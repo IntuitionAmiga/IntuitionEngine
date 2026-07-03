@@ -378,8 +378,11 @@ func m68kEmitFPUDnConvert(cb *CodeBuffer, reg uint16, format int) {
 // result to fp[dst] and updating the FPSR condition codes exactly like the
 // interpreter's applyFPUEAValue. Expects RAX free; reloads the FP base itself.
 func m68kEmitNativeFPUEAApply(cb *CodeBuffer, op m68kFPUNativeOp, dst, precision int, elideCC bool) {
-	dstDisp := int32(dst * 8)
-	amd64MOV_reg_mem(cb, fpuBaseGPR, m68kAMD64RegCtx, int32(m68kCtxOffFPRegsPtr))
+	// fpuBaseGPR = &fp[0] — only the memory-resident (unpinned) fp[dst] accesses
+	// below dereference it; pinned reads/writes go straight to xmm8-15.
+	if !m68kFPPinned {
+		amd64MOV_reg_mem(cb, fpuBaseGPR, m68kAMD64RegCtx, int32(m68kCtxOffFPRegsPtr))
+	}
 	switch op {
 	case m68kFPUNativeFMOVE:
 		amd64MOVSD_rr(cb, fpuWorkXMM, fpuValXMM)
@@ -392,25 +395,25 @@ func m68kEmitNativeFPUEAApply(cb *CodeBuffer, op m68kFPUNativeOp, dst, precision
 		amd64MOVSD_load(cb, fpuWorkXMM, m68kAMD64RegCtx, int32(m68kCtxOffFPNegMask))
 		amd64XORPD_rr(cb, fpuWorkXMM, fpuValXMM)
 	case m68kFPUNativeFADD:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
 		amd64ADDSD_rr(cb, fpuWorkXMM, fpuValXMM)
 	case m68kFPUNativeFSUB:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
 		amd64SUBSD_rr(cb, fpuWorkXMM, fpuValXMM)
 	case m68kFPUNativeFMUL:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
 		amd64MULSD_rr(cb, fpuWorkXMM, fpuValXMM)
 	case m68kFPUNativeFDIV:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
 		amd64DIVSD_rr(cb, fpuWorkXMM, fpuValXMM)
 	case m68kFPUNativeFSGLDIV:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
 		amd64CVTSD2SS_rr(cb, fpuWorkXMM, fpuWorkXMM)
 		amd64CVTSD2SS_rr(cb, fpuValXMM, fpuValXMM)
 		amd64SSE_scalar(cb, 0x5E, fpuWorkXMM, fpuValXMM) // divss
 		amd64CVTSS2SD_rr(cb, fpuWorkXMM, fpuWorkXMM)
 	case m68kFPUNativeFSGLMUL:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
 		amd64CVTSD2SS_rr(cb, fpuWorkXMM, fpuWorkXMM)
 		amd64CVTSD2SS_rr(cb, fpuValXMM, fpuValXMM)
 		amd64SSE_scalar(cb, 0x59, fpuWorkXMM, fpuValXMM) // mulss
@@ -427,7 +430,7 @@ func m68kEmitNativeFPUEAApply(cb *CodeBuffer, op m68kFPUNativeOp, dst, precision
 	case m68kFPUNativeFCMP:
 		// fp[dst] compared against the operand; CC only, no store.
 		amd64XOR_reg_reg32(cb, amd64RDX, amd64RDX)
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
 		amd64UCOMISD_rr(cb, fpuWorkXMM, fpuValXMM)
 		m68kEmitNativeFCMPFlagsTail(cb)
 		return
@@ -436,7 +439,7 @@ func m68kEmitNativeFPUEAApply(cb *CodeBuffer, op m68kFPUNativeOp, dst, precision
 		amd64CVTSD2SS_rr(cb, fpuWorkXMM, fpuWorkXMM)
 		amd64CVTSS2SD_rr(cb, fpuWorkXMM, fpuWorkXMM)
 	}
-	amd64MOVSD_store(cb, fpuBaseGPR, dstDisp, fpuWorkXMM)
+	m68kEmitFPRegStore(cb, dst, fpuWorkXMM)
 	// Lazy FPSR: skip the CC update when the next in-block op overwrites the CC
 	// before any observer or fault (FTST/FCMP above always set their CC).
 	if !elideCC {
@@ -544,13 +547,12 @@ func m68kEmitNativeFPUEALoad(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, in
 }
 
 func m68kEmitNativeFPUEAStore(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, instrPC uint32, br *m68kBlockRegs, instrIdx int, form *m68kNativeFPUEAForm) {
-	srcDisp := int32(form.fpReg * 8)
-
 	if form.mode == 0 {
 		// Dn destination: convert and merge with move-to-Dn semantics
 		// (byte/word writes preserve the upper bits). No memory access, no
-		// FPSR change.
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		// FPSR change. fpuBaseGPR still holds &fp[0] from the presence guard
+		// (used by the funnel's unpinned path).
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, form.fpReg)
 		switch form.format {
 		case 1: // single precision bits
 			amd64CVTSD2SS_rr(cb, fpuWorkXMM, fpuWorkXMM)
@@ -592,8 +594,10 @@ func m68kEmitNativeFPUEAStore(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, i
 	amd64MOV_reg_imm32(cb, amd64RDX, accessBytes)
 	m68kEmitMemRangeBailChecks(cb, amd64R10, amd64RDX, &bailOffs)
 
-	amd64MOV_reg_mem(cb, fpuBaseGPR, m68kAMD64RegCtx, int32(m68kCtxOffFPRegsPtr))
-	amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+	if !m68kFPPinned {
+		amd64MOV_reg_mem(cb, fpuBaseGPR, m68kAMD64RegCtx, int32(m68kCtxOffFPRegsPtr))
+	}
+	m68kEmitFPRegLoad(cb, fpuWorkXMM, form.fpReg)
 	switch form.format {
 	case 1: // single precision
 		amd64CVTSD2SS_rr(cb, fpuWorkXMM, fpuWorkXMM)
@@ -652,7 +656,7 @@ func m68kEmitNativeFMOVECR(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, bloc
 
 	amd64MOV_reg_imm64(cb, amd64R10, math.Float64bits(value))
 	amd64MOVQ_xmm_reg(cb, fpuWorkXMM, amd64R10)
-	amd64MOVSD_store(cb, fpuBaseGPR, int32(dst*8), fpuWorkXMM)
+	m68kEmitFPRegStore(cb, dst, fpuWorkXMM)
 	m68kEmitNativeFPUSetCC(cb)
 	return true
 }

@@ -875,6 +875,13 @@ func m68kEmitEpilogue(cb *CodeBuffer, br *m68kBlockRegs) {
 	// compared with interpreter fallback and they avoid stale host-register
 	// state when the block-level write analysis misses a path edge.
 	m68kEmitSpillMappedRegs(cb)
+	// FP-pinned blocks flush xmm8-15 to the memory FP file before returning to
+	// Go: every helper/fallback/exception/IO bail funnels through this epilogue,
+	// so this is the single point that keeps the interpreter and successor
+	// blocks seeing current fp0-7. Must precede the RAX-clobbering SR merge.
+	if br.fpPinned {
+		m68kEmitSpillFPRegs(cb)
+	}
 
 	// Merge CCR back into SR: *SRPtr = (*SRPtr & 0xFFE0) | (R14 & 0x1F)
 	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(m68kAMD64OffSRPtr)) // RAX = SRPtr
@@ -1047,6 +1054,16 @@ func m68kEmitChainEntry(cb *CodeBuffer, br *m68kBlockRegs) int {
 		amd64MOV_mem_imm32(cb, amd64RSP, int32(m68kAMD64OffLoopCount), 0)
 	}
 
+	// FP-pinned blocks load fp0-7 from the memory file into xmm8-15 once here,
+	// after entryOff so BOTH the full entry (prologue fall-through) and chained
+	// entries (JMP to entryOff) execute it — the memory file is the rendezvous
+	// across every block edge, so a predecessor need not have pinned the same
+	// set. The internal loop back-edge targets a body instruction (not entryOff),
+	// so this runs once per block entry, not per iteration.
+	if br.fpPinned {
+		m68kEmitLoadFPRegs(cb)
+	}
+
 	return entryOff
 }
 
@@ -1066,6 +1083,12 @@ func m68kEmitLightweightEpilogue(cb *CodeBuffer, br *m68kBlockRegs) {
 	amd64SHR_imm(cb, amd64RAX, 4)
 	emitMemOp(cb, false, 0x88, amd64RAX, amd64RSP, m68kAMD64OffXFlag) // MOV [RSP+24], AL
 	m68kEmitSpillMappedRegs(cb)
+	// Flush pinned fp0-7 to the memory file across the chain edge (mirror of the
+	// full epilogue). The successor reloads them at its chain entry, so memory is
+	// the rendezvous. Must precede the RAX-clobbering SR merge.
+	if br.fpPinned {
+		m68kEmitSpillFPRegs(cb)
+	}
 
 	// Merge CCR back into SR
 	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(m68kAMD64OffSRPtr))
@@ -11291,6 +11314,18 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 		// (one chained block per iteration) instead of the in-block budget loop.
 		br.hasBackwardBranch = false
 	}
+	// FP register pinning: enable for loop blocks that use the FPU (the
+	// guaranteed-win case — a tight FP loop compiles to one internally-looping
+	// block, so fp0-7 load once at entry, run register-register inside the
+	// loop, and spill once at exit instead of round-tripping memory per op).
+	// Straight-line FP stays on the memory model to avoid the entry/exit sync
+	// cost. Publish to the per-op emitters via the package global (mirror of
+	// m68kCurrentCS / m68kCurrentLive); reset in the defer below.
+	// Gated off on Windows (m68kFPPinPlatformOK): xmm8-15 are callee-saved in the
+	// Windows x64 ABI and the JIT trampoline saves only GPRs, so pinning them
+	// would clobber the runtime's nonvolatile xmm state on return to Go.
+	br.fpPinned = m68kFPPinPlatformOK && br.hasBackwardBranch && m68kBlockHasNativeFP(instrs)
+	m68kFPPinned = br.fpPinned
 	m68kEmitPrologue(cb, startPC, &br)
 
 	// Emit chain entry point (lightweight entry for chained transitions)
@@ -11319,7 +11354,7 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 		}
 	}
 	m68kCurrentLive = live
-	defer func() { m68kCurrentLive = nil; m68kCurrentInstrIdx = 0 }()
+	defer func() { m68kCurrentLive = nil; m68kCurrentInstrIdx = 0; m68kFPPinned = false }()
 
 	for i := range instrs {
 		m68kCurrentInstrIdx = i

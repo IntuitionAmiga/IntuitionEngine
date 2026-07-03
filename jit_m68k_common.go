@@ -3414,6 +3414,23 @@ type m68kBlockRegs struct {
 	readsCCR          bool  // true if any instruction reads CCR (Bcc, Scc, DBcc, ADDX, etc.)
 	writesCCR         bool  // true if any instruction writes CCR
 	hasBackwardBranch bool
+	fpPinned          bool // fp0-7 pinned into host xmm8-15 for this block's emit
+}
+
+// m68kBlockHasNativeFP reports whether the block contains any coprocessor-1
+// (68881/2 FPU) instruction — F-line group with the coprocessor-id field == 1.
+// Used only as the FP-register-pinning perf gate: pinning is correct for any op
+// mix (every fp[] touch routes through the pin funnels and every mid-block exit
+// spills first), so this only decides whether the block pays the entry-load /
+// exit-spill of xmm8-15 to win back the per-op memory round-trips.
+func m68kBlockHasNativeFP(instrs []M68KJITInstr) bool {
+	for i := range instrs {
+		op := instrs[i].opcode
+		if op&0xF000 == 0xF000 && (op>>9)&0x7 == 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // m68kAnalyzeBlockRegs scans a block's instructions and returns bitmasks of

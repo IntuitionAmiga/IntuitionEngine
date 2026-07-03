@@ -169,6 +169,114 @@ const (
 	fpuBaseGPR = amd64RAX // scratch pointer to the FP register file
 )
 
+// ---------------------------------------------------------------------------
+// FP register pinning (fp0-7 -> host xmm8-15)
+// ---------------------------------------------------------------------------
+//
+// m68kFPPinned is set for the duration of a block's emit when that block's FP
+// register file is pinned into host xmm8-15 (m68kBlockRegs.fpPinned; the
+// compile driver publishes it here, mirroring m68kCurrentCS/m68kCurrentLive).
+// While set, every fp[reg] access below reads/writes the pinned xmm instead of
+// the memory-resident float64 file (fpu_m68881.go); the file is synced only at
+// block entry (m68kEmitLoadFPRegs) and every block exit (m68kEmitSpillFPRegs).
+// Because ALL native FPU emitters route their fp[] touches through the funnels
+// below and every mid-block exit to Go (helper/fallback/exception/IO bail)
+// funnels through an epilogue that spills first, xmm8-15 are authoritative for
+// the whole block and never observed stale. xmm8-15 are volatile across the
+// cgocall trampoline (System V ABI, like the already-clobbered xmm0/1) and no
+// non-FPU m68k emitter touches any xmm, so the pins survive mixed integer/FP
+// loop bodies without save/restore. Reset per block in m68kCompileBlockWithMem.
+var m68kFPPinned bool
+
+// m68kFPPinXMM maps guest FP register n to its pinned host register xmm(8+n).
+func m68kFPPinXMM(reg int) byte { return byte(8 + reg) }
+
+// m68kEmitFPRegLoad loads fp[reg] into dstXMM. Pinned: a register move from the
+// pinned xmm; unpinned: a MOVSD from the memory file at [fpuBaseGPR+reg*8] (the
+// caller must have loaded fpuBaseGPR = &fp[0]).
+func m68kEmitFPRegLoad(cb *CodeBuffer, dstXMM byte, reg int) {
+	if m68kFPPinned {
+		amd64MOVSD_rr(cb, dstXMM, m68kFPPinXMM(reg))
+		return
+	}
+	amd64MOVSD_load(cb, dstXMM, fpuBaseGPR, int32(reg*8))
+}
+
+// m68kEmitFPRegStore writes srcXMM into fp[reg] (pinned xmm or memory file).
+func m68kEmitFPRegStore(cb *CodeBuffer, reg int, srcXMM byte) {
+	if m68kFPPinned {
+		amd64MOVSD_rr(cb, m68kFPPinXMM(reg), srcXMM)
+		return
+	}
+	amd64MOVSD_store(cb, fpuBaseGPR, int32(reg*8), srcXMM)
+}
+
+// m68kEmitFPRegBinOp applies a scalar-double op in place: dstXMM = dstXMM OP fp[reg].
+func m68kEmitFPRegBinOp(cb *CodeBuffer, sseOp, dstXMM byte, reg int) {
+	if m68kFPPinned {
+		amd64SSEsd_rr(cb, sseOp, dstXMM, m68kFPPinXMM(reg))
+		return
+	}
+	amd64SSEsd_rm(cb, sseOp, dstXMM, fpuBaseGPR, int32(reg*8))
+}
+
+// m68kEmitFPRegCvtsd2ss rounds fp[reg] to single precision into dstXMM (cvtsd2ss).
+func m68kEmitFPRegCvtsd2ss(cb *CodeBuffer, dstXMM byte, reg int) {
+	if m68kFPPinned {
+		amd64CVTSD2SS_rr(cb, dstXMM, m68kFPPinXMM(reg))
+		return
+	}
+	amd64SSEsd_rm(cb, 0x5A, dstXMM, fpuBaseGPR, int32(reg*8))
+}
+
+// m68kEmitFPRegSqrt emits sqrt(fp[reg]) into dstXMM as a single sqrtsd.
+func m68kEmitFPRegSqrt(cb *CodeBuffer, dstXMM byte, reg int) {
+	if m68kFPPinned {
+		amd64SQRTSD_rr(cb, dstXMM, m68kFPPinXMM(reg))
+		return
+	}
+	amd64SQRTSD_rm(cb, dstXMM, fpuBaseGPR, int32(reg*8))
+}
+
+// m68kEmitFPRegUcomisd compares dstXMM against fp[reg] (ucomisd, sets host flags).
+func m68kEmitFPRegUcomisd(cb *CodeBuffer, dstXMM byte, reg int) {
+	if m68kFPPinned {
+		amd64UCOMISD_rr(cb, dstXMM, m68kFPPinXMM(reg))
+		return
+	}
+	amd64UCOMISD_rm(cb, dstXMM, fpuBaseGPR, int32(reg*8))
+}
+
+// m68kEmitLoadFPRegs loads the 8 guest FP registers from the memory-resident
+// float64 file into pinned host xmm8-15. Emitted at block/chain entry for
+// FP-pinned blocks. Guarded by a non-nil FP register pointer: when cpu.FPU is
+// absent (&fp[0] == 0) the load is skipped and every FP op in the block bails
+// to the Line-F helper before touching an xmm, so the undefined pins are never
+// observed. Clobbers RAX (fpuBaseGPR).
+func m68kEmitLoadFPRegs(cb *CodeBuffer) {
+	amd64MOV_reg_mem(cb, fpuBaseGPR, m68kAMD64RegCtx, int32(m68kCtxOffFPRegsPtr))
+	amd64TEST_reg_reg(cb, fpuBaseGPR, fpuBaseGPR)
+	skip := amd64Jcc_rel32(cb, amd64CondE)
+	for r := 0; r < 8; r++ {
+		amd64MOVSD_load(cb, m68kFPPinXMM(r), fpuBaseGPR, int32(r*8))
+	}
+	patchRel32(cb, skip, cb.Len())
+}
+
+// m68kEmitSpillFPRegs writes pinned host xmm8-15 back to the memory-resident FP
+// file. Emitted at every block exit for FP-pinned blocks (mirror of
+// m68kEmitLoadFPRegs) so the interpreter/helper/successor block sees current
+// values. Same nil-FP guard (never dereference a null &fp[0]). Clobbers RAX.
+func m68kEmitSpillFPRegs(cb *CodeBuffer) {
+	amd64MOV_reg_mem(cb, fpuBaseGPR, m68kAMD64RegCtx, int32(m68kCtxOffFPRegsPtr))
+	amd64TEST_reg_reg(cb, fpuBaseGPR, fpuBaseGPR)
+	skip := amd64Jcc_rel32(cb, amd64CondE)
+	for r := 0; r < 8; r++ {
+		amd64MOVSD_store(cb, fpuBaseGPR, int32(r*8), m68kFPPinXMM(r))
+	}
+	patchRel32(cb, skip, cb.Len())
+}
+
 // m68kEmitNativeFPURegToReg emits an inline SSE2 implementation of a 68881
 // register-to-register arithmetic op: fp[dst] = fp[dst] OP fp[src] for the
 // binary ops, fp[dst] = fp[src] for FMOVE, fp[dst] = sqrt(fp[src]) for FSQRT.
@@ -178,58 +286,58 @@ const (
 // caller must fall back to the FPU helper); condition-code emission is layered
 // on separately (slice 5b). Caller must have verified cpu.FPU != nil.
 func m68kEmitNativeFPURegToReg(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, precision int) bool {
-	srcDisp := int32(src * 8)
-	dstDisp := int32(dst * 8)
-
-	// fpuBaseGPR = &fp[0]
-	amd64MOV_reg_mem(cb, fpuBaseGPR, m68kAMD64RegCtx, int32(m68kCtxOffFPRegsPtr))
+	// fpuBaseGPR = &fp[0] — needed only for the memory-resident (unpinned) path;
+	// the pinned funnels read/write xmm8-15 and never dereference it.
+	if !m68kFPPinned {
+		amd64MOV_reg_mem(cb, fpuBaseGPR, m68kAMD64RegCtx, int32(m68kCtxOffFPRegsPtr))
+	}
 
 	switch op {
 	case m68kFPUNativeFMOVE:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, src)
 	case m68kFPUNativeFSQRT:
-		amd64SQRTSD_rm(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPRegSqrt(cb, fpuWorkXMM, src)
 	case m68kFPUNativeFABS:
 		// fp[dst] = |fp[src]|: clear the sign bit via ANDPD with the context-
-		// resident 0x7FFF...FFFF mask (one MOVSD, no GPR immediate).
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		// resident 0x7FFF...FFFF mask.
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, src)
 		amd64MOVSD_load(cb, fpuMaskXMM, m68kAMD64RegCtx, int32(m68kCtxOffFPAbsMask))
 		amd64ANDPD_rr(cb, fpuWorkXMM, fpuMaskXMM)
 	case m68kFPUNativeFNEG:
 		// fp[dst] = -fp[src]: flip the sign bit via XORPD with the context-
 		// resident 0x8000...0000 mask.
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, src)
 		amd64MOVSD_load(cb, fpuMaskXMM, m68kAMD64RegCtx, int32(m68kCtxOffFPNegMask))
 		amd64XORPD_rr(cb, fpuWorkXMM, fpuMaskXMM)
 	case m68kFPUNativeFADD:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
-		amd64ADDSD_rm(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
+		m68kEmitFPRegBinOp(cb, sseOpADDSD, fpuWorkXMM, src)
 	case m68kFPUNativeFSUB:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
-		amd64SUBSD_rm(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
+		m68kEmitFPRegBinOp(cb, sseOpSUBSD, fpuWorkXMM, src)
 	case m68kFPUNativeFMUL:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
-		amd64MULSD_rm(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
+		m68kEmitFPRegBinOp(cb, sseOpMULSD, fpuWorkXMM, src)
 	case m68kFPUNativeFDIV:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, dstDisp)
-		amd64DIVSD_rm(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
+		m68kEmitFPRegBinOp(cb, sseOpDIVSD, fpuWorkXMM, src)
 	case m68kFPUNativeFSGLDIV:
 		// Single-precision divide: round BOTH operands to float32 first, divide
 		// in single, widen back. Matches float64(float32(dst)/float32(src)).
-		amd64SSEsd_rm(cb, 0x5A, fpuWorkXMM, fpuBaseGPR, dstDisp) // cvtsd2ss xmm0,[dst]
-		amd64SSEsd_rm(cb, 0x5A, fpuMaskXMM, fpuBaseGPR, srcDisp) // cvtsd2ss xmm1,[src]
-		amd64SSE_scalar(cb, 0x5E, fpuWorkXMM, fpuMaskXMM)        // divss xmm0,xmm1
-		amd64CVTSS2SD_rr(cb, fpuWorkXMM, fpuWorkXMM)             // → double
+		m68kEmitFPRegCvtsd2ss(cb, fpuWorkXMM, dst)        // cvtsd2ss xmm0,fp[dst]
+		m68kEmitFPRegCvtsd2ss(cb, fpuMaskXMM, src)        // cvtsd2ss xmm1,fp[src]
+		amd64SSE_scalar(cb, 0x5E, fpuWorkXMM, fpuMaskXMM) // divss xmm0,xmm1
+		amd64CVTSS2SD_rr(cb, fpuWorkXMM, fpuWorkXMM)      // → double
 	case m68kFPUNativeFSGLMUL:
-		amd64SSEsd_rm(cb, 0x5A, fpuWorkXMM, fpuBaseGPR, dstDisp)
-		amd64SSEsd_rm(cb, 0x5A, fpuMaskXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPRegCvtsd2ss(cb, fpuWorkXMM, dst)
+		m68kEmitFPRegCvtsd2ss(cb, fpuMaskXMM, src)
 		amd64SSE_scalar(cb, 0x59, fpuWorkXMM, fpuMaskXMM) // mulss xmm0,xmm1
 		amd64CVTSS2SD_rr(cb, fpuWorkXMM, fpuWorkXMM)
 	case m68kFPUNativeFINT:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, src)
 		m68kEmitFPURoundToInt(cb, fpuWorkXMM, fpuWorkXMM, false)
 	case m68kFPUNativeFINTRZ:
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, srcDisp)
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, src)
 		m68kEmitFPURoundToInt(cb, fpuWorkXMM, fpuWorkXMM, true)
 	default:
 		// FCMP/FTST are handled by the no-store path; anything else falls back.
@@ -241,7 +349,7 @@ func m68kEmitNativeFPURegToReg(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, pre
 		amd64CVTSS2SD_rr(cb, fpuWorkXMM, fpuWorkXMM)
 	}
 
-	amd64MOVSD_store(cb, fpuBaseGPR, dstDisp, fpuWorkXMM)
+	m68kEmitFPRegStore(cb, dst, fpuWorkXMM)
 	return true
 }
 
@@ -376,7 +484,7 @@ func m68kEmitNativeFPUInstr(cb *CodeBuffer, op m68kFPUNativeOp, src, dst, precis
 		m68kEmitNativeFCMP(cb, src, dst) // compare-only, custom CC, no store
 	case m68kFPUNativeFTST:
 		// FTST sets CC from the source operand; no result is stored.
-		amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, int32(src*8))
+		m68kEmitFPRegLoad(cb, fpuWorkXMM, src)
 		m68kEmitNativeFPUSetCC(cb)
 	default:
 		m68kEmitNativeFPURegToReg(cb, op, src, dst, precision)
@@ -398,8 +506,8 @@ func m68kEmitNativeFCMP(cb *CodeBuffer, src, dst int) {
 	// Zero cc BEFORE the compare: XOR sets host flags (result 0 → PF=1), which
 	// would corrupt the ucomisd result the branches below test.
 	amd64XOR_reg_reg32(cb, amd64RDX, amd64RDX)
-	amd64MOVSD_load(cb, fpuWorkXMM, fpuBaseGPR, int32(dst*8))
-	amd64UCOMISD_rm(cb, fpuWorkXMM, fpuBaseGPR, int32(src*8)) // sets ZF/PF/CF
+	m68kEmitFPRegLoad(cb, fpuWorkXMM, dst)
+	m68kEmitFPRegUcomisd(cb, fpuWorkXMM, src) // sets ZF/PF/CF
 	m68kEmitNativeFCMPFlagsTail(cb)
 }
 
