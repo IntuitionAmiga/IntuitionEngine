@@ -75,6 +75,7 @@ func TestVoodoo_VBlank_AndSwapCompleteCallbacks(t *testing.T) {
 	v.TickFrame()
 	v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
 
 	if vblankCount != 1 {
 		t.Fatalf("vblank callback count = %d, want 1", vblankCount)

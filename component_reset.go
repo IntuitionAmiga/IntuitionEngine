@@ -559,6 +559,12 @@ func (v *VoodooEngine) Reset() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
+	// The swap worker publishes into the triple buffer and renders on
+	// the backend; drain it before resetting either.
+	v.waitSwapIdleLocked()
+	v.pendingClear = false
+	v.pendingClearColor = 0
+
 	v.enabled.Store(false)
 	v.width.Store(VOODOO_DEFAULT_WIDTH)
 	v.height.Store(VOODOO_DEFAULT_HEIGHT)

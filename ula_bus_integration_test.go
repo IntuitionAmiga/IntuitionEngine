@@ -4,19 +4,6 @@ package main
 
 import "testing"
 
-func installRealULA(bus *MachineBus) *ULAEngine {
-	ula := NewULAEngine(bus)
-	bus.MapIO(ULA_BASE, ULA_REG_END, ula.HandleRead, ula.HandleWrite)
-	bus.MapIOByteRead(ULA_BASE, ULA_REG_END, ula.HandleRead8)
-	bus.MapIOByte(ULA_BASE, ULA_REG_END, ula.HandleWrite8)
-	bus.MapIO(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END, ula.HandleBusVRAMRead, ula.HandleBusVRAMWrite)
-	bus.MapIOByteRead(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END, ula.HandleRead8)
-	bus.MapIOByte(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END, ula.HandleWrite8)
-	bus.MapIO64(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END, ula.HandleRead64, ula.HandleWrite64)
-	bus.MapIOWideWriteFanout(ULA_VRAM_AP_BASE, ULA_VRAM_AP_END)
-	return ula
-}
-
 func TestULA_ApertureWrite32UpdatesAllBytes(t *testing.T) {
 	bus := NewMachineBus()
 	ula := installRealULA(bus)

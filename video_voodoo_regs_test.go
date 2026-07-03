@@ -4,18 +4,6 @@ package main
 
 import "testing"
 
-func testVoodooSoftwareBackend(t *testing.T, v *VoodooEngine) *VoodooSoftwareBackend {
-	t.Helper()
-	vb, ok := v.backend.(*VulkanBackend)
-	if !ok {
-		t.Fatalf("headless backend type = %T, want *VulkanBackend", v.backend)
-	}
-	if vb.software == nil {
-		t.Fatal("headless VulkanBackend has nil software backend")
-	}
-	return vb.software
-}
-
 func TestVoodoo_FBZColorPath_AppliedToBackend(t *testing.T) {
 	_, v := newMappedTestVoodoo(t)
 	sw := testVoodooSoftwareBackend(t, v)

@@ -39,7 +39,7 @@ This rule applies to command registers including `VOODOO_TRIANGLE_CMD`, `VOODOO_
 
 Raster state — `VOODOO_FBZ_MODE`, `VOODOO_ALPHA_MODE`, `VOODOO_FBZCOLOR_PATH`, `VOODOO_TEXTURE_MODE`, fog, chroma key, stipple, the clip rectangle, slope registers, and the currently uploaded texture — binds to each triangle at the moment its `VOODOO_TRIANGLE_CMD` commits, matching real SST-1 immediate-mode semantics. The implementation defers rasterization to the swap-time batch flush, but register writes after a triangle is submitted never affect that triangle: internally each triangle is stamped with an immutable state snapshot, shared between consecutive triangles until a state register changes. A texture upload after a submitted triangle does not retroactively change what that triangle samples.
 
-Fog table and palette contents are not snapshotted (their rasterizer lookups remain `compat-pending`). The Vulkan GPU fast path currently draws single-state frames natively and presents the software reference output for multi-state frames; per-group GPU binding is an internal optimization, not an ABI change.
+Fog table and palette contents are not snapshotted (their rasterizer lookups remain `compat-pending`). The Vulkan GPU fast path draws multi-state frames natively with per-state-group binding; frames using raster features its shaders do not implement (stipple patterns, chroma ranges, front-buffer draws, slope-register interpolation) present the software reference output. Flushes without a guest clear composite over previous content and also present the software reference output. Which backend rasterizes a frame is an internal optimization, not an ABI property.
 
 ## Texture Model
 

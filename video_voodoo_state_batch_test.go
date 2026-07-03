@@ -93,6 +93,7 @@ func TestVoodoo_StateBindsAtTriangleCmd_TwoStateFrame(t *testing.T) {
 	sbSubmitTri(v, 300, 40, 420, 40, 300, 160, 1, 1, 1)
 
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
 
 	sbExpectColor(t, sw, 60, 60, 255, 0, 0, "untextured triangle keeps its own state")
 	sbExpectColor(t, sw, 320, 60, 0, 255, 0, "textured triangle samples its texture")
@@ -117,6 +118,7 @@ func TestVoodoo_MidFrameTextureSwitch(t *testing.T) {
 	sbSubmitTri(v, 300, 40, 420, 40, 300, 160, 1, 1, 1)
 
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
 
 	sbExpectColor(t, sw, 60, 60, 255, 0, 0, "first triangle keeps the red texture")
 	sbExpectColor(t, sw, 320, 60, 0, 0, 255, "second triangle samples the blue texture")
@@ -144,6 +146,7 @@ func TestVoodoo_ScissorBindsPerTriangle(t *testing.T) {
 	sbSubmitTri(v, 300, 40, 420, 40, 300, 160, 0, 1, 0)
 
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
 
 	sbExpectColor(t, sw, 60, 60, 0, 0, 0, "left triangle scissored by its own clip rect")
 	sbExpectColor(t, sw, 320, 60, 0, 255, 0, "right triangle visible under its own clip rect")
@@ -238,6 +241,7 @@ func TestVoodoo_SwapClearsStampedTriangleSlots(t *testing.T) {
 	}
 
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
 	if len(v.triangleBatch) != 0 {
 		t.Fatalf("post-swap batch length = %d, want 0", len(v.triangleBatch))
 	}
@@ -465,6 +469,7 @@ func TestVoodoo_SetTextureDataAPI_StampsSnapshots(t *testing.T) {
 	v.SetTextureData(1, 1, []byte{0, 255, 0, 255})
 	sbSubmitTri(v, 40, 40, 160, 40, 40, 160, 1, 1, 1)
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
 
 	sbExpectColor(t, sw, 60, 60, 0, 255, 0, "SetTextureData texture bound to stamped triangle")
 }
@@ -488,6 +493,7 @@ func TestVoodoo_FlushRestoresLiveBackendState(t *testing.T) {
 	v.HandleWrite(VOODOO_CLIP_LEFT_RIGHT, (100<<16)|500)
 
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
 
 	if !sw.textureEnabled {
 		t.Fatal("flush must restore live textureEnabled state")

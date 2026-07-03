@@ -16,6 +16,7 @@ func TestVoodoo_SwapBufferCmd_ClearBit_Honored(t *testing.T) {
 	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
 	v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
 	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, VOODOO_SWAP_CLEAR)
+	v.WaitSwapIdle()
 
 	for i := 0; i < 16; i += 4 {
 		if got := sw.colorBuffer[i : i+4]; got[0] != 0 || got[1] != 0 || got[2] != 0 || got[3] != 0xFF {
@@ -192,6 +193,7 @@ func TestVoodoo_MegaDemoPrebuilt_ProducesNonBlackFrame(t *testing.T) {
 	cpu.StartExecution()
 	time.Sleep(250 * time.Millisecond)
 	cpu.Stop()
+	v.WaitSwapIdle()
 
 	frame := v.backend.GetFrame()
 	if len(frame) == 0 {
@@ -217,6 +219,7 @@ func TestVoodoo_MegaDemoPrebuilt_PublishesNonBlackEngineFrame(t *testing.T) {
 	cpu.StartExecution()
 	time.Sleep(250 * time.Millisecond)
 	cpu.Stop()
+	v.WaitSwapIdle()
 
 	frame := v.GetFrame()
 	if len(frame) == 0 {

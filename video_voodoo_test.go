@@ -1479,22 +1479,224 @@ func TestVoodoo_VulkanBackend_SingleStampedStateFallback(t *testing.T) {
 	tri := VoodooTriangle{State: st}
 
 	if flushRequiresSoftwareFrame(vb, []VoodooTriangle{tri}) {
-		t.Fatal("matching single stamped state should stay on Vulkan path")
+		t.Fatal("GPU-representable stamped state should stay on Vulkan path")
 	}
 
+	// Live-state divergence no longer forces a fallback: each state
+	// group binds its own snapshot-derived pipeline, scissor, push
+	// constants and texture.
 	vb.textureEnabled = true
-	if !flushRequiresSoftwareFrame(vb, []VoodooTriangle{tri}) {
-		t.Fatal("single stamped untextured state must fall back after live texturing is enabled")
-	}
-
 	st.TextureMode = VOODOO_TEX_ENABLE
+	vb.textureData = []byte{0, 255, 0, 255}
 	if flushRequiresSoftwareFrame(vb, []VoodooTriangle{tri}) {
-		t.Fatal("matching single textured state should stay on Vulkan path")
+		t.Fatal("stamped textured state should render per-group on the Vulkan path")
 	}
 
-	vb.textureData = []byte{0, 255, 0, 255}
-	if !flushRequiresSoftwareFrame(vb, []VoodooTriangle{tri}) {
-		t.Fatal("single stamped textured state must fall back after live texture data changes")
+	// Multi-state flushes render natively via state-group binding.
+	st2 := &VoodooRasterState{
+		FbzMode:    fbzOpaque,
+		ClipLeft:   10,
+		ClipTop:    10,
+		ClipRight:  90,
+		ClipBottom: 90,
+	}
+	if flushRequiresSoftwareFrame(vb, []VoodooTriangle{tri, {State: st2}}) {
+		t.Fatal("multi-state flush should render per-group on the Vulkan path")
+	}
+
+	// Raster features the shaders lack still present the software
+	// reference output for the frame.
+	stipple := &VoodooRasterState{FbzMode: fbzOpaque | VOODOO_FBZ_STIPPLE, Stipple: 0xAAAA5555}
+	if !flushRequiresSoftwareFrame(vb, []VoodooTriangle{{State: stipple}}) {
+		t.Fatal("stipple pattern must fall back to the software reference")
+	}
+	stippleAllPass := &VoodooRasterState{FbzMode: fbzOpaque | VOODOO_FBZ_STIPPLE, Stipple: 0}
+	if flushRequiresSoftwareFrame(vb, []VoodooTriangle{{State: stippleAllPass}}) {
+		t.Fatal("all-pass stipple pattern should stay on the Vulkan path")
+	}
+	chromaRange := &VoodooRasterState{FbzMode: fbzOpaque | VOODOO_FBZ_CHROMAKEY, ChromaRange: 0x00202020}
+	if !flushRequiresSoftwareFrame(vb, []VoodooTriangle{{State: chromaRange}}) {
+		t.Fatal("chroma range must fall back to the software reference")
+	}
+	drawFront := &VoodooRasterState{FbzMode: fbzOpaque | VOODOO_FBZ_DRAW_FRONT}
+	if !flushRequiresSoftwareFrame(vb, []VoodooTriangle{{State: drawFront}}) {
+		t.Fatal("front-buffer draw must fall back to the software reference")
+	}
+	sloped := &VoodooRasterState{FbzMode: fbzOpaque, SlopesValid: true}
+	if !flushRequiresSoftwareFrame(vb, []VoodooTriangle{{State: sloped}}) {
+		t.Fatal("slope-register interpolation must fall back to the software reference")
+	}
+}
+
+// A software-fallback frame that follows a GPU frame without a clear
+// must depth-test against the previous frame's geometry. The backend
+// replays the last GPU flush through the software rasteriser to
+// reconstruct reference colour and depth (GPU depth is never read
+// back), so a farther fallback triangle stays hidden behind a nearer
+// GPU-frame triangle.
+func TestVoodoo_VulkanBackend_FallbackDepthContinuity(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	vb, ok := v.backend.(*VulkanBackend)
+	if !ok {
+		t.Fatalf("backend type = %T, want *VulkanBackend", v.backend)
+	}
+	if !vb.initialized {
+		t.Skip("Vulkan not available, skipping fallback depth continuity test")
+	}
+
+	submitTri := func(x0, y0, x1, y1, x2, y2, r, g, b, z float32) {
+		v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(x0))
+		v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(y0))
+		v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(x1))
+		v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(y1))
+		v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(x2))
+		v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(y2))
+		v.HandleWrite(VOODOO_START_R, floatToFixed12_12(r))
+		v.HandleWrite(VOODOO_START_G, floatToFixed12_12(g))
+		v.HandleWrite(VOODOO_START_B, floatToFixed12_12(b))
+		v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1))
+		v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(z))
+		v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+	}
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
+	v.HandleWrite(VOODOO_FBZ_MODE, uint32(VOODOO_FBZ_RGB_WRITE|VOODOO_FBZ_DEPTH_ENABLE|
+		VOODOO_FBZ_DEPTH_WRITE|(VOODOO_DEPTH_LESS<<5)))
+
+	// Frame 1 (GPU): clear blue, near red triangle at z=0.3.
+	v.HandleWrite(VOODOO_COLOR0, 0xFF0000FF)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+	submitTri(100, 50, 400, 50, 100, 350, 1, 0, 0, 0.3)
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
+	if vb.presentSoftwareFrame {
+		t.Fatal("frame 1 should render on the GPU")
+	}
+
+	// Frame 2 (software fallback, NO clear): farther green triangle at
+	// z=0.6 overlapping the red one. Slope registers force the fallback.
+	v.HandleWrite(VOODOO_DZDX, 0)
+	submitTri(100, 50, 400, 50, 100, 350, 0, 1, 0, 0.6)
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
+	if !vb.presentSoftwareFrame {
+		t.Fatal("frame 2 should fall back to the software reference")
+	}
+
+	frame := vb.GetFrame()
+	w, _ := v.GetDimensions()
+	idx := (100*w + 150) * 4
+	r, g, b := frame[idx], frame[idx+1], frame[idx+2]
+	if r < 200 || g > 50 {
+		t.Errorf("fallback triangle at z=0.6 must stay behind GPU-frame triangle at z=0.3, got R=%d G=%d B=%d", r, g, b)
+	}
+
+	// Frame 3 (still no clear): another farther triangle. The software
+	// buffers accumulated frames 1+2, so depth from frame 1 must still
+	// occlude it.
+	submitTri(100, 50, 400, 50, 100, 350, 1, 1, 0, 0.5)
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
+	if !vb.presentSoftwareFrame {
+		t.Fatal("frame 3 composites without a clear and must stay on the software reference")
+	}
+
+	frame = vb.GetFrame()
+	r, g, b = frame[idx], frame[idx+1], frame[idx+2]
+	if r < 200 || g > 50 {
+		t.Errorf("frame-3 triangle at z=0.5 must stay behind frame-1 triangle at z=0.3, got R=%d G=%d B=%d", r, g, b)
+	}
+}
+
+// A frame mixing untextured triangles and two different textures must
+// render on the GPU via state-group binding, with each group sampling
+// the texture bound at its triangleCMD.
+func TestVoodoo_VulkanBackend_MultiStateFrame_GPU(t *testing.T) {
+	v, err := NewVoodooEngine(nil)
+	if err != nil {
+		t.Fatalf("NewVoodooEngine failed: %v", err)
+	}
+	defer v.Destroy()
+
+	vb, ok := v.backend.(*VulkanBackend)
+	if !ok {
+		t.Fatalf("backend type = %T, want *VulkanBackend", v.backend)
+	}
+	if !vb.initialized {
+		t.Skip("Vulkan not available, skipping GPU multi-state test")
+	}
+
+	submitTri := func(x0, y0, x1, y1, x2, y2, r, g, b float32) {
+		v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(x0))
+		v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(y0))
+		v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(x1))
+		v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(y1))
+		v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(x2))
+		v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(y2))
+		v.HandleWrite(VOODOO_START_R, floatToFixed12_12(r))
+		v.HandleWrite(VOODOO_START_G, floatToFixed12_12(g))
+		v.HandleWrite(VOODOO_START_B, floatToFixed12_12(b))
+		v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1))
+		v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(0.5))
+		v.HandleWrite(VOODOO_START_S, floatToFixed14_18(0.5))
+		v.HandleWrite(VOODOO_START_T, floatToFixed14_18(0.5))
+		v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+	}
+	uploadTexel := func(r, g, b byte) {
+		v.HandleTexMemWrite(VOODOO_TEXMEM_BASE,
+			uint32(r)|uint32(g)<<8|uint32(b)<<16|0xFF000000)
+		v.HandleWrite(VOODOO_TEX_WIDTH, 1)
+		v.HandleWrite(VOODOO_TEX_HEIGHT, 1)
+		v.HandleWrite(VOODOO_TEX_UPLOAD, 1)
+	}
+
+	v.HandleWrite(VOODOO_ENABLE, 1)
+	v.HandleWrite(VOODOO_FBZ_MODE, uint32(VOODOO_FBZ_RGB_WRITE|VOODOO_FBZ_DEPTH_ENABLE|
+		VOODOO_FBZ_DEPTH_WRITE|(VOODOO_DEPTH_ALWAYS<<5)))
+	v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
+	v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+	// Untextured red triangle on the left.
+	v.HandleWrite(VOODOO_TEXTURE_MODE, 0)
+	submitTri(40, 40, 160, 40, 40, 160, 1, 0, 0)
+
+	// Green texel, textured white triangle in the middle.
+	uploadTexel(0, 255, 0)
+	v.HandleWrite(VOODOO_TEXTURE_MODE, 1|(10<<8))
+	submitTri(240, 40, 360, 40, 240, 160, 1, 1, 1)
+
+	// Blue texel, textured white triangle on the right. The green
+	// texture is no longer the live upload, so its group exercises
+	// the snapshot texture cache.
+	uploadTexel(0, 0, 255)
+	submitTri(440, 40, 560, 40, 440, 160, 1, 1, 1)
+
+	v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+	v.WaitSwapIdle()
+
+	if vb.presentSoftwareFrame {
+		t.Fatal("multi-state frame should render on the GPU, not the software reference")
+	}
+
+	frame := vb.GetFrame()
+	w, _ := v.GetDimensions()
+	pixel := func(x, y int) (byte, byte, byte) {
+		idx := (y*w + x) * 4
+		return frame[idx], frame[idx+1], frame[idx+2]
+	}
+	if r, g, b := pixel(60, 60); r < 200 || g > 50 || b > 50 {
+		t.Errorf("untextured triangle should be red, got R=%d G=%d B=%d", r, g, b)
+	}
+	if r, g, b := pixel(260, 60); g < 200 || r > 50 || b > 50 {
+		t.Errorf("green-textured triangle should be green, got R=%d G=%d B=%d", r, g, b)
+	}
+	if r, g, b := pixel(460, 60); b < 200 || r > 50 || g > 50 {
+		t.Errorf("blue-textured triangle should be blue, got R=%d G=%d B=%d", r, g, b)
 	}
 }
 
@@ -4695,6 +4897,44 @@ func BenchmarkVoodoo_FullFrame(b *testing.B) {
 	}
 }
 
+// BenchmarkVoodoo_FullFrame_WithGuestWork models a real guest: ~2ms of
+// game logic between the swap command and the next frame's first
+// register write. With the asynchronous swap worker the render overlaps
+// that work, so ns/op approaches max(render, work) instead of their sum.
+func BenchmarkVoodoo_FullFrame_WithGuestWork(b *testing.B) {
+	v, _ := NewVoodooEngine(nil)
+	defer v.Destroy()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		v.HandleWrite(VOODOO_COLOR0, 0xFF000000)
+		v.HandleWrite(VOODOO_FAST_FILL_CMD, 0)
+
+		for j := range 100 {
+			offset := float32(j % 10 * 50)
+			v.HandleWrite(VOODOO_VERTEX_AX, floatToFixed12_4(100+offset))
+			v.HandleWrite(VOODOO_VERTEX_AY, floatToFixed12_4(50+float32(j/10*40)))
+			v.HandleWrite(VOODOO_VERTEX_BX, floatToFixed12_4(140+offset))
+			v.HandleWrite(VOODOO_VERTEX_BY, floatToFixed12_4(90+float32(j/10*40)))
+			v.HandleWrite(VOODOO_VERTEX_CX, floatToFixed12_4(60+offset))
+			v.HandleWrite(VOODOO_VERTEX_CY, floatToFixed12_4(90+float32(j/10*40)))
+			v.HandleWrite(VOODOO_START_R, floatToFixed12_12(float32(j%10)/10.0))
+			v.HandleWrite(VOODOO_START_G, floatToFixed12_12(float32(j/10)/10.0))
+			v.HandleWrite(VOODOO_START_B, floatToFixed12_12(0.5))
+			v.HandleWrite(VOODOO_START_A, floatToFixed12_12(1.0))
+			v.HandleWrite(VOODOO_START_Z, floatToFixed20_12(float32(j)/100.0))
+			v.HandleWrite(VOODOO_TRIANGLE_CMD, 0)
+		}
+
+		v.HandleWrite(VOODOO_SWAP_BUFFER_CMD, 0)
+
+		// Simulated guest CPU work (game logic) after the swap command.
+		deadline := time.Now().Add(2 * time.Millisecond)
+		for time.Now().Before(deadline) {
+		}
+	}
+}
+
 // =============================================================================
 // Texture Memory Upload Tests (TDD for assembly texture upload support)
 // =============================================================================
@@ -5274,6 +5514,40 @@ func BenchmarkVoodoo_100Triangles_Flat(b *testing.B) {
 	}
 
 	// Set up depth testing
+	fbzMode := uint32(VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
+	backend.UpdatePipelineState(fbzMode, 0)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		backend.ClearFramebuffer(0xFF000000)
+		backend.FlushTriangles(triangles)
+		backend.SwapBuffers(false)
+	}
+}
+
+// BenchmarkVoodoo_FullscreenQuad_Software measures fill-rate on two
+// fullscreen triangles — the case the row-banded parallel rasteriser
+// targets (large software-fallback frames).
+func BenchmarkVoodoo_FullscreenQuad_Software(b *testing.B) {
+	backend := NewVoodooSoftwareBackend()
+	backend.Init(640, 480)
+	defer backend.Destroy()
+
+	triangles := []VoodooTriangle{
+		{Vertices: [3]VoodooVertex{
+			{X: 0, Y: 0, Z: 0.5, R: 1, G: 0, B: 0, A: 1},
+			{X: 640, Y: 0, Z: 0.5, R: 0, G: 1, B: 0, A: 1},
+			{X: 0, Y: 480, Z: 0.5, R: 0, G: 0, B: 1, A: 1},
+		}},
+		{Vertices: [3]VoodooVertex{
+			{X: 640, Y: 0, Z: 0.5, R: 0, G: 1, B: 0, A: 1},
+			{X: 640, Y: 480, Z: 0.5, R: 1, G: 1, B: 1, A: 1},
+			{X: 0, Y: 480, Z: 0.5, R: 0, G: 0, B: 1, A: 1},
+		}},
+	}
+
 	fbzMode := uint32(VOODOO_FBZ_DEPTH_ENABLE | VOODOO_FBZ_RGB_WRITE | VOODOO_FBZ_DEPTH_WRITE | (VOODOO_DEPTH_LESS << 5))
 	backend.UpdatePipelineState(fbzMode, 0)
 

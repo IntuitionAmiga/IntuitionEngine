@@ -29,15 +29,6 @@ func newIEMONCoprocHarness(t *testing.T) (*MachineBus, *CoprocessorManager, *Mac
 	return bus, mgr, mon, baseDir
 }
 
-func monitorText(lines []OutputLine) string {
-	var b strings.Builder
-	for _, line := range lines {
-		b.WriteString(line.Text)
-		b.WriteByte('\n')
-	}
-	return b.String()
-}
-
 func requireMonitorOutputContains(t *testing.T, lines []OutputLine, want string) {
 	t.Helper()
 	text := monitorText(lines)

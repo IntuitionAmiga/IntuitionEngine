@@ -775,6 +775,8 @@ type voodooDebugSnapshot struct {
 	Color0, Color1, FogColor, ZAColor        uint32
 	ChromaKey                                uint32
 	Busy, SwapPending                        bool
+	PendingClear                             bool
+	PendingClearColor                        uint32
 	VRetrace                                 int64
 	FrameBufs                                [3][]byte
 	SharedIdx, ReadingIdx                    int32
@@ -801,6 +803,9 @@ func (v *VoodooEngine) DebugSnapshot() (uint32, []byte, error) {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	// Quiesce the swap worker so the snapshot captures a consistent,
+	// published frame and no in-flight busy state.
+	v.waitSwapIdleLocked()
 	stateTable := newVoodooDebugStateTable()
 	triangleBatch := stateTable.snapshotTriangles(v.triangleBatch)
 	batchStateIndex := stateTable.stateIndex(v.batchState)
@@ -824,6 +829,7 @@ func (v *VoodooEngine) DebugSnapshot() (uint32, []byte, error) {
 		ClipLeft: v.clipLeft, ClipRight: v.clipRight, ClipTop: v.clipTop, ClipBottom: v.clipBottom,
 		Color0: v.color0, Color1: v.color1, FogColor: v.fogColor, ZAColor: v.zaColor, ChromaKey: v.chromaKey,
 		Busy: v.busy, SwapPending: v.swapPending, VRetrace: v.vretrace.Load(),
+		PendingClear: v.pendingClear, PendingClearColor: v.pendingClearColor,
 		FrameBufs: cloneByteSlices3(v.frameBufs), SharedIdx: v.sharedIdx.Load(), ReadingIdx: v.readingIdx.Load(), WriteIdx: v.writeIdx,
 		TextureMemory: append([]byte(nil), v.textureMemory...), TextureWidth: v.textureWidth, TextureHeight: v.textureHeight,
 	})
@@ -842,6 +848,8 @@ func (v *VoodooEngine) DebugRestoreSnapshot(version uint32, data []byte) error {
 	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	// Quiesce the swap worker before overwriting the state it publishes into.
+	v.waitSwapIdleLocked()
 	v.width.Store(snap.Width)
 	v.height.Store(snap.Height)
 	v.layer = snap.Layer
@@ -869,6 +877,7 @@ func (v *VoodooEngine) DebugRestoreSnapshot(version uint32, data []byte) error {
 	v.clipLeft, v.clipRight, v.clipTop, v.clipBottom = snap.ClipLeft, snap.ClipRight, snap.ClipTop, snap.ClipBottom
 	v.color0, v.color1, v.fogColor, v.zaColor, v.chromaKey = snap.Color0, snap.Color1, snap.FogColor, snap.ZAColor, snap.ChromaKey
 	v.busy, v.swapPending = snap.Busy, snap.SwapPending
+	v.pendingClear, v.pendingClearColor = snap.PendingClear, snap.PendingClearColor
 	v.vretrace.Store(snap.VRetrace)
 	restoreByteSlices3(&v.frameBufs, snap.FrameBufs)
 	v.sharedIdx.Store(snap.SharedIdx)

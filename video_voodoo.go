@@ -186,6 +186,26 @@ type VoodooEngine struct {
 	vretrace    atomic.Int64 // Frame start time (UnixNano) for time-based vretrace
 	swapPending bool
 
+	// Asynchronous swap worker. SWAP_BUFFER_CMD packages the batched
+	// frame into a job and hands it to a render goroutine so the guest
+	// CPU does not stall on the backend flush/readback round-trip. At
+	// most one job is in flight; the next swap waits for completion
+	// (one frame of run-ahead, matching a FIFO that fills up). STATUS
+	// reports busy/swap-pending while the job runs; frame consumers
+	// (GetFrame, resize, Destroy, SetBackend) drain first.
+	swapJobs      chan voodooSwapJob
+	swapWorkerEnd chan struct{}
+	swapIdle      *sync.Cond // signals jobInFlight -> false; L is &mu
+	jobInFlight   bool
+	swapInFlight  atomic.Bool // lock-free mirror of jobInFlight for GetFrame
+	spareBatch    []VoodooTriangle
+
+	// FAST_FILL is deferred into the next swap job: clearing the
+	// backend immediately would race the in-flight frame's render
+	// (clear colour is live backend state, not snapshotted).
+	pendingClear      bool
+	pendingClearColor uint32
+
 	OnVBlank       func()
 	OnSwapComplete func()
 	OnFIFOEmpty    func()
@@ -202,6 +222,23 @@ type VoodooEngine struct {
 	textureMemory []byte
 	textureWidth  int
 	textureHeight int
+}
+
+// voodooSwapJob carries one frame's rendering work to the swap worker.
+// All referenced data is owned by the job (the triangle slice is handed
+// over and recycled on completion; raster-state snapshots and their
+// textures are immutable).
+type voodooSwapJob struct {
+	backend        VoodooBackend
+	triangles      []VoodooTriangle
+	fbzMode        uint32
+	alphaMode      uint32
+	updatePipeline bool
+	clear          bool
+	clearColor     uint32
+	postClear      bool
+	postClearColor uint32
+	waitVSync      bool
 }
 
 // VoodooBackend interface for rendering backends
@@ -264,6 +301,11 @@ func NewVoodooEngine(bus *MachineBus) (*VoodooEngine, error) {
 	v.width.Store(int32(VOODOO_DEFAULT_WIDTH))
 	v.height.Store(int32(VOODOO_DEFAULT_HEIGHT))
 	// enabled defaults to false (atomic.Bool zero value) - programs enable via VOODOO_ENABLE write
+
+	v.swapIdle = sync.NewCond(&v.mu)
+	v.swapJobs = make(chan voodooSwapJob, 1)
+	v.swapWorkerEnd = make(chan struct{})
+	go v.swapWorker(v.swapJobs, v.swapWorkerEnd)
 
 	// Initialize triple-buffer: producer owns buf 0, shared holds buf 1,
 	// consumer owns buf 2. All buffers start zeroed (black frame).
@@ -549,11 +591,10 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 			size := v.textureWidth * v.textureHeight * 4
 			if size <= len(v.textureMemory) {
 				format := int((v.textureMode >> 8) & 0xF)
-				v.backend.SetTextureData(v.textureWidth, v.textureHeight,
-					v.textureMemory[:size], format)
-				// Immutable copy for state snapshots: triangles already
-				// batched keep sampling the texture they were submitted
-				// with.
+				// Immutable copy shared by the state snapshot and the
+				// backend upload: triangles already batched keep sampling
+				// the texture they were submitted with, and backends can
+				// match snapshots to the live upload by slice identity.
 				data := make([]byte, size)
 				copy(data, v.textureMemory[:size])
 				v.currentTexture = &VoodooTexture{
@@ -562,6 +603,7 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 					Format: format,
 					Data:   data,
 				}
+				v.backend.SetTextureData(v.textureWidth, v.textureHeight, data, format)
 			}
 		}
 	case VOODOO_FOG_MODE:
@@ -637,6 +679,9 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 				}
 				break
 			}
+			// The swap worker publishes into the triple buffer; drain it
+			// before reallocating.
+			v.waitSwapIdleLocked()
 			v.width.Store(int32(newWidth))
 			v.height.Store(int32(newHeight))
 			// Reallocate triple-buffer for new dimensions
@@ -857,71 +902,158 @@ func (v *VoodooEngine) executeTriangleCmd() {
 	v.gouraudEnabled = false
 }
 
-// executeFastFillCmd clears the framebuffer with color0
+// executeFastFillCmd clears the framebuffer with color0. While a swap
+// job is in flight the clear is deferred into the next job instead of
+// applied immediately: the backend's clear colour is live state, and
+// touching it here would repaint the frame still rendering on the swap
+// worker. Rasterisation is already deferred to the swap-time flush, so
+// the visible result is the same either way.
 func (v *VoodooEngine) executeFastFillCmd() {
-	if v.backend != nil {
-		// Update pipeline state if needed
-		if v.pipelineDirty {
-			v.backend.UpdatePipelineState(v.fbzMode, v.alphaMode)
-			v.pipelineDirty = false
-		}
-		v.backend.ClearFramebuffer(v.color0)
+	if v.backend == nil {
+		return
 	}
+	if v.jobInFlight {
+		v.pendingClear = true
+		v.pendingClearColor = v.color0
+		return
+	}
+	// Update pipeline state if needed
+	if v.pipelineDirty {
+		v.backend.UpdatePipelineState(v.fbzMode, v.alphaMode)
+		v.pipelineDirty = false
+	}
+	v.backend.ClearFramebuffer(v.color0)
 }
 
-// executeSwapBufferCmd flushes triangles and swaps buffers
+// executeSwapBufferCmd packages the batched frame into a job for the
+// swap worker and returns without waiting for the render. If the
+// previous frame is still in flight, it waits for that job first (one
+// frame of run-ahead).
 func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
-	if v.backend != nil {
-		v.busy = true
-		defer func() {
-			v.busy = false
-		}()
+	if v.backend == nil || v.swapJobs == nil {
+		v.swapPending = false
+		if v.OnSwapComplete != nil {
+			v.OnSwapComplete()
+		}
+		return
+	}
 
-		// Update pipeline state if needed
-		if v.pipelineDirty {
-			v.backend.UpdatePipelineState(v.fbzMode, v.alphaMode)
-			v.pipelineDirty = false
+	for v.jobInFlight {
+		v.swapIdle.Wait()
+	}
+
+	job := voodooSwapJob{
+		backend:        v.backend,
+		triangles:      v.triangleBatch,
+		fbzMode:        v.fbzMode,
+		alphaMode:      v.alphaMode,
+		updatePipeline: v.pipelineDirty,
+		clear:          v.pendingClear,
+		clearColor:     v.pendingClearColor,
+		waitVSync:      (value & VOODOO_SWAP_VSYNC) != 0,
+	}
+	if value&VOODOO_SWAP_CLEAR != 0 {
+		job.postClear = true
+		job.postClearColor = v.color0
+	}
+	v.pipelineDirty = false
+	v.pendingClear = false
+
+	// The guest batches the next frame into the recycled spare buffer
+	// while the worker renders this one.
+	if v.spareBatch == nil {
+		v.spareBatch = make([]VoodooTriangle, 0, VOODOO_MAX_BATCH_TRIANGLES)
+	}
+	v.triangleBatch = v.spareBatch
+	v.spareBatch = nil
+
+	v.busy = true
+	v.swapPending = true
+	v.jobInFlight = true
+	v.swapInFlight.Store(true)
+	v.swapJobs <- job // cap 1, single job in flight: never blocks
+}
+
+// swapWorker renders swap jobs off the guest CPU thread. Backend calls
+// are serialised against forwarded register writes by the backend's own
+// lock; triangle snapshots are immutable, so job data never races the
+// guest building the next frame.
+// The channels arrive as parameters so the worker never reads the
+// engine fields (Destroy nils them under the engine lock).
+func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- struct{}) {
+	defer close(workerEnd)
+	for job := range jobs {
+		backend := job.backend
+		if job.updatePipeline {
+			backend.UpdatePipelineState(job.fbzMode, job.alphaMode)
+		}
+		if job.clear {
+			backend.ClearFramebuffer(job.clearColor)
 		}
 
 		// Always flush triangles (even if empty, this triggers the clear)
-		hadTriangles := len(v.triangleBatch) > 0
-		v.backend.FlushTriangles(v.triangleBatch)
-		v.triangleBatch = clearVoodooTriangleBatch(v.triangleBatch)
-		if hadTriangles && v.OnFIFOEmpty != nil {
-			v.OnFIFOEmpty()
+		hadTriangles := len(job.triangles) > 0
+		backend.FlushTriangles(job.triangles)
+		backend.SwapBuffers(job.waitVSync)
+		frame := backend.GetFrame()
+		if job.postClear {
+			backend.ClearFramebuffer(job.postClearColor)
 		}
 
-		// Swap buffers
-		waitVSync := (value & VOODOO_SWAP_VSYNC) != 0
-		v.backend.SwapBuffers(waitVSync)
-
-		// Copy rendered frame to write buffer for triple-buffer publish
-		frame := v.backend.GetFrame()
+		v.mu.Lock()
+		// Copy rendered frame to write buffer for triple-buffer publish:
+		// swap our write buffer into the shared slot, get back the old
+		// shared buffer to write next frame.
 		if frame != nil && len(frame) == len(v.frameBufs[v.writeIdx]) {
 			copy(v.frameBufs[v.writeIdx], frame)
+			v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
+		}
+		v.spareBatch = clearVoodooTriangleBatch(job.triangles)
+		onFIFOEmpty := v.OnFIFOEmpty
+		onSwapComplete := v.OnSwapComplete
+		v.mu.Unlock()
+
+		// Callbacks run without the engine lock (they may touch the
+		// engine) but before the job is marked complete, so a drain
+		// guarantees they have fired.
+		if hadTriangles && onFIFOEmpty != nil {
+			onFIFOEmpty()
+		}
+		if onSwapComplete != nil {
+			onSwapComplete()
 		}
 
-		// Publish completed frame via triple-buffer:
-		// Swap our write buffer into the shared slot, get back the old shared buffer.
-		// The old shared buffer is now ours to write to next frame.
-		v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
-
-		if value&VOODOO_SWAP_CLEAR != 0 {
-			v.backend.ClearFramebuffer(v.color0)
-		}
+		v.mu.Lock()
+		v.busy = false
+		v.swapPending = false
+		v.jobInFlight = false
+		v.swapInFlight.Store(false)
+		v.mu.Unlock()
+		v.swapIdle.Broadcast()
 	}
+}
 
-	v.swapPending = false
-	if v.OnSwapComplete != nil {
-		v.OnSwapComplete()
+// waitSwapIdleLocked blocks until no swap job is in flight. The caller
+// holds v.mu; Wait releases and reacquires it.
+func (v *VoodooEngine) waitSwapIdleLocked() {
+	for v.jobInFlight {
+		v.swapIdle.Wait()
 	}
+}
+
+// WaitSwapIdle blocks until any in-flight swap job has completed and
+// its frame is published.
+func (v *VoodooEngine) WaitSwapIdle() {
+	v.mu.Lock()
+	v.waitSwapIdleLocked()
+	v.mu.Unlock()
 }
 
 // getStatus builds the status register value
 func (v *VoodooEngine) getStatus() uint32 {
 	var status uint32
 
-	if v.busy {
+	if v.busy || v.jobInFlight {
 		status |= VOODOO_STATUS_FBI_BUSY | VOODOO_STATUS_SST_BUSY
 	}
 	// Time-based vretrace: active during last 10% of 60Hz frame (~1.67ms)
@@ -1002,10 +1134,15 @@ func fixed2_30ToFloat(value uint32) float32 {
 
 // VideoSource interface implementation
 
-// GetFrame returns the current rendered frame for the compositor (lock-free triple-buffer read)
+// GetFrame returns the current rendered frame for the compositor
+// (lock-free triple-buffer read when no swap job is in flight; an
+// in-flight job is drained first so the newest frame is visible).
 func (v *VoodooEngine) GetFrame() []byte {
 	if !v.enabled.Load() {
 		return nil
+	}
+	if v.swapInFlight.Load() {
+		v.WaitSwapIdle()
 	}
 	// Swap our read buffer into the shared slot, get back the latest frame.
 	// This is lock-free: single atomic Swap ensures no tearing.
@@ -1057,6 +1194,9 @@ func (v *VoodooEngine) SetBackend(backend VoodooBackend) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
+	// The swap worker may still be rendering on the old backend.
+	v.waitSwapIdleLocked()
+
 	// Destroy old backend
 	if v.backend != nil {
 		v.backend.Destroy()
@@ -1085,9 +1225,8 @@ func (v *VoodooEngine) SetTextureData(width, height int, data []byte) {
 	if v.backend != nil {
 		// Get format from textureMode register
 		format := int((v.textureMode >> 8) & 0xF)
-		v.backend.SetTextureData(width, height, data, format)
-		// Mirror into the state-snapshot texture so triangles stamped
-		// after this call bind it, same as the VOODOO_TEX_UPLOAD path.
+		// Immutable copy shared by the state snapshot and the backend
+		// upload, same as the VOODOO_TEX_UPLOAD path.
 		copied := make([]byte, len(data))
 		copy(copied, data)
 		v.currentTexture = &VoodooTexture{
@@ -1096,6 +1235,7 @@ func (v *VoodooEngine) SetTextureData(width, height int, data []byte) {
 			Format: format,
 			Data:   copied,
 		}
+		v.backend.SetTextureData(width, height, copied, format)
 		v.rasterStateDirty = true
 	}
 }
@@ -1104,6 +1244,19 @@ func (v *VoodooEngine) SetTextureData(width, height int, data []byte) {
 func (v *VoodooEngine) Destroy() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+
+	v.waitSwapIdleLocked()
+	if v.swapJobs != nil {
+		close(v.swapJobs)
+		v.swapJobs = nil
+		// Wait for the worker goroutine to exit before tearing down the
+		// backend it renders on. Release the lock: the worker never
+		// needs it after the drained (empty) queue closes, but holding
+		// a lock across a goroutine join is asking for trouble.
+		v.mu.Unlock()
+		<-v.swapWorkerEnd
+		v.mu.Lock()
+	}
 
 	if v.backend != nil {
 		v.backend.Destroy()

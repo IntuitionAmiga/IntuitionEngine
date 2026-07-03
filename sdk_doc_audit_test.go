@@ -3361,7 +3361,8 @@ func TestSDKCompanionDocs_ArchitectureVoodooStateBindingMatchesSource(t *testing
 		"Later register writes or texture uploads do not affect already submitted triangles.",
 		"`VOODOO_SWAP_BUFFER_CMD` may flush the queued batch later, but the batch is rasterised in triangle submission order using each triangle's bound state.",
 		"Fog-table and palette raster lookups remain compatibility-pending.",
-		"Vulkan renders frames it can represent with one native state and otherwise presents the software reference output for that frame.",
+		"Vulkan renders multi-state frames natively by binding each snapshot's pipeline, scissor, push constants, and texture per state group inside one command buffer",
+		"frames using raster features the GPU shaders do not implement (stipple patterns, chroma ranges, front-buffer draws, slope-register interpolation) present the software reference output for that frame.",
 	} {
 		if !strings.Contains(section, required) {
 			t.Fatalf("architecture.md Voodoo state-binding section omits source-backed behaviour: %s", required)
