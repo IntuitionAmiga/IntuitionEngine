@@ -486,13 +486,13 @@ Entry format:
   Result: App J uses 0xF0BD8-0xF0BF3.
 
 - Area: App D / Ch 32, Coprocessor map.
-  Claim: Coprocessor command/status/request registers, extended status block, CPU type codes, worker memory ranges, ticket statuses, command values, error codes, COWAIT timeout semantics, and 6502/Z80 gateway offsets match the implementation. COCALL returns ticket 0 and COPROC_ERR_NO_WORKER when no worker is running.
-  Canonical sources checked: coprocessor_constants.go, sdk/include/ehbasic_hw_coproc.inc, coprocessor_manager.go, coprocessor_asm_test.go, ehbasic_test.go.
+  Claim: Coprocessor command/status/request registers, extended status block, CPU type codes, worker memory ranges, ticket statuses, command values, error codes, COWAIT timeout semantics, and 6502/Z80 gateway offsets match the implementation. COCALL returns ticket 0 and COPROC_ERR_NO_WORKER when no worker is running. COPROC_BUSY_PCT reports a rolling worker busy percentage over about one second, implemented as ten 100 ms buckets; writing 1 to COPROC_STATS_RESET clears operation and byte counters and restarts the busy-percentage accounting window.
+  Canonical sources checked: coprocessor_constants.go, sdk/include/ehbasic_hw_coproc.inc, coprocessor_manager.go, machine_bus_phys.go, coprocessor_asm_test.go, ehbasic_test.go.
   Reader workflow: type BASIC COSTART/COSTOP/COCALL/COSTATUS/COWAIT programmes or use documented POKE/PEEK registers; service creation is separate from the typed control examples.
   Runnable example: Ch 32 no-worker COCALL status listing.
   Expected result: the listing prints ticket 0, command status 1, error 6, and worker state 0.
-  Author verification workflow: compared constants, BASIC keyword handlers, manager error paths, gateway tests, and the Chapter 32 refman BASIC test.
-  Result: Ch 32 now documents the coprocessor as an IE-native control surface, removes image-executor prose, corrects COWAIT to a statement with a default 1000 ms timeout, and includes a runnable typed example.
+  Author verification workflow: compared constants, BASIC keyword handlers, manager error paths, gateway tests, busy-accounting buckets, stats-reset behaviour, completion wake handling, and the Chapter 32 refman BASIC test.
+  Result: Ch 32 now documents the coprocessor as an IE-native control surface, removes image-executor prose, corrects COWAIT to a statement with a default 1000 ms timeout, includes a runnable typed example, and describes COPROC_BUSY_PCT / COPROC_STATS_RESET without exposing JIT or backend performance internals.
 
 - Area: Ch 33, IE Mon byte-entry workflow, IE64 assemble workflow, and command syntax.
   Claim: IE Mon parses bare addresses as hexadecimal, # values as decimal, writes bytes with w addr byte..., disassembles with d, sets registers with r, runs or steps with g/s, uses e for interactive hex editing, uses save start end name and load name addr for memory ranges, and reports command errors without leaving the monitor. IE64 A mode assembles one instruction per line, writes physical RAM only, prints the emitted bytes and disassembly, advances by 8 bytes, and rejects source-file features. ss and sl are CPU-local snapshots, while rg, rt, tl, and history use retained whole-machine reverse history. trace mmio <region> [count] shows recent region access events. The chapter's 6502 workflows show both audible POKEY output and visible ULA VRAM/attribute programming through monitor byte entry.

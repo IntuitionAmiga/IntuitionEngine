@@ -390,8 +390,8 @@ Extended monitor block (`$F23B0`-`$F23BF`):
 |--------|----------|
 | `+$00` | `COPROC_RING_DEPTH`. |
 | `+$04` | `COPROC_WORKER_UPTIME`. |
-| `+$08` | `COPROC_STATS_RESET`. |
-| `+$0C` | `COPROC_BUSY_PCT`. |
+| `+$08` | `COPROC_STATS_RESET`, write `1` to clear operation and byte counters and restart busy accounting. |
+| `+$0C` | `COPROC_BUSY_PCT`, rolling worker busy percentage over about one second. |
 
 ## D.19 IRQ diagnostics (`$F23C0`-`$F23DF`)
 

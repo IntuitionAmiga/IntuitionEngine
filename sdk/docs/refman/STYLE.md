@@ -126,6 +126,38 @@ The current editorial pass is driven by the final review:
 
 Current controlled polish pass:
 
+- Integrate the PRG-facing coprocessor-status precision from commit
+  `27ca532c570a8364e923f8f710c45eee589f52f1`. Treat this as a narrow
+  source-backed wording pass, not as a performance-architecture tour.
+  Check `coprocessor_manager.go`, `coprocessor_constants.go`,
+  `machine_bus_phys.go`, Chapter 32, Appendix D, and the claim ledger
+  before editing. Do not document JIT region policy, deopt accounting,
+  ExecMem arenas, performance profiles, video frame leases, audio block
+  rendering internals, benchmark workflow, or environment-variable
+  tuning in the PRG unless they become a stable reader-facing machine
+  contract.
+
+  The reader-facing effect is limited to the coprocessor monitor
+  registers:
+
+  - `COPROC_BUSY_PCT` reports the busy percentage over the rolling
+    coprocessor accounting window. In source this is ten `100` ms
+    buckets, which is about one second.
+  - `COPROC_STATS_RESET` clears operation and byte counters and restarts
+    the busy-percentage accounting window when written with `1`.
+  - Completion-wake and physical-write notification changes improve
+    responsiveness of the existing ticket and IRQ contract; they do not
+    introduce a new BASIC or MMIO programming route.
+
+  Execute this branch pass in this order:
+
+  1. Update this plan entry before any reader-facing chapter edits.
+  2. Chapter 32: tighten the `COPROC_BUSY_PCT` table entry and add a
+     short note after the register table about `COPROC_STATS_RESET`.
+  3. Appendix D: mirror the same extended-monitor wording.
+  4. Claim ledger: record the checked canonical sources and the changed
+     coprocessor claim.
+  5. Run stale-term and exclusion scans, then publish and print PDFs.
 - Integrate the public PRG-facing changes from the `voodoo-opti`
   branch after the last broad docs refresh. Treat these as a focused
   source-backed consistency pass, not as a new feature tour. Check

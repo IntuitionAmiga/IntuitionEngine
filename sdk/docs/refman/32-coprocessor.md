@@ -214,11 +214,16 @@ status block occupies `$F23B0` to `$F23BF`.
 | `$F23B0` | `COPROC_RING_DEPTH`        | R      | Selected CPU ring occupancy               |
 | `$F23B4` | `COPROC_WORKER_UPTIME`     | R      | Selected worker uptime, seconds           |
 | `$F23B8` | `COPROC_STATS_RESET`       | W      | Write `1` to clear statistics             |
-| `$F23BC` | `COPROC_BUSY_PCT`          | R      | Aggregate busy percentage                 |
+| `$F23BC` | `COPROC_BUSY_PCT`          | R      | Rolling worker busy percentage            |
 
 Read `COPROC_RING_DEPTH` and `COPROC_WORKER_UPTIME` only after
 writing `COPROC_CPU_TYPE`; the selected CPU type chooses which
 worker is queried.
+
+`COPROC_BUSY_PCT` is calculated over the recent coprocessor activity
+window, about one second. Writing `1` to `COPROC_STATS_RESET` clears
+the operation and byte counters and starts a fresh busy-percentage
+window.
 
 The 6502 and Z80 cannot address `$F2340` directly. They use a
 gateway at `$F200` to `$F24F`. The gateway keeps the same register
