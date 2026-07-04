@@ -20,6 +20,10 @@ func RegisterSysInfoMMIO(bus *MachineBus, total, active uint64) {
 	totalHi := uint32(total >> 32)
 	activeLo := uint32(active & 0xFFFFFFFF)
 	activeHi := uint32(active >> 32)
+	features := uint32(SYSINFO_FEATURE_WAIT | SYSINFO_FEATURE_VOODOO_CMD_STREAM)
+	if MMIOStatsEnabled() {
+		features |= SYSINFO_FEATURE_MMIO_STATS
+	}
 
 	read := func(addr uint32) uint32 {
 		switch addr {
@@ -31,6 +35,8 @@ func RegisterSysInfoMMIO(bus *MachineBus, total, active uint64) {
 			return activeLo
 		case SYSINFO_ACTIVE_RAM_HI:
 			return activeHi
+		case SYSINFO_FEATURES:
+			return features
 		default:
 			return 0
 		}

@@ -512,8 +512,11 @@ type VideoChip struct {
 	resetting      bool        // 1 byte - still needs mutex for multi-field operations
 
 	// Synchronization (Cache Line 1)
-	mu       sync.Mutex // 8 bytes - Keep mutex at cache line boundary
-	stopOnce sync.Once
+	mu         sync.Mutex // 8 bytes - Keep mutex at cache line boundary
+	stopOnce   sync.Once
+	vblankMu   sync.Mutex
+	vblankCond *sync.Cond
+	vblankSeq  atomic.Uint64
 
 	// Display interface (Cache Line 1-2)
 	output             VideoOutput    // 8 bytes - Interface pointer
@@ -735,6 +738,7 @@ func NewVideoChip(backend int) (*VideoChip, error) {
 		prevVRAM:       make([]byte, VRAM_SIZE),
 		blitterEnabled: true,
 	}
+	chip.vblankCond = sync.NewCond(&chip.vblankMu)
 	// Atomic fields default to false - no explicit init needed
 
 	mode := VideoModes[chip.currentMode]
@@ -1315,7 +1319,7 @@ func (chip *VideoChip) refreshLoop() {
 			// Start of new frame - record start time for VBlank calculation
 			currentFrame++
 			chip.lastFrameStart.Store(time.Now().UnixNano())
-			chip.inVBlank.Store(false) // Legacy support
+			chip.setVBlank(false) // Legacy support
 
 			if !chip.enabled.Load() {
 				continue
@@ -2814,6 +2818,44 @@ func (chip *VideoChip) BlitStartCount() uint64 {
 	return chip.bltStartCount
 }
 
+func (chip *VideoChip) setVBlank(active bool) {
+	wasActive := chip.inVBlank.Swap(active)
+	if active && !wasActive {
+		chip.vblankSeq.Add(1)
+		chip.vblankMu.Lock()
+		chip.vblankCond.Broadcast()
+		chip.vblankMu.Unlock()
+		return
+	}
+	if !active && wasActive {
+		chip.vblankMu.Lock()
+		chip.vblankCond.Broadcast()
+		chip.vblankMu.Unlock()
+	}
+}
+
+func (chip *VideoChip) WaitForVBlankEdge(maxWait time.Duration) bool {
+	deadline := time.Now().Add(maxWait)
+	timer := time.AfterFunc(maxWait, func() {
+		chip.vblankMu.Lock()
+		chip.vblankCond.Broadcast()
+		chip.vblankMu.Unlock()
+	})
+	defer timer.Stop()
+
+	chip.vblankMu.Lock()
+	defer chip.vblankMu.Unlock()
+
+	for chip.inVBlank.Load() && time.Now().Before(deadline) {
+		chip.vblankCond.Wait()
+	}
+	startSeq := chip.vblankSeq.Load()
+	for chip.vblankSeq.Load() == startSeq && time.Now().Before(deadline) {
+		chip.vblankCond.Wait()
+	}
+	return chip.vblankSeq.Load() != startSeq
+}
+
 func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 	/*
 		HandleRead processes a read request from the memory-mapped register interface.
@@ -3978,7 +4020,7 @@ func (chip *VideoChip) GetOutput() VideoOutput {
 // GetFrame implements VideoSource - returns the current rendered frame
 // Called by compositor each frame to collect video output
 func (chip *VideoChip) GetFrame() []byte {
-	chip.inVBlank.Store(false)
+	chip.setVBlank(false)
 	if !chip.enabled.Load() {
 		return nil
 	}
@@ -4024,13 +4066,13 @@ func (chip *VideoChip) GetDimensions() (int, int) {
 
 // TickFrame advances chip-clock state once per compositor frame.
 func (chip *VideoChip) TickFrame() {
-	chip.inVBlank.Store(true)
+	chip.setVBlank(true)
 }
 
 // SignalVSync implements VideoSource - called by compositor after frame sent.
 func (chip *VideoChip) SignalVSync() {
 	chip.everSignaled.Store(true)
-	chip.inVBlank.Store(true)
+	chip.setVBlank(true)
 }
 
 // NeedsScanlineCompositing reports whether the compositor must own per-scanline
@@ -4051,7 +4093,7 @@ func (chip *VideoChip) StartFrame() {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
-	chip.inVBlank.Store(false)
+	chip.setVBlank(false)
 	chip.copperManagedByCompositor = true // Signal that compositor is managing copper
 
 	if chip.copperEnabled && chip.bus != nil {
@@ -4109,7 +4151,7 @@ func (chip *VideoChip) processScanlineLocked(y int, mode VideoMode) {
 func (chip *VideoChip) FinishFrame() []byte {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
-	chip.inVBlank.Store(false)
+	chip.setVBlank(false)
 
 	chip.copperManagedByCompositor = false // Release copper management back to refreshLoop
 

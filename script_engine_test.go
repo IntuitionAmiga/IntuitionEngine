@@ -213,6 +213,42 @@ func TestScriptEngine_MemoryIOAllowedWithoutFreeze(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_DbgMMIOStats(t *testing.T) {
+	withMMIOStatsForTest(t, true)
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	bus.MapIO(0xF2400, 0xF2403,
+		func(addr uint32) uint32 { return 0xCAFE },
+		func(addr uint32, value uint32) {},
+	)
+	_ = bus.Read32(0xF2400)
+	bus.Write32(0xF2400, 1)
+
+	script := `
+local rows = dbg.mmio_stats()
+local found = false
+for _, row in ipairs(rows) do
+  if row.start == 0xF2400 and row["end"] == 0xF2403 then
+    if row.reads ~= 1 or row.writes ~= 1 then
+      error(string.format("bad stats %d/%d", row.reads, row.writes))
+    end
+    found = true
+  end
+end
+if not found then error("stats row not found") end
+`
+	if err := se.RunString(script, "test"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("unexpected script error: %v", err)
+	}
+}
+
 func TestScriptEngine_TermMouseDelta(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()

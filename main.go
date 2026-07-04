@@ -1116,6 +1116,7 @@ func main() {
 		setter.SetHostOverlay(hostOverlay)
 		hostHelper.SetObserver(hostOverlay)
 	}
+	RegisterCPUWaitMMIO(sysBus, NewCPUWaitMMIO(termMMIO, videoChip))
 	var termHost *TerminalHost
 	var videoTerm *VideoTerminal
 	var outputTicker *time.Ticker

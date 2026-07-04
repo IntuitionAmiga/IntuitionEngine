@@ -59,11 +59,12 @@ Address Range       Size    Device              Constants File
 0xF2340-0xF238F     80B     Coprocessor         coprocessor_constants.go
 0xF2390-0xF23AF     32B     Clipboard Bridge    clipboard_bridge_constants.go
 0xF23B0-0xF23BF     16B     Coprocessor Monitor coprocessor_constants.go
-0xF23C0-0xF23DF     32B     IRQ Diagnostics     registers.go
-0xF23E0-0xF23FF     32B     Bootstrap HostFS    bootstrap_hostfs_constants.go
-0xF2400-0xF24FF     256B    SysInfo             sysinfo_mmio.go
-0xF2500-0xF257F     128B    AROS Host Sockets   aros_host_socket_constants.go
-0xF2600-0xF29FF     1KB     SFX Trigger extended aliases sfx_constants.go
+	0xF23C0-0xF23DF     32B     IRQ Diagnostics     registers.go
+	0xF23E0-0xF23FF     32B     Bootstrap HostFS    bootstrap_hostfs_constants.go
+	0xF2400-0xF24FF     256B    SysInfo             sysinfo_mmio.go
+	0xF2500-0xF257F     128B    AROS Host Sockets   aros_host_socket_constants.go
+	0xF2580-0xF259F     32B     CPU Wait            cpu_wait_mmio.go
+	0xF2600-0xF29FF     1KB     SFX Trigger extended aliases sfx_constants.go
 0xD0000-0xDFFFF     64KB    Voodoo Texture Memory voodoo_constants.go
 0xF8000-0xF87FF     2KB     Voodoo 3D Graphics  voodoo_constants.go
 0xFA000-0xFBAFF     6912B   ULA VRAM Aperture   ula_constants.go
@@ -285,11 +286,25 @@ const (
 	SYSINFO_TOTAL_RAM_HI  = 0xF2404 // high 32 bits of total guest RAM
 	SYSINFO_ACTIVE_RAM_LO = 0xF2408 // low 32 bits of active CPU/profile visible RAM
 	SYSINFO_ACTIVE_RAM_HI = 0xF240C // high 32 bits of active CPU/profile visible RAM
+	SYSINFO_FEATURES      = 0xF2410 // bit0=CPU wait, bit1=Voodoo CMD stream, bit2=MMIO stats
+
+	SYSINFO_FEATURE_WAIT              = 1 << 0
+	SYSINFO_FEATURE_VOODOO_CMD_STREAM = 1 << 1
+	SYSINFO_FEATURE_MMIO_STATS        = 1 << 2
 
 	// AROS host socket bridge. The planning draft proposed 0xF2400, but
 	// that range is occupied by SYSINFO, so sockets use the next 128-byte gap.
 	AROS_HOST_SOCKET_REGION_BASE = 0xF2500
 	AROS_HOST_SOCKET_REGION_END  = 0xF257F
+
+	// CPU wait device. Writes park the CPU goroutine until the requested
+	// host-side timing condition or a short safety timeout.
+	CPU_WAIT_REGION_BASE = 0xF2580
+	CPU_WAIT_REGION_END  = 0xF259F
+	WAIT_VBLANK          = 0xF2580
+	WAIT_UNTIL_LO        = 0xF2584
+	WAIT_UNTIL_HI        = 0xF2588
+	WAIT_UNTIL_GO        = 0xF258C
 
 	// Voodoo 3D graphics region
 	VOODOO_REGION_BASE = 0xF8000
@@ -432,6 +447,8 @@ func GetIORegion(addr uint32) string {
 		return "SysInfo"
 	case addr >= AROS_HOST_SOCKET_REGION_BASE && addr <= AROS_HOST_SOCKET_REGION_END:
 		return "AROSHostSocket"
+	case addr >= CPU_WAIT_REGION_BASE && addr <= CPU_WAIT_REGION_END:
+		return "CPUWait"
 	case addr >= VOODOO_REGION_BASE && addr <= VOODOO_REGION_END:
 		return "Voodoo"
 	default:

@@ -102,6 +102,8 @@ hw_ahx:
     rts
 hw_sap:
     rts
+hw_midi:
+    rts
 hw_zbuffer:
     rts
 hw_vertex:

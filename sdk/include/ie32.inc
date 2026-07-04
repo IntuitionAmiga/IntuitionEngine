@@ -1230,6 +1230,16 @@
 ; SST-1 hardware; register writes after a triangle is submitted never
 ; affect it. See ie68.inc for detailed documentation.
 
+; SysInfo and CPU wait MMIO constants
+.equ SYSINFO_FEATURES      0xF2410
+.equ SYSINFO_FEATURE_WAIT  0x00000001
+.equ SYSINFO_FEATURE_VOODOO_CMD_STREAM 0x00000002
+.equ SYSINFO_FEATURE_MMIO_STATS 0x00000004
+.equ CPU_WAIT_VBLANK       0xF2580
+.equ CPU_WAIT_UNTIL_LO     0xF2584
+.equ CPU_WAIT_UNTIL_HI     0xF2588
+.equ CPU_WAIT_UNTIL_GO     0xF258C
+
 ; Base address
 .equ VOODOO_BASE           0xF8000
 .equ VOODOO_END            0xF87FF

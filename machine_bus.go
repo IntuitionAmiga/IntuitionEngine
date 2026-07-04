@@ -173,6 +173,8 @@ type MachineBus struct {
 	// caller-quiesced: callers must stop CPU/JIT execution before invoking it.
 	resetHooks []func()
 
+	mmioStats []*IODeviceStats
+
 	m68kJITInvalidator   func(addr, size uint64)
 	coprocCompletionWake func(addr, value uint32)
 }
@@ -200,6 +202,7 @@ type IORegion struct {
 	onWrite8        func(addr uint32, value uint8) // Optional: byte-level write handler
 	wideWriteFanout bool
 	Shadow          bool
+	statsIdx        int32
 }
 
 // IORegion64 represents a 64-bit-capable memory-mapped I/O region.
@@ -254,6 +257,7 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
+						bus.mmioStatsRecordWrite(region.statsIdx)
 						region.onWrite(TERM_OUT, value)
 						return true
 					}
@@ -268,6 +272,7 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
+						bus.mmioStatsRecordWrite(region.statsIdx)
 						if !write32Fanout8(region, mapped, value) && region.onWrite != nil {
 							region.onWrite(mapped, value)
 						}
@@ -300,6 +305,7 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
+				bus.mmioStatsRecordWrite(region.statsIdx)
 				if !write32Fanout8(region, addr, value) && region.onWrite != nil {
 					region.onWrite(addr, value)
 				}
@@ -492,6 +498,9 @@ func signExtMirror(start uint32) (uint32, bool) {
 func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 	// Lock-free fast path for VIDEO_STATUS (VBlank polling)
 	if addr == 0xF0008 && bus.videoStatusReader != nil {
+		if mmioStatsOn {
+			bus.mmioStatsRecordRead(bus.mmioStatsIndexForAddr(addr))
+		}
 		return bus.videoStatusReader(addr), true
 	}
 
@@ -509,6 +518,7 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
+						bus.mmioStatsRecordRead(region.statsIdx)
 						result := region.onRead(TERM_OUT)
 						return result, true
 					}
@@ -523,6 +533,7 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && region.onRead != nil {
+						bus.mmioStatsRecordRead(region.statsIdx)
 						value := region.onRead(mapped)
 						bus.shadowWrite32(region, mapped, value)
 						return value, true
@@ -550,6 +561,7 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
+				bus.mmioStatsRecordRead(region.statsIdx)
 				value := region.onRead(addr)
 				bus.shadowWrite32(region, addr, value)
 				return value, true
@@ -586,6 +598,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end {
+						bus.mmioStatsRecordWrite(region.statsIdx)
 						if region.onWrite8 != nil {
 							region.onWrite8(mapped, uint8(value))
 							region.onWrite8(mapped+1, uint8(value>>8))
@@ -614,6 +627,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end {
+						bus.mmioStatsRecordWrite(region.statsIdx)
 						if region.onWrite8 != nil {
 							region.onWrite8(TERM_OUT, uint8(value))
 							region.onWrite8(TERM_OUT+1, uint8(value>>8))
@@ -640,6 +654,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end {
+				bus.mmioStatsRecordWrite(region.statsIdx)
 				if region.onWrite8 != nil {
 					region.onWrite8(addr, uint8(value))
 					region.onWrite8(addr+1, uint8(value>>8))
@@ -678,6 +693,7 @@ func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && region.onRead != nil {
+						bus.mmioStatsRecordRead(region.statsIdx)
 						value := region.onRead(mapped)
 						bus.shadowWrite16(region, mapped, uint16(value))
 						return uint16(value), true
@@ -698,6 +714,7 @@ func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
+						bus.mmioStatsRecordRead(region.statsIdx)
 						result := uint16(region.onRead(TERM_OUT))
 						return result, true
 					}
@@ -719,6 +736,7 @@ func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
+				bus.mmioStatsRecordRead(region.statsIdx)
 				value := region.onRead(addr)
 				bus.shadowWrite16(region, addr, uint16(value))
 				return uint16(value), true
@@ -755,6 +773,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end {
+						bus.mmioStatsRecordWrite(region.statsIdx)
 						if region.onWrite8 != nil {
 							region.onWrite8(mapped, value)
 						} else if region.onWrite != nil {
@@ -782,6 +801,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end {
+						bus.mmioStatsRecordWrite(region.statsIdx)
 						if region.onWrite8 != nil {
 							region.onWrite8(TERM_OUT, value)
 						} else if region.onWrite != nil {
@@ -807,6 +827,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end {
+				bus.mmioStatsRecordWrite(region.statsIdx)
 				if region.onWrite8 != nil {
 					region.onWrite8(addr, value)
 				} else if region.onWrite != nil {
@@ -840,6 +861,7 @@ func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && (region.onRead8 != nil || region.onRead != nil) {
+						bus.mmioStatsRecordRead(region.statsIdx)
 						if region.onRead8 != nil {
 							value := region.onRead8(mapped)
 							bus.shadowWrite8(region, mapped, value)
@@ -865,6 +887,7 @@ func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
+						bus.mmioStatsRecordRead(region.statsIdx)
 						result := uint8(region.onRead(TERM_OUT))
 						return result, true
 					}
@@ -886,6 +909,7 @@ func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && (region.onRead8 != nil || region.onRead != nil) {
+				bus.mmioStatsRecordRead(region.statsIdx)
 				if region.onRead8 != nil {
 					value := region.onRead8(addr)
 					bus.shadowWrite8(region, addr, value)
@@ -1521,11 +1545,12 @@ func (bus *MachineBus) mapIOWithShadow(start, end uint32, onRead func(addr uint3
 	defer bus.publishMapSnapshot()
 
 	region := IORegion{
-		start:   start,
-		end:     end,
-		onRead:  onRead,
-		onWrite: onWrite,
-		Shadow:  shadow,
+		start:    start,
+		end:      end,
+		onRead:   onRead,
+		onWrite:  onWrite,
+		Shadow:   shadow,
+		statsIdx: bus.registerMMIOStats(start, end),
 	}
 
 	// Calculate pages for normal address range
@@ -1824,6 +1849,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onWrite != nil {
+						bus.mmioStatsRecordWrite(region.statsIdx)
 						region.onWrite(TERM_OUT, value)
 						return
 					}
@@ -1851,6 +1877,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && (region.onWrite != nil || region.wideWriteFanout) {
+				bus.mmioStatsRecordWrite(region.statsIdx)
 				if !write32Fanout8(region, addr, value) && region.onWrite != nil {
 					region.onWrite(addr, value)
 				}
@@ -1862,6 +1889,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 	}
 
 	if bus.hasMappedLegacySpan(addr, 4) {
+		bus.mmioStatsRecordWrite(bus.mmioStatsIndexForAddr(addr))
 		bus.writeLegacySpanBytes(addr, uint64(value), 4, false)
 		bus.notifyCoprocessorCompletionWrite(addr, value)
 		return
@@ -1876,6 +1904,9 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 func (bus *MachineBus) Read32(addr uint32) uint32 {
 	// Lock-free fast path for VIDEO_STATUS (VBlank polling)
 	if addr == 0xF0008 && bus.videoStatusReader != nil {
+		if mmioStatsOn {
+			bus.mmioStatsRecordRead(bus.mmioStatsIndexForAddr(addr))
+		}
 		value := bus.videoStatusReader(addr)
 		bus.debugOnRead(addr, 4)
 		return value
@@ -1930,6 +1961,7 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if mapped >= region.start && mapped <= region.end && region.onRead != nil {
+						bus.mmioStatsRecordRead(region.statsIdx)
 						value := region.onRead(mapped)
 						bus.shadowWrite32(region, mapped, value)
 						return value
@@ -1950,6 +1982,7 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 				for i := len(regions) - 1; i >= 0; i-- {
 					region := regions[i]
 					if TERM_OUT >= region.start && TERM_OUT <= region.end && region.onRead != nil {
+						bus.mmioStatsRecordRead(region.statsIdx)
 						result := region.onRead(TERM_OUT)
 						return result
 					}
@@ -1976,6 +2009,7 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 		for i := len(regions) - 1; i >= 0; i-- {
 			region := regions[i]
 			if addr >= region.start && addr <= region.end && region.onRead != nil {
+				bus.mmioStatsRecordRead(region.statsIdx)
 				value := region.onRead(addr)
 				bus.shadowWrite32(region, addr, value)
 				return value
@@ -1984,6 +2018,7 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 	}
 
 	if bus.hasMappedLegacySpan(addr, 4) {
+		bus.mmioStatsRecordRead(bus.mmioStatsIndexForAddr(addr))
 		value, _ := bus.readLegacySpanBytes(addr, 4, false)
 		return uint32(value)
 	}

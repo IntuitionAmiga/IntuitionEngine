@@ -2505,6 +2505,15 @@ VOODOO_FAST_FILL_CMD = $F812        ; Page offset $24
 VOODOO_SWAP_BUFFER_CMD = $F812      ; Page offset $28
 
 ; Configuration registers
+SYSINFO_FEATURES    = $F241         ; Page offset $10 - Feature bitmap
+SYSINFO_FEATURE_WAIT = $00000001
+SYSINFO_FEATURE_VOODOO_CMD_STREAM = $00000002
+SYSINFO_FEATURE_MMIO_STATS = $00000004
+CPU_WAIT_VBLANK     = $F258         ; Page offset $80 - next VBlank rising edge
+CPU_WAIT_UNTIL_LO   = $F258         ; Page offset $84 - low deadline word
+CPU_WAIT_UNTIL_HI   = $F258         ; Page offset $88 - high deadline word
+CPU_WAIT_UNTIL_GO   = $F258         ; Page offset $8C - wait until deadline
+
 VOODOO_COLOR0       = $F81D         ; Page offset $D8
 VOODOO_VIDEO_DIM    = $F821         ; Page offset $14
 

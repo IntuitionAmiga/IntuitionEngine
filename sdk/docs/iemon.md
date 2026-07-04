@@ -1021,6 +1021,7 @@ Available I/O devices:
   boothostfs
   clipboard
   coproc
+  cpu_wait
   exec
   fileio
   gtia
@@ -1045,6 +1046,7 @@ Available I/O devices:
   vga
   video
   voodoo
+  voodoo_depth
   wav
 
 > io vga

@@ -153,7 +153,7 @@ func TestIOView_ListIncludesSN76489SysInfoAndVoodooDepth(t *testing.T) {
 	for _, name := range listIODevices() {
 		names[name] = true
 	}
-	for _, want := range []string{"sn76489", "sysinfo", "voodoo_depth"} {
+	for _, want := range []string{"sn76489", "sysinfo", "cpu_wait", "voodoo_depth"} {
 		if !names[want] {
 			t.Fatalf("listIODevices missing %s: %v", want, listIODevices())
 		}

@@ -1098,6 +1098,15 @@ GTIA_END          equ 0xF21FB
 ; to each triangle when VOODOO_TRIANGLE_CMD is written, as on real
 ; SST-1 hardware; register writes after a triangle is submitted never
 ; affect it. See ie68.inc for detailed documentation.
+SYSINFO_FEATURES      equ 0xF2410
+SYSINFO_FEATURE_WAIT  equ 0x00000001
+SYSINFO_FEATURE_VOODOO_CMD_STREAM equ 0x00000002
+SYSINFO_FEATURE_MMIO_STATS equ 0x00000004
+CPU_WAIT_VBLANK       equ 0xF2580
+CPU_WAIT_UNTIL_LO     equ 0xF2584
+CPU_WAIT_UNTIL_HI     equ 0xF2588
+CPU_WAIT_UNTIL_GO     equ 0xF258C
+
 VOODOO_BASE           equ 0xF8000
 VOODOO_END            equ 0xF87FF
 

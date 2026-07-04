@@ -1075,6 +1075,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"thaw_audio":          se.luaDbgThawAudio(),
 		"io_devices":          se.luaDbgIODevices(),
 		"io":                  se.luaDbgIO(),
+		"mmio_stats":          se.luaDbgMMIOStats(),
 		"run_script":          se.luaDbgRunScript(),
 		"macro":               se.luaDbgMacro(),
 		"layout":              se.luaDbgLayout(),
@@ -5818,6 +5819,27 @@ func (se *ScriptEngine) luaDbgIO() lua.LGFunction {
 			e.RawSetString("addr", lua.LNumber(reg.Addr))
 			e.RawSetString("value", lua.LNumber(val))
 			e.RawSetString("access", lua.LString(reg.Access))
+			t.RawSetInt(i+1, e)
+		}
+		L.Push(t)
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaDbgMMIOStats() lua.LGFunction {
+	return func(L *lua.LState) int {
+		t := L.NewTable()
+		if se.bus == nil {
+			L.Push(t)
+			return 1
+		}
+		for i, row := range se.bus.MMIOStatsSnapshot() {
+			e := L.NewTable()
+			e.RawSetString("start", lua.LNumber(row.Start))
+			e.RawSetString("end", lua.LNumber(row.End))
+			e.RawSetString("name", lua.LString(row.Name))
+			e.RawSetString("reads", lua.LNumber(row.Reads))
+			e.RawSetString("writes", lua.LNumber(row.Writes))
 			t.RawSetInt(i+1, e)
 		}
 		L.Push(t)

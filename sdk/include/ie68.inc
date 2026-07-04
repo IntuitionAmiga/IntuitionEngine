@@ -1736,6 +1736,16 @@ gtia_setpf3       macro   color
 ;   move.l  #0,VOODOO_TRIANGLE_CMD        ; Submit triangle
 ;   move.l  #0,VOODOO_SWAP_BUFFER_CMD     ; Present frame
 
+; SysInfo and CPU wait MMIO constants
+SYSINFO_FEATURES      equ $F2410            ; Feature bitmap: bit0 wait, bit1 Voodoo CMD, bit2 MMIO stats
+SYSINFO_FEATURE_WAIT  equ $00000001
+SYSINFO_FEATURE_VOODOO_CMD_STREAM equ $00000002
+SYSINFO_FEATURE_MMIO_STATS equ $00000004
+CPU_WAIT_VBLANK       equ $F2580            ; Park until next VBlank rising edge
+CPU_WAIT_UNTIL_LO     equ $F2584            ; Low 32 bits of RTC_MONO_USEC deadline
+CPU_WAIT_UNTIL_HI     equ $F2588            ; High 32 bits of RTC_MONO_USEC deadline
+CPU_WAIT_UNTIL_GO     equ $F258C            ; Park until deadline
+
 ; Base address
 VOODOO_BASE           equ $F8000
 VOODOO_END            equ $F87FF

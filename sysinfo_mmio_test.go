@@ -20,6 +20,7 @@ func TestSysInfo_ConstantsAreDistinctAndAligned(t *testing.T) {
 		{"SYSINFO_TOTAL_RAM_HI", SYSINFO_TOTAL_RAM_HI},
 		{"SYSINFO_ACTIVE_RAM_LO", SYSINFO_ACTIVE_RAM_LO},
 		{"SYSINFO_ACTIVE_RAM_HI", SYSINFO_ACTIVE_RAM_HI},
+		{"SYSINFO_FEATURES", SYSINFO_FEATURES},
 	}
 	for _, r := range regs {
 		if r.addr%4 != 0 {
@@ -43,6 +44,34 @@ func TestSysInfo_ConstantsAreDistinctAndAligned(t *testing.T) {
 	if SYSINFO_ACTIVE_RAM_LO != SYSINFO_TOTAL_RAM_HI+4 {
 		t.Errorf("ACTIVE_LO must follow TOTAL_HI by 4: total_hi=%#x active_lo=%#x",
 			SYSINFO_TOTAL_RAM_HI, SYSINFO_ACTIVE_RAM_LO)
+	}
+}
+
+func TestSysInfo_FeaturesAdvertiseGenericCapabilities(t *testing.T) {
+	old := mmioStatsOn
+	mmioStatsForceEnableForTest(false)
+	t.Cleanup(func() { mmioStatsForceEnableForTest(old) })
+
+	bus := NewMachineBus()
+	RegisterSysInfoMMIO(bus, 4*bGiB, 2*bGiB)
+
+	got := bus.Read32(SYSINFO_FEATURES)
+	want := uint32(SYSINFO_FEATURE_WAIT | SYSINFO_FEATURE_VOODOO_CMD_STREAM)
+	if got != want {
+		t.Fatalf("SYSINFO_FEATURES = %#x, want %#x", got, want)
+	}
+}
+
+func TestSysInfo_FeaturesAdvertiseMMIOStatsWhenEnabled(t *testing.T) {
+	old := mmioStatsOn
+	mmioStatsForceEnableForTest(true)
+	t.Cleanup(func() { mmioStatsForceEnableForTest(old) })
+
+	bus := NewMachineBus()
+	RegisterSysInfoMMIO(bus, 4*bGiB, 2*bGiB)
+
+	if got := bus.Read32(SYSINFO_FEATURES); got&SYSINFO_FEATURE_MMIO_STATS == 0 {
+		t.Fatalf("SYSINFO_FEATURES = %#x, want MMIO stats bit", got)
 	}
 }
 
@@ -143,6 +172,9 @@ func TestSysInfo_GetIORegionLabelsBlock(t *testing.T) {
 	if got := GetIORegion(SYSINFO_ACTIVE_RAM_HI); got != "SysInfo" {
 		t.Fatalf("GetIORegion(ACTIVE_HI) = %q, want \"SysInfo\"", got)
 	}
+	if got := GetIORegion(WAIT_VBLANK); got != "CPUWait" {
+		t.Fatalf("GetIORegion(WAIT_VBLANK) = %q, want \"CPUWait\"", got)
+	}
 }
 
 // Conflict registry: SysInfo MMIO must not overlap any documented production
@@ -175,6 +207,7 @@ func TestSysInfo_NoOverlapWithDocumentedMMIO(t *testing.T) {
 		{"IRQDiag", IRQ_DIAG_REGION_BASE, IRQ_DIAG_REGION_END},
 		{"BootstrapHostFS", BOOT_HOSTFS_BASE, BOOT_HOSTFS_BASE + 0x1F},
 		{"AROSHostSocket", AROS_HOST_SOCKET_REGION_BASE, AROS_HOST_SOCKET_REGION_END},
+		{"CPUWait", CPU_WAIT_REGION_BASE, CPU_WAIT_REGION_END},
 		{"Voodoo", VOODOO_REGION_BASE, VOODOO_REGION_END},
 		{"VGA_VRAM", VGA_VRAM_BASE, VGA_VRAM_END},
 		{"VGA_TEXT", VGA_TEXT_BASE, VGA_TEXT_END},

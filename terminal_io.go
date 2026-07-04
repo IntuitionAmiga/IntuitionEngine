@@ -234,6 +234,12 @@ func (tm *TerminalMMIO) monotonicUsecLocked() uint64 {
 	return uint64(time.Since(tm.monoStart).Microseconds())
 }
 
+func (tm *TerminalMMIO) MonotonicUsec() uint64 {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	return tm.monotonicUsecLocked()
+}
+
 // HandleWrite processes writes to terminal registers.
 func (tm *TerminalMMIO) HandleWrite(addr uint32, value uint32) {
 	var sentinelFn func()

@@ -822,6 +822,11 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"TEX_WIDTH", 0xF8330, 4, "RW"},
 			{"TEX_HEIGHT", 0xF8334, 4, "RW"},
 			{"TEX_UPLOAD", 0xF8338, 4, "RW"},
+			{"CMD_PTR", VOODOO_CMD_PTR, 4, "RW"},
+			{"CMD_COUNT", VOODOO_CMD_COUNT, 4, "RW"},
+			{"CMD_SUBMIT", VOODOO_CMD_SUBMIT, 4, "WO"},
+			{"TEX_SRC_PTR", VOODOO_TEX_SRC_PTR, 4, "RW"},
+			{"TEX_SRC_BYTES", VOODOO_TEX_SRC_BYTES, 4, "RW"},
 		},
 	},
 	"voodoo_depth": {
@@ -840,6 +845,16 @@ var ioDevices = map[string]*IODeviceDesc{
 			{"SYSINFO_TOTAL_RAM_HI", SYSINFO_TOTAL_RAM_HI, 4, "RO"},
 			{"SYSINFO_ACTIVE_RAM_LO", SYSINFO_ACTIVE_RAM_LO, 4, "RO"},
 			{"SYSINFO_ACTIVE_RAM_HI", SYSINFO_ACTIVE_RAM_HI, 4, "RO"},
+			{"SYSINFO_FEATURES", SYSINFO_FEATURES, 4, "RO"},
+		},
+	},
+	"cpu_wait": {
+		Name: "CPU Wait",
+		Registers: []IORegisterDesc{
+			{"WAIT_VBLANK", WAIT_VBLANK, 4, "WO"},
+			{"WAIT_UNTIL_LO", WAIT_UNTIL_LO, 4, "WO"},
+			{"WAIT_UNTIL_HI", WAIT_UNTIL_HI, 4, "WO"},
+			{"WAIT_UNTIL_GO", WAIT_UNTIL_GO, 4, "WO"},
 		},
 	},
 }

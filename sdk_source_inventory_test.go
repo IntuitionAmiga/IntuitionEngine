@@ -410,6 +410,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{sdkHexRange(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END), "`bootstrap_hostfs_constants.go` `BOOT_HOSTFS_BASE`/`BOOT_HOSTFS_END`, `main.go` `MapIO`"},
 		{sdkHexRange(SYSINFO_REGION_BASE, SYSINFO_REGION_END), "`sysinfo_mmio.go` `RegisterSysInfoMMIOFromBus`, `main.go` registration"},
 		{sdkHexRange(AROS_HOST_SOCKET_REGION_BASE, AROS_HOST_SOCKET_REGION_END), "`registers.go` `AROS_HOST_SOCKET_REGION_*`, `aros_host_socket_constants.go` register offsets, `main.go` `MapIO`"},
+		{sdkHexRange(CPU_WAIT_REGION_BASE, CPU_WAIT_REGION_END), "`cpu_wait_mmio.go` `RegisterCPUWaitMMIO`, SDK include `CPU_WAIT_*`, `main.go` registration"},
 		{sdkHexRange(VOODOO_BASE, VOODOO_END), "`voodoo_constants.go` `VOODOO_BASE`/`VOODOO_END`, `main.go` `MapIO`"},
 		{sdkHexRange(VOODOO_FOG_TABLE_BASE, VOODOO_FOG_TABLE_END-1), "`voodoo_constants.go` fog-table constants"},
 		{sdkHexRange(WORKER_IE32_BASE, WORKER_IE32_END), "`coprocessor_constants.go` IE32 worker-memory constants"},
