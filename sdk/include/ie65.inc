@@ -27,26 +27,30 @@ BANK3_REG_HI    = $F705         ; Bank 3 select (high byte)
 VRAM_BANK_REG   = $F7F0         ; VRAM bank select
 
 ; ============================================================================
-; TERMINAL / INPUT / RTC REGISTERS (16-bit mapped view)
+; TERMINAL / INPUT / RTC REGISTERS (via bank1 window -> bus $F0700-$F07FF)
 ; ============================================================================
+;
+; $F700-$F705 are bank-control registers on IE65. To access terminal/input/RTC,
+; set bank1 to TERM_IO_BANK, then use the $2700-$27FF aliases below.
 
-TERM_OUT        = $F700         ; Character output (W)
-TERM_STATUS     = $F704         ; Bit 0=input available, bit 1=output ready (R)
-TERM_IN         = $F708         ; Read next input char, dequeues (R)
-TERM_LINE_STATUS = $F70C        ; Bit 0=complete line available (R)
-TERM_ECHO       = $F710         ; Bit 0=local echo enable (R/W)
-TERM_CTRL       = $F724         ; Bit 0=line input mode (R/W)
-TERM_KEY_IN     = $F728         ; Per-keystroke input for GET (R)
-TERM_KEY_STATUS = $F72C         ; Bit 0=raw key available (R)
-MOUSE_CTRL      = $F74C         ; Bit 0=request relative/captured mouse mode (R/W)
-MOUSE_DX        = $F754         ; Signed accumulated relative X delta; read clears (R)
-MOUSE_DY        = $F758         ; Signed accumulated relative Y delta; read clears (R)
-SCAN_CODE       = $F740         ; Raw keyboard scancode dequeue (R)
-SCAN_STATUS     = $F744         ; Bit 0=scancode available (R)
-SCAN_MODIFIERS  = $F748         ; Bit 0=shift, bit 1=ctrl, bit 2=alt, bit 3=caps
-RTC_EPOCH       = $F750         ; Host UTC seconds since Unix epoch (R)
-RTC_MONO_USEC_LO = $F75C       ; Low 32 bits of monotonic microseconds since engine start (R)
-RTC_MONO_USEC_HI = $F760       ; High 32 bits of monotonic microseconds since engine start (R)
+TERM_IO_BANK    = $0078         ; Bank1 value for bus $F0000-$F1FFF
+TERM_OUT        = $2700         ; Character output (W), bus $F0700
+TERM_STATUS     = $2704         ; Bit 0=input available, bit 1=output ready (R)
+TERM_IN         = $2708         ; Read next input char, dequeues (R)
+TERM_LINE_STATUS = $270C        ; Bit 0=complete line available (R)
+TERM_ECHO       = $2710         ; Bit 0=local echo enable (R/W)
+TERM_CTRL       = $2724         ; Bit 0=line input mode (R/W)
+TERM_KEY_IN     = $2728         ; Per-keystroke input for GET (R)
+TERM_KEY_STATUS = $272C         ; Bit 0=raw key available (R)
+MOUSE_CTRL      = $274C         ; Bit 0=request relative/captured mouse mode (R/W)
+MOUSE_DX        = $2754         ; Signed accumulated relative X delta; read clears (R)
+MOUSE_DY        = $2758         ; Signed accumulated relative Y delta; read clears (R)
+SCAN_CODE       = $2740         ; Raw keyboard scancode dequeue (R)
+SCAN_STATUS     = $2744         ; Bit 0=scancode available (R)
+SCAN_MODIFIERS  = $2748         ; Bit 0=shift, bit 1=ctrl, bit 2=alt, bit 3=caps
+RTC_EPOCH       = $2750         ; Host UTC seconds since Unix epoch (R)
+RTC_MONO_USEC_LO = $275C       ; Low 32 bits of monotonic microseconds since engine start (R)
+RTC_MONO_USEC_HI = $2760       ; High 32 bits of monotonic microseconds since engine start (R)
 
 ; ============================================================================
 ; VIDEO HARDWARE REGISTERS (mapped from IE32 $F0000-$F00FF to 6502 $F000-$F0FF)
@@ -1693,6 +1697,11 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
     sta BANK3_REG_LO
     lda #>(bank)
     sta BANK3_REG_HI
+.endmacro
+
+; Select bank1 for terminal/input/RTC aliases at $2700-$27FF.
+.macro SET_TERMINAL_BANK
+    SET_BANK1 TERM_IO_BANK
 .endmacro
 
 ; Set VRAM bank

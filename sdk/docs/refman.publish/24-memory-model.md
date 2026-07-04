@@ -265,9 +265,11 @@ The M68K reaches `TERM_OUT` through a second alias as well:
 The 6502 and Z80 have no equivalent 16-bit alias for `TERM_OUT`:
 the only 16-bit address that would translate to `$F0700` is
 `$F700`, which the CPU adapters intercept as `BANK1_REG_LO`
-before the bus translation runs. Bare 6502 or Z80 code that needs
-to emit text uses the ULA, the VGA, or the SoundChip beeper
-instead. See Chapters 27 and 28 for the per-CPU details.
+before the bus translation runs. Code that needs the system terminal
+can select `TERM_IO_BANK` into bank 1 with `SET_TERMINAL_BANK`, then
+use the 6502/Z80 include-file terminal aliases at `$2700`-`$27FF`;
+`TERM_OUT` is `$2700` in that window and resolves to bus `$F0700`.
+See Chapters 27 and 28 for the per-CPU details.
 
 Chapter 37 covers the keyboard, mouse, and controller MMIO in
 detail. Chapter 38 covers the serial interface that overlays

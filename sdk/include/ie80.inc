@@ -29,26 +29,30 @@
 .set VRAM_BANK_REG,0xF7F0
 
 ; ============================================================================
-; TERMINAL / INPUT / RTC REGISTERS (16-bit mapped view)
+; TERMINAL / INPUT / RTC REGISTERS (via bank1 window -> bus 0xF0700-0xF07FF)
 ; ============================================================================
+;
+; 0xF700-0xF705 are bank-control registers on IE80. To access terminal/input/RTC,
+; set bank1 to TERM_IO_BANK, then use the 0x2700-0x27FF aliases below.
 
-.set TERM_OUT,0xF700
-.set TERM_STATUS,0xF704
-.set TERM_IN,0xF708
-.set TERM_LINE_STATUS,0xF70C
-.set TERM_ECHO,0xF710
-.set TERM_CTRL,0xF724
-.set TERM_KEY_IN,0xF728
-.set TERM_KEY_STATUS,0xF72C
-.set MOUSE_CTRL,0xF74C
-.set MOUSE_DX,0xF754
-.set MOUSE_DY,0xF758
-.set SCAN_CODE,0xF740
-.set SCAN_STATUS,0xF744
-.set SCAN_MODIFIERS,0xF748
-.set RTC_EPOCH,0xF750
-.set RTC_MONO_USEC_LO,0xF75C
-.set RTC_MONO_USEC_HI,0xF760
+.set TERM_IO_BANK,0x0078
+.set TERM_OUT,0x2700
+.set TERM_STATUS,0x2704
+.set TERM_IN,0x2708
+.set TERM_LINE_STATUS,0x270C
+.set TERM_ECHO,0x2710
+.set TERM_CTRL,0x2724
+.set TERM_KEY_IN,0x2728
+.set TERM_KEY_STATUS,0x272C
+.set MOUSE_CTRL,0x274C
+.set MOUSE_DX,0x2754
+.set MOUSE_DY,0x2758
+.set SCAN_CODE,0x2740
+.set SCAN_STATUS,0x2744
+.set SCAN_MODIFIERS,0x2748
+.set RTC_EPOCH,0x2750
+.set RTC_MONO_USEC_LO,0x275C
+.set RTC_MONO_USEC_HI,0x2760
 
 ; ============================================================================
 ; VIDEO HARDWARE REGISTERS
@@ -1539,6 +1543,11 @@
     ld (BANK3_REG_LO),a
     ld a,>(\bank)
     ld (BANK3_REG_HI),a
+.endm
+
+; Select bank1 for terminal/input/RTC aliases at 0x2700-0x27FF.
+.macro SET_TERMINAL_BANK
+    SET_BANK1 TERM_IO_BANK
 .endm
 
 ; Set VRAM bank
