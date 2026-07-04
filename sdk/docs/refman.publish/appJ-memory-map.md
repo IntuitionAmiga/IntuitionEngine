@@ -64,7 +64,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$F0E20`-`$F0E2D`       | 14 B   | SID player block. |
 | `$F0E30`-`$F0E4C`       | 29 B   | SID2 registers. |
 | `$F0E50`-`$F0E6C`       | 29 B   | SID3 registers. |
-| `$F0E80`-`$F0EFF`       | 128 B  | SFX triggers. |
+| `$F0E80`-`$F0EFF`       | 128 B  | SFX trigger legacy aliases, channels `0`-`3`. |
 | `$F0F00`-`$F0F6B`       | 108 B  | TED audio + video. |
 | `$F1000`-`$F13FF`       | 1 KB   | VGA registers. |
 | `$F1400`-`$F140F`       | 16 B   | HOST appliance block. |
@@ -81,6 +81,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$F23C0`-`$F23DF`       | 32 B   | IRQ diagnostics. |
 | `$F23E0`-`$F23FF`       | 32 B   | Bootstrap loader. |
 | `$F2400`-`$F24FF`       | 256 B  | SysInfo (RAM-size ABI). |
+| `$F2600`-`$F29FF`       | 1 KB   | SFX trigger extended window, channels `0`-`31`. |
 | `$F8000`-`$F87FF`       | 2 KB   | Voodoo 3D registers. |
 | `$FA000`-`$FBAFF`       | 6912 B | ULA VRAM aperture. |
 

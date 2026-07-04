@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-02*
+*Last modified: 2026-07-04*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -475,7 +475,9 @@ flowchart LR
   sequencing through dependency fields and profile targets. It preserves the
   existing guest-visible reset contract while keeping quiesce, failed-load
   rollback, CPU recreation, profile loading, and monitor/runtime rewiring out
-  of the host event loop.
+  of the host event loop. A hard reset restages the configured coprocessor
+  service after coprocessor reset and before CPU restart, so the service name
+  pointer and worker-start path remain available across reset.
 - **Audio playback control** - register-mapped music players use
   `PlayerControlState` for staged pointer/length registers, optional high
   pointer, bus reads, busy/error/loop state, subsong selection, and async
@@ -910,6 +912,8 @@ band writes through bus memory aggregate backing invalidation per row.
 Voodoo triangle submission is state-machine driven. A write that commits `VOODOO_TRIANGLE_CMD` binds the current Voodoo raster state to that triangle: `VOODOO_FBZ_MODE`, `VOODOO_ALPHA_MODE`, `VOODOO_FBZCOLOR_PATH`, `VOODOO_TEXTURE_MODE`, fog state, chroma key, stipple, clip rectangle, slope registers, and the currently uploaded texture. Later register writes or texture uploads do not affect already submitted triangles. `VOODOO_SWAP_BUFFER_CMD` may flush the queued batch later, but the batch is rasterised in triangle submission order using each triangle's bound state.
 
 Consecutive triangles may share an internal state snapshot until a raster-state register or texture upload changes; that sharing is not guest-visible. Fog-table and palette raster lookups remain compatibility-pending. The software backend is the conformance reference. Vulkan renders multi-state frames natively by binding each snapshot's pipeline, scissor, push constants, and texture per state group inside one command buffer; frames using raster features the GPU shaders do not implement (stipple patterns, chroma ranges, front-buffer draws, slope-register interpolation) present the software reference output for that frame. Flushes that arrive without a guest clear composite over the previous frame's content; the GPU pass clears its attachments every flush, so those frames also render in software (the previous GPU flush is replayed first to reconstruct the reference colour and depth buffers).
+
+Voodoo swap jobs run asynchronously; oversized triangle batches render mid-frame without presentation or swap callbacks, and STATUS exposes busy and SWAPBUF while a presented swap is pending. `VOODOO_SWAP_BUFFER_CMD` hands the current batch to the swap worker, and `VOODOO_STATUS` reports framebuffer and SST busy plus `SWAPBUF` while that presented swap is active. A later swap waits for the previous job, giving one frame of run-ahead. If a frame exceeds `VOODOO_MAX_BATCH_TRIANGLES`, the full batch is rendered into the draw buffer as a mid-frame render-only flush, without presenting the frame or firing swap callbacks, and triangle submission continues into a fresh batch. This preserves oversized tiled frames instead of dropping triangles.
 
 ### Copper Cross-Chip Bus Access
 

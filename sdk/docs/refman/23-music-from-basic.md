@@ -204,7 +204,7 @@ IE64, IE32, M68K, and x86 can write the full sound MMIO addresses.
 |--------|---------|
 | `AUDIO_CTRL` | `$F0800` |
 | SoundChip channels | `$F0A80`, `$F0AC0`, `$F0B00`, `$F0B40`, then `$F0C40`, `$F0C80`, `$F0CC0`, `$F0D40`, `$F0D80`, `$F0DC0` |
-| SFX channels | `$F0E80-$F0EFF` |
+| SFX channels | `$F2600-$F29FF` extended window; `$F0E80-$F0EFF` legacy aliases for channels `0` to `3` |
 | PSG | `$F0C00-$F0C0F` |
 | PSG player | `$F0C10-$F0C1F` |
 | SN76489 | `$F0C30-$F0C32` |

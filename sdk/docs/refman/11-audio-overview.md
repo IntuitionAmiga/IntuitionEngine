@@ -29,7 +29,7 @@ result to the audio output.
 
 | Engine        | Chapter | Main use |
 |---------------|---------|----------|
-| SoundChip and SFX | 12 | Ten IE-native synth channels and four raw sample SFX channels |
+| SoundChip and SFX | 12 | Ten IE-native synth channels and 32 raw sample SFX channels |
 | PSG           | 13 | AY-style square/noise tones and envelopes |
 | SN76489       | 14 | Four-channel tone/noise latch chip |
 | SID family    | 15 | Three-voice wavetable/filter-style chip sound |
@@ -55,7 +55,7 @@ sample playback.
 | Engine | Characteristic features | Use it when |
 |--------|-------------------------|-------------|
 | SoundChip | Ten flexible channels; sine, triangle, saw, square, pulse, noise, ring modulation, hard sync, PWM, ADSR envelopes, sweeps, DAC writes, per-channel filter, global overdrive, filter, and reverb | You want IE-native synthesis, layered effects, or a shared backend for richer sounds |
-| SFX | Four raw sample trigger channels with pointer, length, loop, rate, volume, and sample-format control | You have short PCM effects and want trigger-and-forget playback |
+| SFX | Thirty-two raw sample trigger channels with pointer, length, loop, rate, volume, and sample-format control | You have short PCM effects and want trigger-and-forget playback |
 | PSG | Three square-tone channels, one noise source, and AY-style envelopes | You want crisp AY/YM arcade or microcomputer tones |
 | SN76489 | Three tone channels and one noise channel through a latch/data port | You want simple console-style square waves and noise |
 | SID family | Three SID voices per chip, pulse width, ADSR, sync/ring options, and resonant filter behaviour | You want C64-style lead, bass, pulse, and filter movement |
@@ -162,8 +162,10 @@ The `SOUND ch,freq,vol[,wave[,duty]]` keyword writes:
 
 ## 11.6 SFX sample channels
 
-The SFX block is for short raw samples stored in memory. It has four
-channels at `$F0E80` to `$F0EFF`, with stride `$20`.
+The SFX block is for short raw samples stored in memory. The extended
+window has 32 channels at `$F2600` to `$F29FF`, with stride `$20`.
+The older `$F0E80` to `$F0EFF` window remains as legacy aliases for
+channels `0` to `3`.
 
 | Offset | Field          | Meaning |
 |--------|----------------|---------|
@@ -172,14 +174,16 @@ channels at `$F0E80` to `$F0EFF`, with stride `$20`.
 | `$08` | `SFX_LOOP_PTR` | Loop start address. |
 | `$0C` | `SFX_LOOP_LEN` | Loop length. |
 | `$10` | `SFX_FREQ`     | Playback rate in Hz. |
-| `$14` | `SFX_VOL`      | Volume, `0` to `65535`. |
+| `$14` | `SFX_VOL`      | Volume field. Values `0` to `255` set the audible level; larger values are clipped to `255`. |
+| `$16` | `SFX_PAN_RESERVED` | Reserved pan field. |
 | `$18` | `SFX_FORMAT`   | `0` signed 8-bit, `1` unsigned 8-bit, `2` signed 16-bit. |
 | `$1C` | `SFX_CTRL`     | Bit `0` trigger, bit `1` stop, bit `2` loop. |
 
-Status bits are exposed through the channel status shadow: bit `0`
-means playing and bit `1` means error. Chapter 12 gives the full
-typed setup for putting sample bytes in memory and triggering a
-channel.
+Status bits are exposed through `SFX_CTRL`: bit `0` means playing and
+bit `1` means error. On the 6502 and Z80, select the extended SFX bank
+and use the `$2600` to `$29FF` bank-window aliases described by the
+include files. Chapter 12 gives the full typed setup for putting sample
+bytes in memory and triggering a channel.
 
 ## 11.7 Media loader
 

@@ -117,6 +117,9 @@ mechanism described in Chapters 27 and 28.
 | Address    | Meaning |
 |------------|---------|
 | `$F0700`  | `TERM_OUT`. |
+| `$2700`-`$27FF` | 6502/Z80 terminal, input, mouse, and RTC aliases after selecting `TERM_IO_BANK` into bank 1. |
+| `TERM_IO_BANK` | Bank-1 value for 6502/Z80 access to the terminal/input/RTC block. |
+| `SET_TERMINAL_BANK` | 6502/Z80 include-file helper that selects `TERM_IO_BANK`. |
 | `$F075C`/`$F0760` | `RTC_MONO_USEC_LO` / `RTC_MONO_USEC_HI`, monotonic elapsed microseconds. |
 | `$F0BA0`  | MIDI/MUS file-player block. |
 | `$F0BF4`  | `IE_MIDI_LIVE_DATA`, byte-wide live MIDI stream input; writes do not shadow into RAM. |

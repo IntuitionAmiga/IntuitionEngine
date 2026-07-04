@@ -229,6 +229,7 @@ symbols, and Appendix J gives the full memory map.
 | Screen codes | Appendix B |
 | Serial devices | Chapter 38 |
 | SFX | Chapter 11, Chapter 12, Appendix D |
+| SFX extended window | Chapter 11, Chapter 12, Chapter 24, Appendix D, Appendix J |
 | SFX Trigger monitor view | Chapter 33 |
 | SID | Chapter 15, Chapter 29, Appendix D |
 | SID2 | Chapter 15, Appendix D, Appendix J |
@@ -249,6 +250,7 @@ symbols, and Appendix J gives the full memory map.
 | TED frequency register | Chapter 16, Appendix E |
 | TED_V_RASTER_STATUS | Chapter 6, Appendix D |
 | TED video | Chapter 6, Chapter 30, Appendix D |
+| TERM_IO_BANK | Chapter 24, Chapter 27, Chapter 28, Appendix H |
 | TERM_SENTINEL | Chapter 38, Appendix D |
 | Tile and sprite layers | Chapter 10 |
 | Timing | Chapter 31 |
@@ -275,6 +277,7 @@ symbols, and Appendix J gives the full memory map.
 | VideoChip | Chapter 4, Chapter 25, Chapter 39, Appendix D |
 | VIDEO_STATUS | Chapter 4, Appendix D |
 | Voodoo | Chapter 9, Chapter 29, Appendix D, Appendix H |
+| Voodoo batch limit | Chapter 9, Appendix D |
 | Voodoo state binding | Chapter 9, Appendix D |
 | VRAM | Chapter 3, Chapter 4, Chapter 24, Appendix J |
 

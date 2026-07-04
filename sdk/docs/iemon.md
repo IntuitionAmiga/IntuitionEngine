@@ -1,6 +1,6 @@
 # Intuition Engine Machine Monitor
 
-*Last modified: 2026-07-02*
+*Last modified: 2026-07-04*
 
 ## Overview
 
@@ -1062,7 +1062,7 @@ Register widths are per-register (1, 2, 4, or 8 bytes). Values are displayed in 
 
 The audio/player views mirror the MMIO layout. `psg`, `sid`, `ted`, and `pokey` are combined chip/player views, so their playback control registers are shown alongside chip registers. `ahx`, `midiplay`, `mod`, and `wav` are independent player/control views. `midiplay` is the file-backed SMF `.mid`/`.midi` and Doom `.mus` player backed by the `MIDI_PLAY_*` MMIO block.
 
-`sfx` shows the trigger-channel sample MMIO block. Bridge and profile integration views such as `hosthelper`, `arosdos`, `paula`, `clipboard`, and `boothostfs` expose their register blocks; values depend on the active runtime/profile and may indicate disabled or idle state. `paula` is the Paula-style DMA shim, and `boothostfs` is Bootstrap HostFS.
+`sfx` shows the trigger-channel sample MMIO block using the extended 32-channel window. Channels `CH0` through `CH31` each show `PTR`, `LEN`, `LOOP_PTR`, `LOOP_LEN`, `FREQ`, `VOL`, `PAN`, `FORMAT`, and `CTRL`; the legacy four-channel aliases address the same first four channels. Bridge and profile integration views such as `hosthelper`, `arosdos`, `paula`, `clipboard`, and `boothostfs` expose their register blocks; values depend on the active runtime/profile and may indicate disabled or idle state. `paula` is the Paula-style DMA shim, and `boothostfs` is Bootstrap HostFS.
 
 `midilive` is the generic live-MIDI port, the CPU-agnostic MMIO stream that drives the shared synth from any core or from EhBASIC, separate from the file-backed `midiplay`. It exposes `LIVE_DATA` (`$F0BF4`, write a raw MIDI byte), `LIVE_STATUS` (`$F0BF5`, read bit 0 = live port active), and `LIVE_CTRL` (`$F0BF6`, write bit 0 = reset).
 

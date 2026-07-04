@@ -74,7 +74,7 @@ one stereo output stream.
    WAV -------+
    Paula DMA -+
               |
-   SFX ch 0-3 +
+   SFX ch 0-31 +
 ```
 
 The SoundChip's own filter, the SID family's resonant filter, and

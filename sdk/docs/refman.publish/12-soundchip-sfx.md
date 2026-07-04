@@ -6,7 +6,7 @@ Copyright (c) 2026 Zayn Otley. All rights reserved.
 The SoundChip is Intuition Engine's IE-native synthesiser. It has ten
 flexible channels. Each channel has an oscillator, envelope, sweep,
 ring modulation, hard sync, PWM, noise selection, and DAC input. The
-same audio block also owns four SFX channels for raw sample playback.
+same audio block also owns 32 SFX channels for raw sample playback.
 
 Use the BASIC `SOUND`, `ENVELOPE`, and `GATE` commands for channels
 `0` to `3`. Use `POKE32` when you need the full ten-channel register
@@ -196,8 +196,10 @@ Lines `50` to `70` write the DAC value.
 
 ## 12.7 SFX channels
 
-The SFX block plays short raw samples from memory. It has four
-channels at `$F0E80` to `$F0EFF`, with stride `$20`.
+The SFX block plays short raw samples from memory. The extended window
+has 32 channels at `$F2600` to `$F29FF`, with stride `$20`. The older
+`$F0E80` to `$F0EFF` window remains as legacy aliases for channels `0`
+to `3`, so old channel-0 examples still work.
 
 | Offset | Name             | Purpose |
 |--------|------------------|---------|
@@ -206,8 +208,8 @@ channels at `$F0E80` to `$F0EFF`, with stride `$20`.
 | `$08` | `SFX_LOOP_PTR`   | Loop start address. |
 | `$0C` | `SFX_LOOP_LEN`   | Loop length. |
 | `$10` | `SFX_FREQ`       | Playback rate in Hz. |
-| `$14` | `SFX_VOL`        | Volume, `0` to `65535`. |
-| `$16` | `SFX_PAN`        | Reserved pan field. |
+| `$14` | `SFX_VOL`        | Volume field. Values `0` to `255` set the audible level; larger values are clipped to `255`. |
+| `$16` | `SFX_PAN_RESERVED` | Reserved pan field. |
 | `$18` | `SFX_FORMAT`     | `0` signed 8-bit, `1` unsigned 8-bit, `2` signed 16-bit. |
 | `$1C` | `SFX_CTRL`       | Bit `0` trigger, bit `1` stop, bit `2` loop. |
 
@@ -229,7 +231,7 @@ triggers SFX channel `0`:
 90 POKE32 &H000F0E80,BASE
 100 POKE32 &H000F0E84,64
 110 POKE32 &H000F0E90,11025
-120 POKE32 &H000F0E94,60000
+120 POKE32 &H000F0E94,255
 130 POKE32 &H000F0E98,1
 140 POKE32 &H000F0E9C,1
 150 PRINT PEEK32(&H000F0E9C) AND 1
@@ -238,6 +240,11 @@ triggers SFX channel `0`:
 Expected result: the sample starts playing and line `150` prints `1`
 while the SFX channel is active. If the pointer or length is invalid,
 bit `1` is set instead.
+
+For channels beyond `3`, use the extended window. Channel `n` starts at
+`$F2600 + n * $20`, so channel `4` begins at `$F2680`. On the 6502 and
+Z80, select `IE_SFX_EXT_BANK` in bank 1 and use the `$2600` to `$29FF`
+aliases from the include file.
 
 ## 12.8 BASIC keyword map
 
@@ -261,11 +268,13 @@ bit `1` is set instead.
 - `SOUND`, `ENVELOPE`, `GATE`, `SOUND WAVE`, `SOUND NOISE`, and
   `SOUND SWEEP` target channels `0` to `3`.
 - Direct `POKE32` reaches all ten channels.
+- Direct SFX register writes reach all 32 extended SFX channels.
 - Writing `PHASE` resets the oscillator phase.
 - Writing `DAC` enables DAC mode for that channel; writing
   `WAVE_TYPE` returns the channel to oscillator mode.
 - `SFX_CTRL` bit `0` triggers playback; bit `1` stops playback.
 - SFX channel errors are reported in the `SFX_CTRL` read-back status.
+- The legacy SFX window aliases only channels `0` to `3`.
 - Global overdrive, filter, and reverb are shared by all engines.
 
 Chapter 13 covers the PSG.

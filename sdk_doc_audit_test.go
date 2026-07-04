@@ -105,7 +105,7 @@ var britishEnglishAmericanisms = map[string]string{
 	"organized":      "organised",
 }
 
-const sdkAuditLastModifiedDate = "2026-07-02"
+const sdkAuditLastModifiedDate = "2026-07-04"
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
 	needle := "*Last modified: " + sdkAuditLastModifiedDate + "*"
@@ -3363,6 +3363,10 @@ func TestSDKCompanionDocs_ArchitectureVoodooStateBindingMatchesSource(t *testing
 		"Fog-table and palette raster lookups remain compatibility-pending.",
 		"Vulkan renders multi-state frames natively by binding each snapshot's pipeline, scissor, push constants, and texture per state group inside one command buffer",
 		"frames using raster features the GPU shaders do not implement (stipple patterns, chroma ranges, front-buffer draws, slope-register interpolation) present the software reference output for that frame.",
+		"Voodoo swap jobs run asynchronously; oversized triangle batches render mid-frame without presentation or swap callbacks, and STATUS exposes busy and SWAPBUF while a presented swap is pending.",
+		"`VOODOO_SWAP_BUFFER_CMD` hands the current batch to the swap worker",
+		"`VOODOO_STATUS` reports framebuffer and SST busy plus `SWAPBUF` while that presented swap is active.",
+		"If a frame exceeds `VOODOO_MAX_BATCH_TRIANGLES`, the full batch is rendered into the draw buffer as a mid-frame render-only flush",
 	} {
 		if !strings.Contains(section, required) {
 			t.Fatalf("architecture.md Voodoo state-binding section omits source-backed behaviour: %s", required)
@@ -3370,6 +3374,75 @@ func TestSDKCompanionDocs_ArchitectureVoodooStateBindingMatchesSource(t *testing
 	}
 	if !normalizedContains(sourceInventory, "A write that commits VOODOO_TRIANGLE_CMD binds the current Voodoo raster state to that triangle") {
 		t.Fatal("SDK_ARCH_SOURCE_AUDIT.md missing Voodoo state-binding architecture claim")
+	}
+	if !normalizedContains(sourceInventory, "Voodoo swap jobs run asynchronously; oversized triangle batches render mid-frame without presentation or swap callbacks, and STATUS exposes busy and SWAPBUF while a presented swap is pending.") {
+		t.Fatal("SDK_ARCH_SOURCE_AUDIT.md missing Voodoo async swap and overflow architecture claim")
+	}
+}
+
+func TestSDKCompanionDocs_IEMonSFXIOViewMatchesSource(t *testing.T) {
+	doc := readAuditFile(t, "sdk/docs/iemon.md")
+	source := readAuditFile(t, "debug_ioview.go")
+	constants := readAuditFile(t, "sfx_constants.go")
+
+	for _, needle := range []string{
+		"makeSFXIORegisters",
+		"IE_SFX_CHANNELS*9",
+		"prefix + \"PAN\"",
+		"ieSFXChannelBase(ch)",
+	} {
+		if !strings.Contains(source, needle) {
+			t.Fatalf("debug_ioview.go SFX ioview source changed; review iemon.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"IE_SFX_LEGACY_CHANNELS = 4",
+		"IE_SFX_CHANNELS        = 32",
+		"IE_SFX_EXT_REGION_BASE = 0xF2600",
+	} {
+		if !strings.Contains(constants, needle) {
+			t.Fatalf("sfx_constants.go channel/window source changed; review iemon.md: %s", needle)
+		}
+	}
+	for _, required := range []string{
+		"`sfx` shows the trigger-channel sample MMIO block using the extended 32-channel window.",
+		"Channels `CH0` through `CH31` each show `PTR`, `LEN`, `LOOP_PTR`, `LOOP_LEN`, `FREQ`, `VOL`, `PAN`, `FORMAT`, and `CTRL`",
+		"the legacy four-channel aliases address the same first four channels.",
+	} {
+		if !strings.Contains(doc, required) {
+			t.Fatalf("iemon.md SFX io reference omits source-backed behaviour: %s", required)
+		}
+	}
+}
+
+func TestSDKCompanionDocs_ArchitectureHardResetRestagesCoprocService(t *testing.T) {
+	doc := readAuditFile(t, "sdk/docs/architecture.md")
+	lifecycle := readAuditFile(t, "machine_lifecycle.go")
+	mainSrc := readAuditFile(t, "main.go")
+	regression := readAuditFile(t, "coprocessor_cli_test.go")
+	sourceInventory := readAuditFile(t, "sdk/docs/verify/SDK_ARCH_SOURCE_AUDIT.md")
+
+	for _, needle := range []string{
+		"t.Coprocessor.Reset()",
+		"m.deps.StageConfiguredCoprocService()",
+		"t.CPU.StartExecution()",
+	} {
+		if !strings.Contains(lifecycle, needle) {
+			t.Fatalf("machine_lifecycle.go hard-reset coprocessor restage path changed; review architecture.md: %s", needle)
+		}
+	}
+	if !strings.Contains(mainSrc, "StageConfiguredCoprocService: stageConfiguredCoprocService") {
+		t.Fatal("main.go no longer wires StageConfiguredCoprocService; review architecture.md")
+	}
+	if !strings.Contains(regression, "TestCoprocStaging_FullResetRestagesAfterCoprocReset") {
+		t.Fatal("coprocessor hard-reset restage regression test missing; review architecture.md")
+	}
+	required := "A hard reset restages the configured coprocessor service after coprocessor reset and before CPU restart, so the service name pointer and worker-start path remain available across reset."
+	if !normalizedContains(doc, required) {
+		t.Fatalf("architecture.md omits source-backed hard-reset coprocessor restage behaviour: %s", required)
+	}
+	if !normalizedContains(sourceInventory, required) {
+		t.Fatal("SDK_ARCH_SOURCE_AUDIT.md missing hard-reset coprocessor restage architecture claim")
 	}
 }
 

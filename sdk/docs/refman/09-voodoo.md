@@ -185,16 +185,19 @@ are 32-bit words at 4-byte aligned addresses.
 
 `MEMFIFO` is useful as a ready/not-ready field, not as a cycle-accurate
 historical FIFO depth. It is non-zero while the queued triangle batch
-can accept more triangles. It reads zero once the batch reaches its
-`4096` triangle limit. `PCIFIFO` reports command space for the current
-high-level engine path.
+can accept more triangles. It reads zero only while the current batch
+is exactly at its `4096` triangle limit. The next `TRIANGLE_CMD` at
+that point flushes the full batch into the drawing buffer without
+publishing the frame, then starts a fresh batch for the new triangle.
+`PCIFIFO` reports command space for the current high-level engine path.
 
-`FBI_BUSY` and `SST_BUSY` are set while `SWAP_BUFFER_CMD` is flushing
-queued triangles, swapping buffers, and publishing the frame. A simple
-BASIC program may not see these bits because the command completes
-before the next `PEEK`, but machine code and IE Mon can still poll them
-around a large swap. `TRIANGLE_CMD` itself does not set these busy bits;
-it only appends work to the batch.
+`FBI_BUSY` and `SST_BUSY` are set while Voodoo is rendering a queued
+batch or publishing a frame. `SWAPBUF` is set while a publish swap is
+pending. A simple BASIC program may not see these bits because small
+frames finish before the next `PEEK`, but machine code and IE Mon can
+still poll them around a large frame. `TRIANGLE_CMD` itself normally
+only appends work to the batch; when the batch is already full it first
+flushes that full batch as a render-only step.
 
 ### 9.5.2 Vertex and attribute registers
 
@@ -235,15 +238,20 @@ vertices, per-vertex attributes, raster state, and currently uploaded
 texture are latched into the triangle batch, up to `4096` triangles.
 Later writes to `FBZ_MODE`, `ALPHA_MODE`, `FBZCOLOR_PATH`,
 `TEXTURE_MODE`, fog, chroma, stipple, clip, slope, or texture upload
-state do not change triangles that are already queued. If the batch is
-already full, further `TRIANGLE_CMD` writes are ignored until a swap
-flushes the batch.
+state do not change triangles that are already queued.
 
-Pixels appear after `SWAP_BUFFER_CMD`. That command updates dirty
-live state for later triangles, rasterises the queued triangles using
-the state each one latched when it was submitted, clears the batch,
-swaps buffers, and publishes the frame to the compositor. During that
-flush the status register reports `FBI_BUSY` and `SST_BUSY`.
+If the batch is already full, the next `TRIANGLE_CMD` renders that full
+batch into the drawing buffer without publishing the frame, clears the
+batch, and then queues the new triangle. This is how very large frames
+remain complete.
+
+Pixels appear after `SWAP_BUFFER_CMD`. That command hands the queued
+triangles to the rasteriser using the state each one latched when it
+was submitted, clears the batch, swaps buffers, and publishes the frame
+to the compositor. If one frame is already in progress, the next swap
+waits until that work is finished before starting the new publish. During
+render or publish work the status register reports `FBI_BUSY` and
+`SST_BUSY`; during a pending publish it also reports `SWAPBUF`.
 
 ### 9.5.4 Mode and state
 
@@ -601,8 +609,8 @@ Voodoo has these programming boundaries:
 | `VOODOO OFF` | Voodoo contributes no picture to the compositor. |
 | `VOODOO DIM w,h` | Ignored unless both dimensions are positive and no larger than `800` by `600`. |
 | `VOODOO CLEAR colour` | Clears the drawing buffer and resets depth to a far value for `LESS` style depth functions. |
-| `TRIANGLE` | Queues one triangle and latches its raster state and current texture, up to `4096` queued triangles; extra submissions are ignored until swap. |
-| `VOODOO SWAP` | Flushes queued triangles, sets busy while the flush runs, swaps buffers, publishes the frame, and clears the batch. |
+| `TRIANGLE` | Queues one triangle and latches its raster state and current texture. A full `4096`-triangle batch is rendered into the drawing buffer without publishing, then the new triangle starts the next batch. |
+| `VOODOO SWAP` | Flushes queued triangles, sets busy while render or publish work runs, swaps buffers, publishes the frame, and clears the batch. |
 | `SWAP_BUFFER_CMD` bit `1` | Clears the drawing buffer after the swap using current `COLOR0`. |
 | `POKE8` to registers | Updates the shadow byte immediately, but command side effects run only when byte `3` of the word is written. |
 | Texture upload | Copies `w * h * 4` bytes from `$D0000` if the size fits in `64` KB. |

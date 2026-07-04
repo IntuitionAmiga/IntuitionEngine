@@ -126,6 +126,53 @@ The current editorial pass is driven by the final review:
 
 Current controlled polish pass:
 
+- Integrate the public PRG-facing changes from the `voodoo-opti`
+  branch after the last broad docs refresh. Treat these as a focused
+  source-backed consistency pass, not as a new feature tour. Check
+  `sfx_constants.go`, `sfx_trigger.go`, `registers.go`,
+  `debug_ioview.go`, `sdk/include/ie64.inc`,
+  `sdk/include/ie65.inc`, `sdk/include/ie80.inc`,
+  `video_voodoo.go`, and `voodoo_constants.go` before writing claims.
+  The reader-facing effects are:
+
+  - SFX now has a 32-channel extended trigger window at
+    `$F2600`-`$F29FF`; the old `$F0E80`-`$F0EFF` window remains as
+    legacy aliases for channels `0`-`3`.
+  - `SFX_VOL` is a 16-bit field, but the sample mixer clamps playback
+    volume to `0`-`255`; do not describe `65535` as a louder reader
+    setting.
+  - 6502 and Z80 include files expose `TERM_IO_BANK`,
+    `SET_TERMINAL_BANK`, and `$2700`-`$27FF` terminal/input/RTC aliases.
+    Chapters 24, 27, and 28 already carry the teaching text; Appendix H
+    must carry the lookup terms as well.
+  - Voodoo triangle submission now flushes a full `4096`-triangle batch
+    as a render-only mid-frame job and then accepts more triangles. Do
+    not say further `TRIANGLE_CMD` writes are ignored while the batch is
+    full. `SWAP_BUFFER_CMD` hands the frame to the rasteriser and
+    returns while that work may still be in progress; the next swap waits
+    if one frame is already in flight.
+  - Voodoo `FBI_BUSY` and `SST_BUSY` mean render/swap work is in
+    progress, `SWAPBUF` means a publish swap is pending, `MEMFIFO` is a
+    coarse ready field for the current batch, and `PCIFIFO` is the
+    high-level command-space field.
+
+  Execute this branch pass in this order:
+
+  1. Update this plan entry before any reader-facing chapter edits.
+  2. Chapters 11, 12, 23, and 24: update SFX channel counts, ranges,
+     legacy aliases, extended window, 8-bit bank-window access, volume
+     range wording, and typed examples only where needed.
+  3. Chapter 33: clarify that `io sfx` shows the 32 extended trigger
+     channels.
+  4. Chapter 9 and Appendix D: update Voodoo batch, overflow, swap, and
+     status wording against `video_voodoo.go` and `voodoo_constants.go`.
+  5. Appendices D, H, J, K, and L: update SFX ranges, terminal aliases,
+     Voodoo lookup terms, and the audio diagram.
+  6. Claim ledger: record the checked canonical sources and the changed
+     claims.
+  7. Run targeted stale-term scans for SFX four-channel wording, stale
+     Voodoo ignored-batch wording, and missing terminal aliases. Publish
+     and print PDFs only after those checks pass.
 - Put the `DEF` / `TROFF` token-collision note in Chapter 2 as well
   as Appendix A, because it affects what a reader sees after `LIST`.
 - Add a Chapter 11 comparison table that starts with the IE-native

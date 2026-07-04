@@ -427,10 +427,10 @@ Useful view groups are:
 The player views mirror their MMIO control blocks. `midiplay` shows
 the MIDI/MUS file-player registers, including `TEMPO_BPM`.
 `midilive` shows the byte-wide live MIDI stream port. `mod` and `wav`
-show the MOD and WAV player blocks. `sfx` shows the trigger-channel
-sample registers. `psg`, `sid`, `ted`, and `pokey` are combined
-chip/player views, so their playback registers appear beside their
-chip registers.
+show the MOD and WAV player blocks. `sfx` shows the 32 extended
+trigger-channel sample registers. `psg`, `sid`, `ted`, and `pokey` are
+combined chip/player views, so their playback registers appear beside
+their chip registers.
 
 Bridge/profile views are inspection aids for machine services that may
 be idle or unavailable in a particular running profile. Use the BASIC

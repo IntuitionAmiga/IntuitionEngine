@@ -146,7 +146,7 @@ Audio player control blocks in the same area:
 | `$F0BD8`-`$F0BF3` | WAV | `WAV_PLAY_PTR`, `WAV_PLAY_LEN`, `WAV_PLAY_CTRL`, `WAV_PLAY_STATUS`, `WAV_POSITION`, `WAV_PLAY_PTR_HI`, `WAV_CHANNEL_BASE`, `WAV_VOLUME_L`, `WAV_VOLUME_R`, `WAV_FLAGS`. |
 | `$F0BF4`-`$F0BF6` | Live MIDI | `IE_MIDI_LIVE_DATA` byte write stream, `IE_MIDI_LIVE_STATUS` bit `0` active, `IE_MIDI_LIVE_CTRL` bit `0` reset. Data and control writes are port writes, not RAM shadow bytes. |
 
-## D.4 SFX triggers (`$F0E80`-`$F0EFF`)
+## D.4 SFX triggers
 
 | Per-channel offset | Field | Notes |
 |---|---|---|
@@ -155,11 +155,14 @@ Audio player control blocks in the same area:
 | `+$08` | `SFX_LOOP_PTR` | Loop point. |
 | `+$0C` | `SFX_LOOP_LEN` | Loop length. |
 | `+$10` | `SFX_FREQ` | Playback rate. |
-| `+$14` | `SFX_VOL` | Volume (`0`-`65535`). |
+| `+$14` | `SFX_VOL` | Volume field; audible level is clipped to `0`-`255`. |
+| `+$16` | `SFX_PAN_RESERVED` | Reserved pan field. |
 | `+$18` | `SFX_FORMAT` | Sample format. |
 | `+$1C` | `SFX_CTRL` | Trigger / one-shot / loop. |
 
-Four channels at `$F0E80`, `$F0EA0`, `$F0EC0`, `$F0EE0`.
+Extended window: 32 channels at `$F2600`-`$F29FF`, stride `$20`.
+Legacy aliases: channels `0`-`3` at `$F0E80`, `$F0EA0`,
+`$F0EC0`, and `$F0EE0`.
 
 ## D.5 PSG / AY-3-8910 (`$F0C00`-`$F0C20`)
 
@@ -456,5 +459,8 @@ Chapter 9. Texture RAM at `$D0000`-`$DFFFF`.
 
 `TRIANGLE_CMD` queues a triangle and binds the current raster state
 and uploaded texture to that triangle. Later Voodoo register writes
-affect later triangles only; `SWAP_BUFFER_CMD` flushes the queued
-triangles to the visible frame.
+affect later triangles only. A full `4096`-triangle batch is flushed
+into the drawing buffer without publishing, then submission continues.
+`SWAP_BUFFER_CMD` hands the current batch to the rasteriser and
+publishes the visible frame. `FBI_BUSY` and `SST_BUSY` report render or
+publish work in progress; `SWAPBUF` reports a pending publish swap.

@@ -171,7 +171,7 @@ The full map:
 | `$F0D00`-`$F0D20` | `33B`  | POKEY                        |
 | `$F0D40`-`$F0DFF` | `192B` | SoundChip flex channels 7-9  |
 | `$F0E00`-`$F0E2D` | `46B`  | SID (6581/8580)              |
-| `$F0E80`-`$F0EFF` | `128B` | SFX trigger block            |
+| `$F0E80`-`$F0EFF` | `128B` | SFX trigger legacy aliases, channels `0`-`3` |
 | `$D0000`-`$DFFFF` | `64K`  | Voodoo texture memory        |
 | `$F0F00`-`$F0F1F` | `32B`  | TED audio                    |
 | `$F0F20`-`$F0F6B` | `76B`  | TED video                    |
@@ -190,6 +190,7 @@ The full map:
 | `$F23C0`-`$F23DF` | `32B`  | IRQ diagnostics              |
 | `$F23E0`-`$F23FF` | `32B`  | Bootstrap file bridge        |
 | `$F2400`-`$F24FF` | `256B` | SysInfo (RAM-size discovery) |
+| `$F2600`-`$F29FF` | `1K`   | SFX trigger extended window, channels `0`-`31` |
 | `$F8000`-`$F87FF` | `2K`   | Voodoo 3D registers          |
 | `$FA000`-`$FBAFF` | `6912B`| ULA VRAM (bitmap + attrs)    |
 
