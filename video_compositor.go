@@ -222,6 +222,11 @@ type VideoCompositor struct {
 	hardwareDisabled   bool
 	lastHardwareFrame  uint64
 	lastHardwareLayers []CompositorFrameLayer
+	frameLeaseRings    map[uint64]*VideoFrameLeaseRing
+	frameLeaseBytes    map[uint64]int
+	softwareFrameRing  *VideoFrameLeaseRing
+	softwareFrameBytes int
+	finalFrameLease    *VideoFrameLease
 	lastSnapshotFrame  uint64
 	lastSnapshot       []byte
 	blendJobs          chan blendStripJob
@@ -348,6 +353,9 @@ func (c *VideoCompositor) prepareResolutionLocked(width, height int) (DisplayCon
 	}
 	c.frameWidth = width
 	c.frameHeight = height
+	c.clearSoftwareFrameLeaseLocked()
+	c.softwareFrameRing = nil
+	c.softwareFrameBytes = 0
 	c.finalFrame = make([]byte, width*height*BYTES_PER_PIXEL)
 	c.outputBuf = make([]byte, width*height*BYTES_PER_PIXEL)
 	c.hardwareDisabled = false
@@ -446,6 +454,8 @@ func (c *VideoCompositor) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.stopBlendWorkersLocked()
+	c.clearHardwareSnapshotLocked()
+	c.clearSoftwareFrameLeaseLocked()
 	c.state = compositorClosed
 	c.sources = nil
 	return nil
@@ -453,6 +463,11 @@ func (c *VideoCompositor) Close() error {
 
 // composite collects and blends frames from all enabled sources
 func (c *VideoCompositor) composite() {
+	var perfT0 time.Time
+	if perfAcctOn {
+		perfT0 = time.Now()
+		defer perfSubsysAcct.VideoFramePath.AddSince(perfT0, 1)
+	}
 	c.mu.Lock()
 
 	if !c.lockedResolution {
@@ -491,6 +506,7 @@ func (c *VideoCompositor) composite() {
 	frameID := c.frameCounter + 1
 
 	var outputFrame []byte
+	var outputLease *VideoFrameLease
 	var outputRegions []FrameDirtyRect
 	forceFullFrame := c.forceFullFrame
 	var hwUpdate *CompositorFrameUpdate
@@ -508,15 +524,13 @@ func (c *VideoCompositor) composite() {
 		c.clearHardwareSnapshotLocked()
 		if hasContent {
 			c.prevHasContent = true
-			copy(c.outputBuf, c.finalFrame)
-			outputFrame = c.outputBuf
+			outputFrame, outputLease = c.prepareSoftwareOutputFrameLocked()
 			if !forceFullFrame {
 				outputRegions = cloneFrameDirtyRects(c.softwareDirtyRects)
 			}
 		} else if c.prevHasContent {
 			c.prevHasContent = false
-			copy(c.outputBuf, c.finalFrame)
-			outputFrame = c.outputBuf
+			outputFrame, outputLease = c.prepareSoftwareOutputFrameLocked()
 			outputRegions = nil
 		}
 	}
@@ -526,6 +540,12 @@ func (c *VideoCompositor) composite() {
 	out := c.output
 	cb := c.onFrameComplete
 	c.mu.Unlock()
+	defer releaseFrameLayerLeases(layers)
+	defer func() {
+		if outputLease != nil {
+			outputLease.Release()
+		}
+	}()
 
 	if hwUpdate != nil {
 		if c.updateHardwareOutput(out, *hwUpdate) {
@@ -539,15 +559,13 @@ func (c *VideoCompositor) composite() {
 			c.clearHardwareSnapshotLocked()
 			if hasContent {
 				c.prevHasContent = true
-				copy(c.outputBuf, c.finalFrame)
-				outputFrame = c.outputBuf
+				outputFrame, outputLease = c.prepareSoftwareOutputFrameLocked()
 				if !forceFullFrame {
 					outputRegions = cloneFrameDirtyRects(c.softwareDirtyRects)
 				}
 			} else if c.prevHasContent {
 				c.prevHasContent = false
-				copy(c.outputBuf, c.finalFrame)
-				outputFrame = c.outputBuf
+				outputFrame, outputLease = c.prepareSoftwareOutputFrameLocked()
 				outputRegions = nil
 			}
 			c.mu.Unlock()
@@ -594,17 +612,48 @@ func (c *VideoCompositor) updateHardwareOutput(out VideoOutput, update Composito
 }
 
 func (c *VideoCompositor) clearHardwareSnapshotLocked() {
+	releaseFrameLayerLeases(c.lastHardwareLayers)
 	c.lastHardwareFrame = 0
 	c.lastHardwareLayers = nil
 	c.lastSnapshotFrame = 0
 	c.lastSnapshot = nil
 }
 
+func (c *VideoCompositor) clearSoftwareFrameLeaseLocked() {
+	if c.finalFrameLease != nil {
+		c.finalFrameLease.Release()
+		c.finalFrameLease = nil
+	}
+}
+
 func (c *VideoCompositor) storeHardwareSnapshotLayersLocked(frameID uint64, layers []CompositorFrameLayer) {
+	releaseFrameLayerLeases(c.lastHardwareLayers)
 	c.lastHardwareFrame = frameID
-	c.lastHardwareLayers = cloneCompositorLayers(layers)
+	c.lastHardwareLayers = retainCompositorLayers(layers)
 	c.lastSnapshotFrame = 0
 	c.lastSnapshot = nil
+}
+
+func retainCompositorLayers(layers []CompositorFrameLayer) []CompositorFrameLayer {
+	if len(layers) == 0 {
+		return nil
+	}
+	out := make([]CompositorFrameLayer, len(layers))
+	copy(out, layers)
+	for i := range out {
+		if out[i].Lease != nil && !out[i].Lease.Retain() {
+			out[i].Lease = nil
+		}
+	}
+	return out
+}
+
+func releaseFrameLayerLeases(layers []CompositorFrameLayer) {
+	for i := range layers {
+		if layers[i].Lease != nil {
+			layers[i].Lease.Release()
+		}
+	}
 }
 
 func cloneCompositorLayers(layers []CompositorFrameLayer) []CompositorFrameLayer {
@@ -617,6 +666,7 @@ func cloneCompositorLayers(layers []CompositorFrameLayer) []CompositorFrameLayer
 		if layer.Buffer != nil {
 			out[i].Buffer = append([]byte(nil), layer.Buffer...)
 		}
+		out[i].Lease = nil
 	}
 	return out
 }
@@ -624,10 +674,12 @@ func cloneCompositorLayers(layers []CompositorFrameLayer) []CompositorFrameLayer
 func (c *VideoCompositor) renderLayersSnapshotLocked(layers []CompositorFrameLayer) []byte {
 	frame := make([]byte, c.frameWidth*c.frameHeight*BYTES_PER_PIXEL)
 	saved := c.finalFrame
+	savedRects := c.softwareDirtyRects
 	c.finalFrame = frame
-	c.renderLayersSoftwareLocked(layers)
+	c.renderLayersIntoCurrentFrameLocked(layers)
 	out := append([]byte(nil), c.finalFrame...)
 	c.finalFrame = saved
+	c.softwareDirtyRects = savedRects
 	return out
 }
 
@@ -660,8 +712,20 @@ func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, re
 	}
 	bufLen := srcW * srcH * BYTES_PER_PIXEL
 	buf := frame[:bufLen]
+	var lease *VideoFrameLease
 	if copyBuffer {
-		buf = append([]byte(nil), buf...)
+		if videoFrameLeasesEnabled() {
+			if acquired, ok := c.acquireFrameLeaseLocked(registered.id, bufLen); ok {
+				copy(acquired.Pixels(), buf)
+				acquired.NormaliseAlpha()
+				lease = acquired
+				buf = acquired.Pixels()[:bufLen]
+			} else {
+				buf = append([]byte(nil), buf...)
+			}
+		} else {
+			buf = append([]byte(nil), buf...)
+		}
 	}
 	opaque := false
 	if sourceOpaque, ok := source.(OpaqueFrameSource); ok {
@@ -683,10 +747,44 @@ func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, re
 		DestWidth:    rect.w,
 		DestHeight:   rect.h,
 		Buffer:       buf,
+		Lease:        lease,
 		Opaque:       opaque,
 		DirtyRects:   dirtyRects,
 	})
 	return layers, true
+}
+
+func videoFrameLeasesEnabled() bool {
+	return os.Getenv("IE_VIDEO_FRAME_LEASES") != "0"
+}
+
+func (c *VideoCompositor) acquireFrameLeaseLocked(sourceID uint64, frameBytes int) (*VideoFrameLease, bool) {
+	if sourceID == 0 || frameBytes <= 0 {
+		return nil, false
+	}
+	if c.frameLeaseRings == nil {
+		c.frameLeaseRings = make(map[uint64]*VideoFrameLeaseRing)
+		c.frameLeaseBytes = make(map[uint64]int)
+	}
+	ring := c.frameLeaseRings[sourceID]
+	if ring == nil || c.frameLeaseBytes[sourceID] != frameBytes {
+		ring = NewVideoFrameLeaseRing(3, frameBytes)
+		c.frameLeaseRings[sourceID] = ring
+		c.frameLeaseBytes[sourceID] = frameBytes
+	}
+	return ring.Acquire()
+}
+
+func (c *VideoCompositor) acquireSoftwareFrameLeaseLocked(frameBytes int) (*VideoFrameLease, bool) {
+	if frameBytes <= 0 {
+		return nil, false
+	}
+	if c.softwareFrameRing == nil || c.softwareFrameBytes != frameBytes {
+		c.clearSoftwareFrameLeaseLocked()
+		c.softwareFrameRing = NewVideoFrameLeaseRing(3, frameBytes)
+		c.softwareFrameBytes = frameBytes
+	}
+	return c.softwareFrameRing.Acquire()
 }
 
 // compositeScanlineAware performs per-scanline rendering for copper-style effects
@@ -841,9 +939,36 @@ func (c *VideoCompositor) collectFullFrameLayers(copyBuffers bool) ([]Compositor
 }
 
 func (c *VideoCompositor) renderLayersSoftwareLocked(layers []CompositorFrameLayer) {
-	if c.finalFrame == nil || len(c.finalFrame) != c.frameWidth*c.frameHeight*BYTES_PER_PIXEL {
-		c.finalFrame = make([]byte, c.frameWidth*c.frameHeight*BYTES_PER_PIXEL)
+	frameBytes := c.frameWidth * c.frameHeight * BYTES_PER_PIXEL
+	if frameBytes <= 0 {
+		c.clearSoftwareFrameLeaseLocked()
+		c.finalFrame = nil
+		c.softwareDirtyRects = nil
+		return
 	}
+	if videoFrameLeasesEnabled() {
+		if lease, ok := c.acquireSoftwareFrameLeaseLocked(frameBytes); ok {
+			oldLease := c.finalFrameLease
+			c.finalFrame = lease.Pixels()[:frameBytes]
+			c.finalFrameLease = lease
+			if oldLease != nil {
+				oldLease.Release()
+			}
+			c.renderLayersIntoCurrentFrameLocked(layers)
+			return
+		}
+	}
+	if c.finalFrameLease != nil {
+		c.clearSoftwareFrameLeaseLocked()
+		c.finalFrame = nil
+	}
+	if c.finalFrame == nil || len(c.finalFrame) != frameBytes {
+		c.finalFrame = make([]byte, frameBytes)
+	}
+	c.renderLayersIntoCurrentFrameLocked(layers)
+}
+
+func (c *VideoCompositor) renderLayersIntoCurrentFrameLocked(layers []CompositorFrameLayer) {
 	for i := range c.finalFrame {
 		c.finalFrame[i] = 0
 	}
@@ -851,6 +976,20 @@ func (c *VideoCompositor) renderLayersSoftwareLocked(layers []CompositorFrameLay
 		c.blendLayer(layer)
 	}
 	c.softwareDirtyRects = c.collectOutputDirtyRectsLocked(layers)
+}
+
+func (c *VideoCompositor) prepareSoftwareOutputFrameLocked() ([]byte, *VideoFrameLease) {
+	if len(c.finalFrame) == 0 {
+		return nil, nil
+	}
+	if c.finalFrameLease != nil && c.finalFrameLease.Retain() {
+		return c.finalFrame, c.finalFrameLease
+	}
+	if len(c.outputBuf) != len(c.finalFrame) {
+		c.outputBuf = make([]byte, len(c.finalFrame))
+	}
+	copy(c.outputBuf, c.finalFrame)
+	return c.outputBuf, nil
 }
 
 func (c *VideoCompositor) ensureBlendWorkersLocked() {

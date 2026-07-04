@@ -85,6 +85,8 @@ type CPU_Z80 struct {
 	InstructionCount uint64    // Total instructions executed
 	perfStartTime    time.Time // When execution started
 	lastPerfReport   time.Time // Last time we printed stats
+	perfAcct         PerfAcct
+	deoptStats       DeoptStats
 
 	// JIT compiler state
 	jitEnabled       bool
@@ -92,8 +94,6 @@ type CPU_Z80 struct {
 	jitCache         *CodeCache // compiled block cache
 	jitExecMem       any        // *ExecMem (typed as any to avoid build tag leakage)
 	jitCtx           any        // *Z80JITContext
-	jitTurboCache    any        // map[uint16]*z80TurboBlock on JIT builds
-	jitTurboStats    any        // *z80TurboStats on JIT builds
 	codePageBitmap   [256]byte  // self-mod detection (one byte per 256-byte Z80 page)
 	directPageBitmap [256]byte  // JIT fast-path (0=direct mem, 1=bail to interp)
 	Debug            bool       // disable JIT when debugging

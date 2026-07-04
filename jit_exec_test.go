@@ -395,16 +395,19 @@ func TestExecuteJIT_ExternalIRQ_AtHelperPC(t *testing.T) {
 	cpu := NewCPU64(bus)
 	cpu.jitEnabled = true
 
-	dataAddr := uint64(PROG_START + 0x600)
+	const mmioAddr = 0xF0800
+	bus.MapIO(mmioAddr, mmioAddr+3,
+		func(addr uint32) uint32 { return 0x1234 },
+		func(addr uint32, value uint32) {},
+	)
 	handler := uint64(PROG_START + 0x100)
-	// Block: DLOAD F4, [R2]; HALT. DLOAD always routes through the helper exit.
-	copy(cpu.memory[PROG_START:], ie64Instr(OP_DLOAD, 4, IE64_SIZE_Q, 0, 2, 0, 0))
+	// Block: LOAD.L R4, [R2]; HALT. The mapped MMIO page forces a helper exit.
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_LOAD, 4, IE64_SIZE_L, 0, 2, 0, 0))
 	copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 	copy(cpu.memory[handler:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, 0xBEEF))
 	copy(cpu.memory[handler+IE64_INSTR_SIZE:], ie64Instr(OP_RTI64, 0, 0, 0, 0, 0, 0))
-	binary.LittleEndian.PutUint64(cpu.memory[dataAddr:], 0x4045000000000000) // 42.0
 
-	cpu.regs[2] = dataAddr
+	cpu.regs[2] = mmioAddr
 	cpu.PC = PROG_START
 	cpu.interruptVector = handler
 	cpu.regs[31] = STACK_START
@@ -425,7 +428,7 @@ func TestExecuteJIT_ExternalIRQ_AtHelperPC(t *testing.T) {
 		t.Fatalf("R10 = 0x%X, want handler to run (0xBEEF)", cpu.regs[10])
 	}
 	if got := binary.LittleEndian.Uint64(cpu.memory[STACK_START-8:]); got != PROG_START {
-		t.Fatalf("pushed PC = 0x%X, want DLOAD (helper) PC 0x%X", got, uint64(PROG_START))
+		t.Fatalf("pushed PC = 0x%X, want LOAD helper PC 0x%X", got, uint64(PROG_START))
 	}
 }
 

@@ -65,3 +65,63 @@ func TestX86JIT_ForceNativeMMIOPoll(t *testing.T) {
 		t.Errorf("EIP = 0x%X, want 0x1000D (post-HLT)", cpu.EIP)
 	}
 }
+
+func TestX86JIT_MMIOPollUsesJITRegsWithoutNamedShuttle(t *testing.T) {
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	cpu.memory = adapter.GetMemory()
+	cpu.EIP = 0x1000
+	cpu.EAX = 0xDEADBEEF
+	cpu.jitRegs[0] = 0x11111111
+	cpu.running.Store(true)
+
+	bus.SetVideoStatusReader(func(addr uint32) uint32 {
+		return 0
+	})
+	copy(cpu.memory[0x1000:], testX86PollLoopCode(0x0000F008, 2, 0x75))
+
+	if !cpu.tryFastMMIOPollLoopJIT() {
+		t.Fatal("expected JIT fast MMIO poll loop to match")
+	}
+	if cpu.EIP != 0x100C {
+		t.Fatalf("EIP = 0x%X, want 0x100C", cpu.EIP)
+	}
+	if cpu.jitRegs[0] != 0 {
+		t.Fatalf("jitRegs[EAX] = 0x%X, want 0", cpu.jitRegs[0])
+	}
+	if cpu.EAX != 0xDEADBEEF {
+		t.Fatalf("named EAX = 0x%X, want stale value to prove no shuttle", cpu.EAX)
+	}
+}
+
+func TestX86JIT_BreakInSeesCurrentRegs(t *testing.T) {
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	cpu.EAX = 0xDEADBEEF
+	cpu.jitRegs[0] = 0x12345678
+	cpu.running.Store(true)
+
+	var seenEAX uint32
+	cpu.debugBreakIn = func(pc uint64) bool {
+		if pc != 0x2000 {
+			t.Fatalf("break-in PC = 0x%X, want 0x2000", pc)
+		}
+		seenEAX = cpu.EAX
+		return true
+	}
+
+	if !cpu.debugHandleBreakInJIT(0x2000) {
+		t.Fatal("expected JIT break-in handler to stop")
+	}
+	if seenEAX != 0x12345678 {
+		t.Fatalf("debug hook saw EAX = 0x%X, want current jitRegs value", seenEAX)
+	}
+	if cpu.EAX != 0x12345678 {
+		t.Fatalf("named EAX after break-in = 0x%X, want current jitRegs value", cpu.EAX)
+	}
+	if cpu.Running() {
+		t.Fatal("CPU still running after break-in")
+	}
+}

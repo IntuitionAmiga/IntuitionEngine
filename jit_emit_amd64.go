@@ -6,6 +6,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 )
 
 // ===========================================================================
@@ -71,12 +72,13 @@ const (
 	amd64IE64FirstMapped = 1
 	amd64IE64LastMapped  = 4
 
-	// Stack frame: 6 callee-saved pushes (48 bytes) + SUB RSP,24 = 72 bytes
-	// + 8 bytes return address = 80 bytes (16-byte aligned)
-	amd64FrameSize    = 24
-	amd64OffCtxPtr    = 0  // [RSP+0] = saved JITContext pointer
-	amd64OffFPUPtr    = 8  // [RSP+8] = FPU pointer (if hasFPU)
-	amd64OffLoopCount = 16 // [RSP+16] = loop counter (if hasBackwardBranch)
+	// Stack frame: 6 callee-saved pushes (48 bytes) + SUB RSP,40 = 88 bytes
+	// + 8 bytes return address = 96 bytes (16-byte aligned)
+	amd64FrameSize        = 40
+	amd64OffCtxPtr        = 0  // [RSP+0] = saved JITContext pointer
+	amd64OffFPUPtr        = 8  // [RSP+8] = FPU pointer (if hasFPU)
+	amd64OffLoopCount     = 16 // [RSP+16] = loop counter (if hasBackwardBranch)
+	amd64OffRTSChainEntry = 24 // [RSP+24] = RTS cache-hit target chainEntry
 )
 
 // Backward branch budget (must fit in imm32)
@@ -208,6 +210,15 @@ func amd64MOV_reg_imm64(cb *CodeBuffer, dst byte, val uint64) {
 	cb.EmitBytes(rexByte(true, false, false, isExtReg(dst)))
 	cb.EmitBytes(0xB8 + regBits(dst))
 	cb.Emit64(val)
+}
+
+// amd64LEA_reg_label emits LEA dst, [RIP+label]. The resolved value is
+// the execution-view address when the block runs, so helper exits can
+// publish continuation entries without post-copy absolute patching.
+func amd64LEA_reg_label(cb *CodeBuffer, dst byte, label string) {
+	emitREX(cb, true, dst, 0)
+	cb.EmitBytes(0x8D, modRM(0, dst, 5))
+	cb.FixupRel32(label, cb.Len()+4)
 }
 
 // amd64MOV_reg_imm32 emits MOV dst32, imm32 (32-bit, zero-extends).
@@ -729,10 +740,14 @@ func emitStoreRetCountAMD64(cb *CodeBuffer, staticCount uint32, br *blockRegs) {
 		if staticCount > 0 {
 			amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(staticCount)) // 0 = ADD
 		}
+		amd64MOV_reg_mem32(cb, amd64R11, amd64R10, int32(jitCtxOffResumeCountBase))
+		amd64ALU_reg_reg32(cb, 0x29, amd64RAX, amd64R11) // SUB EAX, R11D
 		amd64MOV_mem_reg32(cb, amd64R10, int32(jitCtxOffRetCount), amd64RAX)
 	} else {
-		// MOV dword [R10 + RetCount], staticCount (immediate).
-		amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffRetCount), staticCount)
+		amd64MOV_reg_imm32(cb, amd64RAX, staticCount)
+		amd64MOV_reg_mem32(cb, amd64R11, amd64R10, int32(jitCtxOffResumeCountBase))
+		amd64ALU_reg_reg32(cb, 0x29, amd64RAX, amd64R11) // SUB EAX, R11D
+		amd64MOV_mem_reg32(cb, amd64R10, int32(jitCtxOffRetCount), amd64RAX)
 	}
 }
 
@@ -764,7 +779,7 @@ func emitPrologue(cb *CodeBuffer, blockPC uint64, br *blockRegs) int {
 	amd64PUSH(cb, amd64R15)
 
 	// Allocate stack frame
-	amd64ALU_reg_imm32(cb, 5, amd64RSP, int32(amd64FrameSize)) // SUB RSP, 24
+	amd64ALU_reg_imm32(cb, 5, amd64RSP, int32(amd64FrameSize)) // SUB RSP, frame
 
 	// Save JITContext pointer
 	amd64MOV_mem_reg(cb, amd64RSP, int32(amd64OffCtxPtr), amd64RDI) // [RSP+0] = RDI
@@ -825,6 +840,57 @@ func emitPrologue(cb *CodeBuffer, blockPC uint64, br *blockRegs) int {
 	amd64MOV_reg_reg(cb, amd64RegBase, amd64RAX)
 
 	return chainEntryOff
+}
+
+func ie64ResumeLabel(cb *CodeBuffer, instrPC uint64) string {
+	return fmt.Sprintf(".ie64_resume_%x_%d", instrPC, cb.Len())
+}
+
+func emitResumeEntryAMD64(cb *CodeBuffer, resumePC uint64, br *blockRegs) {
+	emitPrologue(cb, resumePC, br)
+}
+
+func emitHelperResumeFieldsAMD64(cb *CodeBuffer, ctxReg byte, resumeLabel string, resumePC uint64, countBase uint32, br *blockRegs) {
+	if br.hasBackwardBranch || resumeLabel == "" {
+		amd64MOV_mem_imm32(cb, ctxReg, int32(jitCtxOffResumeValid), 0)
+		return
+	}
+
+	amd64LEA_reg_label(cb, amd64RAX, resumeLabel)
+	amd64MOV_mem_reg(cb, ctxReg, int32(jitCtxOffResumeAddr), amd64RAX)
+	amd64MOV_reg_imm64(cb, amd64RCX, resumePC)
+	amd64MOV_mem_reg(cb, ctxReg, int32(jitCtxOffResumePC), amd64RCX)
+	amd64MOV_mem_imm32(cb, ctxReg, int32(jitCtxOffResumeCountBase), countBase)
+	amd64MOV_reg_mem32(cb, amd64RCX, ctxReg, int32(jitCtxOffMMUEnabled))
+	amd64MOV_mem_reg32(cb, ctxReg, int32(jitCtxOffResumeMMUEnabled), amd64RCX)
+	amd64MOV_mem_imm32(cb, ctxReg, int32(jitCtxOffResumeValid), 1)
+}
+
+func emitMMUMicroTLBProbeAMD64(cb *CodeBuffer, prefixOff int32) int {
+	// RAX is the virtual address and must survive until the hit path.
+	// Misses jump to the caller-patched helper exit. Hits rewrite RAX to
+	// the translated physical address and fall through to the existing
+	// physical low-RAM/IO bitmap path.
+	amd64MOV_reg_reg(cb, amd64RDX, amd64RAX) // RDX = vaddr
+	amd64SHR_imm(cb, amd64RDX, MMU_PAGE_SHIFT)
+	amd64MOV_reg_reg(cb, amd64RCX, amd64RDX)                            // RCX = vpn
+	amd64ALU_reg_imm32(cb, 4, amd64RCX, int32(jitCtxMicroTLBEntries-1)) // AND RCX, index mask
+
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_reg_mem(cb, amd64R10, amd64R11, prefixOff)
+	amd64ALU_reg_reg(cb, 0x09, amd64RDX, amd64R10) // OR RDX, prefix
+
+	amd64ALU_reg_imm32(cb, 0, amd64R11, int32(jitCtxOffMicroTLBKeys))
+	emitMemOpSIB(cb, true, 0x8B, amd64R10, amd64R11, amd64RCX, 3) // R10 = keys[RCX]
+	amd64ALU_reg_reg(cb, 0x39, amd64RDX, amd64R10)                // CMP RDX, R10
+	missOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffCtxPtr))
+	amd64ALU_reg_imm32(cb, 0, amd64R11, int32(jitCtxOffMicroTLBPhys))
+	emitMemOpSIB(cb, true, 0x8B, amd64R10, amd64R11, amd64RCX, 3) // R10 = phys page base
+	amd64ALU_reg_imm32(cb, 4, amd64RAX, int32(MMU_PAGE_MASK))     // AND RAX, page offset
+	amd64ALU_reg_reg(cb, 0x09, amd64RAX, amd64R10)                // OR RAX, phys base
+	return missOff
 }
 
 // emitLightweightStoreRegs stores the resident IE64 register file back to
@@ -968,7 +1034,7 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, _ uint32) {
 	amd64MOV_mem_reg(cb, amd64RegBase, 0, amd64RegIE64PC)                 // legacy: regs[0] = R15
 
 	// Deallocate stack frame
-	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(amd64FrameSize)) // ADD RSP, 24
+	amd64ALU_reg_imm32(cb, 0, amd64RSP, int32(amd64FrameSize)) // ADD RSP, frame
 
 	// Restore callee-saved registers (reverse order of push)
 	amd64POP(cb, amd64R15)
@@ -988,7 +1054,7 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, _ uint32) {
 // compileBlock compiles a scanned block of IE64 instructions to x86-64 machine code.
 func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBlock, error) {
 	if n := ie64CountFusedLeafCalls(instrs); n != 0 {
-		globalIE64TurboStats.inlinedCalls.Add(uint64(n))
+		globalIE64JITStats.inlinedCalls.Add(uint64(n))
 	}
 
 	cb := NewCodeBuffer(len(instrs) * 384) // x86-64 instructions are variable length
@@ -1030,6 +1096,7 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 		emitEpilogue(cb, br.written, br.used)
 	}
 
+	cb.Resolve()
 	code := cb.Bytes()
 	addr, err := execMem.Write(code)
 	if err != nil {
@@ -1105,6 +1172,68 @@ func ie64FormRegion(hotPC uint64, memory []byte) *ie64Region {
 	return region
 }
 
+func ie64FormRegionMMU(cpu *CPU64, hotPC uint64) *ie64Region {
+	if cpu == nil || cpu.bus == nil || !cpu.mmuEnabled {
+		return nil
+	}
+	pc := hotPC
+	totalInstrs := 0
+	visited := map[uint64]struct{}{}
+	region := &ie64Region{entryPC: hotPC}
+	memLen := uint64(len(cpu.memory))
+	for len(region.blockPCs) < IE64RegionProfile.MaxBlocks && totalInstrs < IE64RegionProfile.MaxInstructions {
+		if _, seen := visited[pc]; seen {
+			break
+		}
+		pcPhys, fault, _ := cpu.translateAddr(pc, ACCESS_EXEC)
+		if fault {
+			break
+		}
+		pageEnd := (pcPhys & ^uint64(MMU_PAGE_MASK)) + MMU_PAGE_SIZE
+		highPhys := pcPhys > memLen-IE64_INSTR_SIZE
+		var instrs []JITInstr
+		if !highPhys && pageEnd <= memLen {
+			instrs = scanBlockWithLimit(cpu.memory, pcPhys, pageEnd)
+		} else {
+			instrs = scanBlockBusWithLimit(cpu.bus, pcPhys, pageEnd)
+		}
+		if len(instrs) == 0 || needsFallback(instrs) {
+			break
+		}
+		for _, ji := range instrs {
+			if ji.fusedFlag != 0 {
+				return nil
+			}
+		}
+		if len(region.blocks) > 0 && totalInstrs+len(instrs) > IE64RegionProfile.MaxInstructions {
+			break
+		}
+		markIE64MMUBails(instrs)
+		visited[pc] = struct{}{}
+		region.blockPCs = append(region.blockPCs, pc)
+		region.blocks = append(region.blocks, instrs)
+		totalInstrs += len(instrs)
+
+		last := &instrs[len(instrs)-1]
+		if !isBlockTerminator(last.opcode) {
+			break
+		}
+		if last.fusedFlag&ie64FusedRTSLeafReturn != 0 {
+			break
+		}
+		instrPC := pc + uint64(last.pcOffset)
+		target, ok := ie64ResolveTerminatorTarget(last.opcode, last.rs, last.imm32, instrPC)
+		if !ok {
+			break
+		}
+		pc = target
+	}
+	if len(region.blocks) < 2 {
+		return nil
+	}
+	return region
+}
+
 // ie64CompileRegion compiles a multi-block IE64 region as a single
 // native JITBlock. Mirrors x86CompileRegion / m68kCompileRegion: shared
 // prologue/chain entry, per-block emit with the per-block startPC
@@ -1134,9 +1263,12 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		return nil, errIE64RegionTooSmall
 	}
 
-	plan := ie64PlanTurboRegion(region)
-	globalIE64TurboStats.spills.Add(uint64(plan.spillOps))
-	globalIE64TurboStats.fpuSpills.Add(uint64(plan.fpuSpillOps))
+	plan := ie64PlanRegion(region)
+	globalIE64JITStats.spills.Add(uint64(plan.spillOps))
+	globalIE64JITStats.fpuSpills.Add(uint64(plan.fpuSpillOps))
+	if !ie64RegionPlanAccepted(plan) {
+		return nil, errIE64RegionSpillPressure
+	}
 
 	var allInstrs []JITInstr
 	for _, blk := range region.blocks {
@@ -1261,6 +1393,7 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		emitEpilogue(cb, br.written, br.used)
 	}
 
+	cb.Resolve()
 	code := cb.Bytes()
 	addr, err := execMem.Write(code)
 	if err != nil {
@@ -1294,14 +1427,17 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 
 	endPC := region.blockPCs[len(region.blocks)-1] + uint64(lastInstr.pcOffset) + IE64_INSTR_SIZE
 	return &JITBlock{
-		startPC:       region.entryPC,
-		endPC:         endPC,
-		instrCount:    totalInstrCount,
-		execAddr:      addr,
-		execSize:      len(code),
-		chainEntry:    addr + uintptr(chainEntryOff),
-		chainSlots:    chainSlots,
-		coveredRanges: covered,
+		startPC:         region.entryPC,
+		endPC:           endPC,
+		instrCount:      totalInstrCount,
+		execAddr:        addr,
+		execSize:        len(code),
+		chainEntry:      addr + uintptr(chainEntryOff),
+		chainSlots:      chainSlots,
+		coveredRanges:   covered,
+		regionRegMask:   plan.residentMask(),
+		regionSpillOps:  plan.spillOps,
+		regionFPUSpills: plan.fpuSpillOps,
 	}, nil
 }
 
@@ -2550,6 +2686,152 @@ func emitMemStore(cb *CodeBuffer, srcReg byte, size byte) {
 	}
 }
 
+// emitIE64SMCStoreCheckAMD64 probes IE64 SMC tracking after a direct RAM
+// store has committed. RAX must hold the guest address unless
+// translatedPhysInRAX is true, in which case RAX holds the translated physical
+// address and ctx.HelperAddr holds the original virtual address. The
+// dispatcher consumes the recorded invalidation at the block boundary.
+func emitIE64SMCStoreCheckAMD64(cb *CodeBuffer, size byte, translatedPhysInRAX bool) {
+	accessBytes := ie64AccessBytes(size)
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+
+	var finalDoneOffs []int
+	if translatedPhysInRAX {
+		// MMU micro-TLB STORE hits bypass the helper, so probe the physical
+		// bitmap before falling back to the virtual bitmap. A physical hit
+		// may be an alias of another compiled VA, so force full invalidation.
+		amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+		physFallbackOffs := []int{amd64Jcc_rel32(cb, amd64CondE)}
+		amd64MOV_reg_mem(cb, amd64RDX, amd64RCX, int32(jitCtxOffPhysCodeBitmapPtr))
+		amd64TEST_reg_reg(cb, amd64RDX, amd64RDX)
+		physFallbackOffs = append(physFallbackOffs, amd64Jcc_rel32(cb, amd64CondE))
+		amd64MOV_reg_mem32(cb, amd64R10, amd64RCX, int32(jitCtxOffPhysCodeBitmapLen))
+		amd64TEST_reg_reg(cb, amd64R10, amd64R10)
+		physFallbackOffs = append(physFallbackOffs, amd64Jcc_rel32(cb, amd64CondE))
+
+		probePhysPage := func() []int {
+			var hitOffs []int
+			amd64MOV_reg_mem32(cb, amd64R10, amd64RCX, int32(jitCtxOffPhysCodeBitmapLen))
+			amd64ALU_reg_reg(cb, 0x39, amd64R11, amd64R10) // CMP page, physBitmapLen
+			pageOutOff := amd64Jcc_rel32(cb, amd64CondAE)
+			amd64CMP_memSIB8_imm8(cb, amd64RDX, amd64R11, 0)
+			hitOffs = append(hitOffs, amd64Jcc_rel32(cb, amd64CondNE))
+			pageDonePC := cb.Len()
+			patchRel32(cb, pageOutOff, pageDonePC)
+			return hitOffs
+		}
+
+		amd64MOV_reg_reg(cb, amd64R11, amd64RAX)
+		amd64SHR_imm(cb, amd64R11, 8)
+		physHitOffs := probePhysPage()
+		if accessBytes > 1 {
+			amd64MOV_reg_reg(cb, amd64R11, amd64RAX)
+			amd64ALU_reg_imm32(cb, 0, amd64R11, int32(accessBytes-1))
+			amd64ALU_reg_reg(cb, 0x39, amd64R11, amd64RAX) // CMP endAddr, startAddr
+			endWrappedOff := amd64Jcc_rel32(cb, amd64CondB)
+			amd64SHR_imm(cb, amd64R11, 8)
+			physHitOffs = append(physHitOffs, probePhysPage()...)
+			secondProbeDonePC := cb.Len()
+			patchRel32(cb, endWrappedOff, secondProbeDonePC)
+		}
+		physFallbackOff := amd64JMP_rel32(cb)
+
+		physHitPC := cb.Len()
+		for _, off := range physHitOffs {
+			patchRel32(cb, off, physHitPC)
+		}
+		amd64MOV_mem_imm32(cb, amd64RCX, int32(jitCtxOffNeedInval), 1)
+		amd64MOV_mem_imm32(cb, amd64RCX, int32(jitCtxOffInvalSize), 0)
+		finalDoneOffs = append(finalDoneOffs, amd64JMP_rel32(cb))
+
+		physFallbackPC := cb.Len()
+		for _, off := range physFallbackOffs {
+			patchRel32(cb, off, physFallbackPC)
+		}
+		patchRel32(cb, physFallbackOff, physFallbackPC)
+
+		amd64MOV_reg_mem(cb, amd64RAX, amd64RCX, int32(jitCtxOffHelperAddr))
+	}
+
+	amd64MOV_reg_mem(cb, amd64RDX, amd64RCX, int32(jitCtxOffCodePageBitmapPtr))
+	amd64TEST_reg_reg(cb, amd64RDX, amd64RDX)
+	doneOffs := []int{amd64Jcc_rel32(cb, amd64CondE)}
+	amd64MOV_reg_mem32(cb, amd64R10, amd64RCX, int32(jitCtxOffCodePageBitmapLen))
+	amd64TEST_reg_reg(cb, amd64R10, amd64R10)
+	doneOffs = append(doneOffs, amd64Jcc_rel32(cb, amd64CondE))
+
+	probePage := func() []int {
+		var invalOffs []int
+		amd64MOV_reg_mem32(cb, amd64R10, amd64RCX, int32(jitCtxOffCodePageBitmapLen))
+		amd64ALU_reg_reg(cb, 0x39, amd64R11, amd64R10) // CMP page, bitmapLen
+		highCheckOff := amd64Jcc_rel32(cb, amd64CondAE)
+		amd64CMP_memSIB8_imm8(cb, amd64RDX, amd64R11, 0)
+		invalOffs = append(invalOffs, amd64Jcc_rel32(cb, amd64CondNE))
+		bitmapDoneOff := amd64JMP_rel32(cb)
+
+		highCheckPC := cb.Len()
+		patchRel32(cb, highCheckOff, highCheckPC)
+		amd64MOV_reg_mem(cb, amd64R10, amd64RCX, int32(jitCtxOffCodeHighEndPage))
+		amd64TEST_reg_reg(cb, amd64R10, amd64R10)
+		noHighOff := amd64Jcc_rel32(cb, amd64CondE)
+		amd64MOV_reg_mem(cb, amd64R10, amd64RCX, int32(jitCtxOffCodeHighStartPage))
+		amd64ALU_reg_reg(cb, 0x39, amd64R11, amd64R10) // CMP page, highStart
+		belowHighOff := amd64Jcc_rel32(cb, amd64CondB)
+		amd64MOV_reg_mem(cb, amd64R10, amd64RCX, int32(jitCtxOffCodeHighEndPage))
+		amd64ALU_reg_reg(cb, 0x39, amd64R11, amd64R10) // CMP page, highEnd
+		aboveHighOff := amd64Jcc_rel32(cb, amd64CondA)
+		invalOffs = append(invalOffs, amd64JMP_rel32(cb))
+
+		donePC := cb.Len()
+		patchRel32(cb, bitmapDoneOff, donePC)
+		patchRel32(cb, noHighOff, donePC)
+		patchRel32(cb, belowHighOff, donePC)
+		patchRel32(cb, aboveHighOff, donePC)
+		return invalOffs
+	}
+
+	amd64MOV_reg_reg(cb, amd64R11, amd64RAX)
+	amd64SHR_imm(cb, amd64R11, 8)
+	invalOffs := probePage()
+
+	if accessBytes > 1 {
+		amd64MOV_reg_reg(cb, amd64R11, amd64RAX)
+		amd64ALU_reg_imm32(cb, 0, amd64R11, int32(accessBytes-1))
+		amd64ALU_reg_reg(cb, 0x39, amd64R11, amd64RAX) // CMP endAddr, startAddr
+		endWrappedOff := amd64Jcc_rel32(cb, amd64CondB)
+		amd64SHR_imm(cb, amd64R11, 8)
+		invalOffs = append(invalOffs, probePage()...)
+		secondProbeDonePC := cb.Len()
+		patchRel32(cb, endWrappedOff, secondProbeDonePC)
+	}
+	noSecondOff := amd64JMP_rel32(cb)
+
+	invalPC := cb.Len()
+	for _, off := range invalOffs {
+		patchRel32(cb, off, invalPC)
+	}
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffNeedInval))
+	secondInvalOff := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_mem_imm32(cb, amd64RCX, int32(jitCtxOffNeedInval), 1)
+	amd64MOV_mem_reg(cb, amd64RCX, int32(jitCtxOffInvalAddr), amd64RAX)
+	amd64MOV_mem_imm32(cb, amd64RCX, int32(jitCtxOffInvalSize), accessBytes)
+	firstInvalDoneOff := amd64JMP_rel32(cb)
+
+	secondInvalPC := cb.Len()
+	patchRel32(cb, secondInvalOff, secondInvalPC)
+	amd64MOV_mem_imm32(cb, amd64RCX, int32(jitCtxOffInvalSize), 0)
+
+	donePC := cb.Len()
+	for _, off := range doneOffs {
+		patchRel32(cb, off, donePC)
+	}
+	for _, off := range finalDoneOffs {
+		patchRel32(cb, off, donePC)
+	}
+	patchRel32(cb, noSecondOff, donePC)
+	patchRel32(cb, firstInvalDoneOff, donePC)
+}
+
 func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	if ji.rd == 0 {
 		return
@@ -2563,7 +2845,10 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	// helper - direct [memBase + addr] would be wrong.
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
 	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
-	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE) // JNE → helper exit
+	physPathOff := amd64Jcc_rel32(cb, amd64CondE) // JE → physical path
+	mmuMissOff := emitMMUMicroTLBProbeAMD64(cb, int32(jitCtxOffMicroTLBReadPrefix))
+	physPathPC := cb.Len()
+	patchRel32(cb, physPathOff, physPathPC)
 
 	// Fast path: addr < IO_REGION_START (R8). 64-bit CMP so any address
 	// with upper bits set routes to the slow path.
@@ -2619,11 +2904,15 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	// Helper exit. All three bail paths (MMU on, high addr, I/O page)
 	// converge here. emitLOADHelperExit ends with emitEpilogue → RET,
 	// so there is no fallthrough into the post-block done label.
+	resumeLabel := ie64ResumeLabel(cb, instrPC)
 	helperPC := cb.Len()
-	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, mmuMissOff, helperPC)
 	patchRel32(cb, highHelperOff, helperPC)
 	patchRel32(cb, ioHelperOff, helperPC)
-	emitLOADHelperExit(cb, ji, instrPC, br, writtenSoFar)
+	emitLOADHelperExit(cb, ji, instrPC, br, writtenSoFar, resumeLabel)
+
+	cb.Label(resumeLabel)
+	emitResumeEntryAMD64(cb, instrPC+IE64_INSTR_SIZE, br)
 
 	donePC := cb.Len()
 	patchRel32(cb, doneOff1, donePC)
@@ -2636,7 +2925,7 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 // result into Rd, advances PC, and re-enters the JIT loop.
 //
 // RAX must hold the effective virtual address on entry.
-func emitLOADHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+func emitLOADHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32, resumeLabel string) {
 	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))               // R10 = ctx
 	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffHelperAddr), amd64RAX)          // HelperAddr = RAX
 	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffHelperSize), uint32(ji.size)) // HelperSize
@@ -2648,6 +2937,8 @@ func emitLOADHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockR
 
 	bailCount := ji.pcOffset / IE64_INSTR_SIZE
 	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))
+	emitHelperResumeFieldsAMD64(cb, amd64R10, resumeLabel, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
@@ -2688,17 +2979,31 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 		emitSizeMaskAMD64(cb, amd64R11, ji.size)
 		srcReg = amd64R11
 	}
+	preserveSrcAcrossProbe := srcReg == amd64R10 || srcReg == amd64R11
+	if preserveSrcAcrossProbe {
+		amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(amd64OffCtxPtr))
+		amd64MOV_mem_reg(cb, amd64RDX, int32(jitCtxOffHelperVal), srcReg)
+	}
 
 	// Phase 5 cycle 5.5: MMU-on check. Branch to helper exit if MMU is
 	// active so the interpreter helper translates the virtual address.
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_mem_reg(cb, amd64RCX, int32(jitCtxOffHelperAddr), amd64RAX)
 	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
-	mmuHelperOff := amd64Jcc_rel32(cb, amd64CondNE)
+	physPathOff := amd64Jcc_rel32(cb, amd64CondE)
+	mmuMissOff := emitMMUMicroTLBProbeAMD64(cb, int32(jitCtxOffMicroTLBWritePrefix))
+	physPathPC := cb.Len()
+	patchRel32(cb, physPathOff, physPathPC)
+	if preserveSrcAcrossProbe {
+		amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(amd64OffCtxPtr))
+		amd64MOV_reg_mem(cb, srcReg, amd64RDX, int32(jitCtxOffHelperVal))
+	}
 
 	amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RegIOStart) // CMP RAX, R8 (64-bit)
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
 	emitMemStore(cb, srcReg, ji.size)
+	emitIE64SMCStoreCheckAMD64(cb, ji.size, true)
 	doneOff1 := amd64JMP_rel32(cb)
 
 	slowPathPC := cb.Len()
@@ -2729,14 +3034,23 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	nonIOPC := cb.Len()
 	patchRel32(cb, nonIOOff, nonIOPC)
 	emitMemStore(cb, srcReg, ji.size)
+	emitIE64SMCStoreCheckAMD64(cb, ji.size, true)
 	doneOff2 := amd64JMP_rel32(cb)
 
 	// Helper exit. All three bail paths converge here.
+	resumeLabel := ie64ResumeLabel(cb, instrPC)
 	helperPC := cb.Len()
-	patchRel32(cb, mmuHelperOff, helperPC)
+	patchRel32(cb, mmuMissOff, helperPC)
 	patchRel32(cb, highHelperOff, helperPC)
 	patchRel32(cb, ioHelperOff, helperPC)
-	emitSTOREHelperExit(cb, ji, instrPC, srcReg, br, writtenSoFar)
+	if preserveSrcAcrossProbe {
+		amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(amd64OffCtxPtr))
+		amd64MOV_reg_mem(cb, srcReg, amd64RDX, int32(jitCtxOffHelperVal))
+	}
+	emitSTOREHelperExit(cb, ji, instrPC, srcReg, br, writtenSoFar, resumeLabel)
+
+	cb.Label(resumeLabel)
+	emitResumeEntryAMD64(cb, instrPC+IE64_INSTR_SIZE, br)
 
 	donePC := cb.Len()
 	patchRel32(cb, doneOff1, donePC)
@@ -2756,7 +3070,7 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 // srcReg - otherwise the helper would pass the JITContext address into
 // cpu.storeMem instead of the guest value (P1 data-corruption regression
 // for unmapped STORE.Q sources).
-func emitSTOREHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) {
+func emitSTOREHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32, resumeLabel string) {
 	ctxReg := byte(amd64R10)
 	if srcReg == amd64R10 {
 		ctxReg = amd64R11
@@ -2773,6 +3087,8 @@ func emitSTOREHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg by
 
 	bailCount := ji.pcOffset / IE64_INSTR_SIZE
 	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	amd64MOV_reg_mem(cb, ctxReg, amd64RSP, int32(amd64OffCtxPtr))
+	emitHelperResumeFieldsAMD64(cb, ctxReg, resumeLabel, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
@@ -3044,13 +3360,19 @@ func emitPUSH_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	// Fast path: SUB R14, 8 then MOV [memBase+R14], src.
 	amd64ALU_reg_imm32(cb, 5, amd64RegIE64SP, 8)
 	emitMemOpSIB(cb, true, 0x89, srcReg, amd64RegMemBase, amd64RegIE64SP, 0)
+	amd64MOV_reg_reg(cb, amd64RAX, amd64RegIE64SP)
+	emitIE64SMCStoreCheckAMD64(cb, IE64_SIZE_Q, false)
 	doneOff := amd64JMP_rel32(cb)
 
 	helperPC := cb.Len()
 	patchRel32(cb, mmuHelperOff, helperPC)
 	patchRel32(cb, underflowOff, helperPC)
 	patchRel32(cb, highHelperOff, helperPC)
-	emitPUSHHelperExit(cb, ji, instrPC, srcReg, br, writtenSoFar)
+	resumeLabel := ie64ResumeLabel(cb, instrPC)
+	emitPUSHHelperExit(cb, ji, instrPC, srcReg, br, writtenSoFar, resumeLabel)
+
+	cb.Label(resumeLabel)
+	emitResumeEntryAMD64(cb, instrPC+IE64_INSTR_SIZE, br)
 
 	donePC := cb.Len()
 	patchRel32(cb, doneOff, donePC)
@@ -3060,7 +3382,7 @@ func emitPUSH_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 // The dispatcher decrements cpu.regs[31] and writes HelperVal via
 // mmuStackWrite, then advances PC. srcReg holds the value to push; the
 // ctx-pointer scratch avoids colliding with it.
-func emitPUSHHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) {
+func emitPUSHHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32, resumeLabel string) {
 	ctxReg := byte(amd64R10)
 	if srcReg == amd64R10 {
 		ctxReg = amd64R11
@@ -3086,6 +3408,8 @@ func emitPUSHHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byt
 
 	bailCount := ji.pcOffset / IE64_INSTR_SIZE
 	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	amd64MOV_reg_mem(cb, ctxReg, amd64RSP, int32(amd64OffCtxPtr))
+	emitHelperResumeFieldsAMD64(cb, ctxReg, resumeLabel, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
@@ -3122,7 +3446,11 @@ func emitPOP_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, 
 	helperPC := cb.Len()
 	patchRel32(cb, mmuHelperOff, helperPC)
 	patchRel32(cb, highHelperOff, helperPC)
-	emitPOPHelperExit(cb, ji, instrPC, br, writtenSoFar)
+	resumeLabel := ie64ResumeLabel(cb, instrPC)
+	emitPOPHelperExit(cb, ji, instrPC, br, writtenSoFar, resumeLabel)
+
+	cb.Label(resumeLabel)
+	emitResumeEntryAMD64(cb, instrPC+IE64_INSTR_SIZE, br)
 
 	donePC := cb.Len()
 	patchRel32(cb, doneOff, donePC)
@@ -3131,7 +3459,7 @@ func emitPOP_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, 
 // emitPOPHelperExit writes the JITContext HELPER_POP protocol fields.
 // The dispatcher reads via mmuStackRead, writes the result into HelperRd,
 // increments cpu.regs[31], and advances PC.
-func emitPOPHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+func emitPOPHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32, resumeLabel string) {
 	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))
 	amd64MOV_mem_imm32(cb, amd64R10, int32(jitCtxOffHelperRd), uint32(ji.rd))
 	amd64MOV_mem_reg(cb, amd64R10, int32(jitCtxOffLiveSP), amd64RegIE64SP)
@@ -3141,6 +3469,8 @@ func emitPOPHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRe
 
 	bailCount := ji.pcOffset / IE64_INSTR_SIZE
 	emitPackedPCAndCount(cb, instrPC, bailCount, br)
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, int32(amd64OffCtxPtr))
+	emitHelperResumeFieldsAMD64(cb, amd64R10, resumeLabel, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
@@ -3174,6 +3504,8 @@ func emitJSR_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, 
 	retAddr := uint64(instrPC + IE64_INSTR_SIZE)
 	emitLoadImm64AMD64(cb, amd64RAX, retAddr)
 	emitMemOpSIB(cb, true, 0x89, amd64RAX, amd64RegMemBase, amd64RegIE64SP, 0)
+	amd64MOV_reg_reg(cb, amd64RAX, amd64RegIE64SP)
+	emitIE64SMCStoreCheckAMD64(cb, IE64_SIZE_Q, false)
 
 	emitPackedPCAndCount(cb, targetPC, instrCount, br)
 	slot := emitChainExit(cb, br, targetPC, instrCount)
@@ -3274,24 +3606,38 @@ func emitRTS_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, 
 	amd64ALU_reg_mem_cmp(cb, amd64RAX, amd64R10, int32(jitCtxOffRTSCache0PC))
 	miss0Off := amd64Jcc_rel32(cb, amd64CondNE)
 	amd64MOV_reg_mem(cb, amd64R11, amd64R10, int32(jitCtxOffRTSCache0Addr))
+	amd64TEST_reg_reg(cb, amd64R11, amd64R11)
+	miss0AddrOff := amd64Jcc_rel32(cb, amd64CondE)
 	hit0Off := amd64JMP_rel32(cb)
 
-	patchRel32(cb, miss0Off, cb.Len())
+	slot1PC := cb.Len()
+	patchRel32(cb, miss0Off, slot1PC)
+	patchRel32(cb, miss0AddrOff, slot1PC)
 	amd64ALU_reg_mem_cmp(cb, amd64RAX, amd64R10, int32(jitCtxOffRTSCache1PC))
 	miss1Off := amd64Jcc_rel32(cb, amd64CondNE)
 	amd64MOV_reg_mem(cb, amd64R11, amd64R10, int32(jitCtxOffRTSCache1Addr))
+	amd64TEST_reg_reg(cb, amd64R11, amd64R11)
+	miss1AddrOff := amd64Jcc_rel32(cb, amd64CondE)
 	hit1Off := amd64JMP_rel32(cb)
 
-	patchRel32(cb, miss1Off, cb.Len())
+	slot2PC := cb.Len()
+	patchRel32(cb, miss1Off, slot2PC)
+	patchRel32(cb, miss1AddrOff, slot2PC)
 	amd64ALU_reg_mem_cmp(cb, amd64RAX, amd64R10, int32(jitCtxOffRTSCache2PC))
 	miss2Off := amd64Jcc_rel32(cb, amd64CondNE)
 	amd64MOV_reg_mem(cb, amd64R11, amd64R10, int32(jitCtxOffRTSCache2Addr))
+	amd64TEST_reg_reg(cb, amd64R11, amd64R11)
+	miss2AddrOff := amd64Jcc_rel32(cb, amd64CondE)
 	hit2Off := amd64JMP_rel32(cb)
 
-	patchRel32(cb, miss2Off, cb.Len())
+	slot3PC := cb.Len()
+	patchRel32(cb, miss2Off, slot3PC)
+	patchRel32(cb, miss2AddrOff, slot3PC)
 	amd64ALU_reg_mem_cmp(cb, amd64RAX, amd64R10, int32(jitCtxOffRTSCache3PC))
 	missOff := amd64Jcc_rel32(cb, amd64CondNE)
 	amd64MOV_reg_mem(cb, amd64R11, amd64R10, int32(jitCtxOffRTSCache3Addr))
+	amd64TEST_reg_reg(cb, amd64R11, amd64R11)
+	miss3AddrOff := amd64Jcc_rel32(cb, amd64CondE)
 
 	// .chain_hit: R11 = chainEntry. Stash R11 in scratch slot since the
 	// upcoming light-store + ChainCount path can clobber R11 indirectly.
@@ -3304,12 +3650,12 @@ func emitRTS_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, 
 	// paths (budget exhausted, inval) emitEpilogue will copy R15 to
 	// ctx.RetPC.
 	amd64MOV_reg_reg(cb, amd64RegIE64PC, amd64RAX)
-	emitStoreRetCountAMD64(cb, instrCount, br)
 
 	// Stash chainEntry on the stack - the lightweight store sequence
-	// only clobbers RAX/R10 indirectly via emitChainExit prologue, but
-	// to keep R11 alive across reg-stores we save it.
-	amd64MOV_mem_reg(cb, amd64RSP, int32(amd64FrameSize-8), amd64R11)
+	// and RetCount store both use R11 as scratch, so preserve the hit
+	// target before writing the return channel.
+	amd64MOV_mem_reg(cb, amd64RSP, int32(amd64OffRTSChainEntry), amd64R11)
+	emitStoreRetCountAMD64(cb, instrCount, br)
 
 	// Lightweight reg store back to RegsPtr (RDI is RegsPtr at this point).
 	emitLightweightStoreRegs(cb)
@@ -3346,7 +3692,7 @@ func emitRTS_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, 
 		byte(jitCtxOffChainCount>>16), byte(jitCtxOffChainCount>>24))
 
 	// Reload chainEntry from stash and JMP to it (indirect JMP).
-	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64FrameSize-8))
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffRTSChainEntry))
 	emitREX(cb, false, 0, amd64R11)
 	cb.EmitBytes(0xFF, 0xE0|byte(amd64R11&7))
 
@@ -3354,6 +3700,7 @@ func emitRTS_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, 
 	// Cache miss / budget exhausted / inval pending: R15 already holds
 	// the popped PC for hit path; miss path must set it.
 	patchRel32(cb, missOff, cb.Len())
+	patchRel32(cb, miss3AddrOff, cb.Len())
 	patchRel32(cb, zeroPCMissOff, cb.Len())
 	// On miss, R15 has not been set yet. Set it from popped RAX.
 	amd64MOV_reg_reg(cb, amd64RegIE64PC, amd64RAX)
@@ -3416,6 +3763,8 @@ func emitJSR_IND_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRe
 	retAddr := uint64(instrPC + IE64_INSTR_SIZE)
 	emitLoadImm64AMD64(cb, amd64RAX, retAddr)
 	emitMemOpSIB(cb, true, 0x89, amd64RAX, amd64RegMemBase, amd64RegIE64SP, 0)
+	amd64MOV_reg_reg(cb, amd64RAX, amd64RegIE64SP)
+	emitIE64SMCStoreCheckAMD64(cb, IE64_SIZE_Q, false)
 
 	rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
 	amd64MOV_reg_imm32(cb, amd64RCX, ji.imm32)
@@ -4061,6 +4410,7 @@ func emitFSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
 	emitMemOpSIB(cb, false, 0x89, amd64R10, amd64RegMemBase, amd64RAX, 0)
+	emitIE64SMCStoreCheckAMD64(cb, IE64_SIZE_L, false)
 	doneOff1 := amd64JMP_rel32(cb)
 
 	slowPathPC := cb.Len()
@@ -4085,6 +4435,7 @@ func emitFSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 	nonIOPC := cb.Len()
 	patchRel32(cb, nonIOOff, nonIOPC)
 	emitMemOpSIB(cb, false, 0x89, amd64R10, amd64RegMemBase, amd64RAX, 0)
+	emitIE64SMCStoreCheckAMD64(cb, IE64_SIZE_L, false)
 	doneOff2 := amd64JMP_rel32(cb)
 
 	helperPC := cb.Len()
@@ -4173,6 +4524,7 @@ func emitDSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 	slowPathOff := amd64Jcc_rel32(cb, amd64CondAE)
 
 	emitMemOpSIB(cb, true, 0x89, amd64R10, amd64RegMemBase, amd64RAX, 0)
+	emitIE64SMCStoreCheckAMD64(cb, IE64_SIZE_Q, false)
 	doneOff1 := amd64JMP_rel32(cb)
 
 	slowPathPC := cb.Len()
@@ -4196,6 +4548,7 @@ func emitDSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 	nonIOPC := cb.Len()
 	patchRel32(cb, nonIOOff, nonIOPC)
 	emitMemOpSIB(cb, true, 0x89, amd64R10, amd64RegMemBase, amd64RAX, 0)
+	emitIE64SMCStoreCheckAMD64(cb, IE64_SIZE_Q, false)
 	doneOff2 := amd64JMP_rel32(cb)
 
 	helperPC := cb.Len()

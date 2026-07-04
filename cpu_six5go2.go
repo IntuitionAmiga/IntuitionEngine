@@ -252,6 +252,8 @@ type CPU_6502 struct {
 	InstructionCount uint64    // Total instructions executed
 	perfStartTime    time.Time // When execution started
 	lastPerfReport   time.Time // Last time we printed stats
+	perfAcct         PerfAcct
+	deoptStats       DeoptStats
 
 	// JIT compiler state
 	jitEnabled       bool

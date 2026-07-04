@@ -83,6 +83,8 @@ type busyBucket struct {
 	idleNs uint64
 }
 
+const busyBucketDuration = 100 * time.Millisecond
+
 // CoprocessorManager handles coprocessor MMIO, worker lifecycle, and ticket routing.
 type CoprocessorManager struct {
 	bus     *MachineBus
@@ -121,6 +123,8 @@ type CoprocessorManager struct {
 	irqTargetCPU         *M68KCPU
 	watcherRunning       atomic.Bool
 	watcherDone          chan struct{}
+	completionWake       chan struct{}
+	watcherScanCount     atomic.Uint64
 
 	// Adaptive threshold calibration
 	dispatchOverheadNs atomic.Uint64
@@ -133,6 +137,7 @@ type CoprocessorManager struct {
 	busyBuckets       [10]busyBucket
 	busyBucketIdx     int
 	busyRotateCounter int
+	busyBucketStart   time.Time
 	lastTransition    time.Time
 	workerBusy        bool
 }
@@ -140,10 +145,14 @@ type CoprocessorManager struct {
 // NewCoprocessorManager creates a new coprocessor manager.
 func NewCoprocessorManager(bus *MachineBus, baseDir string) *CoprocessorManager {
 	mgr := &CoprocessorManager{
-		bus:         bus,
-		baseDir:     baseDir,
-		nextTicket:  1,
-		completions: make(map[uint32]*CoprocCompletion),
+		bus:            bus,
+		baseDir:        baseDir,
+		nextTicket:     1,
+		completions:    make(map[uint32]*CoprocCompletion),
+		completionWake: make(chan struct{}, 1),
+	}
+	if bus != nil {
+		bus.RegisterCoprocessorCompletionWake(mgr.handleCompletionStatusWrite)
 	}
 	mgr.initRings()
 	return mgr
@@ -185,48 +194,68 @@ func (m *CoprocessorManager) StopCompletionWatcher() {
 	if !m.watcherRunning.Swap(false) {
 		return
 	}
+	m.signalCompletionWake()
 	<-m.watcherDone
+}
+
+func (m *CoprocessorManager) signalCompletionWake() {
+	if m == nil || m.completionWake == nil {
+		return
+	}
+	select {
+	case m.completionWake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *CoprocessorManager) handleCompletionStatusWrite(addr, value uint32) {
+	if value == COPROC_TICKET_PENDING || value == COPROC_TICKET_RUNNING {
+		return
+	}
+	if !isCoprocResponseStatusAddr(addr) {
+		return
+	}
+	m.signalCompletionWake()
+}
+
+func isCoprocResponseStatusAddr(addr uint32) bool {
+	for i := range 6 {
+		base := ringBaseAddr(i) + RING_RESPONSES_OFFSET
+		if addr < base+RESP_STATUS_OFF {
+			continue
+		}
+		off := addr - base
+		if off >= uint32(RING_CAPACITY)*RESP_DESC_SIZE {
+			continue
+		}
+		if off%RESP_DESC_SIZE == RESP_STATUS_OFF {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *CoprocessorManager) completionWatcherLoop() {
 	defer close(m.watcherDone)
-	ticker := time.NewTicker(100 * time.Microsecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		select {
+		case <-m.completionWake:
 		case <-ticker.C:
-			if !m.watcherRunning.Load() {
-				return
-			}
-			m.scanForCompletions()
-			// Rotate busy% buckets every ~100ms (1000 ticks x 100us)
-			m.mu.Lock()
-			m.busyRotateCounter++
-			if m.busyRotateCounter >= 1000 {
-				m.busyRotateCounter = 0
-				// Flush partial elapsed time into current bucket
-				now := time.Now()
-				if m.workerBusy {
-					elapsed := uint64(now.Sub(m.lastTransition).Nanoseconds())
-					m.busyBuckets[m.busyBucketIdx].busyNs += elapsed
-					m.lastTransition = now
-				} else if !m.lastTransition.IsZero() {
-					elapsed := uint64(now.Sub(m.lastTransition).Nanoseconds())
-					m.busyBuckets[m.busyBucketIdx].idleNs += elapsed
-					m.lastTransition = now
-				}
-				// Advance to next bucket and clear it
-				m.busyBucketIdx = (m.busyBucketIdx + 1) % 10
-				m.busyBuckets[m.busyBucketIdx] = busyBucket{}
-			}
-			m.mu.Unlock()
 		}
+		if !m.watcherRunning.Load() {
+			return
+		}
+		m.scanForCompletions()
+		m.rotateBusyBuckets()
 	}
 }
 
 func (m *CoprocessorManager) scanForCompletions() {
+	m.watcherScanCount.Add(1)
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.reapDeadWorkersLocked()
 
 	anyPending := false
 	for ticket, comp := range m.completions {
@@ -249,6 +278,53 @@ func (m *CoprocessorManager) scanForCompletions() {
 	if !anyPending && m.workerBusy {
 		m.transitionBusyIdleLocked()
 	}
+	drained := m.drainPendingUnregsLocked()
+	m.mu.Unlock()
+	m.flushReaped(drained)
+}
+
+func (m *CoprocessorManager) rotateBusyBuckets() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.rotateBusyBucketsAtLocked(time.Now())
+}
+
+func (m *CoprocessorManager) rotateBusyBucketsAtLocked(now time.Time) {
+	if m.busyBucketStart.IsZero() {
+		m.busyBucketStart = now
+		return
+	}
+	if now.Before(m.busyBucketStart) {
+		m.busyBucketStart = now
+		if !m.lastTransition.IsZero() && m.lastTransition.After(now) {
+			m.lastTransition = now
+		}
+		return
+	}
+	for {
+		boundary := m.busyBucketStart.Add(busyBucketDuration)
+		if now.Before(boundary) {
+			return
+		}
+		m.accrueBusyTimeLocked(boundary)
+		m.busyBucketIdx = (m.busyBucketIdx + 1) % len(m.busyBuckets)
+		m.busyBuckets[m.busyBucketIdx] = busyBucket{}
+		m.busyBucketStart = boundary
+		m.busyRotateCounter++
+	}
+}
+
+func (m *CoprocessorManager) accrueBusyTimeLocked(until time.Time) {
+	if m.lastTransition.IsZero() || until.Before(m.lastTransition) {
+		return
+	}
+	elapsed := uint64(until.Sub(m.lastTransition).Nanoseconds())
+	if m.workerBusy {
+		m.busyBuckets[m.busyBucketIdx].busyNs += elapsed
+	} else {
+		m.busyBuckets[m.busyBucketIdx].idleNs += elapsed
+	}
+	m.lastTransition = until
 }
 
 func (m *CoprocessorManager) reapDeadWorkersLocked() {
@@ -290,6 +366,10 @@ func (m *CoprocessorManager) markWorkerDownCompletionsLocked(cpuType uint32) {
 				status = COPROC_TICKET_WORKER_DOWN
 			}
 			comp.status = status
+			m.completedTicket.Store(comp.ticket)
+			if m.completionIRQEnabled.Load() && m.irqTargetCPU != nil {
+				m.irqTargetCPU.AssertInterrupt(6)
+			}
 		}
 	}
 }
@@ -310,10 +390,7 @@ func (m *CoprocessorManager) flushReaped(reaped []reapedMonitor) {
 
 func (m *CoprocessorManager) transitionBusyIdleLocked() {
 	now := time.Now()
-	if !m.lastTransition.IsZero() {
-		elapsed := uint64(now.Sub(m.lastTransition).Nanoseconds())
-		m.busyBuckets[m.busyBucketIdx].busyNs += elapsed
-	}
+	m.accrueBusyTimeLocked(now)
 	m.lastTransition = now
 	m.workerBusy = false
 }
@@ -442,13 +519,15 @@ func (m *CoprocessorManager) writeReg(regBase, val uint32) {
 		m.completionIRQEnabled.Store(val&1 != 0)
 	case COPROC_STATS_RESET:
 		if val == 1 {
+			now := time.Now()
 			m.opsDispatched = 0
 			m.bytesProcessed = 0
 			m.busyBuckets = [10]busyBucket{}
 			m.busyBucketIdx = 0
 			m.busyRotateCounter = 0
+			m.busyBucketStart = now
 			// Reset transition state so busy% starts fresh from this point
-			m.lastTransition = time.Now()
+			m.lastTransition = now
 			// workerBusy keeps its current value — if the worker IS busy,
 			// we just reset the epoch so elapsed time accrues from now.
 		}
@@ -666,7 +745,11 @@ func (m *CoprocessorManager) cmdEnqueue() {
 
 	// Track busy transition for busy% computation
 	if !m.workerBusy {
-		m.lastTransition = time.Now()
+		now := time.Now()
+		if m.busyBucketStart.IsZero() {
+			m.busyBucketStart = now
+		}
+		m.lastTransition = now
 		m.workerBusy = true
 	}
 
@@ -1016,7 +1099,18 @@ func (m *CoprocessorManager) startWorkerLocked(cpuType uint32, filename string, 
 		mon.UnregisterCPU(newID)
 		m.mu.Lock()
 	}
+	m.watchWorkerDone(worker)
 	return nil
+}
+
+func (m *CoprocessorManager) watchWorkerDone(worker *CoprocWorker) {
+	if m == nil || worker == nil || worker.done == nil {
+		return
+	}
+	go func() {
+		<-worker.done
+		m.signalCompletionWake()
+	}()
 }
 
 // StopWorker stops an online coprocessor worker and unregisters it from IEMon.

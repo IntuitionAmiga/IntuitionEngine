@@ -134,6 +134,70 @@ func TestEbitenOutput_HardwareCompositor_StagesOpaquePixelsForDrawImage(t *testi
 	}
 }
 
+func TestEbitenOutput_HardwareCompositor_FallbackDoesNotReuseReleasedLeaseBuffer(t *testing.T) {
+	out, err := NewEbitenOutput()
+	if err != nil {
+		t.Fatalf("NewEbitenOutput returned error: %v", err)
+	}
+	eo := out.(*EbitenOutput)
+	ring := NewVideoFrameLeaseRing(1, BYTES_PER_PIXEL)
+	lease, ok := ring.Acquire()
+	if !ok {
+		t.Fatal("failed to acquire initial lease")
+	}
+	copy(lease.Pixels(), []byte{1, 2, 3, 0xFF})
+
+	leasedUpdate := CompositorFrameUpdate{
+		FrameID:            10,
+		PresentationWidth:  eo.width,
+		PresentationHeight: eo.height,
+		HasContent:         true,
+		Layers: []CompositorFrameLayer{{
+			SourceID:     1,
+			SourceWidth:  1,
+			SourceHeight: 1,
+			DestWidth:    1,
+			DestHeight:   1,
+			Buffer:       lease.Pixels(),
+			Lease:        lease,
+		}},
+	}
+	if err := eo.UpdateHardwareCompositorFrame(leasedUpdate); err != nil {
+		t.Fatalf("leased UpdateHardwareCompositorFrame returned error: %v", err)
+	}
+	lease.Release()
+
+	fallbackPixels := []byte{4, 5, 6, 0xFF}
+	fallbackUpdate := CompositorFrameUpdate{
+		FrameID:            11,
+		PresentationWidth:  eo.width,
+		PresentationHeight: eo.height,
+		HasContent:         true,
+		Layers: []CompositorFrameLayer{{
+			SourceID:     1,
+			SourceWidth:  1,
+			SourceHeight: 1,
+			DestWidth:    1,
+			DestHeight:   1,
+			Buffer:       fallbackPixels,
+		}},
+	}
+	if err := eo.UpdateHardwareCompositorFrame(fallbackUpdate); err != nil {
+		t.Fatalf("fallback UpdateHardwareCompositorFrame returned error: %v", err)
+	}
+	staged := eo.hwLayers[0].Buffer
+	reused, ok := ring.Acquire()
+	if !ok {
+		t.Fatal("released lease slot was not reusable after fallback update")
+	}
+	defer reused.Release()
+	copy(reused.Pixels(), []byte{99, 88, 77, 0xFF})
+
+	if staged[0] != 4 || staged[1] != 5 || staged[2] != 6 || staged[3] != 0xFF {
+		t.Fatalf("fallback staged buffer was overwritten through released lease: got %v", staged[:BYTES_PER_PIXEL])
+	}
+}
+
 func TestEbitenOutput_SetDisplayConfig_ClearsHardwareFrame(t *testing.T) {
 	out, err := NewEbitenOutput()
 	if err != nil {

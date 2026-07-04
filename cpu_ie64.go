@@ -312,6 +312,8 @@ type CPU64 struct {
 	InstructionCount uint64
 	perfStartTime    time.Time
 	lastPerfReport   time.Time
+	perfAcct         PerfAcct
+	deoptStats       DeoptStats
 
 	// Execution lifecycle
 	execMu     sync.Mutex
@@ -324,6 +326,14 @@ type CPU64 struct {
 	jitCache   *CodeCache
 	jitExecMem any // *ExecMem — uses any to avoid build tag dependency
 	jitCtx     *JITContext
+	// jitCodePageBitmap marks 256-byte guest pages that contain compiled IE64
+	// code. Native stores probe it to detect self-modifying writes without a
+	// Go-side map lookup on every RAM store.
+	jitCodePageBitmap []byte
+	// jitPhysCodePageBitmap marks 256-byte physical pages backing compiled
+	// MMU-mode IE64 code. Native MMU store fast paths probe it after
+	// micro-TLB translation so virtual aliases cannot bypass SMC invalidation.
+	jitPhysCodePageBitmap []byte
 
 	// Coprocessor mode: allows PC outside PROG_START..STACK_START
 	CoprocMode bool

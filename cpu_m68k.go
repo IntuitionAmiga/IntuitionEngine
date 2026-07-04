@@ -822,6 +822,8 @@ type M68KCPU struct {
 	m68kJitCompileFailMu        sync.Mutex
 	m68kJitCompileFailCounts    map[uint32]uint64
 	m68kJitCompileFailErrors    map[uint32]string
+	perfAcct                    PerfAcct
+	deoptStats                  DeoptStats
 
 	m68kJitRecordFallbackSnapshots bool
 	m68kJitFallbackSnapshotMu      sync.Mutex

@@ -50,7 +50,6 @@ func (cpu *CPU_Z80) initZ80JIT(adapter *Z80BusAdapter) error {
 	cpu.jitExecMem = execMem
 	cpu.jitCache = NewCodeCache()
 	cpu.jitCtx = newZ80JITContext(cpu, adapter)
-	cpu.z80InitTurboJIT()
 	return nil
 }
 
@@ -68,8 +67,6 @@ func (cpu *CPU_Z80) freeZ80JIT() {
 	}
 	cpu.jitCache = nil
 	cpu.jitCtx = nil
-	cpu.jitTurboCache = nil
-	cpu.jitTurboStats = nil
 }
 
 // interpretZ80One executes one Z80 instruction at cpu.PC using the interpreter.
@@ -94,7 +91,6 @@ func (cpu *CPU_Z80) z80JITFlushAll(ctx *Z80JITContext) {
 	ctx.RTSCache0Addr = 0
 	ctx.RTSCache1PC = 0
 	ctx.RTSCache1Addr = 0
-	cpu.jitTurboCache = nil
 	for i := range cpu.codePageBitmap {
 		cpu.codePageBitmap[i] = 0
 	}
@@ -133,7 +129,6 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 	ctx := cpu.jitCtx.(*Z80JITContext)
 	mem := adapter.bus.GetMemory()
 	memSize := len(mem)
-	defer cpu.z80MaybePrintTurboStats()
 
 	// Performance measurement
 	perfEnabled := cpu.PerfEnabled
@@ -147,6 +142,19 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 	var diagCacheHits uint64
 	var diagCacheMisses uint64
 	var diagFallbackInstr uint64
+
+	interpretFallback := func(reason DeoptReason) {
+		var interpT0 time.Time
+		if perfAcctOn {
+			interpT0 = time.Now()
+		}
+		cpu.interpretZ80One()
+		if perfAcctOn {
+			cpu.perfAcct.AddInterpSince(interpT0)
+			cpu.perfAcct.AddInstrs(1)
+			cpu.deoptStats.Add(reason)
+		}
+	}
 
 	for cpu.running.Load() {
 		if cpu.debugHandleBreakIn(uint64(cpu.PC)) {
@@ -181,7 +189,7 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 		// Execute exactly one instruction via interpreter so finishInstruction()
 		// can process the countdown with per-instruction accuracy.
 		if cpu.iffDelay > 0 {
-			cpu.interpretZ80One()
+			interpretFallback(DeoptInterrupt)
 			diagFallbackInstr++
 			if perfEnabled {
 				cpu.InstructionCount++
@@ -213,9 +221,12 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 				if perfEnabled {
 					cpu.InstructionCount += uint64(retired)
 				}
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(uint64(retired))
+				}
 				continue
 			}
-			cpu.interpretZ80One()
+			interpretFallback(DeoptMMIO)
 			diagFallbackInstr++
 			if perfEnabled {
 				cpu.InstructionCount++
@@ -231,52 +242,13 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 
 		// ── Block lookup ──
 		block := cpu.jitCache.Get(uint64(pc))
-		if cpu.z80IsNativeTurboBlock(block) && !cpu.z80ValidateNativeTurboBlock(pc, adapter) {
-			cpu.jitCache.InvalidateRange(uint64(pc), uint64(pc)+1)
-			block = nil
-		}
-		if cpu.z80IsTurboSentinel(block) {
-			if retired, cycles, rInc, ok := cpu.z80ExecuteTurboBlock(pc, adapter, mem); ok {
-				cpu.Cycles += uint64(cycles)
-				cpu.bus.Tick(cycles)
-				if rInc > 0 {
-					r := cpu.R
-					cpu.R = (r & 0x80) | ((r + byte(rInc)) & 0x7F)
-				}
-				if perfEnabled {
-					cpu.InstructionCount += uint64(retired)
-				}
-				continue
-			}
-			cpu.jitCache.InvalidateRange(uint64(pc), uint64(pc)+1)
-			block = nil
-		}
 		if block == nil {
-			if cpu.z80TurboJITEnabled() {
-				if turboBlock := cpu.z80ProbeTurboBlock(pc, adapter, mem); turboBlock != nil {
-					cpu.z80InstallTurboBlock(turboBlock)
-					if retired, cycles, rInc, ok := cpu.z80ExecuteTurboBlock(pc, adapter, mem); ok {
-						cpu.Cycles += uint64(cycles)
-						cpu.bus.Tick(cycles)
-						if rInc > 0 {
-							r := cpu.R
-							cpu.R = (r & 0x80) | ((r + byte(rInc)) & 0x7F)
-						}
-						if perfEnabled {
-							cpu.InstructionCount += uint64(retired)
-						}
-						diagCacheMisses++
-						continue
-					}
-				}
-			}
-
 			// Scan block from raw memory (safe: PC is on a direct page)
 			instrs := z80JITScanBlock(mem, pc, memSize, &cpu.directPageBitmap)
 
 			if len(instrs) == 0 {
 				// First instruction needs fallback (I/O, HALT, etc.)
-				cpu.interpretZ80One()
+				interpretFallback(DeoptUnsupported)
 				diagFallbackInstr++
 				if perfEnabled {
 					cpu.InstructionCount++
@@ -299,7 +271,7 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 				block, err = compileBlockZ80(instrs, pc, execMem, &cpu.codePageBitmap)
 				if err != nil {
 					// Genuine failure — interpret one instruction and continue
-					cpu.interpretZ80One()
+					interpretFallback(DeoptCachePressure)
 					diagFallbackInstr++
 					if perfEnabled {
 						cpu.InstructionCount++
@@ -345,7 +317,14 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 		ctx.CycleBudget = 2000 // ~500us at 4MHz — interrupt responsiveness budget
 
 		// Execute the native code block (may chain across multiple blocks)
+		var jitT0 time.Time
+		if perfAcctOn {
+			jitT0 = time.Now()
+		}
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
+		if perfAcctOn {
+			cpu.perfAcct.AddJitSince(jitT0)
+		}
 		block.execCount++
 
 		// ── Process block results ──
@@ -361,16 +340,13 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 
 		// ── Handle NeedInval (self-mod: page-granular invalidation) ──
 		if ctx.NeedInval != 0 {
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptSMC)
 			page := ctx.InvalPage
 			lo := page << 8
 			hi := lo + 256
 			// Unpatch chain slots targeting invalidated range, then remove blocks
 			cpu.jitCache.UnpatchChainsInRange(uint64(lo), uint64(hi))
 			cpu.jitCache.InvalidateRange(uint64(lo), uint64(hi))
-			cpu.jitTurboCache = nil
-			if st, ok := cpu.jitTurboStats.(*z80TurboStats); ok {
-				st.selfModInvalid++
-			}
 			ctx.NeedInval = 0
 			// Clear RTS cache (invalidated blocks may have had chain entries)
 			ctx.RTSCache0PC = 0
@@ -382,8 +358,16 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 		// ── Handle NeedBail (re-execute current instruction via interpreter) ──
 		if ctx.NeedBail != 0 {
 			ctx.NeedBail = 0
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
 			// cpu.PC was already set to the bailing instruction's start PC
+			var interpT0 time.Time
+			if perfAcctOn {
+				interpT0 = time.Now()
+			}
 			cpu.interpretZ80One()
+			if perfAcctOn {
+				cpu.perfAcct.AddInterpSince(interpT0)
+			}
 			executed++
 			if !cpu.running.Load() {
 				break
@@ -409,6 +393,9 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 		}
 
 		// ── Bookkeeping ──
+		if perfAcctOn {
+			cpu.perfAcct.AddInstrs(uint64(executed))
+		}
 		if perfEnabled {
 			cpu.InstructionCount += uint64(executed)
 

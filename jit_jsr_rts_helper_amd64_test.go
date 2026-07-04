@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/binary"
 	"testing"
+	"unsafe"
 )
 
 // ── JSR ──────────────────────────────────────────────────────────────────
@@ -129,6 +130,81 @@ func TestJIT_AMD64_RTS_LowSP_NoHelper(t *testing.T) {
 	}
 	if r.ctx.NeedHelper != 0xDEADBEEF {
 		t.Fatalf("NeedHelper = %d, want untouched poison", r.ctx.NeedHelper)
+	}
+}
+
+func TestJIT_AMD64_RTSCacheZeroAddrBypassesHit(t *testing.T) {
+	r := newJITTestRig(t)
+	const retAddr uint64 = PROG_START + 0x220
+	r.cpu.regs[31] = STACK_START
+	binary.LittleEndian.PutUint64(r.cpu.memory[STACK_START:], retAddr)
+	r.ctx.RTSCache0PC = retAddr
+	r.ctx.RTSCache0Addr = 0
+
+	r.compileAndRun(t, ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0))
+
+	if r.cpu.PC != retAddr {
+		t.Fatalf("PC = 0x%016X, want 0x%016X (zero-address RTS cache slot must be bypassed)",
+			r.cpu.PC, retAddr)
+	}
+	if r.cpu.regs[31] != STACK_START+8 {
+		t.Fatalf("SP = 0x%X, want 0x%X", r.cpu.regs[31], uint64(STACK_START+8))
+	}
+}
+
+func TestJIT_AMD64_RTSCacheHitPreservesChainEntryAcrossRetCountStore(t *testing.T) {
+	r := newJITTestRig(t)
+	const retAddr uint64 = PROG_START + 0x220
+	const movedValue uint64 = 0x44
+
+	copy(r.cpu.memory[retAddr:], ie64Instr(OP_MOVEQ, 1, 0, 0, 0, 0, uint32(movedValue)))
+	copy(r.cpu.memory[retAddr+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	targetInstrs := scanBlock(r.cpu.memory, retAddr)
+	if len(targetInstrs) == 0 || targetInstrs[len(targetInstrs)-1].opcode != OP_HALT64 {
+		t.Fatalf("target scan did not terminate at HALT: len=%d", len(targetInstrs))
+	}
+	target, err := compileBlock(targetInstrs[:len(targetInstrs)-1], retAddr, r.execMem)
+	if err != nil {
+		t.Fatalf("compile target block: %v", err)
+	}
+	if target.chainEntry == 0 {
+		t.Fatal("target block has no chainEntry")
+	}
+
+	copy(r.cpu.memory[PROG_START:], ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0))
+	copy(r.cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	sourceInstrs := scanBlock(r.cpu.memory, PROG_START)
+	if len(sourceInstrs) == 0 {
+		t.Fatal("source scan returned no instructions")
+	}
+	if len(sourceInstrs) != 1 || sourceInstrs[0].opcode != OP_RTS64 {
+		t.Fatalf("source scan = %d instrs ending in opcode 0x%02X, want single RTS",
+			len(sourceInstrs), sourceInstrs[len(sourceInstrs)-1].opcode)
+	}
+	source, err := compileBlock(sourceInstrs, PROG_START, r.execMem)
+	if err != nil {
+		t.Fatalf("compile source block: %v", err)
+	}
+
+	r.cpu.regs[31] = STACK_START
+	binary.LittleEndian.PutUint64(r.cpu.memory[STACK_START:], retAddr)
+	r.ctx.RegsPtr = uintptr(unsafe.Pointer(&r.cpu.regs[0]))
+	r.ctx.MemPtr = uintptr(unsafe.Pointer(&r.cpu.memory[0]))
+	r.ctx.RTSCache0PC = retAddr
+	r.ctx.RTSCache0Addr = target.chainEntry
+	r.ctx.ChainBudget = 2
+
+	callNative(source.execAddr, uintptr(unsafe.Pointer(r.ctx)))
+
+	if r.cpu.regs[1] != movedValue {
+		t.Fatalf("R1 = 0x%X, want 0x%X (RTS cache hit should jump to target chainEntry)",
+			r.cpu.regs[1], movedValue)
+	}
+	if r.ctx.RetPC != retAddr+IE64_INSTR_SIZE {
+		t.Fatalf("RetPC = 0x%X, want 0x%X", r.ctx.RetPC, retAddr+IE64_INSTR_SIZE)
+	}
+	if r.cpu.regs[31] != STACK_START+8 {
+		t.Fatalf("SP = 0x%X, want 0x%X", r.cpu.regs[31], uint64(STACK_START+8))
 	}
 }
 

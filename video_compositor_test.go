@@ -180,6 +180,49 @@ func (m *dirtyMockSource) IsOpaqueFrame() bool {
 	return m.opaque
 }
 
+func TestCompositor_HardwareLayersUseFrameLeases(t *testing.T) {
+	t.Setenv("IE_VIDEO_FRAME_LEASES", "1")
+	comp := NewVideoCompositor(nil)
+	src := &mockOpaqueSource{
+		layer: 1,
+		w:     3,
+		h:     1,
+		frame: []byte{
+			0, 0, 0, 0,
+			1, 2, 3, 0,
+			4, 5, 6, 7,
+		},
+	}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	comp.mu.Lock()
+	layers, hasContent := comp.collectCompositeLayers(true)
+	comp.mu.Unlock()
+	defer releaseFrameLayerLeases(layers)
+
+	if !hasContent || len(layers) != 1 {
+		t.Fatalf("layers=%d hasContent=%v, want one layer with content", len(layers), hasContent)
+	}
+	layer := layers[0]
+	if layer.Lease == nil {
+		t.Fatal("hardware layer did not carry a frame lease")
+	}
+	src.frame[0] = 99
+	if layer.Buffer[0] != 0 {
+		t.Fatalf("lease buffer aliased source frame: got %d", layer.Buffer[0])
+	}
+	if layer.Buffer[3] != 0 {
+		t.Fatalf("transparent black alpha changed: got %d", layer.Buffer[3])
+	}
+	if layer.Buffer[7] != 0xFF {
+		t.Fatalf("zero-alpha colour was not promoted to opaque: got %d", layer.Buffer[7])
+	}
+	if layer.Buffer[11] != 7 {
+		t.Fatalf("partial alpha changed: got %d", layer.Buffer[11])
+	}
+}
+
 func TestBlendOpaqueLayerFastPathPromotesAlpha(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	comp.frameWidth = 2
@@ -1010,20 +1053,21 @@ func TestCompositor_NativeSourceDimensionsPreferVideoChipBelowVoodoo(t *testing.
 }
 
 type mockVideoOutput struct {
-	mu             sync.Mutex
-	started        bool
-	config         DisplayConfig
-	setCalls       int
-	updateCalls    int
-	regionCalls    int
-	lastFrame      []byte
-	lastRegion     []byte
-	lastRegionRect FrameDirtyRect
-	updateErr      error
-	setErr         error
-	updateCallback func()
-	setCallback    func()
-	refreshRate    int
+	mu              sync.Mutex
+	started         bool
+	config          DisplayConfig
+	setCalls        int
+	updateCalls     int
+	regionCalls     int
+	lastFrame       []byte
+	lastUpdateInput []byte
+	lastRegion      []byte
+	lastRegionRect  FrameDirtyRect
+	updateErr       error
+	setErr          error
+	updateCallback  func()
+	setCallback     func()
+	refreshRate     int
 }
 
 type mockHardwareVideoOutput struct {
@@ -1089,6 +1133,7 @@ func (m *mockVideoOutput) GetDisplayConfig() DisplayConfig {
 func (m *mockVideoOutput) UpdateFrame(buffer []byte) error {
 	m.mu.Lock()
 	m.updateCalls++
+	m.lastUpdateInput = buffer
 	m.lastFrame = append(m.lastFrame[:0], buffer...)
 	err := m.updateErr
 	cb := m.updateCallback
@@ -1346,6 +1391,121 @@ func TestCompositor_SoftwareLayerCollectionBorrowsSourceFrame(t *testing.T) {
 	}
 	if len(layers[0].Buffer) == 0 || &layers[0].Buffer[0] != &src.frame[0] {
 		t.Fatal("software layer collection copied source frame; want borrowed buffer")
+	}
+}
+
+func TestCompositor_SoftwareOutputUsesFrameLeaseHandoff(t *testing.T) {
+	t.Setenv("IE_VIDEO_FRAME_LEASES", "1")
+	out := newMockVideoOutput()
+	if err := out.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	comp := NewVideoCompositor(out)
+	comp.LockResolution(2, 1)
+	src := &mockOpaqueSource{layer: 0, w: 2, h: 1, frame: solidTestFrame(2, 1, 1, 2, 3, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	comp.composite()
+
+	comp.mu.Lock()
+	finalFrame := comp.finalFrame
+	finalLease := comp.finalFrameLease
+	outputBuf := comp.outputBuf
+	comp.mu.Unlock()
+	if finalLease == nil {
+		t.Fatal("software compositor did not retain a frame lease")
+	}
+
+	out.mu.Lock()
+	updateCalls := out.updateCalls
+	handoff := out.lastUpdateInput
+	out.mu.Unlock()
+	if updateCalls != 1 {
+		t.Fatalf("UpdateFrame calls = %d, want 1", updateCalls)
+	}
+	if len(handoff) == 0 || len(finalFrame) == 0 {
+		t.Fatal("missing software output handoff frame")
+	}
+	if &handoff[0] != &finalFrame[0] {
+		t.Fatal("software output handoff copied away from the lease-backed final frame")
+	}
+	if len(outputBuf) > 0 && &handoff[0] == &outputBuf[0] {
+		t.Fatal("software output handoff used legacy outputBuf copy")
+	}
+	if got := testPixel(handoff, 0, 0, 2); got != [4]byte{1, 2, 3, 0xFF} {
+		t.Fatalf("pixel = %v, want source colour", got)
+	}
+}
+
+func TestCompositor_SoftwareOutputLeaseKillSwitchUsesCopyBuffer(t *testing.T) {
+	t.Setenv("IE_VIDEO_FRAME_LEASES", "0")
+	out := newMockVideoOutput()
+	if err := out.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	comp := NewVideoCompositor(out)
+	comp.LockResolution(1, 1)
+	src := &mockOpaqueSource{layer: 0, w: 1, h: 1, frame: solidTestFrame(1, 1, 4, 5, 6, 0xFF)}
+	src.enabled.Store(true)
+	comp.RegisterSource(src)
+
+	comp.composite()
+
+	comp.mu.Lock()
+	finalLease := comp.finalFrameLease
+	outputBuf := comp.outputBuf
+	comp.mu.Unlock()
+	if finalLease != nil {
+		t.Fatal("software compositor used a frame lease while IE_VIDEO_FRAME_LEASES=0")
+	}
+
+	out.mu.Lock()
+	handoff := out.lastUpdateInput
+	out.mu.Unlock()
+	if len(handoff) == 0 || len(outputBuf) == 0 {
+		t.Fatal("missing software output handoff frame")
+	}
+	if &handoff[0] != &outputBuf[0] {
+		t.Fatal("software output handoff did not use legacy outputBuf copy with leases disabled")
+	}
+}
+
+func TestCompositor_RenderLayersSnapshotKeepsSoftwareFrameLease(t *testing.T) {
+	t.Setenv("IE_VIDEO_FRAME_LEASES", "1")
+	comp := NewVideoCompositor(nil)
+	comp.LockResolution(1, 1)
+	defer comp.clearSoftwareFrameLeaseLocked()
+
+	liveLayer := CompositorFrameLayer{
+		SourceWidth:  1,
+		SourceHeight: 1,
+		DestWidth:    1,
+		DestHeight:   1,
+		Buffer:       []byte{1, 2, 3, 0xFF},
+	}
+	comp.renderLayersSoftwareLocked([]CompositorFrameLayer{liveLayer})
+	liveLease := comp.finalFrameLease
+	if liveLease == nil {
+		t.Fatal("software render did not acquire a frame lease")
+	}
+	livePtr := &comp.finalFrame[0]
+
+	snapshotLayer := liveLayer
+	snapshotLayer.Buffer = []byte{7, 8, 9, 0xFF}
+	snapshot := comp.renderLayersSnapshotLocked([]CompositorFrameLayer{snapshotLayer})
+
+	if comp.finalFrameLease != liveLease {
+		t.Fatal("snapshot render replaced the live software frame lease")
+	}
+	if &comp.finalFrame[0] != livePtr {
+		t.Fatal("snapshot render replaced the live software frame buffer")
+	}
+	if got := testPixel(comp.finalFrame, 0, 0, 1); got != [4]byte{1, 2, 3, 0xFF} {
+		t.Fatalf("live frame changed to %v", got)
+	}
+	if got := testPixel(snapshot, 0, 0, 1); got != [4]byte{7, 8, 9, 0xFF} {
+		t.Fatalf("snapshot = %v, want snapshot layer", got)
 	}
 }
 

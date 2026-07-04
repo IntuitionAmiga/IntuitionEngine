@@ -40,6 +40,8 @@ type X86JITContext struct {
 	_pad2             uint32  // 132: alignment
 	RTSCache1Addr     uintptr // 136: MRU entry 1 - chain entry address
 	RTSCache1RegMap   uint64  // 144: MRU entry 1 - target block's regMap
+	InvalAddr         uint32  // 152: self-modifying write address
+	InvalSize         uint32  // 156: self-modifying write size in bytes
 }
 
 // X86JITContext field offsets (must match struct layout above)
@@ -66,6 +68,8 @@ const (
 	x86CtxOffRTSCache1PC       = 128
 	x86CtxOffRTSCache1Addr     = 136
 	x86CtxOffRTSCache1RegMap   = 144
+	x86CtxOffInvalAddr         = 152
+	x86CtxOffInvalSize         = 156
 )
 
 // x86JitAvailable is set to true at init time on platforms that support x86 JIT.

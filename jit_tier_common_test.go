@@ -72,4 +72,100 @@ func TestTierController_X86_DefaultThresholds(t *testing.T) {
 			x86TierController.Thresholds.IOBailMaxNumerator,
 			x86TierController.Thresholds.IOBailMaxDenominator)
 	}
+	if x86TierController.Thresholds.RegionMinBlocks != 3 {
+		t.Errorf("x86 region floor = %d, want legacy 3", x86TierController.Thresholds.RegionMinBlocks)
+	}
+}
+
+func TestTierController_RegionFloorPerBackend(t *testing.T) {
+	cases := []struct {
+		name       string
+		controller *TierController
+		wantFloor  uint32
+	}{
+		{"x86", x86TierController, 3},
+		{"ie64", ie64TierController, 2},
+		{"m68k", m68kTierController, 2},
+		{"6502", p65TierController, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.controller.Thresholds.RegionMinBlocks; got != tc.wantFloor {
+				t.Fatalf("RegionMinBlocks = %d, want %d", got, tc.wantFloor)
+			}
+			if tc.controller.ShouldPromoteRegion(int(tc.wantFloor - 1)) {
+				t.Fatalf("admitted %d-block region below floor %d", tc.wantFloor-1, tc.wantFloor)
+			}
+			if !tc.controller.ShouldPromoteRegion(int(tc.wantFloor)) {
+				t.Fatalf("rejected %d-block region at floor", tc.wantFloor)
+			}
+		})
+	}
+}
+
+func TestTierController_LegacyParityAllBackends(t *testing.T) {
+	cases := []struct {
+		name       string
+		controller *TierController
+		threshold  uint32
+	}{
+		{"x86", x86TierController, 64},
+		{"ie64", ie64TierController, 64},
+		{"m68k", m68kTierController, 64},
+		{"6502", p65TierController, 32},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.controller.ShouldPromote(0, tc.threshold-1, 0, 0) {
+				t.Fatal("promoted below exec threshold")
+			}
+			if !tc.controller.ShouldPromote(0, tc.threshold, 0, 0) {
+				t.Fatal("rejected clean block at exec threshold")
+			}
+			if tc.controller.ShouldPromote(0, tc.threshold, tc.threshold/4, 0) {
+				t.Fatal("promoted block at legacy 25 percent deopt boundary")
+			}
+			if !tc.controller.ShouldPromote(0, tc.threshold, tc.threshold/4-1, 0) {
+				t.Fatal("rejected block below legacy deopt boundary")
+			}
+		})
+	}
+}
+
+func TestTierController_DeoptParity(t *testing.T) {
+	cases := []struct {
+		name                              string
+		tier                              int
+		execCount, ioBails, lastPromoteAt uint32
+	}{
+		{"cold", 0, 10, 0, 0},
+		{"hot-clean", 0, 64, 0, 0},
+		{"borderline", 0, 64, 16, 0},
+		{"under-borderline", 0, 64, 15, 0},
+		{"already-tier2", 1, 1024, 0, 0},
+		{"already-promoted", 0, 1024, 0, 64},
+		{"hot-iobound", 0, 100, 30, 0},
+		{"hot-not-iobound", 0, 100, 24, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var deopts DeoptStatsSnapshot
+			deopts.Counts[DeoptMMIO] = uint64(tc.ioBails)
+			deopts.Total = uint64(tc.ioBails)
+			got := x86TierController.ShouldPromoteDeopt(tc.tier, tc.execCount, tc.lastPromoteAt, deopts)
+			want := legacyX86ShouldPromote(tc.tier, tc.execCount, tc.ioBails, tc.lastPromoteAt)
+			if got != want {
+				t.Fatalf("ShouldPromoteDeopt = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestTierController_AlwaysDeoptNeverPromoted(t *testing.T) {
+	var deopts DeoptStatsSnapshot
+	deopts.Counts[DeoptUnsupported] = uint64(x86Tier2Threshold)
+	deopts.Total = uint64(x86Tier2Threshold)
+	if x86TierController.ShouldPromoteDeopt(0, x86Tier2Threshold, 0, deopts) {
+		t.Fatal("always-deopting block promoted")
+	}
 }

@@ -247,6 +247,85 @@ func BenchmarkM68K_MemCopy_JIT(b *testing.B) {
 	ReportMIPSHostNormalized(b, totalInstrs)
 }
 
+func buildM68KMixedProgram(cpu *M68KCPU) (startPC uint32, instrPerIter int) {
+	startPC = 0x1000
+	pc := startPC
+
+	w := func(ops ...uint16) {
+		for _, op := range ops {
+			cpu.memory[pc] = byte(op >> 8)
+			cpu.memory[pc+1] = byte(op)
+			pc += 2
+		}
+	}
+
+	for i := uint32(0); i < uint32(m68kBenchIterations)*4; i += 4 {
+		addr := m68kBenchDataAddr + i
+		value := i + 1
+		cpu.memory[addr] = byte(value >> 24)
+		cpu.memory[addr+1] = byte(value >> 16)
+		cpu.memory[addr+2] = byte(value >> 8)
+		cpu.memory[addr+3] = byte(value)
+	}
+
+	w(0x41F9, uint16(m68kBenchDataAddr>>16), uint16(m68kBenchDataAddr&0xFFFF)) // LEA data,A0
+	w(0x7000)                                                                  // MOVEQ #0,D0
+	w(0x3E3C, uint16(m68kBenchIterations-1))                                   // MOVE.W #iter-1,D7
+
+	loopTop := pc
+	w(0x2210) // MOVE.L (A0),D1
+	w(0xD081) // ADD.L D1,D0
+	w(0x5888) // ADDQ.L #4,A0
+	disp := int16(int32(loopTop) - int32(pc) - 2)
+	w(0x51CF, uint16(disp)) // DBRA D7,loop
+	w(0x4E72, 0x2700)       // STOP
+
+	return startPC, 4
+}
+
+func BenchmarkM68K_Mixed_Interpreter(b *testing.B) {
+	cpu := setupM68KJITBenchCPU()
+	startPC, instrPerIter := buildM68KMixedProgram(cpu)
+	totalInstrs := m68kBenchIterations * instrPerIter
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.AddrRegs[0] = m68kBenchDataAddr
+		cpu.DataRegs[0] = 0
+		cpu.DataRegs[7] = m68kBenchIterations - 1
+		runM68KBenchInterpreter(cpu, startPC)
+	}
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
+}
+
+func BenchmarkM68K_Mixed_JIT(b *testing.B) {
+	if !m68kJitAvailable {
+		b.Skip("M68K JIT not available on this platform")
+	}
+	cpu := setupM68KJITBenchCPU()
+	startPC, instrPerIter := buildM68KMixedProgram(cpu)
+	totalInstrs := m68kBenchIterations * instrPerIter
+
+	cpu.m68kJitEnabled = true
+	cpu.m68kJitForceNative = true
+	cpu.m68kJitPersist = true
+	cpu.AddrRegs[0] = m68kBenchDataAddr
+	cpu.DataRegs[0] = 0
+	cpu.DataRegs[7] = m68kBenchIterations - 1
+	runM68KBenchJIT(cpu, startPC)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.AddrRegs[0] = m68kBenchDataAddr
+		cpu.DataRegs[0] = 0
+		cpu.DataRegs[7] = m68kBenchIterations - 1
+		runM68KBenchJIT(cpu, startPC)
+	}
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
+}
+
 // ===========================================================================
 // Call Benchmark: Subroutine call/return overhead
 // ===========================================================================

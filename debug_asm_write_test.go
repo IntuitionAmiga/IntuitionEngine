@@ -107,7 +107,7 @@ func TestWriteAssembledCodeRAMFlushesIE64JIT(t *testing.T) {
 		t.Cleanup(execMem.Free)
 	}
 
-	beforeInvalidations := globalIE64TurboStats.invalidations.Load()
+	beforeInvalidations := globalIE64JITStats.invalidations.Load()
 	want := []byte{0xE0, 0, 0, 0, 0, 0, 0, 0}
 	if err := cpu.WriteAssembledCodeRAM(0x1000, want); err != nil {
 		t.Fatalf("WriteAssembledCodeRAM: %v", err)
@@ -125,7 +125,7 @@ func TestWriteAssembledCodeRAMFlushesIE64JIT(t *testing.T) {
 	if execMem != nil && execMem.Used() != 0 {
 		t.Fatalf("execMem Used = %d, want 0", execMem.Used())
 	}
-	if got := globalIE64TurboStats.invalidations.Load(); got != beforeInvalidations+1 {
+	if got := globalIE64JITStats.invalidations.Load(); got != beforeInvalidations+1 {
 		t.Fatalf("invalidations = %d, want %d", got, beforeInvalidations+1)
 	}
 }
@@ -138,7 +138,7 @@ func TestWriteAssembledCodeRAMFailedWriteDoesNotFlushJIT(t *testing.T) {
 	cpu.jitCache.Put(&JITBlock{startPC: 0x1000, endPC: 0x1008})
 	cpu.jitCtx = newJITContext(cpu)
 	cpu.jitCtx.RTSCache0PC = 0x1000
-	beforeInvalidations := globalIE64TurboStats.invalidations.Load()
+	beforeInvalidations := globalIE64JITStats.invalidations.Load()
 
 	err := cpu.WriteAssembledCodeRAM(^uint64(0)-3, []byte{0xE0, 0, 0, 0, 0, 0, 0, 0})
 	if err == nil {
@@ -150,7 +150,7 @@ func TestWriteAssembledCodeRAMFailedWriteDoesNotFlushJIT(t *testing.T) {
 	if cpu.jitCtx.RTSCache0PC != 0x1000 {
 		t.Fatalf("RTS cache changed after failed write: %#x", cpu.jitCtx.RTSCache0PC)
 	}
-	if got := globalIE64TurboStats.invalidations.Load(); got != beforeInvalidations {
+	if got := globalIE64JITStats.invalidations.Load(); got != beforeInvalidations {
 		t.Fatalf("invalidations changed after failed write: got %d want %d", got, beforeInvalidations)
 	}
 }

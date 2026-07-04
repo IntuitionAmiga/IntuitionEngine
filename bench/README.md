@@ -1,8 +1,12 @@
-# 6502 Interpreter Profiling Artifacts
+# 6502 Interpreter Profiling Artefacts
 
 This directory holds the CPU profiles captured between the legacy and the
 fast 6502 interpreter paths, produced to satisfy verification step 11 of the
-6502 optimization plan:
+6502 optimisation plan:
+
+For benchstat before/after evidence tied to current performance items, use
+[`benchmarks/README.md`](../benchmarks/README.md). This directory remains for
+pprof captures and profiling notes.
 
 ```
 go test -tags headless -bench "Benchmark6502" -cpuprofile cpu.prof
@@ -10,11 +14,11 @@ go test -tags headless -bench "Benchmark6502" -cpuprofile cpu.prof
 
 ## Files
 
-- `interp_baseline.pprof` — cpu profile with `Execute()` forced to
+- `interp_baseline.pprof` - cpu profile with `Execute()` forced to
   `executeLegacy()` (the original generic interpreter) for the comparison
   benchmarks `Benchmark6502_{ALU,Memory,Call,Branch,Mixed}_Interpreter` at
   `-benchtime 2s`.
-- `interp_final.pprof` — cpu profile with `Execute()` routed to
+- `interp_final.pprof` - cpu profile with `Execute()` routed to
   `ExecuteFast()` (the full validation-subset inline dispatch) on the same
   benchmarks and the same settings.
 
@@ -55,7 +59,7 @@ go test -tags headless -run '^$' \
 
 ## Top-cum summary (from `go tool pprof -top -cum`)
 
-### `interp_baseline.pprof` — Duration 15.66s, Total samples 15.69s
+### `interp_baseline.pprof` - Duration 15.66s, Total samples 15.69s
 
 ```
      flat  flat%   sum%        cum   cum%
@@ -71,10 +75,10 @@ go test -tags headless -run '^$' \
 
 The legacy path spends ~40% of total time in `readByte` + `ReadFast` (every
 byte fetch is a function call through the adapter) and dispatches each
-instruction through `opcodeTable[opcode](cpu)` — visible as the scattered
+instruction through `opcodeTable[opcode](cpu)` - visible as the scattered
 `op6502_*` symbols.
 
-### `interp_final.pprof` — Duration 12.63s, Total samples 12.66s
+### `interp_final.pprof` - Duration 12.63s, Total samples 12.66s
 
 ```
      flat  flat%   sum%        cum   cum%
@@ -86,10 +90,10 @@ instruction through `opcodeTable[opcode](cpu)` — visible as the scattered
 `ExecuteFast` holds ~78% of flat time, which means the dispatch + addressing
 mode decoding + ALU bodies all ran inside the single big switch with minimal
 function-call overhead. `adc6502Binary` shows up as the only visible ALU
-helper (3.87%) — the other ALU helpers (`cmp6502`, `asl6502`, etc.) are
+helper (3.87%) - the other ALU helpers (`cmp6502`, `asl6502`, etc.) are
 tiny enough that Go's inliner folded them fully into the switch and the
 sampler never attributed a sample back to them. `sync/atomic.(*Bool).Load`
-is now 16% of time — the per-instruction polls for `resetting`, `rdyLine`,
+is now 16% of time - the per-instruction polls for `resetting`, `rdyLine`,
 `nmiPending`, `irqPending`, and `running` are a real fraction of the fast
 loop and a plausible target for future batching.
 

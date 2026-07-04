@@ -270,19 +270,31 @@ func (eo *EbitenOutput) UpdateHardwareCompositorFrame(update CompositorFrameUpda
 	eo.hwHasContent = update.HasContent
 	if !update.HasContent {
 		for i := range eo.hwLayers {
-			eo.hwLayers[i].CompositorFrameLayer = CompositorFrameLayer{}
+			eo.releaseHardwareLayerLocked(i)
 		}
 		return nil
 	}
 	eo.resizeHardwareLayerSlotsLocked(len(update.Layers))
 	for i, layer := range update.Layers {
-		buf := eo.hwLayers[i].Buffer
-		eo.hwLayers[i].CompositorFrameLayer = layer
 		want := layer.SourceWidth * layer.SourceHeight * BYTES_PER_PIXEL
-		eo.hwLayers[i].Buffer = stageHardwareCompositorBuffer(buf, layer.Buffer, want)
+		oldBuf := eo.hwLayers[i].Buffer
+		oldHadLease := eo.hwLayers[i].Lease != nil
+		if layer.Lease != nil && !layer.Lease.Retain() {
+			layer.Lease = nil
+		}
+		eo.releaseHardwareLayerLocked(i)
+		if oldHadLease {
+			oldBuf = nil
+		}
+		eo.hwLayers[i].CompositorFrameLayer = layer
+		if layer.Lease != nil {
+			eo.hwLayers[i].Buffer = layer.Buffer[:want]
+		} else {
+			eo.hwLayers[i].Buffer = stageHardwareCompositorBuffer(oldBuf, layer.Buffer, want)
+		}
 	}
 	for i := len(update.Layers); i < len(eo.hwLayers); i++ {
-		eo.hwLayers[i].CompositorFrameLayer = CompositorFrameLayer{}
+		eo.releaseHardwareLayerLocked(i)
 	}
 	return nil
 }
@@ -332,8 +344,18 @@ func (eo *EbitenOutput) clearHardwareCompositorLocked() {
 	eo.hwPresentationH = 0
 	eo.hwHasContent = false
 	for i := range eo.hwLayers {
-		eo.hwLayers[i].CompositorFrameLayer = CompositorFrameLayer{}
+		eo.releaseHardwareLayerLocked(i)
 	}
+}
+
+func (eo *EbitenOutput) releaseHardwareLayerLocked(i int) {
+	if i < 0 || i >= len(eo.hwLayers) {
+		return
+	}
+	if lease := eo.hwLayers[i].Lease; lease != nil {
+		lease.Release()
+	}
+	eo.hwLayers[i].CompositorFrameLayer = CompositorFrameLayer{}
 }
 
 func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {

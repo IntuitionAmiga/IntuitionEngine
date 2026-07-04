@@ -20,20 +20,18 @@
 //   - Reset is explicit; benchmark harnesses call Reset before the
 //     measurement window, Snapshot after. No implicit reset on Read.
 //
-// What's deliberately out of scope for slice 3b:
+// What's deliberately out of scope:
 //   - ioWaitNs: each backend has different wait boundaries (x86's
 //     tryFastMMIOPollLoop, M68K's GEMDOS intercept, IE64's MMIO bails).
-//     Mixing them in one counter loses meaning. Add per-backend in
-//     a follow-up slice.
-//   - Cross-backend wiring: only the x86 CPU is wired here today.
-//     Other backends get the field hookup when their Metric 2 workload
-//     is recorded.
+//     Mixing them in one counter loses meaning. Use the deopt taxonomy
+//     and subsystem counters when a workload needs that split.
 
 package main
 
 import (
 	"os"
 	"sync/atomic"
+	"time"
 )
 
 // PerfAcct holds the JIT-vs-interpreter time split for one CPU
@@ -107,6 +105,24 @@ func (p *PerfAcct) AddInterp(ns int64) {
 		return
 	}
 	p.interpNs.Add(ns)
+}
+
+// AddInterpSince records elapsed interpreter/fallback time when accounting is
+// enabled. Callers pass a zero time when the gate is off; the helper returns
+// before observing it, keeping the disabled path cheap.
+func (p *PerfAcct) AddInterpSince(start time.Time) {
+	if !perfAcctOn {
+		return
+	}
+	p.interpNs.Add(time.Since(start).Nanoseconds())
+}
+
+// AddJitSince records elapsed native-code time when accounting is enabled.
+func (p *PerfAcct) AddJitSince(start time.Time) {
+	if !perfAcctOn {
+		return
+	}
+	p.jitNs.Add(time.Since(start).Nanoseconds())
 }
 
 // perfAcctOn is read at process start from IE_PERF_ACCT. The value

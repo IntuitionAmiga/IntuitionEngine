@@ -126,6 +126,27 @@ func (s *SFXTrigger) TickSample() {
 	s.active.Store(anyActive)
 }
 
+func (s *SFXTrigger) TickBlock(samples int) {
+	if samples <= 0 {
+		return
+	}
+	if !s.active.Load() {
+		if s.clearMix.Swap(false) {
+			s.mixMu.Lock()
+			s.mix = 0
+			s.mixMu.Unlock()
+		}
+		return
+	}
+	for range samples {
+		s.TickSample()
+	}
+}
+
+func (s *SFXTrigger) CanTickBlockForReadSamples() bool {
+	return !s.active.Load()
+}
+
 func (s *SFXTrigger) MixSample() float32 {
 	s.mixMu.Lock()
 	defer s.mixMu.Unlock()

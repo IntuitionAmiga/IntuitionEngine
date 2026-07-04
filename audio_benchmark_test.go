@@ -107,6 +107,21 @@ func BenchmarkSoundChip_GenerateSample(b *testing.B) {
 	}
 }
 
+func BenchmarkSoundChip_ReadSamples(b *testing.B) {
+	chip := createBenchmarkChip(b)
+	setupBenchmarkChannel(chip, 0, WAVE_SINE, 440.0)
+	buf := make([]float32, 256)
+	chip.ReadSamples(buf)
+
+	b.SetBytes(int64(len(buf) * 4))
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		chip.ReadSamples(buf)
+	}
+}
+
 // BenchmarkSoundChip_GenerateSample_Square benchmarks square wave generation
 // which includes polyBLEP anti-aliasing
 func BenchmarkSoundChip_GenerateSample_Square(b *testing.B) {

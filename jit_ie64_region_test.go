@@ -157,6 +157,33 @@ func TestIE64FormRegion_BuildsTwoBlockChain(t *testing.T) {
 	}
 }
 
+func TestIE64FormRegionMMU_BuildsVirtualChain(t *testing.T) {
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+
+	putIE64NOP(cpu.memory, 0x100)
+	putIE64BRA(cpu.memory, 0x108, 0x200)
+	putIE64NOP(cpu.memory, 0x200)
+	putIE64RTS(cpu.memory, 0x208)
+
+	region := ie64FormRegionMMU(cpu, 0x100)
+	if region == nil {
+		t.Fatal("expected non-nil MMU region for valid virtual chain")
+	}
+	if len(region.blocks) != 2 || region.blockPCs[0] != 0x100 || region.blockPCs[1] != 0x200 {
+		t.Fatalf("MMU region shape mismatch: blockPCs=%v len(blocks)=%d", region.blockPCs, len(region.blocks))
+	}
+}
+
+func TestMarkIE64MMUBails_Atomic(t *testing.T) {
+	instrs := []JITInstr{{opcode: OP_CAS}}
+	markIE64MMUBails(instrs)
+	if !instrs[0].mmuBail {
+		t.Fatal("OP_CAS was not marked for MMU helper bail")
+	}
+}
+
 // TestIE64CompileRegion_BuildsSingleNativeBlock exercises
 // ie64CompileRegion end-to-end: scan + form + compile, then verify
 // the returned JITBlock spans the region's PC range and was admitted
@@ -283,18 +310,26 @@ func TestIE64CompileRegion_PopulatesCoveredRanges_NonMonotonic(t *testing.T) {
 	}
 }
 
-func TestIE64TurboEnabled_KillSwitch(t *testing.T) {
-	t.Setenv("IE64_JIT_TURBO", "0")
-	if ie64TurboEnabled() {
-		t.Fatal("IE64_JIT_TURBO=0 should disable turbo promotion")
+func TestIE64RegionPromotionEnabled_KillSwitch(t *testing.T) {
+	t.Setenv("IE64_JIT_REGIONS", "0")
+	if ie64RegionPromotionEnabled() {
+		t.Fatal("IE64_JIT_REGIONS=0 should disable region promotion")
 	}
-	t.Setenv("IE64_JIT_TURBO", "1")
-	if !ie64TurboEnabled() {
-		t.Fatal("IE64_JIT_TURBO=1 should enable turbo promotion")
+	t.Setenv("IE64_JIT_REGIONS", "1")
+	if !ie64RegionPromotionEnabled() {
+		t.Fatal("IE64_JIT_REGIONS=1 should enable region promotion")
+	}
+	t.Setenv("IE64_JIT_REGION_MMU", "")
+	if ie64RegionMMUEnabled() {
+		t.Fatal("IE64_JIT_REGION_MMU should default off")
+	}
+	t.Setenv("IE64_JIT_REGION_MMU", "1")
+	if !ie64RegionMMUEnabled() {
+		t.Fatal("IE64_JIT_REGION_MMU=1 should enable MMU region promotion")
 	}
 }
 
-func TestIE64TurboPlanner_WeightsHotSpilledRegs(t *testing.T) {
+func TestIE64RegionPlanner_WeightsHotSpilledRegs(t *testing.T) {
 	mem := make([]byte, 0x1000)
 	// R10 is a hot accumulator, R8 is a hot address base, and both are
 	// spilled in Tier 1. The planner should select them before cold regs.
@@ -309,7 +344,7 @@ func TestIE64TurboPlanner_WeightsHotSpilledRegs(t *testing.T) {
 	if region == nil {
 		t.Fatal("expected region")
 	}
-	plan := ie64PlanTurboRegion(region)
+	plan := ie64PlanRegion(region)
 	if len(plan.residentGuestRegs) == 0 {
 		t.Fatal("planner chose no resident guest registers")
 	}
@@ -334,7 +369,7 @@ func TestIE64TurboPlanner_WeightsHotSpilledRegs(t *testing.T) {
 	}
 }
 
-func TestIE64CompileRegion_TurboStats(t *testing.T) {
+func TestIE64CompileRegion_RegionStats(t *testing.T) {
 	mem := make([]byte, 0x1000)
 	putIE64Instr(mem, 0x100, OP_ADD, 10, 10, 11, 0)
 	putIE64BRA(mem, 0x108, 0x200)
@@ -352,12 +387,44 @@ func TestIE64CompileRegion_TurboStats(t *testing.T) {
 	}
 	defer execMem.Free()
 
-	before := ie64TurboStatsLoad()
-	if _, err := ie64CompileRegion(region, execMem, mem); err != nil {
+	before := ie64JITStatsLoad()
+	block, err := ie64CompileRegion(region, execMem, mem)
+	if err != nil {
 		t.Fatalf("ie64CompileRegion: %v", err)
 	}
-	after := ie64TurboStatsLoad().Sub(before)
+	after := ie64JITStatsLoad().Sub(before)
 	if after.spills == 0 {
 		t.Fatalf("spills delta = 0, want planner spill estimate; stats=%+v", after)
+	}
+	if block.regionSpillOps == 0 {
+		t.Fatal("compiled region block did not record spill pressure")
+	}
+	if block.regionRegMask&(1<<10) == 0 {
+		t.Fatalf("regionRegMask = 0x%08X, want hot R10 recorded", block.regionRegMask)
+	}
+}
+
+func TestIE64CompileRegion_RejectsOverSpillLimit(t *testing.T) {
+	t.Setenv("IE64_JIT_REGION_MAX_SPILLS", "0")
+
+	mem := make([]byte, 0x1000)
+	putIE64Instr(mem, 0x100, OP_ADD, 10, 10, 11, 0)
+	putIE64BRA(mem, 0x108, 0x200)
+	putIE64Instr(mem, 0x200, OP_ADD, 10, 10, 11, 0)
+	putIE64RTS(mem, 0x208)
+
+	region := ie64FormRegion(0x100, mem)
+	if region == nil {
+		t.Fatal("expected region")
+	}
+
+	execMem, err := AllocExecMem(64 * 1024)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+
+	if _, err := ie64CompileRegion(region, execMem, mem); err != errIE64RegionSpillPressure {
+		t.Fatalf("ie64CompileRegion error = %v, want %v", err, errIE64RegionSpillPressure)
 	}
 }

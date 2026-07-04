@@ -258,6 +258,53 @@ func TestX86JIT_Exec_MMIOByteWriteFallbackFastPath(t *testing.T) {
 	}
 }
 
+func TestX86JIT_Exec_MMIOByteWriteFallbackJITUsesCanonicalRegs(t *testing.T) {
+	bus := NewMachineBus()
+	writes := map[uint32]uint8{}
+	bus.MapIO(0xF2100, 0xF2101, nil, nil)
+	bus.MapIOByte(0xF2100, 0xF2101, func(addr uint32, value uint8) {
+		writes[addr] = value
+	})
+
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	cpu.memory = adapter.GetMemory()
+	cpu.x86JitIOBitmap = buildX86IOBitmap(adapter, bus)
+	cpu.EIP = 0x1000
+	cpu.EAX = 0xDEADBEEF
+	cpu.jitRegs[0] = 0x11111111
+
+	code := []byte{
+		0xB0, 0x7F, // MOV AL, 0x7F
+		0xA2, 0x00, 0x21, 0x0F, 0x00, // MOV [0xF2100], AL
+		0xB4, 0x12, // MOV AH, 0x12
+		0x88, 0x25, 0x01, 0x21, 0x0F, 0x00, // MOV [0xF2101], AH
+	}
+	for i, b := range code {
+		cpu.memory[cpu.EIP+uint32(i)] = b
+	}
+
+	executed, ok := cpu.tryFastMMIOWriteFallbackJIT()
+	if !ok {
+		t.Fatal("JIT fast MMIO fallback returned false")
+	}
+	if executed != 4 {
+		t.Fatalf("executed = %d, want 4", executed)
+	}
+	if got := writes[0xF2100]; got != 0x7F {
+		t.Fatalf("[0xF2100] = 0x%02X, want 0x7F from jitRegs AL", got)
+	}
+	if got := writes[0xF2101]; got != 0x12 {
+		t.Fatalf("[0xF2101] = 0x%02X, want 0x12 from jitRegs AH", got)
+	}
+	if cpu.jitRegs[0] != 0x1111127F {
+		t.Fatalf("jitRegs[EAX] = 0x%08X, want 0x1111127F", cpu.jitRegs[0])
+	}
+	if cpu.EAX != 0xDEADBEEF {
+		t.Fatalf("named EAX = 0x%08X, want stale value to prove no shuttle", cpu.EAX)
+	}
+}
+
 func TestX86JIT_Exec_MMIOByteWriteFallbackStopsOnRaisedIRQ(t *testing.T) {
 	bus := NewMachineBus()
 	bus.MapIO(0xF2100, 0xF2100, nil, nil)

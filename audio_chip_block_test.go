@@ -28,6 +28,38 @@ func (p *blockProbe) MixSample() float32 {
 	return float32(p.pos) * 0.0001
 }
 
+type readSamplesBlockProbe struct {
+	samples int
+	blocks  int
+}
+
+func (p *readSamplesBlockProbe) TickSample() {
+	p.samples++
+}
+
+func (p *readSamplesBlockProbe) TickBlock(samples int) {
+	p.blocks++
+	p.samples += samples
+}
+
+func (p *readSamplesBlockProbe) CanTickBlockForReadSamples() bool {
+	return true
+}
+
+type unsafeBlockProbe struct {
+	samples int
+	blocks  int
+}
+
+func (p *unsafeBlockProbe) TickSample() {
+	p.samples++
+}
+
+func (p *unsafeBlockProbe) TickBlock(samples int) {
+	p.blocks++
+	p.samples += samples
+}
+
 func configureBlockReadChip(chip *SoundChip) {
 	chip.HandleRegisterWrite(AUDIO_CTRL, 1)
 	chip.HandleRegisterWrite(FLEX_CH0_BASE+FLEX_OFF_FREQ, 440*256)
@@ -80,6 +112,40 @@ func TestReadSamplesBlockMatchesPerSample(t *testing.T) {
 			t.Fatalf("ReadSamples(%d) returned %d", n, read)
 		}
 		assertFloat32BitsEqual(t, got, want)
+	}
+}
+
+func TestReadSamples_UsesSafeTickerBlockGraph(t *testing.T) {
+	chip := newTestSoundChip()
+	configureBlockReadChip(chip)
+	probe := &readSamplesBlockProbe{}
+	chip.RegisterSampleTicker("safe-block", probe)
+
+	got := make([]float32, audioBlockSegmentMax*2+3)
+	chip.ReadSamples(got)
+
+	if probe.samples != len(got) {
+		t.Fatalf("ticker samples = %d, want %d", probe.samples, len(got))
+	}
+	if probe.blocks != 3 {
+		t.Fatalf("TickBlock calls = %d, want 3", probe.blocks)
+	}
+}
+
+func TestReadSamples_UnsafeBlockTickerFallsBackToSamples(t *testing.T) {
+	chip := newTestSoundChip()
+	configureBlockReadChip(chip)
+	probe := &unsafeBlockProbe{}
+	chip.RegisterSampleTicker("unsafe-block", probe)
+
+	got := make([]float32, 17)
+	chip.ReadSamples(got)
+
+	if probe.samples != len(got) {
+		t.Fatalf("ticker samples = %d, want %d", probe.samples, len(got))
+	}
+	if probe.blocks != 0 {
+		t.Fatalf("TickBlock calls = %d, want 0", probe.blocks)
 	}
 }
 
@@ -263,6 +329,22 @@ func TestReadSamples_ZeroLenAndNil(t *testing.T) {
 	}
 }
 
+func TestReadSamples_ZeroAllocsSteadyState(t *testing.T) {
+	chip := newTestSoundChip()
+	configureBlockReadChip(chip)
+	buf := make([]float32, 256)
+	chip.ReadSamples(buf)
+
+	allocs := testing.AllocsPerRun(100, func() {
+		if got := chip.ReadSamples(buf); got != len(buf) {
+			t.Fatalf("ReadSamples returned %d, want %d", got, len(buf))
+		}
+	})
+	if allocs != 0 {
+		t.Fatalf("ReadSamples steady-state allocations = %.2f, want 0", allocs)
+	}
+}
+
 func TestReadSample_StillWorks_Compat(t *testing.T) {
 	perSample := newTestSoundChip()
 	block := newTestSoundChip()
@@ -284,6 +366,7 @@ func BenchmarkReadSamples_64Segment(b *testing.B) {
 	configureBlockReadChip(chip)
 	buf := make([]float32, audioBlockSegmentMax)
 	b.SetBytes(int64(len(buf) * 4))
+	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
 		chip.ReadSamples(buf)

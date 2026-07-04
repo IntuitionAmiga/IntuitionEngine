@@ -116,7 +116,8 @@ type CPU_X86 struct {
 	// Counters increment only when IE_PERF_ACCT=1 at process start;
 	// otherwise the AddJit/AddInterp helpers fast-fall to no-op.
 	// Snapshot/Reset are called by the harness, not by hot paths.
-	perfAcct PerfAcct
+	perfAcct   PerfAcct
+	deoptStats DeoptStats
 
 	// Deterministic-step budget for the shadow-parity harness. The
 	// harness sets x86BudgetActive=true and primes x86InstrBudget with
@@ -903,6 +904,14 @@ func x86WriteLE32(memory []byte, pc uint32, value uint32) {
 //	TEST EAX, imm32
 //	JZ/JNZ back_to_self
 func (c *CPU_X86) tryFastMMIOPollLoop() bool {
+	return c.tryFastMMIOPollLoopWithRegs(false)
+}
+
+func (c *CPU_X86) tryFastMMIOPollLoopJIT() bool {
+	return c.tryFastMMIOPollLoopWithRegs(true)
+}
+
+func (c *CPU_X86) tryFastMMIOPollLoopWithRegs(useJITRegs bool) bool {
 	pc := c.EIP
 	if pc+12 > uint32(len(c.memory)) {
 		return false
@@ -942,14 +951,31 @@ func (c *CPU_X86) tryFastMMIOPollLoop() bool {
 	iterations := 0
 	for c.Running() && !c.Halted {
 		if c.nmiPending.Load() {
+			if useJITRegs {
+				c.syncJITRegsToNamed()
+			}
 			c.handleInterrupt(0x02)
 			c.nmiPending.Store(false)
+			if useJITRegs {
+				c.syncJITRegsFromNamed()
+			}
 		} else if c.irqPending.Load() && c.IF() {
+			if useJITRegs {
+				c.syncJITRegsToNamed()
+			}
 			c.handleInterrupt(byte(c.irqVector.Load()))
 			c.irqPending.Store(false)
+			if useJITRegs {
+				c.syncJITRegsFromNamed()
+			}
 		}
 
-		c.EAX = adapter.readBus32(hostAddr)
+		eax := adapter.readBus32(hostAddr)
+		if useJITRegs {
+			c.jitRegs[0] = eax
+		} else {
+			c.EAX = eax
+		}
 		c.bus.Tick(1)
 		iterations++
 		if bounded {
@@ -960,7 +986,7 @@ func (c *CPU_X86) tryFastMMIOPollLoop() bool {
 			}
 		}
 
-		testResult := c.EAX & mask
+		testResult := eax & mask
 		c.setFlagsLogic32(testResult)
 		if bounded {
 			c.x86InstrBudget--
@@ -1346,6 +1372,19 @@ func (c *CPU_X86) debugHandleBreakIn(pc uint64) bool {
 		c.running.Store(false)
 		return true
 	}
+	return false
+}
+
+func (c *CPU_X86) debugHandleBreakInJIT(pc uint64) bool {
+	if c == nil || c.debugBreakIn == nil {
+		return false
+	}
+	c.syncJITRegsToNamed()
+	if c.debugBreakIn(pc) {
+		c.running.Store(false)
+		return true
+	}
+	c.syncJITRegsFromNamed()
 	return false
 }
 

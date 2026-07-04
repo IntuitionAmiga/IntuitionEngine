@@ -23,4 +23,4 @@ package main
 // reviving it would require execMem reclamation +
 // chain-slot-rewrite-on-promotion infrastructure that no measured
 // workload currently justifies.
-var x86TierController = NewTierController(X86RegProfile)
+var x86TierController = applyPerfTuningProfileToTierController("x86", NewTierController(X86RegProfile))

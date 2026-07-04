@@ -57,6 +57,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // ------------------------------------------------------------------------------
@@ -899,6 +900,34 @@ type SampleTicker interface {
 	TickSample()
 }
 
+// BlockTicker allows engines to advance several output samples in one call.
+// Implementations must be bit-identical to calling TickSample n times.
+type BlockTicker interface {
+	TickBlock(samples int)
+}
+
+// ReadSamplesBlockTicker opts a ticker into ReadSamples block ticking. The
+// ticker must not rely on SoundChip pending-range flush callbacks inside the
+// block and must remain bit-identical to TickSample for the supplied span.
+type ReadSamplesBlockTicker interface {
+	SampleTicker
+	BlockTicker
+	CanTickBlockForReadSamples() bool
+}
+
+func tickBlock(ticker SampleTicker, samples int) {
+	if ticker == nil || samples <= 0 {
+		return
+	}
+	if block, ok := ticker.(BlockTicker); ok {
+		block.TickBlock(samples)
+		return
+	}
+	for range samples {
+		ticker.TickSample()
+	}
+}
+
 // SampleMixer allows independent engines to contribute samples without
 // mutating SoundChip channel registers.
 type SampleMixer interface {
@@ -917,7 +946,7 @@ type sampleTapHolder struct {
 	tap func(float32)
 }
 
-const audioBlockSegmentMax = 64
+var audioBlockSegmentMax = perfTuningAudioChunk()
 
 type audioBlockState struct {
 	mu           sync.Mutex
@@ -970,6 +999,8 @@ type SoundChip struct {
 	sampleMixers  map[string]SampleMixer
 	sampleTap     atomic.Value // Optional tap callback fed with each generated sample
 	audioBlock    atomic.Pointer[audioBlockState]
+	audioBlockBuf audioBlockState
+	mixerCapture  []float32
 	audioFrozen   atomic.Bool // When true, ReadSample returns 0 (hard pause)
 	sfx           *SFXTrigger // Independent trigger-and-forget sample mixer
 
@@ -3126,24 +3157,55 @@ func (chip *SoundChip) ReadSamples(dst []float32) int {
 	if len(dst) == 0 {
 		return 0
 	}
+	var perfT0 time.Time
+	if perfAcctOn {
+		perfT0 = time.Now()
+		defer perfSubsysAcct.AudioPull.AddSince(perfT0, uint64(len(dst)))
+	}
 	if chip.audioFrozen.Load() {
 		clear(dst)
 		return len(dst)
 	}
-	state := &audioBlockState{
-		dst:          dst,
-		mixerCapture: make([]float32, len(dst)),
+	if cap(chip.mixerCapture) < len(dst) {
+		chip.mixerCapture = make([]float32, len(dst))
 	}
+	state := &chip.audioBlockBuf
+	state.dst = dst
+	state.mixerCapture = chip.mixerCapture[:len(dst)]
+	state.pendingStart = 0
+	state.pendingEnd = 0
 	chip.audioBlock.Store(state)
 	defer func() {
 		chip.flushAudioBlockState(state)
 		chip.audioBlock.CompareAndSwap(state, nil)
+		state.dst = nil
+		state.mixerCapture = nil
+		state.pendingStart = 0
+		state.pendingEnd = 0
 	}()
 
-	for i := range dst {
+	for i := 0; i < len(dst); {
 		if chip.audioFrozen.Load() {
 			chip.flushAudioBlockState(state)
 			dst[i] = 0
+			i++
+			continue
+		}
+		if holder, ok := chip.sampleTicker.Load().(*sampleTickerListHolder); ok && chip.canUseReadSamplesBlockGraph(holder) {
+			n := len(dst) - i
+			if n > audioBlockSegmentMax {
+				n = audioBlockSegmentMax
+			}
+			chip.tickBlockHolder(holder, n)
+			state.mu.Lock()
+			if state.pendingEnd == state.pendingStart {
+				state.pendingStart = i
+			}
+			clear(state.mixerCapture[i : i+n])
+			state.pendingEnd = i + n
+			state.mu.Unlock()
+			chip.flushAudioBlockState(state)
+			i += n
 			continue
 		}
 		chip.tickSample()
@@ -3158,8 +3220,48 @@ func (chip *SoundChip) ReadSamples(dst []float32) int {
 		if shouldFlush {
 			chip.flushAudioBlockState(state)
 		}
+		i++
 	}
 	return len(dst)
+}
+
+func (chip *SoundChip) canUseReadSamplesBlockGraph(holder *sampleTickerListHolder) bool {
+	if chip.hasSampleMixers() {
+		return false
+	}
+	if chip.sfx != nil && !chip.sfx.CanTickBlockForReadSamples() {
+		return false
+	}
+	if holder == nil {
+		return true
+	}
+	for _, ticker := range holder.tickers {
+		if ticker == nil {
+			continue
+		}
+		block, ok := ticker.(ReadSamplesBlockTicker)
+		if !ok || !block.CanTickBlockForReadSamples() {
+			return false
+		}
+	}
+	return true
+}
+
+func (chip *SoundChip) hasSampleMixers() bool {
+	holder, ok := chip.sampleMixer.Load().(*sampleMixerListHolder)
+	return ok && len(holder.mixers) != 0
+}
+
+func (chip *SoundChip) tickBlockHolder(holder *sampleTickerListHolder, samples int) {
+	if holder == nil || samples <= 0 {
+		return
+	}
+	for _, ticker := range holder.tickers {
+		if ticker == nil {
+			continue
+		}
+		ticker.(ReadSamplesBlockTicker).TickBlock(samples)
+	}
 }
 
 func (chip *SoundChip) tickSample() {

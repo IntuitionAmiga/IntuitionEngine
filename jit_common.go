@@ -85,6 +85,33 @@ type JITContext struct {
 	HelperVal  uint64 // 192: value to store/push (input only); LOAD/POP results go to an integer reg via setReg and FLOAD/DLOAD results go to the FPU via FP setters, never returned through this field
 	HelperPC   uint64 // 200: PC of the requesting instruction for trapFault.faultPC
 	LiveSP     uint64 // 208: SP flushed from host register before helper exit
+	// A1a: optional helper continuation. AMD64 helper exits for
+	// fall-through operations can publish a native continuation entry
+	// after the bailing instruction. The dispatcher uses it only when the
+	// helper completed cleanly and no interrupt, invalidation, or MMU
+	// address-space change occurred.
+	ResumeAddr       uintptr // 216: native continuation entry, execution-view address
+	ResumePC         uint64  // 224: guest PC expected after helper completion
+	ResumePTBR       uint64  // 232: PTBR captured by dispatcher before native entry
+	ResumeCountBase  uint32  // 240: instruction count already retired before continuation
+	ResumeMMUEnabled uint32  // 244: MMUEnabled value captured by helper exit
+	ResumeValid      uint32  // 248: non-zero when ResumeAddr/ResumePC are usable
+	// A1b: small native-probed MMU translation cache for dense-RAM data
+	// accesses. Key prefixes are refreshed by the dispatcher from CPU
+	// privilege state; helper dispatch fills entries only after a clean
+	// interpreter translation.
+	MicroTLBReadPrefix  uint64    // 256: valid/access/mode prefix for LOAD probes
+	MicroTLBWritePrefix uint64    // 264: valid/access/mode prefix for STORE probes
+	MicroTLBKeys        [4]uint64 // 272: valid-prefixed VPN keys
+	MicroTLBPhys        [4]uint64 // 304: physical page bases
+	CodePageBitmapPtr   uintptr   // 336: &cpu.jitCodePageBitmap[0], 256-byte pages
+	InvalAddr           uint64    // 344: self-modifying write address
+	InvalSize           uint32    // 352: self-modifying write size in bytes
+	CodePageBitmapLen   uint32    // 356: len(cpu.jitCodePageBitmap), bounds native SMC probes
+	CodeHighStartPage   uint64    // 360: first compiled code page outside CodePageBitmapLen, 0 if none
+	CodeHighEndPage     uint64    // 368: last compiled code page outside CodePageBitmapLen, 0 if none
+	PhysCodeBitmapPtr   uintptr   // 376: &cpu.jitPhysCodePageBitmap[0], physical 256-byte pages
+	PhysCodeBitmapLen   uint32    // 384: len(cpu.jitPhysCodePageBitmap), bounds native MMU SMC probes
 }
 
 // HELPER_* opcodes for the JITContext.NeedHelper field. Phase 5: native
@@ -111,38 +138,58 @@ const (
 
 // JITContext field offsets (must match struct layout above)
 const (
-	jitCtxOffRegsPtr        = 0
-	jitCtxOffMemPtr         = 8
-	jitCtxOffMemSize        = 16
-	jitCtxOffIOStart        = 20
-	jitCtxOffPCPtr          = 24
-	jitCtxOffLoadMemFn      = 32
-	jitCtxOffStoreMemFn     = 40
-	jitCtxOffCpuPtr         = 48
-	jitCtxOffNeedInval      = 56
-	jitCtxOffNeedIOFallback = 60
-	jitCtxOffIOBitmapPtr    = 64
-	jitCtxOffFPUPtr         = 72
-	jitCtxOffChainBudget    = 80
-	jitCtxOffChainCount     = 84
-	jitCtxOffRTSCache0PC    = 88
-	jitCtxOffRTSCache0Addr  = 96
-	jitCtxOffRTSCache1PC    = 104
-	jitCtxOffRTSCache1Addr  = 112
-	jitCtxOffRTSCache2PC    = 120
-	jitCtxOffRTSCache2Addr  = 128
-	jitCtxOffRTSCache3PC    = 136
-	jitCtxOffRTSCache3Addr  = 144
-	jitCtxOffRetPC          = 152
-	jitCtxOffRetCount       = 160
-	jitCtxOffMMUEnabled     = 164
-	jitCtxOffNeedHelper     = 168
-	jitCtxOffHelperSize     = 172
-	jitCtxOffHelperRd       = 176
-	jitCtxOffHelperAddr     = 184
-	jitCtxOffHelperVal      = 192
-	jitCtxOffHelperPC       = 200
-	jitCtxOffLiveSP         = 208
+	jitCtxOffRegsPtr             = 0
+	jitCtxOffMemPtr              = 8
+	jitCtxOffMemSize             = 16
+	jitCtxOffIOStart             = 20
+	jitCtxOffPCPtr               = 24
+	jitCtxOffLoadMemFn           = 32
+	jitCtxOffStoreMemFn          = 40
+	jitCtxOffCpuPtr              = 48
+	jitCtxOffNeedInval           = 56
+	jitCtxOffNeedIOFallback      = 60
+	jitCtxOffIOBitmapPtr         = 64
+	jitCtxOffFPUPtr              = 72
+	jitCtxOffChainBudget         = 80
+	jitCtxOffChainCount          = 84
+	jitCtxOffRTSCache0PC         = 88
+	jitCtxOffRTSCache0Addr       = 96
+	jitCtxOffRTSCache1PC         = 104
+	jitCtxOffRTSCache1Addr       = 112
+	jitCtxOffRTSCache2PC         = 120
+	jitCtxOffRTSCache2Addr       = 128
+	jitCtxOffRTSCache3PC         = 136
+	jitCtxOffRTSCache3Addr       = 144
+	jitCtxOffRetPC               = 152
+	jitCtxOffRetCount            = 160
+	jitCtxOffMMUEnabled          = 164
+	jitCtxOffNeedHelper          = 168
+	jitCtxOffHelperSize          = 172
+	jitCtxOffHelperRd            = 176
+	jitCtxOffHelperAddr          = 184
+	jitCtxOffHelperVal           = 192
+	jitCtxOffHelperPC            = 200
+	jitCtxOffLiveSP              = 208
+	jitCtxOffResumeAddr          = 216
+	jitCtxOffResumePC            = 224
+	jitCtxOffResumePTBR          = 232
+	jitCtxOffResumeCountBase     = 240
+	jitCtxOffResumeMMUEnabled    = 244
+	jitCtxOffResumeValid         = 248
+	jitCtxOffMicroTLBReadPrefix  = 256
+	jitCtxOffMicroTLBWritePrefix = 264
+	jitCtxOffMicroTLBKeys        = 272
+	jitCtxOffMicroTLBPhys        = 304
+	jitCtxOffCodePageBitmapPtr   = 336
+	jitCtxOffInvalAddr           = 344
+	jitCtxOffInvalSize           = 352
+	jitCtxOffCodePageBitmapLen   = 356
+	jitCtxOffCodeHighStartPage   = 360
+	jitCtxOffCodeHighEndPage     = 368
+	jitCtxOffPhysCodeBitmapPtr   = 376
+	jitCtxOffPhysCodeBitmapLen   = 384
+	jitCtxMicroTLBEntries        = 4
+	jitCtxMicroTLBStride         = 8
 )
 
 // ie64ChainBudget is the per-callNative chain dispatch budget (number of
@@ -167,6 +214,14 @@ func newJITContext(cpu *CPU64) *JITContext {
 	}
 	if cpu.FPU != nil {
 		ctx.FPUPtr = uintptr(unsafe.Pointer(cpu.FPU))
+	}
+	if len(cpu.jitCodePageBitmap) > 0 {
+		ctx.CodePageBitmapPtr = uintptr(unsafe.Pointer(&cpu.jitCodePageBitmap[0]))
+		ctx.CodePageBitmapLen = uint32(len(cpu.jitCodePageBitmap))
+	}
+	if len(cpu.jitPhysCodePageBitmap) > 0 {
+		ctx.PhysCodeBitmapPtr = uintptr(unsafe.Pointer(&cpu.jitPhysCodePageBitmap[0]))
+		ctx.PhysCodeBitmapLen = uint32(len(cpu.jitPhysCodePageBitmap))
 	}
 	return ctx
 }
@@ -922,6 +977,7 @@ type JITBlock struct {
 	unchainedExits uint32      // times this block exited via unchained path
 	ioBails        uint32      // times this block triggered I/O fallback
 	lastPromoteAt  uint32      // exec count when last promoted (hysteresis)
+	dominantDeopt  DeoptReason // first observed deopt reason for this block
 	rIncrements    int         // Z80: total R register increments for this block
 	// ptbr is the MMU page-table-base address active when this block was
 	// compiled, or 0 for non-MMU backends. Used by IE64's chain patcher
@@ -929,6 +985,13 @@ type JITBlock struct {
 	// without this filter, two address spaces sharing a virtual PC could
 	// cross-link native blocks and execute the wrong physical code.
 	ptbr uint64
+
+	// IE64 region planning metadata. The current emitter still uses
+	// the fixed Tier-1 register mapping; these fields expose the pressure
+	// plan used for diagnostics and optional admission gating.
+	regionRegMask   uint32
+	regionSpillOps  int
+	regionFPUSpills int
 
 	// coveredRanges optionally enumerates every guest [start, end) span
 	// the block's native code was compiled from. Non-nil only for
@@ -941,6 +1004,7 @@ type JITBlock struct {
 
 	guestHash      uint64
 	guestHashValid bool
+	execReleased   bool
 }
 
 type chainPatchRef struct {
@@ -998,59 +1062,111 @@ type CodeCache struct {
 	blocks            map[uint64]*JITBlock       // non-MMU: keyed by guest PC
 	mmuBlocks         map[ie64CacheKey]*JITBlock // MMU mode: exact (ptbr, vPC) composite
 	inboundChainSlots map[uint64][]chainPatchRef // chain slots keyed by target PC
+	dispatch          *JITDispatchCache          // direct-mapped dispatch lookup cache
+	generation        uint64                     // bumped on invalidation so dispatch entries expire in O(1)
 }
 
 func NewCodeCache() *CodeCache {
-	return &CodeCache{
+	cc := &CodeCache{
 		blocks:            make(map[uint64]*JITBlock),
 		mmuBlocks:         make(map[ie64CacheKey]*JITBlock),
 		inboundChainSlots: make(map[uint64][]chainPatchRef),
 	}
+	if !jitDispatchCacheDisabled {
+		cc.dispatch = newJITDispatchCache()
+	}
+	return cc
+}
+
+func (cc *CodeCache) Len() int {
+	if cc == nil {
+		return 0
+	}
+	return len(cc.blocks) + len(cc.mmuBlocks)
+}
+
+func resetExecMemWhenCacheEmpty(cc *CodeCache, execMem *ExecMem) bool {
+	if cc == nil || execMem == nil || cc.Len() != 0 {
+		return false
+	}
+	execMem.Reset()
+	return true
 }
 
 // GetMMU looks up an MMU-scoped block with an exact composite key.
 func (cc *CodeCache) GetMMU(ptbr, pc uint64) *JITBlock {
-	return cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}]
+	if block := cc.dispatch.get(pc, ptbr, cc.generation); block != nil {
+		return block
+	}
+	block := cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}]
+	cc.dispatch.put(pc, ptbr, cc.generation, block)
+	return block
 }
 
 // PutMMU stores an MMU-scoped block under its exact composite key.
 func (cc *CodeCache) PutMMU(ptbr, pc uint64, block *JITBlock) {
 	if old := cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}]; old != nil {
 		cc.unregisterChainSlots(old)
+		if old != block {
+			releaseJITBlockExecMem(old)
+		}
 	}
+	block.ptbr = ptbr
 	cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}] = block
 	cc.registerChainSlots(block)
+	cc.dispatch.put(pc, ptbr, cc.generation, block)
 }
 
 func (cc *CodeCache) Get(pc uint64) *JITBlock {
-	return cc.blocks[pc]
+	if block := cc.dispatch.get(pc, 0, cc.generation); block != nil {
+		return block
+	}
+	block := cc.blocks[pc]
+	cc.dispatch.put(pc, 0, cc.generation, block)
+	return block
 }
 
 func (cc *CodeCache) Put(block *JITBlock) {
 	if old := cc.blocks[block.startPC]; old != nil {
 		cc.unregisterChainSlots(old)
+		if old != block {
+			releaseJITBlockExecMem(old)
+		}
 	}
 	cc.blocks[block.startPC] = block
 	cc.registerChainSlots(block)
+	cc.dispatch.put(block.startPC, 0, cc.generation, block)
 }
 
 func (cc *CodeCache) GetKey(key uint64) *JITBlock {
-	return cc.blocks[key]
+	if block := cc.dispatch.get(key, 0, cc.generation); block != nil {
+		return block
+	}
+	block := cc.blocks[key]
+	cc.dispatch.put(key, 0, cc.generation, block)
+	return block
 }
 
 func (cc *CodeCache) PutKey(key uint64, block *JITBlock) {
 	if old := cc.blocks[key]; old != nil {
 		cc.unregisterChainSlots(old)
+		if old != block {
+			releaseJITBlockExecMem(old)
+		}
 	}
 	cc.blocks[key] = block
 	cc.registerChainSlots(block)
+	cc.dispatch.put(key, 0, cc.generation, block)
 }
 
 // Invalidate clears the entire code cache (both non-MMU and MMU maps).
 func (cc *CodeCache) Invalidate() {
+	cc.releaseAllExecMem()
 	clear(cc.blocks)
 	clear(cc.mmuBlocks)
 	clear(cc.inboundChainSlots)
+	cc.generation++
+	cc.dispatch.reset()
 }
 
 // InvalidateRange removes any blocks whose covered guest PC ranges
@@ -1066,6 +1182,7 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint64) int {
 				cc.unpatchChainsToBlock(block)
 				cc.unregisterChainSlots(block)
 				delete(cc.blocks, key)
+				releaseJITBlockExecMem(block)
 				removed++
 				break
 			}
@@ -1077,10 +1194,15 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint64) int {
 				cc.unpatchChainsToBlock(block)
 				cc.unregisterChainSlots(block)
 				delete(cc.mmuBlocks, key)
+				releaseJITBlockExecMem(block)
 				removed++
 				break
 			}
 		}
+	}
+	if removed != 0 {
+		cc.generation++
+		cc.dispatch.reset()
 	}
 	return removed
 }
@@ -1095,6 +1217,7 @@ func (cc *CodeCache) RemoveBlock(target *JITBlock) bool {
 			cc.unpatchChainsToBlock(block)
 			cc.unregisterChainSlots(block)
 			delete(cc.blocks, key)
+			releaseJITBlockExecMem(block)
 			removed = true
 		}
 	}
@@ -1103,10 +1226,27 @@ func (cc *CodeCache) RemoveBlock(target *JITBlock) bool {
 			cc.unpatchChainsToBlock(block)
 			cc.unregisterChainSlots(block)
 			delete(cc.mmuBlocks, key)
+			releaseJITBlockExecMem(block)
 			removed = true
 		}
 	}
+	if removed {
+		cc.generation++
+		cc.dispatch.reset()
+	}
 	return removed
+}
+
+func (cc *CodeCache) releaseAllExecMem() {
+	if cc == nil {
+		return
+	}
+	for _, block := range cc.blocks {
+		releaseJITBlockExecMem(block)
+	}
+	for _, block := range cc.mmuBlocks {
+		releaseJITBlockExecMem(block)
+	}
 }
 
 // PatchChainsTo scans all cached blocks for chain slots targeting targetPC

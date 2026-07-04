@@ -191,6 +191,14 @@ MKDIR := mkdir
 NICE := nice
 INSTALL := install
 NICE_LEVEL := 19
+BENCHSTAT_VERSION ?= v0.0.0-20260615155930-9e4b9ddef5b6
+BENCH_ITEM ?= m0_phase0
+BENCH_REGEX ?= BenchmarkIE64_
+BENCH_TAGS ?= headless
+BENCH_TIME ?= 1s
+BENCH_COUNT ?= 10
+BENCH_PKG ?= ./...
+BENCH_DIR ?= benchmarks/$(BENCH_ITEM)
 
 # Installation paths
 PREFIX := /usr/local
@@ -312,7 +320,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs bench-baseline bench-after bench-compare
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -334,6 +342,54 @@ vet:
 
 tidy:
 	$(GO) mod tidy -v
+
+bench-baseline:
+	@$(MKDIR) -p "$(BENCH_DIR)"
+	@{ \
+		echo "# item: $(BENCH_ITEM)"; \
+		echo "# captured: $$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+		echo "# git_sha: $$($(GIT) rev-parse --short HEAD 2>/dev/null || echo unknown)"; \
+		echo "# cpu: $$(awk -F: '/model name/ {sub(/^[ \t]+/, "", $$2); print $$2; exit}' /proc/cpuinfo 2>/dev/null || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"; \
+		echo "# governor: $$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"; \
+		echo "# GOAMD64: $(GOAMD64)"; \
+		echo "# tags: $(BENCH_TAGS)"; \
+		echo "# bench: $(BENCH_REGEX)"; \
+		echo "# benchtime: $(BENCH_TIME)"; \
+		echo "# count: $(BENCH_COUNT)"; \
+	} > "$(BENCH_DIR)/before.txt"
+	@tmp="$(BENCH_DIR)/before.cmd.out"; status=0; \
+	GOAMD64=$(GOAMD64) $(GO) test -tags "$(BENCH_TAGS)" -run '^$$' -bench '$(BENCH_REGEX)' -benchtime "$(BENCH_TIME)" -count "$(BENCH_COUNT)" $(BENCH_PKG) > "$$tmp" 2>&1 || status=$$?; \
+	tee -a "$(BENCH_DIR)/before.txt" < "$$tmp" || status=$$?; \
+	$(RM) -f "$$tmp"; \
+	exit $$status
+
+bench-after:
+	@$(MKDIR) -p "$(BENCH_DIR)"
+	@{ \
+		echo "# item: $(BENCH_ITEM)"; \
+		echo "# captured: $$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+		echo "# git_sha: $$($(GIT) rev-parse --short HEAD 2>/dev/null || echo unknown)"; \
+		echo "# cpu: $$(awk -F: '/model name/ {sub(/^[ \t]+/, "", $$2); print $$2; exit}' /proc/cpuinfo 2>/dev/null || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"; \
+		echo "# governor: $$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"; \
+		echo "# GOAMD64: $(GOAMD64)"; \
+		echo "# tags: $(BENCH_TAGS)"; \
+		echo "# bench: $(BENCH_REGEX)"; \
+		echo "# benchtime: $(BENCH_TIME)"; \
+		echo "# count: $(BENCH_COUNT)"; \
+	} > "$(BENCH_DIR)/after.txt"
+	@tmp="$(BENCH_DIR)/after.cmd.out"; status=0; \
+	GOAMD64=$(GOAMD64) $(GO) test -tags "$(BENCH_TAGS)" -run '^$$' -bench '$(BENCH_REGEX)' -benchtime "$(BENCH_TIME)" -count "$(BENCH_COUNT)" $(BENCH_PKG) > "$$tmp" 2>&1 || status=$$?; \
+	tee -a "$(BENCH_DIR)/after.txt" < "$$tmp" || status=$$?; \
+	$(RM) -f "$$tmp"; \
+	exit $$status
+
+bench-compare:
+	@$(MKDIR) -p "$(BENCH_DIR)"
+	@tmp="$(BENCH_DIR)/benchstat.cmd.out"; status=0; \
+	$(GO) run golang.org/x/perf/cmd/benchstat@$(BENCHSTAT_VERSION) "$(BENCH_DIR)/before.txt" "$(BENCH_DIR)/after.txt" > "$$tmp" 2>&1 || status=$$?; \
+	tee "$(BENCH_DIR)/benchstat.txt" < "$$tmp" || status=$$?; \
+	$(RM) -f "$$tmp"; \
+	exit $$status
 
 test-makefile:
 	@bash ./scripts/test-makefile.sh

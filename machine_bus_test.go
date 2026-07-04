@@ -720,6 +720,42 @@ func TestRead32_StillUsesIO_WhenMapped(t *testing.T) {
 	}
 }
 
+func TestRead32_WrapGuardHighAddresses(t *testing.T) {
+	bus := NewMachineBus()
+	mem := bus.GetMemory()
+	mem[0xFFFD] = 0x11
+	mem[0xFFFE] = 0x22
+	mem[0xFFFF] = 0x33
+	mem[0x10000] = 0x44
+
+	if got := bus.Read32(0xFFFFFFFD); got != 0x44332211 {
+		t.Fatalf("Read32 high sign-extended alias = 0x%08X, want 0x44332211", got)
+	}
+}
+
+func TestRead32_UnalignedStraddleIntoIOPage(t *testing.T) {
+	bus := NewMachineBus()
+	mem := bus.GetMemory()
+	mem[0x10FE] = 0x11
+	mem[0x10FF] = 0x22
+	bus.MapIO(0x1100, 0x11FF, nil, nil)
+	bus.MapIOByteRead(0x1100, 0x11FF, func(addr uint32) uint8 {
+		switch addr {
+		case 0x1100:
+			return 0x33
+		case 0x1101:
+			return 0x44
+		default:
+			t.Fatalf("unexpected I/O byte read at 0x%08X", addr)
+			return 0
+		}
+	})
+
+	if got := bus.Read32(0x10FE); got != 0x44332211 {
+		t.Fatalf("Read32 unaligned RAM/I/O straddle = 0x%08X, want 0x44332211", got)
+	}
+}
+
 // TestWrite32_LockFree_NoIOPage tests writes to pages without I/O mappings
 func TestWrite32_LockFree_NoIOPage(t *testing.T) {
 	bus := NewMachineBus()

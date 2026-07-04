@@ -122,6 +122,7 @@ type CompositorFrameLayer struct {
 	DestWidth    int
 	DestHeight   int
 	Buffer       []byte
+	Lease        *VideoFrameLease
 	Opaque       bool
 	DirtyRects   []FrameDirtyRect
 }

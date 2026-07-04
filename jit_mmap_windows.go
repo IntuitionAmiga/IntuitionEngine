@@ -15,6 +15,7 @@ type ExecMem struct {
 	exec     []byte
 	used     int
 	mapping  windows.Handle
+	arenas   execMemArenaState
 }
 
 const execMemAlign = 16
@@ -68,21 +69,23 @@ func AllocExecMem(size int) (*ExecMem, error) {
 }
 
 func (em *ExecMem) Write(code []byte) (uintptr, error) {
-	aligned := (em.used + execMemAlign - 1) &^ (execMemAlign - 1)
-	if aligned+len(code) > len(em.writable) {
-		return 0, fmt.Errorf("ExecMem exhausted: need %d, have %d", aligned+len(code), len(em.writable))
+	offset, err := em.arenas.reserve(len(em.writable), len(code))
+	if err != nil {
+		return 0, err
 	}
-	em.used = aligned
-	copy(em.writable[em.used:], code)
-	writableAddr := uintptr(unsafe.Pointer(&em.writable[em.used]))
-	execAddr := uintptr(unsafe.Pointer(&em.exec[em.used]))
-	em.used += len(code)
+	copy(em.writable[offset:], code)
+	writableAddr := uintptr(unsafe.Pointer(&em.writable[offset]))
+	execAddr := uintptr(unsafe.Pointer(&em.exec[offset]))
+	if high := offset + len(code); high > em.used {
+		em.used = high
+	}
 	flushICacheDual(writableAddr, execAddr, uintptr(len(code)))
 	return execAddr, nil
 }
 
 func (em *ExecMem) Reset() {
 	em.used = 0
+	em.arenas.reset()
 }
 
 func (em *ExecMem) Free() {
@@ -164,6 +167,26 @@ func lookupExecBytes(execAddr uintptr, size int) ([]byte, bool) {
 		}
 	}
 	return nil, false
+}
+
+func releaseExecMemAddr(execAddr uintptr) bool {
+	execMemsMu.RLock()
+	defer execMemsMu.RUnlock()
+	for _, em := range execMems {
+		if len(em.exec) == 0 {
+			continue
+		}
+		execBase := uintptr(unsafe.Pointer(&em.exec[0]))
+		if execAddr < execBase {
+			continue
+		}
+		offset := execAddr - execBase
+		if offset > uintptr(len(em.exec)) {
+			continue
+		}
+		return em.arenas.releaseOffset(int(offset))
+	}
+	return false
 }
 
 func PatchRel32At(patchAddr, targetAddr uintptr) {

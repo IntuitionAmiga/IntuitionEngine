@@ -54,6 +54,6 @@ func (cpu *CPU64) FlushIE64JITFull() {
 	}
 	cpu.jitNeedInval = false
 	if flushed {
-		globalIE64TurboStats.invalidations.Add(1)
+		globalIE64JITStats.invalidations.Add(1)
 	}
 }

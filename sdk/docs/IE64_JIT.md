@@ -79,10 +79,8 @@ IE64 Machine Code (at PROG_START)
 | `jit_region_common.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Shared region/superblock budget profile, including `IE64RegionProfile` |
 | `jit_region_backends.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Region scanners, including `ScanRegionIE64` |
 | `jit_chain_ordering.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Advisory chain-slot ordering invariant for AMD64 backends |
-| `jit_ie64_turbo.go` | `amd64 && (linux \|\| windows \|\| darwin)` | IE64 turbo-region policy, statistics, and planning metadata |
-| `jit_ie64_turbo_stub.go` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 IE64 turbo stubs; turbo is disabled on ARM64 |
-| `jit_ie64_bench_turbo_amd64.go` | `amd64 && (linux \|\| windows \|\| darwin)` | AMD64 IE64 recognised benchmark-family turbo shortcuts |
-| `jit_ie64_bench_turbo_stub.go` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 stubs for IE64 benchmark-family turbo shortcuts |
+| `jit_ie64_region_policy.go` | `amd64 && (linux \|\| windows \|\| darwin)` | IE64 region-tier policy, statistics, and planning metadata |
+| `jit_ie64_region_policy_stub.go` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 IE64 region-tier stubs; region compilation is disabled on ARM64 |
 | `jit_mmio_poll_common.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Shared MMIO-poll loop matcher |
 | `jit_mmio_poll_backends.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Per-backend MMIO-poll pattern descriptors, including IE64 |
 | `jit_mmio_poll_wiring.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Runtime MMIO-poll predicate wiring from each CPU/bus |
@@ -164,17 +162,15 @@ Variable-length byte buffer with label/fixup support for forward references:
 
 Maps a dispatcher key to `*JITBlock` for O(1) lookup. In non-MMU mode the key is the physical `startPC`; in MMU mode the cache uses `GetMMU`/`PutMMU` with the **exact** composite key `ie64CacheKey{ptbr, pc}` (not a lossy hash), described in [MMU Integration](#mmu-integration). Invalidated on self-modifying code (writes to [PROG_START, STACK_START)).
 
-### Turbo Region Tier
+### Region Tier
 
-On AMD64, hot IE64 blocks can be promoted from Tier 1 single-block JIT code to a turbo region. The dispatcher increments `JITBlock.execCount` on cache hits and asks the shared `TierController` whether the block is hot enough to promote. The default threshold is 64 re-entries, with promotion suppressed when the block is already promoted, was already attempted, or has an I/O-bail rate of 25% or higher.
+On AMD64, hot IE64 blocks can be promoted from Tier 1 single-block JIT code to a compiled region. The dispatcher increments `JITBlock.execCount` on cache hits and asks the shared `TierController` whether the block is hot enough to promote. The default threshold is 64 re-entries, with promotion suppressed when the block is already promoted, was already attempted, or has an I/O-bail rate of 25% or higher.
 
-IE64 turbo promotion is currently non-MMU only. `ie64FormRegion()` scans `cpu.memory` at flat physical indices and follows statically-known BRA/JMP terminators; under MMU, each virtual successor would need its own page-table walk before the scanner could read the correct physical bytes. The dispatcher therefore gates region promotion with `!cpu.mmuEnabled`.
+IE64 region promotion is currently non-MMU only. `ie64FormRegion()` scans `cpu.memory` at flat physical indices and follows statically-known BRA/JMP terminators; under MMU, each virtual successor would need its own page-table walk before the scanner could read the correct physical bytes. The dispatcher therefore gates region promotion with `!cpu.mmuEnabled`.
 
-The AMD64 region compiler emits one native `JITBlock` for two or more IE64 blocks. Internal BRA/JMP targets become direct `JMP rel32` transfers inside the native region; external targets still use the normal chain-exit machinery. Back-edges inside a region keep the loop-budget and retired-count checks so native code cannot spin without returning to the dispatcher. Region promotion can be disabled with `IE64_JIT_TURBO=0`, and statistics print when `IE64_JIT_STATS=1`.
+The AMD64 region compiler emits one native `JITBlock` for two or more IE64 blocks. Internal BRA/JMP targets become direct `JMP rel32` transfers inside the native region; external targets still use the normal chain-exit machinery. Back-edges inside a region keep the loop-budget and retired-count checks so native code cannot spin without returning to the dispatcher. Region promotion can be disabled with `IE64_JIT_REGIONS=0`, and statistics print when `IE64_JIT_STATS=1`.
 
-Separate from native region compilation, AMD64 also has recognised benchmark-family turbo shortcuts in `tryIE64TurboProgram()`. These run before normal block-cache lookup, only in non-MMU mode, only when the physical PC is `PROG_START`, only when the first opcode is a candidate `MOVE`, and only when timers, interrupt handling, and trap halt state are inactive. The currently wired patterns are the ALU, memory, and call benchmark loops. They execute specialised Go paths and return a retired-instruction count; they are not a general-purpose native compiler.
-
-ARM64 builds include the tier controller and stub symbols, but `ie64TurboEnabled()` is false and `ie64CompileRegion()` returns an unsupported error. There is no ARM64 IE64 turbo-region compiler today.
+ARM64 builds include the tier controller and stub symbols, but `ie64RegionPromotionEnabled()` is false and `ie64CompileRegion()` returns an unsupported error. There is no ARM64 IE64 region compiler today.
 
 ### ExecMem
 
@@ -277,7 +273,7 @@ Uses X7 as iteration counter. Budget = 4095 (fits ARM64 CMP imm12). Budget excee
 
 Required on ARM64. Uses DC CVAU + IC IVAU + DSB ISH + ISB per 64-byte cache line.
 
-### Turbo Regions
+### Region Promotion
 
 Not implemented on ARM64. The ARM64 backend provides IE64 region stubs so the shared dispatcher builds, but promotion is disabled and native region compilation is unsupported.
 
@@ -334,11 +330,9 @@ Uses stack slot `[RSP+16]` as loop counter (no spare callee-saved register). Bud
 
 No flush needed. x86-64 guarantees instruction cache coherency.
 
-### Turbo Regions
+### Regions
 
 Implemented for non-MMU IE64 code. Region formation uses `ScanRegionIE64()` and `ie64FormRegion()` to collect two or more statically-linked blocks within `IE64RegionProfile` limits (up to 8 blocks and 512 guest instructions). `ie64CompileRegion()` emits a single native block, preserves the normal chain-exit path for targets outside the region, and emits direct in-region jumps for BRA/JMP targets inside the region.
-
-The AMD64 dispatcher also contains the recognised benchmark-family turbo shortcuts described in [Turbo Region Tier](#turbo-region-tier). Those shortcuts are Go fast paths, not emitted native blocks.
 
 ---
 
@@ -440,7 +434,7 @@ Poll sites, all before the next instruction or block fetch so the interrupt take
 - Interpreter `Execute()`: at the top of the loop, before PC translation and fetch.
 - `StepOne()`: at entry, before fetch. A delivered interrupt consumes the step.
 - JIT `ExecuteJIT()`: a single poll at the top of the dispatcher loop, reached only after a native block's helper, IO-bail, and retired-count handling have completed. The helper dispatcher (`handleJITHelper`) also polls before it services a bailed memory/stack/control op, so helper-exit blocks (DLOAD/DSTORE, MMU-on memory, high/IO helpers) take the interrupt at the bailing instruction's PC like the interpreter rather than after the op runs.
-- JIT fast paths (amd64): the MMIO poll-loop shortcut exits its spin when `pendingIRQMask` is set (leaving the PC at the loop head so the dispatcher delivers and resumes there), and the benchmark turbo shortcut refuses to start while an interrupt is pending. These watch `pendingIRQMask` because external IRQs no longer flip `inInterrupt`.
+- JIT fast paths (amd64): the MMIO poll-loop shortcut exits its spin when `pendingIRQMask` is set, leaving the PC at the loop head so the dispatcher delivers and resumes there. This watches `pendingIRQMask` because external IRQs no longer flip `inInterrupt`.
 
 IE64 native code can chain up to `ie64ChainBudget` (256) block transitions inside one `callNative` without returning to Go, so a pending interrupt raised mid-chain is observed when the chain returns to the dispatcher rather than between every guest instruction. This is a latency difference from the interpreter, not a correctness one, and is acceptable for the video-class interrupts in scope. Tighter latency would require a pending check in the chain-dispatch epilogue.
 
@@ -494,13 +488,12 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 - 32-bit host ops for IE64 `.L` size where semantics match
 - Fast-path fall-through for normal RAM; I/O in slow-path branch
 - Non-MMU AMD64 hot-region promotion for IE64 blocks with static BRA/JMP successors
-- Non-MMU AMD64 recognised-pattern shortcuts for selected IE64 benchmark loops
 
 ### Deferred
 - Direct (non-helper) native fast path for high-physical data/stack access: high addresses currently route through the JITContext helper exit; inlining the sparse-backing / MMU translation into native code is a future perf item
 - Native double-precision FPU emission
 - MMU-aware IE64 region scanning and native region compilation
-- ARM64 IE64 turbo-region compilation
+- ARM64 IE64 region compilation
 - Memory operands for spilled-source ALU
 - Peephole patterns (MOVE imm, ADD/SUB imm, compare against zero)
 - Profiling-driven register residency tuning

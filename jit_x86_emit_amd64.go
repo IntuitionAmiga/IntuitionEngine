@@ -437,6 +437,8 @@ type x86DeferredBail struct {
 	retPC     uint32 // guest PC to return to
 	instrIdx  int    // instruction count at bail point
 	kind      byte   // 0 = IO bail, 1 = self-mod bail
+	addrReg   byte   // self-mod write address register
+	size      uint32 // self-mod write size in bytes
 }
 
 // x86TryConstantEA returns (address, true) if the instruction's EA is a compile-time
@@ -471,13 +473,13 @@ func x86EmitIOCheckMaybeElide(cb *CodeBuffer, addrReg byte, ji *X86JITInstr, mem
 }
 
 // x86EmitSelfModCheckMaybeElide emits a self-mod check only if the EA might be on a code page.
-func x86EmitSelfModCheckMaybeElide(cb *CodeBuffer, addrReg byte, ji *X86JITInstr, memory []byte, nextPC uint32, instrCount int) {
+func x86EmitSelfModCheckMaybeElide(cb *CodeBuffer, addrReg byte, ji *X86JITInstr, memory []byte, nextPC uint32, instrCount int, size uint32) {
 	if addr, isConst := x86TryConstantEA(ji, memory); isConst {
 		if !x86IsCodePageAtCompileTime(addr) {
 			return // compile-time: not a code page -- no check needed
 		}
 	}
-	x86EmitSelfModCheck(cb, addrReg, nextPC, instrCount)
+	x86EmitSelfModCheck(cb, addrReg, nextPC, instrCount, size)
 }
 
 // x86IsPageSafeAtCompileTime checks if a given address is on a non-I/O page
@@ -555,6 +557,8 @@ func x86EmitDeferredBails(cb *CodeBuffer) {
 			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
 		} else {
 			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedInval), 1)
+			amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffInvalAddr), bail.addrReg)
+			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffInvalSize), bail.size)
 		}
 
 		// JMP to shared exit
@@ -574,7 +578,7 @@ func x86EmitDeferredBails(cb *CodeBuffer) {
 // x86EmitSelfModCheck emits a self-modification check after a memory store.
 // addrReg holds the (already masked) address that was written to.
 // If the page is marked as code, defers to the shared bail exit.
-func x86EmitSelfModCheck(cb *CodeBuffer, addrReg byte, nextPC uint32, instrCount int) {
+func x86EmitSelfModCheck(cb *CodeBuffer, addrReg byte, nextPC uint32, instrCount int, size uint32) {
 	// Load code page bitmap pointer from context
 	amd64MOV_reg_mem(cb, amd64RCX, x86AMD64RegCtx, int32(x86CtxOffCodePageBitmapPtr))
 
@@ -591,7 +595,7 @@ func x86EmitSelfModCheck(cb *CodeBuffer, addrReg byte, nextPC uint32, instrCount
 
 	if x86CurrentBails != nil {
 		*x86CurrentBails = append(*x86CurrentBails, x86DeferredBail{
-			jccOffset: jccOff, retPC: nextPC, instrIdx: instrCount, kind: 1,
+			jccOffset: jccOff, retPC: nextPC, instrIdx: instrCount, kind: 1, addrReg: addrReg, size: size,
 		})
 	}
 }
@@ -1514,7 +1518,7 @@ func x86EmitMOV_moffs32_EAX(cb *CodeBuffer, ji *X86JITInstr, memory []byte, inst
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64R8, 0) // EAX
 	x86EmitMemStore32(cb, amd64R10, amd64R8)
-	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
 	return true
 }
 
@@ -1527,7 +1531,7 @@ func x86EmitMOV_moffs8_AL(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrI
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64R8, 0) // EAX
 	x86EmitMemStore8(cb, amd64R10, amd64R8)
-	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 1)
 	return true
 }
 
@@ -1579,7 +1583,7 @@ func x86EmitMOV_Eb_Gb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 		amd64SHR_imm32(cb, amd64R8, 8)
 	}
 	x86EmitMemStore8(cb, amd64R10, amd64R8)
-	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 1)
 	return true
 }
 
@@ -1636,7 +1640,7 @@ func x86EmitMOV_Ev_Gv(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64R8, srcReg)
 	x86EmitMemStore32(cb, amd64R10, amd64R8)
-	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
 	return true
 }
 
@@ -1768,7 +1772,7 @@ func x86EmitALU_Ev_Gv(cb *CodeBuffer, ji *X86JITInstr, hostOpcode byte, cs *x86C
 		cs.flagCaptureDone = true
 	}
 
-	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
 	return true
 }
 
@@ -2809,7 +2813,7 @@ func x86EmitMOV_Eb_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 		amd64MOV_reg_imm32(cb, amd64R8, uint32(imm))
 		x86EmitMemStore8(cb, amd64R10, amd64R8)
-		x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+		x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 1)
 		return true
 	}
 
@@ -2859,7 +2863,7 @@ func x86EmitMOV_Ev_Iv(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 		amd64MOV_reg_imm32(cb, amd64R8, imm)
 		x86EmitMemStore32(cb, amd64R10, amd64R8)
-		x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1)
+		x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
 		return true
 	}
 

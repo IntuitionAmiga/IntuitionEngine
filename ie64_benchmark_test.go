@@ -29,6 +29,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"testing"
 )
 
@@ -169,6 +170,38 @@ func buildMemoryProgram(iterations uint32) (instrs [][]byte, totalInstrs int) {
 		ie64Instr(OP_BNE, 0, 0, 0, 10, 0, neg40),         // loop
 	}
 	totalInstrs = 3 + int(iterations)*6 + 1
+	return
+}
+
+func buildMMIOProgram(iterations uint32) (instrs [][]byte, totalInstrs int) {
+	const mmioBenchAddr = 0xF0700
+	neg32 := uint32(0xFFFFFFE0)
+	instrs = [][]byte{
+		ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, iterations),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, mmioBenchAddr),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0),
+		ie64Instr(OP_STORE, 2, IE64_SIZE_L, 0, 1, 0, 0),
+		ie64Instr(OP_ADD, 2, IE64_SIZE_L, 1, 2, 0, 1),
+		ie64Instr(OP_SUB, 10, IE64_SIZE_Q, 1, 10, 0, 1),
+		ie64Instr(OP_BNE, 0, 0, 0, 10, 0, neg32),
+	}
+	totalInstrs = 3 + int(iterations)*4 + 1
+	return
+}
+
+func buildMMUMixedProgram(iterations uint32) (instrs [][]byte, totalInstrs int) {
+	neg32 := uint32(0xFFFFFFE0)
+	instrs = [][]byte{
+		ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, iterations),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_L, 1, 0, 0, 0x3100),
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_L, 1, 0, 0, 0),
+		ie64Instr(OP_LOAD, 3, IE64_SIZE_L, 0, 1, 0, 0),
+		ie64Instr(OP_ADD, 2, IE64_SIZE_L, 0, 2, 3, 0),
+		ie64Instr(OP_STORE, 2, IE64_SIZE_L, 0, 1, 0, 4),
+		ie64Instr(OP_SUB, 10, IE64_SIZE_Q, 1, 10, 0, 1),
+		ie64Instr(OP_BNE, 0, 0, 0, 10, 0, neg32),
+	}
+	totalInstrs = 3 + int(iterations)*5 + 1
 	return
 }
 
@@ -472,6 +505,112 @@ func BenchmarkIE64_Memory_JIT(b *testing.B) {
 		cpu.regs[10] = benchIterations
 		cpu.regs[1] = benchDataAddr
 		cpu.regs[2] = 0
+		cpu.running.Store(true)
+	}
+	setupJITBench(b, cpu, instrs, resetState)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resetState()
+		cpu.jitExecute()
+	}
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
+}
+
+func BenchmarkIE64_MMIO_Interpreter(b *testing.B) {
+	instrs, totalInstrs := buildMMIOProgram(benchIterations)
+	bus := NewMachineBus()
+	var sink uint32
+	bus.MapIO(0xF0700, 0xF0703, nil, func(addr uint32, value uint32) {
+		sink = value
+	})
+	cpu := NewCPU64(bus)
+	loadBenchProgram(cpu, instrs)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = PROG_START
+		cpu.regs[10] = benchIterations
+		cpu.regs[1] = 0xF0700
+		cpu.regs[2] = 0
+		cpu.running.Store(true)
+		cpu.Execute()
+	}
+	_ = sink
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
+}
+
+func BenchmarkIE64_MMIO_JIT(b *testing.B) {
+	if !jitAvailable {
+		b.Skip("JIT not available on this platform")
+	}
+	instrs, totalInstrs := buildMMIOProgram(benchIterations)
+	bus := NewMachineBus()
+	var sink uint32
+	bus.MapIO(0xF0700, 0xF0703, nil, func(addr uint32, value uint32) {
+		sink = value
+	})
+	cpu := NewCPU64(bus)
+	resetState := func() {
+		cpu.PC = PROG_START
+		cpu.regs[10] = benchIterations
+		cpu.regs[1] = 0xF0700
+		cpu.regs[2] = 0
+		cpu.running.Store(true)
+	}
+	setupJITBench(b, cpu, instrs, resetState)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resetState()
+		cpu.jitExecute()
+	}
+	_ = sink
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
+}
+
+func BenchmarkIE64_MMU_Mixed_Interpreter(b *testing.B) {
+	instrs, totalInstrs := buildMMUMixedProgram(benchIterations)
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+	writePTE(cpu, 3, makePTE(7, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+	loadBenchProgram(cpu, instrs)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cpu.PC = PROG_START
+		cpu.regs[10] = benchIterations
+		cpu.regs[1] = 0x3100
+		cpu.regs[2] = 0
+		binary.LittleEndian.PutUint32(cpu.memory[0x7100:], 0x10)
+		binary.LittleEndian.PutUint32(cpu.memory[0x7104:], 0)
+		cpu.running.Store(true)
+		cpu.Execute()
+	}
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
+}
+
+func BenchmarkIE64_MMU_Mixed_JIT(b *testing.B) {
+	if !jitAvailable {
+		b.Skip("JIT not available on this platform")
+	}
+	instrs, totalInstrs := buildMMUMixedProgram(benchIterations)
+	rig := newIE64TestRig()
+	cpu := rig.cpu
+	setupIdentityMMU(cpu, 160)
+	writePTE(cpu, 3, makePTE(7, PTE_P|PTE_R|PTE_W|PTE_X|PTE_U))
+	resetState := func() {
+		cpu.PC = PROG_START
+		cpu.regs[10] = benchIterations
+		cpu.regs[1] = 0x3100
+		cpu.regs[2] = 0
+		binary.LittleEndian.PutUint32(cpu.memory[0x7100:], 0x10)
+		binary.LittleEndian.PutUint32(cpu.memory[0x7104:], 0)
 		cpu.running.Store(true)
 	}
 	setupJITBench(b, cpu, instrs, resetState)

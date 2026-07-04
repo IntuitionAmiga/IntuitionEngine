@@ -11,8 +11,9 @@ import (
 )
 
 type ExecMem struct {
-	mem  []byte
-	used int
+	mem    []byte
+	used   int
+	arenas execMemArenaState
 }
 
 const execMemAlign = 16
@@ -47,9 +48,9 @@ func AllocExecMem(size int) (*ExecMem, error) {
 }
 
 func (em *ExecMem) Write(code []byte) (addr uintptr, err error) {
-	aligned := (em.used + execMemAlign - 1) &^ (execMemAlign - 1)
-	if aligned+len(code) > len(em.mem) {
-		return 0, fmt.Errorf("ExecMem exhausted: need %d, have %d", aligned+len(code), len(em.mem))
+	offset, reserveErr := em.arenas.reserve(len(em.mem), len(code))
+	if reserveErr != nil {
+		return 0, reserveErr
 	}
 	if err := jitPrepareForWrite(); err != nil {
 		return 0, err
@@ -61,10 +62,11 @@ func (em *ExecMem) Write(code []byte) (addr uintptr, err error) {
 		}
 	}()
 
-	em.used = aligned
-	copy(em.mem[em.used:], code)
-	addr = uintptr(unsafe.Pointer(&em.mem[em.used]))
-	em.used += len(code)
+	copy(em.mem[offset:], code)
+	addr = uintptr(unsafe.Pointer(&em.mem[offset]))
+	if high := offset + len(code); high > em.used {
+		em.used = high
+	}
 	if err := darwinICacheInvalidate(addr, uintptr(len(code))); err != nil {
 		return 0, err
 	}
@@ -73,6 +75,7 @@ func (em *ExecMem) Write(code []byte) (addr uintptr, err error) {
 
 func (em *ExecMem) Reset() {
 	em.used = 0
+	em.arenas.reset()
 }
 
 func (em *ExecMem) Free() {
@@ -138,6 +141,26 @@ func lookupExecBytes(execAddr uintptr, size int) ([]byte, bool) {
 		}
 	}
 	return nil, false
+}
+
+func releaseExecMemAddr(execAddr uintptr) bool {
+	execMemsMu.RLock()
+	defer execMemsMu.RUnlock()
+	for _, em := range execMems {
+		if len(em.mem) == 0 {
+			continue
+		}
+		base := uintptr(unsafe.Pointer(&em.mem[0]))
+		if execAddr < base {
+			continue
+		}
+		offset := execAddr - base
+		if offset > uintptr(len(em.mem)) {
+			continue
+		}
+		return em.arenas.releaseOffset(int(offset))
+	}
+	return false
 }
 
 func PatchRel32At(patchAddr, targetAddr uintptr) {

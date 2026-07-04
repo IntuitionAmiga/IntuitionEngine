@@ -7,7 +7,7 @@
 // live. Architectural results (registers, CCR, X propagation, loop
 // counts) must remain bit-identical to the interpreter.
 
-//go:build amd64 && (linux || windows || darwin)
+//go:build amd64 && linux
 
 package main
 

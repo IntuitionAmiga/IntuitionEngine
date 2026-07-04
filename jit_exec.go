@@ -28,10 +28,13 @@ const (
 // to IE64's reference RegPressureProfile. Exec-loop cache-hit gate
 // delegates to ShouldPromote so threshold tweaks apply uniformly.
 //
-// IE64 uses this controller to drive the turbo region tier. Single-block
+// IE64 uses this controller to drive the region tier. Single-block
 // promotion remains retired; hot non-MMU code promotes at region granularity
 // where the planner can reason across loops and static control-flow edges.
-var ie64TierController = NewTierController(IE64RegProfile)
+var ie64TierController = func() *TierController {
+	c := NewTierController(IE64RegProfile)
+	return applyPerfTuningProfileToTierController("ie64", c)
+}()
 
 // jitExecMem returns the typed *ExecMem from the cpu's any field.
 func (cpu *CPU64) getJITExecMem() *ExecMem {
@@ -59,6 +62,12 @@ func (cpu *CPU64) initJIT() error {
 	}
 	cpu.jitExecMem = execMem
 	cpu.jitCache = NewCodeCache()
+	codePages := (len(cpu.memory) + 255) >> 8
+	if codePages < 1 {
+		codePages = 1
+	}
+	cpu.jitCodePageBitmap = make([]byte, codePages)
+	cpu.jitPhysCodePageBitmap = make([]byte, codePages)
 	cpu.jitCtx = newJITContext(cpu)
 	return nil
 }
@@ -75,6 +84,8 @@ func (cpu *CPU64) freeJIT() {
 	}
 	cpu.jitCache = nil
 	cpu.jitCtx = nil
+	cpu.jitCodePageBitmap = nil
+	cpu.jitPhysCodePageBitmap = nil
 }
 
 // compileBlockMMU wraps compileBlock for MMU-enabled execution. Phase 5:
@@ -97,6 +108,11 @@ func (cpu *CPU64) freeJIT() {
 // OP_JSR64 / OP_RTS64 case, which bails to the interpreter.
 func compileBlockMMU(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBlock, error) {
 	compileBlockMMUInvocations.Add(1)
+	markIE64MMUBails(instrs)
+	return compileBlock(instrs, startPC, execMem)
+}
+
+func markIE64MMUBails(instrs []JITInstr) {
 	for i := range instrs {
 		switch instrs[i].opcode {
 		case OP_CAS, OP_XCHG, OP_FAA, OP_FAND, OP_FOR, OP_FXOR:
@@ -106,7 +122,6 @@ func compileBlockMMU(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITB
 			instrs[i].mmuBail = true
 		}
 	}
-	return compileBlock(instrs, startPC, execMem)
 }
 
 // interpretOne executes one IE64 instruction at cpu.PC using the interpreter.
@@ -149,8 +164,58 @@ func (cpu *CPU64) ExecuteJIT() {
 	var diagCacheMisses uint64   // block compiled (cache miss)
 	var diagFallbackInstr uint64 // instructions via interpretOne
 	var diagIOBails uint64       // I/O fallback bail count
-	statsEnabled := ie64TurboStatsEnabled()
-	statsBase := ie64TurboStatsLoad()
+	statsEnabled := ie64JITStatsEnabled()
+	statsBase := ie64JITStatsLoad()
+
+	interpretFallback := func(reason DeoptReason) int {
+		var interpT0 time.Time
+		if perfAcctOn {
+			interpT0 = time.Now()
+		}
+		executed := cpu.interpretOne()
+		if perfAcctOn {
+			cpu.perfAcct.AddInterpSince(interpT0)
+			cpu.deoptStats.Add(reason)
+		}
+		return executed
+	}
+
+	runNative := func(addr uintptr) uint64 {
+		var jitT0 time.Time
+		if perfAcctOn {
+			jitT0 = time.Now()
+		}
+		callNative(addr, uintptr(unsafe.Pointer(cpu.jitCtx)))
+		if perfAcctOn {
+			cpu.perfAcct.AddJitSince(jitT0)
+		}
+
+		cpu.PC = cpu.jitCtx.RetPC
+		cpu.jitCtx.RetPC = 0
+		executed := uint64(cpu.jitCtx.RetCount)
+		cpu.jitCtx.RetCount = 0
+		cpu.regs[0] = 0
+		executed += uint64(cpu.jitCtx.ChainCount)
+		cpu.jitCtx.ChainCount = 0
+		return executed
+	}
+
+	handleHelperExit := func(block *JITBlock, executed *uint64) (uint64, bool) {
+		var helperT0 time.Time
+		if perfAcctOn {
+			helperT0 = time.Now()
+		}
+		helperRetired, helperHandled := cpu.handleJITHelper()
+		if !helperHandled {
+			return helperRetired, false
+		}
+		if perfAcctOn {
+			cpu.perfAcct.AddInterpSince(helperT0)
+		}
+		recordBlockDeopt(&cpu.deoptStats, block, DeoptHelper)
+		*executed += helperRetired
+		return helperRetired, true
+	}
 
 	// Use local running flag to avoid atomic load every iteration
 	running := true
@@ -180,25 +245,24 @@ func (cpu *CPU64) ExecuteJIT() {
 		if cpu.jitNeedInval {
 			cpu.jitCache.Invalidate()
 			execMem.Reset()
+			clear(cpu.jitCodePageBitmap)
+			clear(cpu.jitPhysCodePageBitmap)
+			ie64ClearHighCodePageSpan(cpu.jitCtx)
 			cpu.jitNeedInval = false
-			globalIE64TurboStats.invalidations.Add(1)
-			cpu.jitCtx.RTSCache0PC = 0
-			cpu.jitCtx.RTSCache0Addr = 0
-			cpu.jitCtx.RTSCache1PC = 0
-			cpu.jitCtx.RTSCache1Addr = 0
-			cpu.jitCtx.RTSCache2PC = 0
-			cpu.jitCtx.RTSCache2Addr = 0
-			cpu.jitCtx.RTSCache3PC = 0
-			cpu.jitCtx.RTSCache3Addr = 0
+			globalIE64JITStats.invalidations.Add(1)
+			ie64ClearRTSCache(cpu.jitCtx)
 		}
 
 		if cpu.timerEnabled.Load() {
-			executed := cpu.interpretOne()
+			executed := interpretFallback(DeoptInterrupt)
 			if executed == 0 {
 				cpu.running.Store(false)
 				break
 			}
 			cpu.InstructionCount += uint64(executed)
+			if perfAcctOn {
+				cpu.perfAcct.AddInstrs(uint64(executed))
+			}
 			diagFallbackInstr += uint64(executed)
 			if !cpu.running.Load() {
 				break
@@ -248,6 +312,9 @@ func (cpu *CPU64) ExecuteJIT() {
 			if perfEnabled {
 				cpu.InstructionCount += uint64(retired)
 			}
+			if perfAcctOn {
+				cpu.perfAcct.AddInstrs(uint64(retired))
+			}
 			continue
 		}
 
@@ -259,7 +326,6 @@ func (cpu *CPU64) ExecuteJIT() {
 		memLen := uint64(len(cpu.memory))
 		var opcode byte
 		var instrWord uint64
-		fetchedFromBus := false
 		if pcPhys <= memLen-IE64_INSTR_SIZE {
 			opcode = cpu.memory[pcPhys]
 		} else {
@@ -276,30 +342,12 @@ func (cpu *CPU64) ExecuteJIT() {
 			}
 			instrWord = fetched
 			opcode = byte(instrWord)
-			fetchedFromBus = true
 		}
 		if opcode == OP_HALT64 {
 			cpu.running.Store(false)
 			break
 		}
 
-		// Turbo-program fast path is a low-memory specialisation: it
-		// indexes cpu.memory[] directly and only matches a narrow
-		// recognised pattern at PROG_START-aligned offsets. Skip it
-		// for high pcPhys (which is necessarily outside cpu.memory)
-		// and let the normal JIT block builder run.
-		if !cpu.mmuEnabled && !fetchedFromBus && opcode == OP_MOVE && ie64TurboStartCandidate(cpu.memory, uint32(pcPhys)) && ie64TurboEnabled() {
-			if matched, retired := cpu.tryIE64TurboProgram(uint32(pcPhys), statsEnabled); matched {
-				if statsEnabled {
-					globalIE64TurboStats.turboRegions.Add(1)
-				}
-				cpu.InstructionCount += retired
-				if !cpu.running.Load() {
-					break
-				}
-				continue
-			}
-		}
 		_ = instrWord
 
 		// Under MMU, different address spaces can execute different physical
@@ -346,8 +394,11 @@ func (cpu *CPU64) ExecuteJIT() {
 			// containing a stack op back to the interpreter
 			// (which uses cpu.mmuStackRead/Write through the bus).
 			if highPhys && containsStackOp(instrs) {
-				cpu.interpretOne()
+				interpretFallback(DeoptUnsupported)
 				cpu.InstructionCount++
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(1)
+				}
 				diagFallbackInstr++
 				if !cpu.running.Load() {
 					break
@@ -357,8 +408,11 @@ func (cpu *CPU64) ExecuteJIT() {
 
 			if needsFallback(instrs) {
 				// FPU, WAIT, RTI, MMU ops — use interpreter for single instruction
-				cpu.interpretOne()
+				interpretFallback(DeoptUnsupported)
 				cpu.InstructionCount++
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(1)
+				}
 				diagFallbackInstr++
 				if !cpu.running.Load() {
 					break
@@ -375,15 +429,18 @@ func (cpu *CPU64) ExecuteJIT() {
 			}
 			if err != nil {
 				// Compilation failed (e.g., exec mem exhausted) — interpret
-				cpu.interpretOne()
+				interpretFallback(DeoptCachePressure)
 				cpu.InstructionCount++
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(1)
+				}
 				diagFallbackInstr++
 				if !cpu.running.Load() {
 					break
 				}
 				continue
 			}
-			globalIE64TurboStats.tier1Blocks.Add(1)
+			globalIE64JITStats.tier1Blocks.Add(1)
 			// Tag the block with its compile-time PTBR so the chain
 			// patcher can keep cross-address-space blocks isolated. Non-
 			// MMU mode uses ptbr=0 implicitly, which preserves the
@@ -395,6 +452,10 @@ func (cpu *CPU64) ExecuteJIT() {
 				cpu.jitCache.PutMMU(cpu.ptbr, pcVirt, block)
 			} else {
 				cpu.jitCache.Put(block)
+			}
+			ie64MarkCodePagesForBlockContext(cpu.jitCodePageBitmap, cpu.jitCtx, block)
+			if cpu.mmuEnabled {
+				ie64MarkPhysicalCodePagesForBlock(cpu.jitPhysCodePageBitmap, cpu.bus, block)
 			}
 
 			// Bidirectional chain patching, scoped by MMU PTBR when
@@ -437,60 +498,64 @@ func (cpu *CPU64) ExecuteJIT() {
 			// rel32 jumps (skipping chain-exit reg-spill on the hot
 			// intra-region branch).
 			block.execCount++
-			// Region promotion is currently MMU-disabled: ie64FormRegion
-			// scans cpu.memory at flat physical indices and the in-region
-			// successor walker assumes virtual==physical. Under MMU each
-			// scanned block's virtual successor PC would need a separate
-			// page-table walk to resolve to its physical address; that
-			// machinery is not in place yet, and naively passing pcVirt
-			// would scan unrelated bytes (when the virtual PC maps to a
-			// different physical page) or silently disable valid
-			// regions. Keep region promotion to non-MMU mode until the
-			// scanner gains MMU awareness.
-			if !cpu.mmuEnabled && pcPhys <= memLen-IE64_INSTR_SIZE && block.tier == ie64JITTier1 && ie64TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
-				globalIE64TurboStats.turboCandidates.Add(1)
+			if block.tier == ie64JITTier1 && ie64TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+				globalIE64JITStats.regionCandidates.Add(1)
 				block.lastPromoteAt = block.execCount
-				if !ie64TurboEnabled() {
-					globalIE64TurboStats.turboRejected.Add(1)
-				} else if region := ie64FormRegion(pcPhys, cpu.memory); region != nil && len(region.blocks) >= 2 {
-					newBlock, err := ie64CompileRegion(region, execMem, cpu.memory)
-					if err == nil {
-						newBlock.execCount = block.execCount
-						newBlock.tier = ie64JITTierTurbo
-						if cpu.mmuEnabled {
-							newBlock.ptbr = cpu.ptbr
-						}
-						if cpu.mmuEnabled {
-							cpu.jitCache.PutMMU(cpu.ptbr, pcVirt, newBlock)
-						} else {
-							cpu.jitCache.Put(newBlock)
-						}
-						if newBlock.chainEntry != 0 {
-							if cpu.mmuEnabled {
-								cpu.jitCache.PatchChainsToScoped(newBlock.startPC, newBlock.chainEntry, cpu.ptbr)
-							} else {
-								cpu.jitCache.PatchChainsTo(newBlock.startPC, newBlock.chainEntry)
-							}
-						}
-						for i := range newBlock.chainSlots {
-							slot := &newBlock.chainSlots[i]
-							var target *JITBlock
-							if cpu.mmuEnabled {
-								target = cpu.jitCache.GetMMU(cpu.ptbr, slot.targetPC)
-							} else {
-								target = cpu.jitCache.Get(slot.targetPC)
-							}
-							if target != nil && target.chainEntry != 0 {
-								PatchRel32At(slot.patchAddr, target.chainEntry)
-							}
-						}
-						block = newBlock
-						globalIE64TurboStats.turboRegions.Add(1)
-					} else {
-						globalIE64TurboStats.turboRejected.Add(1)
-					}
+				if !ie64RegionPromotionEnabled() {
+					globalIE64JITStats.regionRejected.Add(1)
 				} else {
-					globalIE64TurboStats.turboRejected.Add(1)
+					var region *ie64Region
+					if cpu.mmuEnabled {
+						if ie64RegionMMUEnabled() {
+							region = ie64FormRegionMMU(cpu, pcVirt)
+						}
+					} else if pcPhys <= memLen-IE64_INSTR_SIZE {
+						region = ie64FormRegion(pcPhys, cpu.memory)
+					}
+					if region != nil && ie64TierController.ShouldPromoteRegion(len(region.blocks)) {
+						newBlock, err := ie64CompileRegion(region, execMem, cpu.memory)
+						if err == nil {
+							newBlock.execCount = block.execCount
+							newBlock.tier = ie64JITTierRegion
+							if cpu.mmuEnabled {
+								newBlock.ptbr = cpu.ptbr
+							}
+							if cpu.mmuEnabled {
+								cpu.jitCache.PutMMU(cpu.ptbr, pcVirt, newBlock)
+							} else {
+								cpu.jitCache.Put(newBlock)
+							}
+							ie64MarkCodePagesForBlockContext(cpu.jitCodePageBitmap, cpu.jitCtx, newBlock)
+							if cpu.mmuEnabled {
+								ie64MarkPhysicalCodePagesForBlock(cpu.jitPhysCodePageBitmap, cpu.bus, newBlock)
+							}
+							if newBlock.chainEntry != 0 {
+								if cpu.mmuEnabled {
+									cpu.jitCache.PatchChainsToScoped(newBlock.startPC, newBlock.chainEntry, cpu.ptbr)
+								} else {
+									cpu.jitCache.PatchChainsTo(newBlock.startPC, newBlock.chainEntry)
+								}
+							}
+							for i := range newBlock.chainSlots {
+								slot := &newBlock.chainSlots[i]
+								var target *JITBlock
+								if cpu.mmuEnabled {
+									target = cpu.jitCache.GetMMU(cpu.ptbr, slot.targetPC)
+								} else {
+									target = cpu.jitCache.Get(slot.targetPC)
+								}
+								if target != nil && target.chainEntry != 0 {
+									PatchRel32At(slot.patchAddr, target.chainEntry)
+								}
+							}
+							block = newBlock
+							globalIE64JITStats.regions.Add(1)
+						} else {
+							globalIE64JITStats.regionRejected.Add(1)
+						}
+					} else {
+						globalIE64JITStats.regionRejected.Add(1)
+					}
 				}
 			}
 		}
@@ -530,6 +595,7 @@ func (cpu *CPU64) ExecuteJIT() {
 		} else {
 			cpu.jitCtx.MMUEnabled = 0
 		}
+		cpu.jitCtx.refreshMicroTLBPrefixes(cpu)
 
 		// Test-only seam: inject work (e.g. a device interrupt pulse) inside the
 		// native execution window so the RetPC-clobber path can be exercised
@@ -539,24 +605,10 @@ func (cpu *CPU64) ExecuteJIT() {
 		}
 
 		// Execute the native code block
-		callNative(block.execAddr, uintptr(unsafe.Pointer(cpu.jitCtx)))
-
-		// Phase 2 return channel: read full 64-bit PC from ctx.RetPC and
-		// retired count from ctx.RetCount. The emitted native code writes
-		// both before returning; the legacy regs[0]-packed channel is
-		// still populated as a fallback signal for blocks compiled before
-		// the Phase 2 rebuild (none exist after this commit, but keeping
-		// the read defensive costs nothing).
-		cpu.PC = cpu.jitCtx.RetPC
-		cpu.jitCtx.RetPC = 0
-		executed := uint64(cpu.jitCtx.RetCount)
-		cpu.jitCtx.RetCount = 0
-		cpu.regs[0] = 0
-		// ChainCount accumulates instruction counts retired by chained
-		// predecessor blocks. Add it so retired-instruction accounting is
-		// uniform with interpreter mode.
-		executed += uint64(cpu.jitCtx.ChainCount)
-		cpu.jitCtx.ChainCount = 0
+		cpu.jitCtx.clearResume()
+		cpu.jitCtx.ResumePTBR = cpu.ptbr
+		cpu.jitCtx.ResumeCountBase = 0
+		executed := runNative(block.execAddr)
 
 		// Phase 5: helper-exit dispatch. Emitted code that hit an MMU
 		// translation, a high physical address, or any other case it
@@ -575,10 +627,22 @@ func (cpu *CPU64) ExecuteJIT() {
 		// missing return-channel write would synthesize a fake
 		// block.instrCount on top of the helper's 0 or 1 and over-count
 		// instructions that never ran.
-		helperRetired, helperHandled := cpu.handleJITHelper()
-		if helperHandled {
-			executed += helperRetired
-		} else if executed == 0 {
+		helperRetired, helperHandled := handleHelperExit(block, &executed)
+		for helperHandled && cpu.canResumeJITHelper(helperRetired) {
+			if cpu.deliverPendingExternalInterrupt() {
+				globalIE64JITStats.helperResumeCancels.Add(1)
+				cpu.jitCtx.clearResume()
+				break
+			}
+			resumeAddr := cpu.jitCtx.ResumeAddr
+			cpu.jitCtx.ResumeValid = 0
+			cpu.jitCtx.ChainBudget = 0
+			cpu.jitCtx.ChainCount = 0
+			globalIE64JITStats.helperResumes.Add(1)
+			executed += runNative(resumeAddr)
+			helperRetired, helperHandled = handleHelperExit(block, &executed)
+		}
+		if !helperHandled && executed == 0 {
 			// Legacy safety fallback for compiled blocks that did not
 			// write the return channel. Suppressed when a helper has
 			// already supplied authoritative accounting.
@@ -594,6 +658,9 @@ func (cpu *CPU64) ExecuteJIT() {
 		// retired count and exit immediately.
 		if helperHandled && !cpu.running.Load() {
 			cpu.InstructionCount += executed
+			if perfAcctOn {
+				cpu.perfAcct.AddInstrs(executed)
+			}
 			break
 		}
 
@@ -606,31 +673,38 @@ func (cpu *CPU64) ExecuteJIT() {
 		}
 		if ioBail {
 			diagIOBails++
-			globalIE64TurboStats.ioBails.Add(1)
+			globalIE64JITStats.ioBails.Add(1)
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
 		}
 		diagBlocksExec++
 		diagBlockInstrs += uint64(block.instrCount)
 
 		// Self-modifying code: invalidate cache
 		if cpu.jitCtx.NeedInval != 0 {
-			cpu.jitCache.Invalidate()
-			execMem.Reset()
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptSMC)
+			if jitSMCRangeDisabled || cpu.jitCtx.InvalSize == 0 {
+				cpu.jitCache.Invalidate()
+				execMem.Reset()
+				clear(cpu.jitCodePageBitmap)
+				clear(cpu.jitPhysCodePageBitmap)
+				ie64ClearHighCodePageSpan(cpu.jitCtx)
+				ie64ClearRTSCache(cpu.jitCtx)
+			} else {
+				removed := ie64InvalidateSMCRangeWithPhysical(cpu.jitCache, cpu.jitCodePageBitmap, cpu.jitPhysCodePageBitmap, cpu.jitCtx, cpu.bus)
+				if removed != 0 {
+					resetExecMemWhenCacheEmpty(cpu.jitCache, execMem)
+				}
+			}
 			cpu.jitCtx.NeedInval = 0
-			globalIE64TurboStats.invalidations.Add(1)
-			cpu.jitCtx.RTSCache0PC = 0
-			cpu.jitCtx.RTSCache0Addr = 0
-			cpu.jitCtx.RTSCache1PC = 0
-			cpu.jitCtx.RTSCache1Addr = 0
-			cpu.jitCtx.RTSCache2PC = 0
-			cpu.jitCtx.RTSCache2Addr = 0
-			cpu.jitCtx.RTSCache3PC = 0
-			cpu.jitCtx.RTSCache3Addr = 0
+			cpu.jitCtx.InvalAddr = 0
+			cpu.jitCtx.InvalSize = 0
+			globalIE64JITStats.invalidations.Add(1)
 		}
 
 		// I/O fallback: re-execute the bailing instruction via interpreter
 		if ioBail {
 			cpu.jitCtx.NeedIOFallback = 0
-			cpu.interpretOne()
+			interpretFallback(DeoptMMIO)
 			executed++ // count the re-executed instruction
 			diagFallbackInstr++
 			if !cpu.running.Load() {
@@ -640,6 +714,9 @@ func (cpu *CPU64) ExecuteJIT() {
 
 		// Retired instruction count (uniform with interpreter)
 		cpu.InstructionCount += executed
+		if perfAcctOn {
+			cpu.perfAcct.AddInstrs(executed)
+		}
 
 		// Performance reporting
 		if perfEnabled && checkCounter&0x3FFF == 0 {
@@ -666,6 +743,6 @@ func (cpu *CPU64) ExecuteJIT() {
 		}
 	}
 	if statsEnabled {
-		ie64TurboStatsLoad().Sub(statsBase).Print()
+		ie64JITStatsLoad().Sub(statsBase).Print()
 	}
 }

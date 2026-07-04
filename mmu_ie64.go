@@ -70,6 +70,9 @@ func (cpu *CPU64) tlbFlush() {
 	for i := range cpu.tlb {
 		cpu.tlb[i].valid = false
 	}
+	if cpu.jitCtx != nil {
+		cpu.jitCtx.flushMicroTLB()
+	}
 }
 
 // tlbInvalidate invalidates the TLB entry for a specific VPN.
@@ -77,6 +80,9 @@ func (cpu *CPU64) tlbInvalidate(vpn uint64) {
 	idx := vpn & 63
 	if cpu.tlb[idx].vpn == vpn {
 		cpu.tlb[idx].valid = false
+	}
+	if cpu.jitCtx != nil {
+		cpu.jitCtx.invalidateMicroTLBVPN(vpn)
 	}
 }
 

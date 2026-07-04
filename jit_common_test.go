@@ -399,6 +399,46 @@ func TestCodeCache_InvalidateRange_NoOverlap(t *testing.T) {
 	}
 }
 
+func TestCodeCache_ResetExecMemWhenLastBlockInvalidated(t *testing.T) {
+	execMem, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+
+	if _, err := execMem.Write([]byte{0x90, 0x90, 0x90, 0x90}); err != nil {
+		t.Fatalf("Write first block: %v", err)
+	}
+	usedAfterFirstWrite := execMem.Used()
+	if usedAfterFirstWrite == 0 {
+		t.Fatal("ExecMem Used stayed at zero after Write")
+	}
+
+	cc := NewCodeCache()
+	cc.Put(&JITBlock{startPC: 0x1000, endPC: 0x1020})
+	cc.Put(&JITBlock{startPC: 0x2000, endPC: 0x2020})
+
+	if removed := cc.InvalidateRange(0x1000, 0x1001); removed != 1 {
+		t.Fatalf("first InvalidateRange removed %d blocks, want 1", removed)
+	}
+	if resetExecMemWhenCacheEmpty(cc, execMem) {
+		t.Fatal("resetExecMemWhenCacheEmpty reset while one block survived")
+	}
+	if execMem.Used() != usedAfterFirstWrite {
+		t.Fatalf("ExecMem Used after partial invalidation = %d, want %d", execMem.Used(), usedAfterFirstWrite)
+	}
+
+	if removed := cc.InvalidateRange(0x2000, 0x2001); removed != 1 {
+		t.Fatalf("second InvalidateRange removed %d blocks, want 1", removed)
+	}
+	if !resetExecMemWhenCacheEmpty(cc, execMem) {
+		t.Fatal("resetExecMemWhenCacheEmpty did not reset after last block")
+	}
+	if execMem.Used() != 0 {
+		t.Fatalf("ExecMem Used after last-block invalidation = %d, want 0", execMem.Used())
+	}
+}
+
 func TestCodeCache_Replace(t *testing.T) {
 	cc := NewCodeCache()
 	b1 := &JITBlock{startPC: 0x1000, endPC: 0x1020, instrCount: 4}

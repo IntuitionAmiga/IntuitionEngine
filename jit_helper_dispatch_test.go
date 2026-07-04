@@ -53,7 +53,7 @@ func TestHandleJITHelper_LOAD_HighAddr_LoadsAndAdvances(t *testing.T) {
 	const highAddr = phase4HighPC + 0x100
 	const want uint64 = 0xCAFEBABEDEADBEEF
 	cpu.bus.WritePhys64WithFault(highAddr, want)
-	before := globalIE64TurboStats.helperExits[HELPER_LOAD].Load()
+	before := globalIE64JITStats.helperExits[HELPER_LOAD].Load()
 
 	cpu.jitCtx.NeedHelper = HELPER_LOAD
 	cpu.jitCtx.HelperAddr = highAddr
@@ -78,7 +78,7 @@ func TestHandleJITHelper_LOAD_HighAddr_LoadsAndAdvances(t *testing.T) {
 	if cpu.jitCtx.NeedHelper != HELPER_NONE {
 		t.Fatalf("NeedHelper not cleared")
 	}
-	after := globalIE64TurboStats.helperExits[HELPER_LOAD].Load()
+	after := globalIE64JITStats.helperExits[HELPER_LOAD].Load()
 	if after-before != 1 {
 		t.Fatalf("HELPER_LOAD counter delta = %d, want 1", after-before)
 	}
@@ -195,7 +195,7 @@ func TestHandleJITHelper_DTRANS_ExecutesFP64AndAdvances(t *testing.T) {
 	cpu := dispatchTestCPU(t)
 	cpu.FPU.setDPair(2, -1)
 	cpu.FPU.setDPair(4, 0.5)
-	before := globalIE64TurboStats.helperExits[HELPER_DTRANS].Load()
+	before := globalIE64JITStats.helperExits[HELPER_DTRANS].Load()
 
 	cpu.jitCtx.NeedHelper = HELPER_DTRANS
 	cpu.jitCtx.HelperSize = uint32(OP_DPOW)
@@ -224,7 +224,7 @@ func TestHandleJITHelper_DTRANS_ExecutesFP64AndAdvances(t *testing.T) {
 	if cpu.jitCtx.NeedHelper != HELPER_NONE {
 		t.Fatalf("NeedHelper not cleared")
 	}
-	after := globalIE64TurboStats.helperExits[HELPER_DTRANS].Load()
+	after := globalIE64JITStats.helperExits[HELPER_DTRANS].Load()
 	if after-before != 1 {
 		t.Fatalf("HELPER_DTRANS counter delta = %d, want 1", after-before)
 	}

@@ -115,14 +115,26 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 	var diagCacheHits uint64
 	var diagCacheMisses uint64
 	var diagFallbackInstr uint64
-	p65Stats := p65TurboStatsEnabled()
-	p65Turbo := p65TurboEnabled()
-	p65StatsBase := p65TurboStatsSnapshot{}
+	p65Stats := p65JITStatsEnabled()
+	p65StatsBase := p65JITStatsSnapshot{}
 	if p65Stats {
-		p65StatsBase = p65TurboStatsLoad()
+		p65StatsBase = p65JITStatsLoad()
 		defer func() {
-			p65TurboStatsLoad().Sub(p65StatsBase).Print()
+			p65JITStatsLoad().Sub(p65StatsBase).Print()
 		}()
+	}
+
+	interpretFallback := func(reason DeoptReason) {
+		var interpT0 time.Time
+		if perfAcctOn {
+			interpT0 = time.Now()
+		}
+		cpu.interpret6502One()
+		if perfAcctOn {
+			cpu.perfAcct.AddInterpSince(interpT0)
+			cpu.perfAcct.AddInstrs(1)
+			cpu.deoptStats.Add(reason)
+		}
 	}
 
 	cpu.executing.Store(true)
@@ -167,16 +179,13 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			cpu.running.Store(false)
 			break
 		}
-		if matched, retired := cpu.tryFast6502TurboLoop(mem, pc, p65Turbo); matched {
-			if perfEnabled {
-				cpu.InstructionCount += uint64(retired)
-			}
-			continue
-		}
 		if adapter, ok := cpu.memory.(*Bus6502Adapter); ok {
 			if matched, retired := cpu.tryFast6502MMIOPollLoop(adapter); matched {
 				if perfEnabled {
 					cpu.InstructionCount += uint64(retired)
+				}
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(uint64(retired))
 				}
 				continue
 			}
@@ -186,10 +195,10 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		block := cpu.jitCache.Get(uint64(pc))
 		if block == nil {
 			// Scan and potentially compile a new block
-			instrs := p65ScanTurboBlock(cpu, mem, pc, memSize)
+			instrs := jit6502ScanBlock(mem, pc, memSize)
 			if jit6502NeedsFallback(instrs) {
 				// BRK, RTI, KIL, undocumented — use interpreter for single instruction
-				cpu.interpret6502One()
+				interpretFallback(DeoptUnsupported)
 				diagFallbackInstr++
 				if !cpu.running.Load() {
 					break
@@ -218,7 +227,7 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 				block, err = compileBlock6502(instrs, pc, execMem, &cpu.codePageBitmap)
 				if err != nil {
 					// Genuine failure — interpret one instruction and continue
-					cpu.interpret6502One()
+					interpretFallback(DeoptCachePressure)
 					if perfEnabled {
 						cpu.InstructionCount++
 					}
@@ -231,7 +240,7 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			}
 			cpu.jitCache.Put(block)
 			if p65Stats {
-				globalP65TurboStats.tier1Blocks.Add(1)
+				globalP65JITStats.tier1Blocks.Add(1)
 			}
 
 			// Bidirectional chain patching:
@@ -253,56 +262,6 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		}
 
 		block.execCount++
-		if p65TurboRegionPromotion && p65Turbo && p65TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
-			block.lastPromoteAt = block.execCount
-			if p65Stats {
-				globalP65TurboStats.turboCandidates.Add(1)
-			}
-			instrs := jit6502ScanBlock(mem, pc, memSize)
-			if jit6502NeedsFallback(instrs) {
-				if p65Stats {
-					p65RecordTurboReject(p65TurboRejectUnsupported)
-				}
-			} else {
-				newBlock, plan, reason, err := compileBlock6502Turbo(cpu, instrs, pc, execMem, &cpu.codePageBitmap)
-				if err != nil {
-					// ExecMem pressure is handled by the normal tier-1 compile path.
-					if p65Stats {
-						p65RecordTurboReject(p65TurboRejectUnsupported)
-					}
-				} else if reason != p65TurboRejectNone {
-					if p65Stats {
-						p65RecordTurboReject(reason)
-					}
-				} else if newBlock != nil {
-					newBlock.execCount = block.execCount
-					newBlock.lastPromoteAt = block.lastPromoteAt
-					cpu.jitCache.Put(newBlock)
-					block = newBlock
-					if p65Stats {
-						globalP65TurboStats.turboRegions.Add(1)
-						if plan.directMemoryProofs > 0 {
-							globalP65TurboStats.directMemoryProofs.Add(uint64(plan.directMemoryProofs))
-						}
-						if plan.loopSpecialized {
-							globalP65TurboStats.loopSpecializations.Add(1)
-						}
-						if plan.inlinedCalls > 0 {
-							globalP65TurboStats.inlinedCalls.Add(uint64(plan.inlinedCalls))
-						}
-					}
-					if block.chainEntry != 0 {
-						cpu.jitCache.PatchChainsTo(block.startPC, block.chainEntry)
-					}
-					for i := range block.chainSlots {
-						slot := &block.chainSlots[i]
-						if target := cpu.jitCache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
-							PatchRel32At(slot.patchAddr, target.chainEntry)
-						}
-					}
-				}
-			}
-		}
 
 		// Update 2-entry MRU RTS cache before execution
 		if block.chainEntry != 0 {
@@ -320,7 +279,14 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		ctx.ChainCount = 0
 
 		// Execute the native code block
+		var jitT0 time.Time
+		if perfAcctOn {
+			jitT0 = time.Now()
+		}
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
+		if perfAcctOn {
+			cpu.perfAcct.AddJitSince(jitT0)
+		}
 
 		// ── Process block results ──
 		cpu.PC = uint16(ctx.RetPC)
@@ -331,14 +297,15 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			executed = ctx.ChainCount
 		}
 		if p65Stats && ctx.ChainCount > 0 {
-			globalP65TurboStats.chainExits.Add(1)
+			globalP65JITStats.chainExits.Add(1)
 		}
 		ctx.RetCount = 0
 
 		// ── Handle NeedInval (self-mod: page-granular invalidation) ──
 		if ctx.NeedInval != 0 {
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptSMC)
 			if p65Stats {
-				globalP65TurboStats.invalidations.Add(1)
+				globalP65JITStats.invalidations.Add(1)
 			}
 			page := ctx.InvalPage
 			lo := page << 8
@@ -359,18 +326,26 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		// ── Handle NeedBail (re-execute current instruction via interpreter) ──
 		if ctx.NeedBail != 0 {
 			ctx.NeedBail = 0
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
 			block.ioBails++
 			if p65Stats {
-				globalP65TurboStats.bails.Add(1)
+				globalP65JITStats.bails.Add(1)
+			}
+			var interpT0 time.Time
+			if perfAcctOn {
+				interpT0 = time.Now()
 			}
 			cpu.interpret6502One()
-			executed++
-			if !cpu.running.Load() {
-				break
+			if perfAcctOn {
+				cpu.perfAcct.AddInterpSince(interpT0)
 			}
+			executed++
 		}
 
 		// ── Bookkeeping ──
+		if perfAcctOn {
+			cpu.perfAcct.AddInstrs(uint64(executed))
+		}
 		if perfEnabled {
 			cpu.InstructionCount += uint64(executed)
 

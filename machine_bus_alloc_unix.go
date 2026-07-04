@@ -59,6 +59,7 @@ func defaultBusMemAllocator(size uint64) []byte {
 		// a smaller bus and high-range Backing.
 		return nil
 	}
+	adviseHugePages(mem)
 	registerBusMemMmap(mem)
 	return mem
 }

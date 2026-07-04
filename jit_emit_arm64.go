@@ -215,6 +215,13 @@ func arm64MOV_W(rd, rm byte) uint32 {
 	return 0x2A0003E0 | uint32(rm)<<16 | uint32(rd)
 }
 
+// adr Xd, label. The signed 21-bit immediate is a byte offset from
+// the ADR instruction, so the final mmap base address does not matter.
+func arm64ADR(rd byte, offset int32) uint32 {
+	imm := uint32(offset) & 0x1FFFFF
+	return 0x10000000 | (imm&0x3)<<29 | ((imm>>2)&0x7FFFF)<<5 | uint32(rd)
+}
+
 // add Xd, Xn, Xm
 func arm64ADD(rd, rn, rm byte) uint32 {
 	return 0x8B000000 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
@@ -696,12 +703,13 @@ func emitStoreRetCount(cb *CodeBuffer, staticCount uint32, br *blockRegs) {
 		} else {
 			cb.Emit32(arm64MOV_W(1, arm64RegLoopCount))
 		}
-		cb.Emit32(arm64STR_W_imm(1, 2, uint32(jitCtxOffRetCount/4)))
 	} else {
 		// Static count: load into W1 then store.
 		emitLoadImm32(cb, 1, staticCount)
-		cb.Emit32(arm64STR_W_imm(1, 2, uint32(jitCtxOffRetCount/4)))
 	}
+	cb.Emit32(arm64LDR_W_imm(3, 2, uint32(jitCtxOffResumeCountBase/4)))
+	cb.Emit32(arm64SUB_W(1, 1, 3))
+	cb.Emit32(arm64STR_W_imm(1, 2, uint32(jitCtxOffRetCount/4)))
 }
 
 // emitDynamicCount retained for ABI compatibility — rewritten to write
@@ -784,6 +792,39 @@ func emitPrologue(cb *CodeBuffer, blockPC uint64, br *blockRegs) {
 
 	// Load block start PC into X28
 	emitLoadImm64(cb, arm64RegIE64PC, uint64(blockPC))
+}
+
+func emitResumeEntryARM64(cb *CodeBuffer, resumePC uint64, br *blockRegs) {
+	emitPrologue(cb, resumePC, br)
+}
+
+func emitHelperResumeFieldsARM64(cb *CodeBuffer, ctxReg byte, resumePC uint64, countBase uint32, br *blockRegs) int {
+	if br.hasBackwardBranch {
+		emitLoadImm32(cb, 2, 0)
+		cb.Emit32(arm64STR_W_imm(2, ctxReg, uint32(jitCtxOffResumeValid/4)))
+		return -1
+	}
+
+	adrOff := cb.Len()
+	cb.Emit32(0) // Patched to ADR X2, resume_label once the label is emitted.
+	cb.Emit32(arm64STR_imm(2, ctxReg, uint32(jitCtxOffResumeAddr/8)))
+	emitLoadImm64(cb, 2, resumePC)
+	cb.Emit32(arm64STR_imm(2, ctxReg, uint32(jitCtxOffResumePC/8)))
+	emitLoadImm32(cb, 2, countBase)
+	cb.Emit32(arm64STR_W_imm(2, ctxReg, uint32(jitCtxOffResumeCountBase/4)))
+	cb.Emit32(arm64LDR_W_imm(2, ctxReg, uint32(jitCtxOffMMUEnabled/4)))
+	cb.Emit32(arm64STR_W_imm(2, ctxReg, uint32(jitCtxOffResumeMMUEnabled/4)))
+	emitLoadImm32(cb, 2, 1)
+	cb.Emit32(arm64STR_W_imm(2, ctxReg, uint32(jitCtxOffResumeValid/4)))
+	return adrOff
+}
+
+func patchResumeADRARM64(cb *CodeBuffer, adrOff int, resumeOff int) {
+	if adrOff < 0 {
+		return
+	}
+	offset := int32(resumeOff - adrOff)
+	cb.PatchUint32(adrOff, arm64ADR(2, offset))
 }
 
 // emitEpilogue emits the block exit sequence, storing/restoring only the
@@ -2124,7 +2165,10 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
 	cb.PatchUint32(highHelperOff, arm64B(int32(helperPC-highHelperOff)))
 	cb.PatchUint32(ioHelperOff, arm64B(int32(helperPC-ioHelperOff)))
-	emitLOADHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
+	resumePatch := emitLOADHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
+	resumeOff := cb.Len()
+	patchResumeADRARM64(cb, resumePatch, resumeOff)
+	emitResumeEntryARM64(cb, instrPC+IE64_INSTR_SIZE, br)
 
 	// Converged done label for both successful direct loads.
 	donePC := cb.Len()
@@ -2138,7 +2182,7 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 // the result into Rd, advances PC, and re-enters the JIT loop.
 //
 // X0 must hold the effective virtual address on entry.
-func emitLOADHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+func emitLOADHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) int {
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr (SP+96)
 	cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffHelperAddr/8)))          // HelperAddr = X0
 	emitLoadImm32(cb, 2, uint32(ji.size))                                 //
@@ -2153,7 +2197,10 @@ func emitLOADHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *b
 
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
+	return resumePatch
 }
 
 // emitHighAddrBailCheckARM64 emits a size-aware 64-bit bail check at the
@@ -2286,7 +2333,10 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
 	cb.PatchUint32(highHelperOff, arm64B(int32(helperPC-highHelperOff)))
 	cb.PatchUint32(ioHelperOff, arm64B(int32(helperPC-ioHelperOff)))
-	emitSTOREHelperExitARM64(cb, ji, instrPC, srcReg, br, writtenSoFar)
+	resumePatch := emitSTOREHelperExitARM64(cb, ji, instrPC, srcReg, br, writtenSoFar)
+	resumeOff := cb.Len()
+	patchResumeADRARM64(cb, resumePatch, resumeOff)
+	emitResumeEntryARM64(cb, instrPC+IE64_INSTR_SIZE, br)
 
 	// Converged done label.
 	donePC := cb.Len()
@@ -2297,7 +2347,7 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 // emitSTOREHelperExitARM64 writes the JITContext HELPER_STORE protocol
 // fields and exits the block. X0 = effective virtual address, srcReg =
 // value to store (already size-masked).
-func emitSTOREHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) {
+func emitSTOREHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) int {
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr
 	cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffHelperAddr/8)))          // HelperAddr = X0
 	cb.Emit32(arm64STR_imm(srcReg, 1, uint32(jitCtxOffHelperVal/8)))      // HelperVal
@@ -2313,7 +2363,10 @@ func emitSTOREHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcR
 
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
+	return resumePatch
 }
 
 func emitStoreAtomicOld(cb *CodeBuffer, oldReg byte, rd byte) {
@@ -2723,7 +2776,10 @@ func emitPUSH(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
 	cb.PatchUint32(underflowOff, arm64Bcond(arm64CondLO, int32(helperPC-underflowOff)))
 	cb.PatchUint32(highHelperOff, arm64Bcond(arm64CondHI, int32(helperPC-highHelperOff)))
-	emitPUSHHelperExitARM64(cb, ji, instrPC, srcReg, br, writtenSoFar)
+	resumePatch := emitPUSHHelperExitARM64(cb, ji, instrPC, srcReg, br, writtenSoFar)
+	resumeOff := cb.Len()
+	patchResumeADRARM64(cb, resumePatch, resumeOff)
+	emitResumeEntryARM64(cb, instrPC+IE64_INSTR_SIZE, br)
 
 	donePC := cb.Len()
 	cb.PatchUint32(doneOff, arm64B(int32(donePC-doneOff)))
@@ -2732,7 +2788,7 @@ func emitPUSH(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 // emitPUSHHelperExitARM64 writes the JITContext HELPER_PUSH protocol
 // fields. srcReg holds the value to push; X1 is the ctx pointer and
 // never aliases a mapped IE64 register.
-func emitPUSHHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) {
+func emitPUSHHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcReg byte, br *blockRegs, writtenSoFar uint32) int {
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8)) // X1 = ctx ptr
 	valReg := srcReg
 	if ji.rs == 31 {
@@ -2754,7 +2810,10 @@ func emitPUSHHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcRe
 
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
+	return resumePatch
 }
 
 // emitPOP handles POP rd. Phase 5 cycle 5.8: routes through HELPER_POP
@@ -2793,7 +2852,10 @@ func emitPOP(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writte
 	helperPC := cb.Len()
 	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
 	cb.PatchUint32(highHelperOff, arm64Bcond(arm64CondHI, int32(helperPC-highHelperOff)))
-	emitPOPHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
+	resumePatch := emitPOPHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
+	resumeOff := cb.Len()
+	patchResumeADRARM64(cb, resumePatch, resumeOff)
+	emitResumeEntryARM64(cb, instrPC+IE64_INSTR_SIZE, br)
 
 	donePC := cb.Len()
 	cb.PatchUint32(doneOff, arm64B(int32(donePC-doneOff)))
@@ -2802,7 +2864,7 @@ func emitPOP(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writte
 // emitPOPHelperExitARM64 writes the JITContext HELPER_POP protocol
 // fields. The dispatcher reads via mmuStackRead, writes into HelperRd,
 // increments cpu.regs[31], and advances PC.
-func emitPOPHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+func emitPOPHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) int {
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr
 	emitLoadImm32(cb, 2, uint32(ji.rd))                                   //
 	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperRd/4)))          // HelperRd
@@ -2814,7 +2876,10 @@ func emitPOPHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *bl
 
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
+	return resumePatch
 }
 
 // emitJSR_IND handles JSR_IND (register-indirect subroutine call,
@@ -3764,6 +3829,10 @@ type ie64Region struct {
 var ie64CurrentInstrCountBase uint32
 
 func ie64FormRegion(hotPC uint64, memory []byte) *ie64Region {
+	return nil
+}
+
+func ie64FormRegionMMU(cpu *CPU64, hotPC uint64) *ie64Region {
 	return nil
 }
 

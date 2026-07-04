@@ -82,7 +82,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 		return 0, false
 	}
 	if op <= HELPER_DTRANS {
-		globalIE64TurboStats.helperExits[op].Add(1)
+		globalIE64JITStats.helperExits[op].Add(1)
 	}
 	cpu.jitCtx.NeedHelper = HELPER_NONE
 
@@ -108,6 +108,10 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 	// suppresses the I/O fallback; retired=0 since the bailing instruction did
 	// not run.
 	if cpu.deliverPendingExternalInterrupt() {
+		if cpu.jitCtx.ResumeValid != 0 {
+			globalIE64JITStats.helperResumeCancels.Add(1)
+			cpu.jitCtx.clearResume()
+		}
 		return 0, true
 	}
 
@@ -175,6 +179,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 				cpu.trapped = false
 				return 0, true
 			}
+			cpu.fillJITMicroTLB(addr, ACCESS_READ)
 		}
 		cpu.PC += IE64_INSTR_SIZE
 		return 1, true
@@ -185,6 +190,8 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 			cpu.trapped = false
 			return 0, true
 		}
+		cpu.markJITSMCWrite(addr, ie64AccessBytes(size))
+		cpu.fillJITMicroTLB(addr, ACCESS_WRITE)
 		cpu.PC += IE64_INSTR_SIZE
 		return 1, true
 
@@ -218,6 +225,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 			cpu.trapped = false
 			return 0, true
 		}
+		cpu.markJITSMCWrite(addr, ie64AccessBytes(IE64_SIZE_L))
 		cpu.PC += IE64_INSTR_SIZE
 		return 1, true
 
@@ -246,6 +254,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 			cpu.trapped = false
 			return 0, true
 		}
+		cpu.markJITSMCWrite(addr, ie64AccessBytes(IE64_SIZE_Q))
 		cpu.PC += IE64_INSTR_SIZE
 		return 1, true
 
@@ -268,6 +277,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 			cpu.haltStackFault()
 			return 0, true
 		}
+		cpu.markJITSMCWrite(cpu.regs[31], 8)
 		cpu.PC += IE64_INSTR_SIZE
 		return 1, true
 
@@ -302,6 +312,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 			cpu.haltStackFault()
 			return 0, true
 		}
+		cpu.markJITSMCWrite(cpu.regs[31], 8)
 		cpu.PC = addr
 		return 1, true
 
@@ -330,6 +341,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 			cpu.haltStackFault()
 			return 0, true
 		}
+		cpu.markJITSMCWrite(cpu.regs[31], 8)
 		cpu.PC = addr
 		return 1, true
 

@@ -281,6 +281,9 @@ func (bus *MachineBus) WritePhys32(addr uint64, v uint32) {
 		}
 		bus.backing.Write32(addr, v)
 		bus.invalidateM68KJITRAMWrite(addr, 4)
+		if addr <= uint64(^uint32(0)) {
+			bus.notifyCoprocessorCompletionWrite(uint32(addr), v)
+		}
 		bus.debugOnPhysWrite(addr, 4, uint64(old), uint64(v))
 	}
 }

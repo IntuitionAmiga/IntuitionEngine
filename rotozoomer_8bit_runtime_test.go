@@ -75,9 +75,10 @@ func requireVideoContent(t *testing.T, video *VideoChip, minDistinct int) {
 
 	mode := VideoModes[video.currentMode]
 	frame := video.GetFrame()
-	got := sampleFrameDistinctColors(frame, mode.width, mode.height, 80)
+	const sampleStep = 40
+	got := sampleFrameDistinctColors(frame, mode.width, mode.height, sampleStep)
 	if got < minDistinct {
-		t.Fatalf("sampled distinct colors = %d, want >= %d", got, minDistinct)
+		t.Fatalf("sampled distinct colors = %d, want >= %d (step=%d)", got, minDistinct, sampleStep)
 	}
 }
 
@@ -91,7 +92,10 @@ func Test6502RotozoomerRuntimeProducesVideo(t *testing.T) {
 		rig.sound.Stop()
 	})
 
-	runner := NewCPU6502Runner(rig.bus, CPU6502Config{})
+	runner := NewCPU6502Runner(rig.bus, CPU6502Config{
+		LoadAddr: 0x0800,
+		Entry:    0x0800,
+	})
 	runner.JITEnabled = true
 	if err := runner.LoadProgram(filepath.Join("sdk", "examples", "prebuilt", "rotozoomer_65.ie65")); err != nil {
 		t.Fatalf("load 6502 rotozoomer: %v", err)

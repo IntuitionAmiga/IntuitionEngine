@@ -292,7 +292,21 @@ func (e *PSGEngine) TickSample() {
 
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
+	e.tickSampleLocked()
+}
 
+func (e *PSGEngine) TickBlock(samples int) {
+	if samples <= 0 || !e.enabled.Load() {
+		return
+	}
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	for range samples {
+		e.tickSampleLocked()
+	}
+}
+
+func (e *PSGEngine) tickSampleLocked() {
 	e.advanceEnvelope()
 
 	if !e.playing {

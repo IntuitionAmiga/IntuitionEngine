@@ -1106,6 +1106,12 @@ func (e *SIDEngine) TickSample() {
 	}
 }
 
+func (e *SIDEngine) TickBlock(samples int) {
+	for range samples {
+		e.TickSample()
+	}
+}
+
 func (e *SIDEngine) silenceChannels() {
 	if e.sound == nil {
 		return

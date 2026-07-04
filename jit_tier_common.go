@@ -48,6 +48,11 @@ type TierThresholds struct {
 	// so non-power-of-two thresholds remain expressible.
 	IOBailMaxNumerator   uint32
 	IOBailMaxDenominator uint32
+
+	// RegionMinBlocks is the minimum block count for a promoted region.
+	// x86's existing region path requires 3+ blocks; IE64, M68K, and
+	// 6502 preserve their current 2+ block admission by overriding this.
+	RegionMinBlocks uint32
 }
 
 // DefaultTierThresholds matches x86's reference Tier-2 promoter (the policy
@@ -56,6 +61,7 @@ var DefaultTierThresholds = TierThresholds{
 	PromoteAtExecCount:   64,
 	IOBailMaxNumerator:   1,
 	IOBailMaxDenominator: 4,
+	RegionMinBlocks:      3,
 }
 
 // RegPressureProfile describes a backend's host-register budget for the
@@ -142,6 +148,39 @@ func (c *TierController) ShouldPromote(currentTier int, execCount, ioBails, last
 		return false
 	}
 	return true
+}
+
+// ShouldPromoteDeopt applies the same promotion policy using the deopt
+// taxonomy collected by dispatchers. Legacy callers pass ioBails to
+// ShouldPromote; taxonomy-aware callers pass all deopt exits here, so helper,
+// MMIO, SMC, interrupt, cache-pressure, debug, and unsupported exits all
+// contribute to the "too much time outside native code" admission gate.
+func (c *TierController) ShouldPromoteDeopt(currentTier int, execCount, lastPromoteAt uint32, deopts DeoptStatsSnapshot) bool {
+	if currentTier != 0 {
+		return false
+	}
+	if lastPromoteAt != 0 {
+		return false
+	}
+	if execCount < c.Thresholds.PromoteAtExecCount {
+		return false
+	}
+	if deopts.Total == 0 {
+		return true
+	}
+	if deopts.Total*uint64(c.Thresholds.IOBailMaxDenominator) >=
+		uint64(execCount)*uint64(c.Thresholds.IOBailMaxNumerator) {
+		return false
+	}
+	return true
+}
+
+// ShouldPromoteRegion applies the backend's shared minimum-region floor.
+// Call this after ShouldPromote/ShouldPromoteDeopt has admitted the hot
+// entry block and the backend-specific region former has returned a
+// candidate.
+func (c *TierController) ShouldPromoteRegion(blockCount int) bool {
+	return blockCount >= int(c.Thresholds.RegionMinBlocks)
 }
 
 // TierAllocator is the per-backend hook the controller calls when it

@@ -42,6 +42,9 @@ func TestX86JITContext_FieldOffsets(t *testing.T) {
 		{"RTSCache0Addr", uintptr(unsafe.Pointer(&ctx.RTSCache0Addr)) - base, x86CtxOffRTSCache0Addr},
 		{"RTSCache1PC", uintptr(unsafe.Pointer(&ctx.RTSCache1PC)) - base, x86CtxOffRTSCache1PC},
 		{"RTSCache1Addr", uintptr(unsafe.Pointer(&ctx.RTSCache1Addr)) - base, x86CtxOffRTSCache1Addr},
+		{"RTSCache1RegMap", uintptr(unsafe.Pointer(&ctx.RTSCache1RegMap)) - base, x86CtxOffRTSCache1RegMap},
+		{"InvalAddr", uintptr(unsafe.Pointer(&ctx.InvalAddr)) - base, x86CtxOffInvalAddr},
+		{"InvalSize", uintptr(unsafe.Pointer(&ctx.InvalSize)) - base, x86CtxOffInvalSize},
 	}
 
 	for _, tt := range tests {

@@ -721,6 +721,7 @@ func (m *CoprocessorManager) Reset() {
 	m.busyBuckets = [10]busyBucket{}
 	m.busyBucketIdx = 0
 	m.busyRotateCounter = 0
+	m.busyBucketStart = time.Time{}
 	m.lastTransition = time.Time{}
 	m.workerBusy = false
 	m.initRings()

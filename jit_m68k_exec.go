@@ -436,7 +436,10 @@ func (cpu *M68KCPU) m68kReportJITStopRetRange(block *JITBlock, ctx *M68KJITConte
 // per-block Tier-2 reg-map promotion lands until B.1.c. The
 // PromoteBlock allocator stub stays a no-op for now (see
 // jit_tier_backends.go).
-var m68kTierController = NewTierController(M68KRegProfile)
+var m68kTierController = func() *TierController {
+	c := NewTierController(M68KRegProfile)
+	return applyPerfTuningProfileToTierController("m68k", c)
+}()
 
 // m68kGetJITExecMem returns the typed *ExecMem from the cpu's any field.
 func (cpu *M68KCPU) m68kGetJITExecMem() *ExecMem {
@@ -611,6 +614,7 @@ func (cpu *M68KCPU) m68kInvalidateJITCodeRange(lo, hi uint32) {
 	if removed != 0 {
 		cpu.m68kClearJITRTSCache()
 		cpu.m68kRebuildJITCodeMetadata()
+		resetExecMemWhenCacheEmpty(cpu.m68kJitCache, cpu.m68kGetJITExecMem())
 		return
 	}
 }
@@ -1918,7 +1922,7 @@ func (cpu *M68KCPU) m68kTryPromoteJITRegion(block *JITBlock, execMem *ExecMem, m
 	}
 	block.lastPromoteAt = block.execCount
 	region := m68kFormRegion(uint32(block.startPC), memory)
-	if region == nil || len(region.blocks) < 2 {
+	if region == nil || !m68kTierController.ShouldPromoteRegion(len(region.blocks)) {
 		return block
 	}
 	if disabledPCs := m68kJITDiagnosticDisabledPCs(); len(disabledPCs) != 0 {
@@ -2545,6 +2549,26 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 	var diagFallbackInstr uint64
 	var diagIOBails uint64
 
+	recordM68KInterpreted := func(reason DeoptReason, fn func() uint64) uint64 {
+		var interpT0 time.Time
+		if perfAcctOn {
+			interpT0 = time.Now()
+		}
+		retired := fn()
+		if perfAcctOn {
+			cpu.perfAcct.AddInterpSince(interpT0)
+			cpu.perfAcct.AddInstrs(retired)
+			cpu.deoptStats.Add(reason)
+		}
+		return retired
+	}
+	interpretOneFallback := func(reason DeoptReason) {
+		recordM68KInterpreted(reason, func() uint64 {
+			cpu.m68kInterpretOne()
+			return 1
+		})
+	}
+
 	// A0/R12-across-IRQ corruption tracer (IE_M68K_JIT_DIAG_A0WATCH=1). Tracks the
 	// A0 register file slot at each interrupt-sample boundary in the crash window
 	// and logs when it flips from a sane small value to garbage, plus each IRQ
@@ -2733,6 +2757,9 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			prevInstructionCount := instructionCount
 			instructionCount += uint64(retired)
 			cpu.InstructionCount = instructionCount
+			if perfAcctOn {
+				cpu.perfAcct.AddInstrs(uint64(retired))
+			}
 			if !cpu.running.Load() {
 				break
 			}
@@ -2747,6 +2774,9 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				prevInstructionCount := instructionCount
 				instructionCount += uint64(retired)
 				cpu.InstructionCount = instructionCount
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(uint64(retired))
+				}
 				checkPending(prevInstructionCount)
 				if !cpu.running.Load() || cpu.stopped.Load() || cpu.PC != chasedPC {
 					continue
@@ -2771,7 +2801,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			// Scan block
 			instrs := m68kScanBlock(cpu.memory, pc)
 			if len(instrs) == 0 {
-				cpu.m68kInterpretOne()
+				interpretOneFallback(DeoptUnsupported)
 				instructionCount++
 				cpu.InstructionCount = instructionCount
 				diagFallbackInstr++
@@ -2789,9 +2819,13 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			// interpreter's goroutine stack via a burst instead of compiling.
 			// m68kJitForceNative (test/diagnostic) overrides this.
 			if !cpu.m68kJitForceNative && m68kBlockContainsTranscendental(cpu.memory, pc, instrs) {
-				retired := cpu.m68kInterpretTranscendentalBurst(m68kFallbackBurstUntilInterruptSample(instructionCount))
+				retired := recordM68KInterpreted(DeoptHelper, func() uint64 {
+					return cpu.m68kInterpretTranscendentalBurst(m68kFallbackBurstUntilInterruptSample(instructionCount))
+				})
 				if retired == 0 {
-					retired = cpu.m68kFallbackOneInstruction()
+					retired = recordM68KInterpreted(DeoptUnsupported, func() uint64 {
+						return cpu.m68kFallbackOneInstruction()
+					})
 				}
 				cpu.m68kJitTranscendentalBursts.Add(1)
 				prevInstructionCount := instructionCount
@@ -2845,13 +2879,13 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			// interpreter bursts are no longer a production path; the diagnostic
 			// burst is opt-in only.
 			if !fullBlockAllowed {
-				var retired uint64
-				if m68kJITDiagBurstFallback() {
-					retired = cpu.m68kInterpretFallbackBurst(m68kFallbackBurstUntilInterruptSample(instructionCount))
-				} else {
-					retired = cpu.m68kFallbackOneInstruction()
+				retired := recordM68KInterpreted(DeoptUnsupported, func() uint64 {
+					if m68kJITDiagBurstFallback() {
+						return cpu.m68kInterpretFallbackBurst(m68kFallbackBurstUntilInterruptSample(instructionCount))
+					}
 					cpu.m68kJitUnsupportedOneExits.Add(1)
-				}
+					return cpu.m68kFallbackOneInstruction()
+				})
 				prevInstructionCount := instructionCount
 				instructionCount += retired
 				cpu.InstructionCount = instructionCount
@@ -2868,7 +2902,10 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			}
 
 			if cpu.m68kJITShouldWarmupInterpret(pc) {
-				cpu.StepOne()
+				recordM68KInterpreted(DeoptNone, func() uint64 {
+					cpu.StepOne()
+					return 1
+				})
 				prevInstructionCount := instructionCount
 				instructionCount++
 				cpu.InstructionCount = instructionCount
@@ -2898,13 +2935,13 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				// Normal mode: execute exactly one interpreter instruction,
 				// record compile_failure, return to JIT dispatch. Never blacklist
 				// the block or fall back to an interpreter burst.
-				var retired uint64
-				if m68kJITDiagBurstFallback() {
-					retired = cpu.m68kInterpretFallbackBurst(m68kFallbackBurstUntilInterruptSample(instructionCount))
-				} else {
-					retired = cpu.m68kFallbackOneInstruction()
+				retired := recordM68KInterpreted(DeoptCachePressure, func() uint64 {
+					if m68kJITDiagBurstFallback() {
+						return cpu.m68kInterpretFallbackBurst(m68kFallbackBurstUntilInterruptSample(instructionCount))
+					}
 					cpu.m68kJitCompileFailureExits.Add(1)
-				}
+					return cpu.m68kFallbackOneInstruction()
+				})
 				prevInstructionCount := instructionCount
 				instructionCount += retired
 				cpu.InstructionCount = instructionCount
@@ -3033,7 +3070,14 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		ctx.InvalGenSnapshot = genAtDispatch
 		cpu.m68kRecordJITNativePC(uint32(block.startPC))
 		cpu.m68kJitNativeActive.Store(true)
+		var jitT0 time.Time
+		if perfAcctOn {
+			jitT0 = time.Now()
+		}
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
+		if perfAcctOn {
+			cpu.perfAcct.AddJitSince(jitT0)
+		}
 		cpu.m68kJitNativeActive.Store(false)
 		cpu.m68kJitNativeBlocksExecuted.Add(1)
 
@@ -3217,6 +3261,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		}
 
 		if ctx.NativeException != 0 {
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptInterrupt)
 			cpu.m68kJitNativeExceptionExits.Add(1)
 			vector := uint8(ctx.NativeException)
 			ctx.NativeException = 0
@@ -3224,6 +3269,9 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			cpu.lastExecOpcode = uint16(ctx.NativeExceptionIR)
 			prevInstructionCount := instructionCount
 			instructionCount += executed
+			if perfAcctOn {
+				cpu.perfAcct.AddInstrs(executed)
+			}
 			cpu.InstructionCount = instructionCount
 			if vector >= M68K_VEC_TRAP_BASE && vector < M68K_VEC_TRAP_BASE+16 {
 				cpu.currentIR = uint16(M68K_TRAP | uint16(vector-M68K_VEC_TRAP_BASE))
@@ -3237,11 +3285,15 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 
 		didHelper := false
 		if ctx.NeedHelper != m68kJITHelperNone {
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptHelper)
 			cpu.m68kJitNativeHelperExits.Add(1)
 			didHelper = true
 			if executed != 0 {
 				prevInstructionCount := instructionCount
 				instructionCount += executed
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(executed)
+				}
 				executed = 0
 				cpu.InstructionCount = instructionCount
 				checkPending(prevInstructionCount)
@@ -3250,7 +3302,10 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				}
 			}
 			prevInstructionCount := instructionCount
-			retired, _ := cpu.m68kHandleJITHelper(ctx)
+			retired := recordM68KInterpreted(DeoptNone, func() uint64 {
+				helperRetired, _ := cpu.m68kHandleJITHelper(ctx)
+				return helperRetired
+			})
 			instructionCount += retired
 			cpu.InstructionCount = instructionCount
 			if !cpu.running.Load() {
@@ -3263,6 +3318,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		invalidated := false
 		deferredInval := cpu.m68kJitDeferredInval.Swap(false)
 		if ctx.NeedInval != 0 || deferredInval {
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptSMC)
 			cpu.m68kJitNativeInvalExits.Add(1)
 			cpu.m68kRecordJITNativeInvalPC(uint32(block.startPC))
 			invalAddr := ctx.InvalAddr
@@ -3287,11 +3343,15 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		if ctx.NeedIOFallback != 0 {
 			ctx.NeedIOFallback = 0
 			didIOBail = true
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
 			block.ioBails++
 			cpu.m68kJitMMIOGuardExits.Add(1)
 			if executed != 0 {
 				prevInstructionCount := instructionCount
 				instructionCount += executed
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(executed)
+				}
 				executed = 0
 				cpu.InstructionCount = instructionCount
 				checkPending(prevInstructionCount)
@@ -3300,8 +3360,10 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				}
 			}
 			prevInstructionCount := instructionCount
-			cpu.m68kInterpretOne()
-			retired := uint64(1)
+			retired := recordM68KInterpreted(DeoptNone, func() uint64 {
+				cpu.m68kInterpretOne()
+				return 1
+			})
 			instructionCount += retired // count the re-executed instruction.
 			cpu.InstructionCount = instructionCount
 			diagIOBails++
@@ -3323,6 +3385,9 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 
 		prevInstructionCount := instructionCount
 		instructionCount += executed
+		if perfAcctOn {
+			cpu.perfAcct.AddInstrs(executed)
+		}
 		cpu.InstructionCount = instructionCount
 
 		// ── Interrupt/exception checking (replicates cpu_m68k.go:2457-2485) ──

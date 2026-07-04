@@ -56,6 +56,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
@@ -172,7 +173,8 @@ type MachineBus struct {
 	// caller-quiesced: callers must stop CPU/JIT execution before invoking it.
 	resetHooks []func()
 
-	m68kJITInvalidator func(addr, size uint64)
+	m68kJITInvalidator   func(addr, size uint64)
+	coprocCompletionWake func(addr, value uint32)
 }
 
 // AddrRange defines an inclusive address range.
@@ -270,6 +272,7 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 							region.onWrite(mapped, value)
 						}
 						bus.shadowWrite32(region, mapped, value)
+						bus.notifyCoprocessorCompletionWrite(mapped, value)
 						return true
 					}
 				}
@@ -279,6 +282,7 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 			if mapped+4 <= uint32(len(bus.memory)) {
 				binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
 				bus.invalidateM68KJITRAMWrite(uint64(mapped), 4)
+				bus.notifyCoprocessorCompletionWrite(mapped, value)
 				return true
 			}
 		}
@@ -300,18 +304,24 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 					region.onWrite(addr, value)
 				}
 				bus.shadowWrite32(region, addr, value)
+				bus.notifyCoprocessorCompletionWrite(addr, value)
 				return true
 			}
 		}
 	}
 
 	if bus.hasMappedLegacySpan(addr, 4) {
-		return bus.writeLegacySpanBytes(addr, uint64(value), 4, true)
+		if !bus.writeLegacySpanBytes(addr, uint64(value), 4, true) {
+			return false
+		}
+		bus.notifyCoprocessorCompletionWrite(addr, value)
+		return true
 	}
 
 	// Regular memory write
 	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
 	bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
+	bus.notifyCoprocessorCompletionWrite(addr, value)
 	return true
 }
 
@@ -397,6 +407,19 @@ func (bus *MachineBus) RegisterM68KJITInvalidator(fn func(addr, size uint64)) {
 		return
 	}
 	bus.m68kJITInvalidator = fn
+}
+
+func (bus *MachineBus) RegisterCoprocessorCompletionWake(fn func(addr, value uint32)) {
+	if bus == nil {
+		return
+	}
+	bus.coprocCompletionWake = fn
+}
+
+func (bus *MachineBus) notifyCoprocessorCompletionWrite(addr, value uint32) {
+	if bus != nil && bus.coprocCompletionWake != nil {
+		bus.coprocCompletionWake(addr, value)
+	}
 }
 
 func (bus *MachineBus) writeRAM8Raw(addr uint32, value uint8) bool {
@@ -1095,6 +1118,17 @@ func ioPageMappedInSnapshot(snap *busMapSnapshot, page uint32) bool {
 	return snap != nil && page < uint32(len(snap.ioPageBitmap)) && snap.ioPageBitmap[page]
 }
 
+func ioPageMappedForSizedAccess(snap *busMapSnapshot, addr uint32, width uint32) bool {
+	if width == 0 {
+		return false
+	}
+	if addr&(width-1) == 0 {
+		return ioPageMappedInSnapshot(snap, addr>>8)
+	}
+	return ioPageMappedInSnapshot(snap, addr>>8) ||
+		ioPageMappedInSnapshot(snap, uint32(uint64(addr)+uint64(width)-1)>>8)
+}
+
 func (bus *MachineBus) IsIOPageMapped(page uint32) bool {
 	return bus.ioPageMapped(page)
 }
@@ -1726,7 +1760,7 @@ func (bus *MachineBus) Write32(addr uint32, value uint32) {
 
 	// Lock-free fast path: check bitmap for I/O mappings
 	snap := bus.currentMapSnapshot()
-	if !ioPageMappedInSnapshot(snap, addr>>8) && !ioPageMappedInSnapshot(snap, (addr+3)>>8) {
+	if !ioPageMappedForSizedAccess(snap, addr, 4) {
 		// No I/O on this page - lock-free write using unsafe pointer
 		var old uint32
 		if bus.debugWriteActive() {
@@ -1734,6 +1768,7 @@ func (bus *MachineBus) Write32(addr uint32, value uint32) {
 		}
 		*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
 		bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
+		bus.notifyCoprocessorCompletionWrite(addr, value)
 		bus.debugOnWrite(addr, 4, uint64(old), uint64(value))
 		return
 	}
@@ -1748,6 +1783,11 @@ func (bus *MachineBus) Write32(addr uint32, value uint32) {
 }
 
 func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
+	var perfT0 time.Time
+	if perfAcctOn {
+		perfT0 = time.Now()
+		defer perfSubsysAcct.BusWrite32Slow.AddSince(perfT0, 1)
+	}
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -1762,6 +1802,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 							region.onWrite(mapped, value)
 						}
 						bus.shadowWrite32(region, mapped, value)
+						bus.notifyCoprocessorCompletionWrite(mapped, value)
 						return
 					}
 				}
@@ -1771,6 +1812,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 			if mapped+4 <= uint32(len(bus.memory)) {
 				binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
 				bus.invalidateM68KJITRAMWrite(uint64(mapped), 4)
+				bus.notifyCoprocessorCompletionWrite(mapped, value)
 				return
 			}
 		}
@@ -1813,6 +1855,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 					region.onWrite(addr, value)
 				}
 				bus.shadowWrite32(region, addr, value)
+				bus.notifyCoprocessorCompletionWrite(addr, value)
 				return
 			}
 		}
@@ -1820,12 +1863,14 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 
 	if bus.hasMappedLegacySpan(addr, 4) {
 		bus.writeLegacySpanBytes(addr, uint64(value), 4, false)
+		bus.notifyCoprocessorCompletionWrite(addr, value)
 		return
 	}
 
 	// Regular memory write
 	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
 	bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
+	bus.notifyCoprocessorCompletionWrite(addr, value)
 }
 
 func (bus *MachineBus) Read32(addr uint32) uint32 {
@@ -1856,7 +1901,7 @@ func (bus *MachineBus) Read32(addr uint32) uint32 {
 
 	// Lock-free fast path: check bitmap for I/O mappings
 	snap := bus.currentMapSnapshot()
-	if !ioPageMappedInSnapshot(snap, addr>>8) && !ioPageMappedInSnapshot(snap, (addr+3)>>8) {
+	if !ioPageMappedForSizedAccess(snap, addr, 4) {
 		// No I/O on this page - lock-free read using unsafe pointer
 		value := *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
 		bus.debugOnRead(addr, 4)
@@ -1870,6 +1915,11 @@ func (bus *MachineBus) Read32(addr uint32) uint32 {
 }
 
 func (bus *MachineBus) read32Slow(addr uint32) uint32 {
+	var perfT0 time.Time
+	if perfAcctOn {
+		perfT0 = time.Now()
+		defer perfSubsysAcct.BusRead32Slow.AddSince(perfT0, 1)
+	}
 	// Check if the address is in the upper memory region (potentially sign-extended)
 	if addr >= 0xFFFF0000 {
 		// Map to lower 16-bit range if it looks like a sign-extended I/O address
@@ -1971,7 +2021,7 @@ func (bus *MachineBus) Write16(addr uint32, value uint16) {
 
 	// Lock-free fast path: check bitmap for I/O mappings
 	snap := bus.currentMapSnapshot()
-	if !ioPageMappedInSnapshot(snap, addr>>8) && !ioPageMappedInSnapshot(snap, (addr+1)>>8) {
+	if !ioPageMappedForSizedAccess(snap, addr, 2) {
 		// No I/O on this page - lock-free write using unsafe pointer
 		var old uint16
 		if bus.debugWriteActive() {
@@ -2105,7 +2155,7 @@ func (bus *MachineBus) Read16(addr uint32) uint16 {
 
 	// Lock-free fast path: check bitmap for I/O mappings
 	snap := bus.currentMapSnapshot()
-	if !ioPageMappedInSnapshot(snap, addr>>8) && !ioPageMappedInSnapshot(snap, (addr+1)>>8) {
+	if !ioPageMappedForSizedAccess(snap, addr, 2) {
 		// No I/O on this page - lock-free read using unsafe pointer
 		value := *(*uint16)(unsafe.Pointer(&bus.memory[addr]))
 		bus.debugOnRead(addr, 2)
@@ -2641,11 +2691,9 @@ func (bus *MachineBus) Read64(addr uint32) uint64 {
 		return 0
 	}
 
-	// Fast path: both pages are non-I/O → single 64-bit load
-	lowPage := addr >> 8
-	highPage := uint32(uint64(addr)+7) >> 8
+	// Fast path: accessed page span is non-I/O -> single 64-bit load
 	snap := bus.currentMapSnapshot()
-	if !ioPageMappedInSnapshot(snap, lowPage) && !ioPageMappedInSnapshot(snap, highPage) {
+	if !ioPageMappedForSizedAccess(snap, addr, 8) {
 		value := *(*uint64)(unsafe.Pointer(&bus.memory[addr]))
 		bus.debugOnRead(addr, 8)
 		return value
@@ -2739,11 +2787,9 @@ func (bus *MachineBus) Write64(addr uint32, value uint64) {
 		return
 	}
 
-	// Fast path: both pages are non-I/O → single 64-bit store
-	lowPage := addr >> 8
-	highPage := uint32(uint64(addr)+7) >> 8
+	// Fast path: accessed page span is non-I/O -> single 64-bit store
 	snap := bus.currentMapSnapshot()
-	if !ioPageMappedInSnapshot(snap, lowPage) && !ioPageMappedInSnapshot(snap, highPage) {
+	if !ioPageMappedForSizedAccess(snap, addr, 8) {
 		var old uint64
 		if bus.debugWriteActive() {
 			old = *(*uint64)(unsafe.Pointer(&bus.memory[addr]))

@@ -66,8 +66,8 @@ make install           # Install to /usr/local/bin (all built tools)
 make uninstall         # Remove installed binaries
 
 # Housekeeping
-make clean             # Remove all build artifacts
-make distclean         # Remove generated/downloaded rebuild artifacts
+make clean             # Remove all build artefacts
+make distclean         # Remove generated/downloaded rebuild artefacts
 make list              # List compiled binaries with sizes
 make help              # Show all available targets
 ```
@@ -454,6 +454,40 @@ go test -tags audiolong -run TestSineWave_BasicWaveforms
 go test -tags videolong -run TestFireEffect
 ```
 
+### Performance Accounting and Benchstat Evidence
+
+Set `IE_PERF_ACCT=1` to collect the opt-in CPU accounting split in JIT
+dispatchers. `PerfAcct` records native JIT time, interpreter or fallback time,
+and retired guest instructions for IE64, M68K, Z80, 6502, and x86. The same gate
+enables subsystem counters for compositor frames, audio pulls, and 32-bit bus
+slow paths. JIT exits are classified through `DeoptReason` and feed
+`TierController.ShouldPromoteDeopt`.
+
+`IE_PERF_PROFILE` selects parameter-only tuning profiles. The default profile
+matches the current promotion thresholds and region floors exactly. `latency`
+lowers tier-promotion thresholds and the audio chunk size, while `throughput`
+raises them. Profiles must route through shared knobs such as `TierController`
+and `ReadSamples`; they must not introduce backend-specific code paths.
+
+JIT code-cache invalidation releases ExecMem leases through logical arenas
+layered over the platform RW/RX mapping. Keep block replacement, range
+invalidation, full invalidation, and explicit removal paths paired with
+`releaseJITBlockExecMem` so a fully evicted arena can be reused without waiting
+for a whole-cache reset.
+
+Use the Makefile benchstat workflow for performance items:
+
+```bash
+make bench-baseline BENCH_ITEM=m0_phase0 BENCH_REGEX='BenchmarkIE64_'
+make bench-after BENCH_ITEM=m0_phase0 BENCH_REGEX='BenchmarkIE64_'
+make bench-compare BENCH_ITEM=m0_phase0
+```
+
+The targets write raw captures and `benchstat.txt` under
+`benchmarks/<item>/`. Raw files include date, git SHA, CPU model, governor,
+GOAMD64, tags, bench regex, benchtime, and count headers. Keep `bench/` for
+pprof files and use `benchmarks/` for before/after optimisation evidence.
+
 ### Audio Demonstration Tests
 
 | Test | Description |
@@ -486,7 +520,7 @@ The IE64 benchmark suite measures CPU throughput through both the interpreter an
 go test -tags headless -run='^$' -bench BenchmarkIE64_ -benchtime 3s -count 3 ./...
 
 # Compare JIT vs interpreter
-go test -tags headless -run='^$' -bench 'BenchmarkIE64_(ALU|FPU|Memory|Mixed|Call)' -benchtime 3s ./...
+go test -tags headless -run='^$' -bench 'BenchmarkIE64_(ALU|FPU|Memory|Mixed|Call|MMIO|MMU_Mixed)' -benchtime 3s ./...
 
 # Run only JIT benchmarks
 go test -tags headless -run='^$' -bench 'BenchmarkIE64_.*_JIT' -benchtime 3s ./...
@@ -495,7 +529,7 @@ go test -tags headless -run='^$' -bench 'BenchmarkIE64_.*_JIT' -benchtime 3s ./.
 go test -tags headless -run='^$' -bench 'BenchmarkIE64_.*_Interpreter' -benchtime 3s ./...
 ```
 
-Benchmarks report ns/op and instructions/op. MIPS can be derived: `MIPS = instructions/op / ns/op * 1000`. JIT benchmarks skip automatically on platforms without JIT support. See `ie64_benchmark_test.go` for detailed documentation of each workload and its instruction mix.
+Benchmarks report ns/op and instructions/op. MIPS can be derived: `MIPS = instructions/op / ns/op * 1000`. JIT benchmarks skip automatically on platforms without JIT support. `MMIO` and `MMU_Mixed` cover helper-heavy paths used by resumable helper and micro-TLB work. See `ie64_benchmark_test.go` for detailed documentation of each workload and its instruction mix.
 
 Reference results on Intel Core i5-8365U @ 1.60 GHz (x86-64 JIT, `benchtime 3s`):
 
@@ -566,7 +600,7 @@ tar xzf 6502_bench.tar.gz && ./run_6502_bench_report.sh
 
 `run_6502_bench_report.sh` is bash + awk only, with no Python, no Go, and no codebase dependency. The friend unpacks the tarball and runs one script to see both Interpreter and JIT columns side by side plus a JIT/Interpreter speedup row.
 
-#### Profile-Guided Optimization (evaluated, not adopted)
+#### Profile-Guided Optimisation (evaluated, not adopted)
 
 Go's PGO (`default.pgo` at the repo root, auto-detected by `go build`) was evaluated on Go 1.26.1 against the five comparison workloads. Profile was captured with `./6502_bench.test -test.cpuprofile=default.pgo -test.benchtime=10s`, then both a PGO-enabled and a non-PGO build were measured with `-test.count 3 -test.benchtime 5s`:
 
@@ -656,7 +690,7 @@ make install-desktop-entry
 make set-default-handler
 ```
 
-### Release Artifacts
+### Release Artefacts
 
 Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds with embedded EhBASIC, EmuTOS, and AROS ROMs, plus the staged `sdk/` and `AROS/` runtime trees. The `EMUTOS` and `AROS` commands are available at the BASIC prompt in release builds.
 
@@ -675,7 +709,7 @@ Additional release targets:
 | Windows amd64, arm64 | `.zip` | novulkan |
 | macOS arm64 | `.tar.xz` | novulkan |
 
-`make release-all` builds all of the above plus the source and SDK archives, and produces `SHA256SUMS` covering all artifacts.
+`make release-all` builds all of the above plus the source and SDK archives, and produces `SHA256SUMS` covering all artefacts.
 
 ---
 
@@ -829,6 +863,53 @@ The IE64 CPU core includes a JIT compiler that translates IE64 machine code into
 
 For full technical details (register mappings, return-channel contract, I/O dual-path, FPU categories, backward branch budget, fallback rules), see [sdk/docs/IE64_JIT.md](sdk/docs/IE64_JIT.md).
 
+IE64 helper exits on amd64 and arm64 can resume inside the current native block
+for integer LOAD, STORE, PUSH, and POP paths when the dispatcher verifies that
+interrupts, SMC, debug state, PTBR, and MMU mode are unchanged. Set
+`IE64_JIT_RESUME=0` to force the older exit-and-re-enter protocol. MMU
+LOAD/STORE helpers fill a small direct-mapped micro-TLB in `JITContext`; PTBR
+writes and TLB invalidation flush it before native code can reuse stale
+translations.
+
+IE64 amd64 regions can form under MMU when `IE64_JIT_REGION_MMU=1`.
+The region scanner translates each virtual block through the active PTBR and
+stores the promoted block under the exact `(ptbr, pc)` MMU cache key. This is a
+formation and keying slice only; regions still use the fixed IE64
+register mapping.
+
+`CodeCache` has an optional 4096-entry direct-mapped dispatch cache in front of
+the Go map lookups. It is generation-tagged, so full and range invalidations
+expire entries in O(1). Set `IE_JIT_DISPATCH_CACHE=0` to bypass it.
+
+The x86 and IE64 JITs report self-modifying stores with a guest address and
+byte size, then remove only overlapping cached blocks through
+`CodeCache.InvalidateRange`. After a range invalidation, code-page bitmaps are
+rebuilt from surviving blocks so unrelated blocks on the same 256-byte page
+continue to protect SMC detection. Set `IE_JIT_SMC_RANGE=0` to restore the
+older whole-cache reset path. When a range invalidation removes the final live
+block, the shared exec-memory bump allocator is reset.
+
+The x86 JIT treats `jitRegs` as the canonical register file while native code
+is active. Debug break-in hooks and MMIO poll fast paths use JIT-specific
+helpers so named registers are synchronised only when a debugger hook,
+interrupt handler, fallback interpreter step, or final JIT exit actually needs
+that view.
+Multi-block x86 region promotion is enabled by default and can be disabled with
+`X86_JIT_REGIONS=0`.
+
+Audio engines that can advance state in chunks may implement `BlockTicker`
+beside `SampleTicker`. Implementations must match repeated `TickSample` calls
+exactly. PSG provides a lock-once block path; SID keeps a conservative wrapper
+so SoundChip synchronisation order stays unchanged.
+
+Video frame leases use `VideoFrameLeaseRing` for release-gated RGBA buffers and
+copy-on-snapshot debug safety. Hardware compositor layer collection and software
+output handoff use lease-backed buffers when `IE_VIDEO_FRAME_LEASES` is not `0`;
+Ebiten retains layer leases until replacement or clear, while non-lease callers
+and the lease kill switch keep the defensive staging/output copies. Lease alpha
+normalisation follows compositor semantics: zero-alpha colour is promoted to
+opaque, transparent black remains transparent.
+
 ## Running JIT Tests
 
 ```bash
@@ -837,6 +918,10 @@ go test -v -run TestAMD64_ -tags headless ./...
 
 # ARM64 backend tests (on arm64)
 go test -v -run TestARM64_ -tags headless ./...
+
+# Cross-compile all supported targets. If qemu-user is installed, this also
+# executes the Linux/arm64 smoke tests through qemu-aarch64.
+QEMU_AARCH64=/usr/bin/qemu-aarch64 make test-cross
 
 # JIT-vs-interpreter parity (verifies JIT matches interpreter output)
 go test -v -run TestJIT_vs_Interpreter -tags headless ./...

@@ -6,7 +6,8 @@ import "fmt"
 
 // ExecMem is a non-executable stub on platforms without the Linux dual-map backend.
 type ExecMem struct {
-	used int
+	used   int
+	arenas execMemArenaState
 }
 
 func AllocExecMem(size int) (*ExecMem, error) {
@@ -23,6 +24,7 @@ func (em *ExecMem) Write(code []byte) (uintptr, error) {
 func (em *ExecMem) Reset() {
 	if em != nil {
 		em.used = 0
+		em.arenas.reset()
 	}
 }
 
@@ -36,6 +38,8 @@ func (em *ExecMem) Used() int {
 }
 
 func lookupExecBytes(execAddr uintptr, size int) ([]byte, bool) { return nil, false }
+
+func releaseExecMemAddr(execAddr uintptr) bool { return false }
 
 func PatchRel32At(patchAddr, targetAddr uintptr) {}
 

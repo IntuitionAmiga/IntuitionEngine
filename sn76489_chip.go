@@ -98,6 +98,21 @@ func (c *SN76489Chip) TickSample() {
 	c.clockNoise()
 }
 
+func (c *SN76489Chip) TickBlock(samples int) {
+	if samples <= 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for range samples {
+		c.clockNoise()
+	}
+}
+
+func (c *SN76489Chip) CanTickBlockForReadSamples() bool {
+	return true
+}
+
 func (c *SN76489Chip) writeDataLocked(value uint8) {
 	c.lastWritten = value
 	c.writeCount++

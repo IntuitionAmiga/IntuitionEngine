@@ -297,6 +297,112 @@ func TestLiveness_ReapedWorkerMarksOldTicketsWorkerDown(t *testing.T) {
 	}
 }
 
+func waitCoprocCondition(t *testing.T, timeout time.Duration, fn func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if fn() {
+			return
+		}
+		time.Sleep(100 * time.Microsecond)
+	}
+	t.Fatal("condition was not met before timeout")
+}
+
+func TestCompletionWatcher_IdleNoScans(t *testing.T) {
+	_, mgr := newTestBusAndManager(t)
+	mgr.StartCompletionWatcher()
+	defer mgr.StopCompletionWatcher()
+
+	time.Sleep(2 * time.Millisecond)
+	if got := mgr.watcherScanCount.Load(); got != 0 {
+		t.Fatalf("idle watcher scans after 2ms = %d, want 0 before 10ms fallback", got)
+	}
+}
+
+func TestCompletionWake_ObservedWithoutFastTicker(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+	ticket := uint32(0xC001)
+	respAddr := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64)) + RING_RESPONSES_OFFSET
+
+	mgr.mu.Lock()
+	mgr.completions[ticket] = &CoprocCompletion{
+		ticket:  ticket,
+		cpuType: EXEC_TYPE_IE64,
+		status:  COPROC_TICKET_PENDING,
+		created: time.Now(),
+	}
+	mgr.mu.Unlock()
+
+	mgr.StartCompletionWatcher()
+	defer mgr.StopCompletionWatcher()
+
+	bus.Write32(respAddr+RESP_TICKET_OFF, ticket)
+	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
+
+	waitCoprocCondition(t, 5*time.Millisecond, func() bool {
+		return mgr.completedTicket.Load() == ticket
+	})
+}
+
+func TestCompletionWake_FaultingWriteObservedWithoutFastTicker(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+	ticket := uint32(0xC002)
+	respAddr := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_M68K)) + RING_RESPONSES_OFFSET
+
+	mgr.mu.Lock()
+	mgr.completions[ticket] = &CoprocCompletion{
+		ticket:  ticket,
+		cpuType: EXEC_TYPE_M68K,
+		status:  COPROC_TICKET_PENDING,
+		created: time.Now(),
+	}
+	mgr.mu.Unlock()
+
+	mgr.StartCompletionWatcher()
+	defer mgr.StopCompletionWatcher()
+
+	if !bus.Write32WithFault(respAddr+RESP_TICKET_OFF, ticket) {
+		t.Fatal("Write32WithFault ticket write failed")
+	}
+	if !bus.Write32WithFault(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK) {
+		t.Fatal("Write32WithFault status write failed")
+	}
+
+	waitCoprocCondition(t, 5*time.Millisecond, func() bool {
+		return mgr.completedTicket.Load() == ticket
+	})
+}
+
+func TestWorkerDeath_ObservedWithoutFastTicker(t *testing.T) {
+	_, mgr := newTestBusAndManager(t)
+	ticket := uint32(0xC0DE)
+	done := make(chan struct{})
+	worker := &CoprocWorker{cpuType: EXEC_TYPE_IE64, done: done}
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64] = worker
+	mgr.completions[ticket] = &CoprocCompletion{
+		ticket:  ticket,
+		cpuType: EXEC_TYPE_IE64,
+		status:  COPROC_TICKET_PENDING,
+		created: time.Now(),
+	}
+	mgr.mu.Unlock()
+	mgr.watchWorkerDone(worker)
+
+	mgr.StartCompletionWatcher()
+	defer mgr.StopCompletionWatcher()
+	close(done)
+
+	waitCoprocCondition(t, 5*time.Millisecond, func() bool {
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+		return mgr.completedTicket.Load() == ticket &&
+			mgr.completions[ticket].status == COPROC_TICKET_WORKER_DOWN
+	})
+}
+
 func TestLiveness_ReapedWorkerPreservesCompletedPollStatus(t *testing.T) {
 	bus, mgr := newTestBusAndManager(t)
 	ticket := uint32(0xBEE0)
@@ -395,6 +501,7 @@ func TestReset_ClearsBusyState(t *testing.T) {
 	mgr.busyBuckets[3] = busyBucket{busyNs: 10, idleNs: 20}
 	mgr.busyBucketIdx = 3
 	mgr.busyRotateCounter = 99
+	mgr.busyBucketStart = time.Now().Add(-time.Second)
 	mgr.workerStartTime[EXEC_TYPE_IE64] = time.Now()
 	mgr.mu.Unlock()
 
@@ -402,9 +509,9 @@ func TestReset_ClearsBusyState(t *testing.T) {
 
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
-	if mgr.workerBusy || !mgr.lastTransition.IsZero() || mgr.busyBucketIdx != 0 || mgr.busyRotateCounter != 0 {
-		t.Fatalf("busy lifecycle not reset: busy=%v last=%v idx=%d rotate=%d",
-			mgr.workerBusy, mgr.lastTransition, mgr.busyBucketIdx, mgr.busyRotateCounter)
+	if mgr.workerBusy || !mgr.lastTransition.IsZero() || !mgr.busyBucketStart.IsZero() || mgr.busyBucketIdx != 0 || mgr.busyRotateCounter != 0 {
+		t.Fatalf("busy lifecycle not reset: busy=%v last=%v bucketStart=%v idx=%d rotate=%d",
+			mgr.workerBusy, mgr.lastTransition, mgr.busyBucketStart, mgr.busyBucketIdx, mgr.busyRotateCounter)
 	}
 	for i, b := range mgr.busyBuckets {
 		if b != (busyBucket{}) {
@@ -415,6 +522,43 @@ func TestReset_ClearsBusyState(t *testing.T) {
 		if !start.IsZero() {
 			t.Fatalf("workerStartTime[%d] not cleared", i)
 		}
+	}
+}
+
+func TestBusyBucketsRotateOnElapsedTimeNotWakeCount(t *testing.T) {
+	_, mgr := newTestBusAndManager(t)
+	start := time.Unix(1234, 0)
+
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	mgr.workerBusy = true
+	mgr.lastTransition = start
+	mgr.busyBucketStart = start
+
+	for i := 1; i <= 10; i++ {
+		mgr.rotateBusyBucketsAtLocked(start.Add(time.Duration(i) * time.Millisecond))
+	}
+	if mgr.busyBucketIdx != 0 {
+		t.Fatalf("busyBucketIdx advanced on burst wake scans: got %d, want 0", mgr.busyBucketIdx)
+	}
+	if mgr.busyRotateCounter != 0 {
+		t.Fatalf("busyRotateCounter = %d, want 0 before elapsed bucket duration", mgr.busyRotateCounter)
+	}
+	for i, bucket := range mgr.busyBuckets {
+		if bucket != (busyBucket{}) {
+			t.Fatalf("bucket %d changed before 100ms elapsed: %+v", i, bucket)
+		}
+	}
+
+	mgr.rotateBusyBucketsAtLocked(start.Add(busyBucketDuration))
+	if mgr.busyBucketIdx != 1 {
+		t.Fatalf("busyBucketIdx = %d, want 1 after one elapsed bucket", mgr.busyBucketIdx)
+	}
+	if got, want := mgr.busyBuckets[0].busyNs, uint64(busyBucketDuration); got != want {
+		t.Fatalf("bucket 0 busyNs = %d, want %d", got, want)
+	}
+	if mgr.busyBuckets[1] != (busyBucket{}) {
+		t.Fatalf("new active bucket not cleared: %+v", mgr.busyBuckets[1])
 	}
 }
 

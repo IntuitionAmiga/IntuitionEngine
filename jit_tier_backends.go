@@ -2,7 +2,7 @@
 // (Phase 3 of the six-CPU JIT unification plan).
 //
 // The closure pass retired per-block register-map promotion for M68K, Z80,
-// and 6502. IE64 now takes its high-tier payoff through the turbo region
+// and 6502. IE64 now takes its high-tier payoff through the region
 // path in the exec loop; Z80/6502 keep their existing chain-patching and
 // pinned-register designs. x86 single-block promotion was also retired; x86
 // region promotion remains implemented in the x86-specific path.
@@ -16,7 +16,7 @@
 package main
 
 // IE64TierAllocator implements TierAllocator for the IE64 backend.
-// IE64's aggressive tier is region-level turbo compilation rather than
+// IE64's aggressive tier is region-level compilation rather than
 // single-block replacement. The exec loop drives promotion directly through
 // ie64FormRegion/ie64CompileRegion so it can reject MMU, I/O-heavy, and
 // unsupported region shapes before compiling. PromoteBlock remains a no-op

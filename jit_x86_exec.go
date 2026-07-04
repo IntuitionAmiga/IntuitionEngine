@@ -106,8 +106,8 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		panic(fmt.Sprintf("x86 JIT init failed: %v", err))
 	}
 	defer cpu.freeX86JIT()
-	if x86TurboStatsOn {
-		defer x86TurboReport()
+	if x86JITStatsOn {
+		defer x86JITStatsReport()
 	}
 
 	execMem := cpu.x86GetJITExecMem()
@@ -138,17 +138,17 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 	bounded := cpu.x86BudgetActive
 	var budgetPrevCount uint64
 	for cpu.Running() && !cpu.Halted {
-		cpu.syncJITRegsToNamed()
-		if cpu.debugHandleBreakIn(uint64(cpu.EIP)) {
+		if cpu.debugHandleBreakInJIT(uint64(cpu.EIP)) {
+			cpu.deoptStats.Add(DeoptDebug)
 			cpu.syncJITSegRegsToNamed()
 			return
 		}
-		cpu.syncJITRegsFromNamed()
 		if bounded {
 			delta := instructionCount - budgetPrevCount
 			budgetPrevCount = instructionCount
 			cpu.x86InstrBudget -= int64(delta)
 			if cpu.x86InstrBudget <= 0 {
+				cpu.deoptStats.Add(DeoptDebug)
 				cpu.syncJITRegsToNamed()
 				cpu.syncJITSegRegsToNamed()
 				return
@@ -174,12 +174,9 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// MMIO status spin loops dominate demo wait time. Handle the common
 		// MOV/TEST/Jcc-back pattern directly so JIT-enabled execution doesn't
 		// bounce through one-instruction fallbacks for every poll.
-		cpu.syncJITRegsToNamed()
-		if cpu.tryFastMMIOPollLoop() {
-			cpu.syncJITRegsFromNamed()
+		if cpu.tryFastMMIOPollLoopJIT() {
 			continue
 		}
-		cpu.syncJITRegsFromNamed()
 
 		pc := cpu.EIP
 
@@ -210,6 +207,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				instructionCount++
 				if perfAcctOn {
 					cpu.perfAcct.AddInstrs(1)
+					cpu.deoptStats.Add(DeoptUnsupported)
 				}
 				diagFallbackInstr++
 				continue
@@ -229,6 +227,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				instructionCount++
 				if perfAcctOn {
 					cpu.perfAcct.AddInstrs(1)
+					cpu.deoptStats.Add(DeoptUnsupported)
 				}
 				diagFallbackInstr++
 				if cpu.Halted || !cpu.Running() {
@@ -263,6 +262,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 					instructionCount++
 					if perfAcctOn {
 						cpu.perfAcct.AddInstrs(1)
+						cpu.deoptStats.Add(DeoptUnsupported)
 					}
 					diagFallbackInstr++
 					if cpu.Halted || !cpu.Running() {
@@ -278,17 +278,11 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 
 			// Cache block and mark code pages
 			cpu.x86JitCache.Put(block)
-			if x86TurboStatsOn {
-				x86TurboStats.tier1Blocks.Add(1)
+			if x86JITStatsOn {
+				x86JITStats.tier1Blocks.Add(1)
 			}
 			if cpu.x86JitCodeBM != nil {
-				startPage := block.startPC >> 8
-				endPage := (block.endPC - 1) >> 8
-				for p := startPage; p <= endPage; p++ {
-					if p < uint64(len(cpu.x86JitCodeBM)) {
-						cpu.x86JitCodeBM[p] = 1
-					}
-				}
+				x86MarkCodePagesForBlock(cpu.x86JitCodeBM, block)
 			}
 
 			// Patch chain slots bidirectionally -- only for compatible register maps
@@ -319,17 +313,18 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				// Try multi-block region compilation first (only for 3+ block regions)
 				x86CompileIOBitmap = cpu.x86JitIOBitmap
 				x86CompileCodeBitmap = cpu.x86JitCodeBM
-				if x86TurboStatsOn {
-					x86TurboStats.regionCandidates.Add(1)
+				if x86JITStatsOn {
+					x86JITStats.regionCandidates.Add(1)
 				}
 				region := x86FormRegion(pc, cpu.x86JitCache, cpu.memory)
-				if region != nil && len(region.blocks) >= 3 {
+				if region != nil && x86TierController.ShouldPromoteRegion(len(region.blocks)) {
 					newBlock, err := x86CompileRegion(region, execMem, cpu.memory)
 					if err == nil {
 						newBlock.execCount = block.execCount
 						cpu.x86JitCache.Put(newBlock)
 						if x86BlockChainingEnabled && newBlock.chainEntry != 0 {
-							x86PatchCompatibleChainsTo(cpu.x86JitCache, newBlock)
+							x86RetargetPromotionChainsTo(cpu.x86JitCache, newBlock)
+							x86InvalidateRTSCacheForPC(ctx, uint32(newBlock.startPC))
 						}
 						block = newBlock
 					}
@@ -378,6 +373,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			instructionCount++
 			if perfAcctOn {
 				cpu.perfAcct.AddInstrs(1)
+				cpu.deoptStats.Add(DeoptDebug)
 			}
 			diagFallbackInstr++
 			if cpu.Halted || !cpu.Running() {
@@ -389,6 +385,8 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// Execute native code block -- jitRegs is already canonical, no sync needed
 		ctx.NeedInval = 0
 		ctx.NeedIOFallback = 0
+		ctx.InvalAddr = 0
+		ctx.InvalSize = 0
 		// In bounded mode (deterministic-step harness), force the native
 		// dispatch to return after a single block by setting ChainBudget=1.
 		// Otherwise a chained run could retire many thousands of guest
@@ -427,8 +425,8 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// Profile counters
 		if ctx.ChainCount > 0 {
 			block.chainHits++
-			if x86TurboStatsOn {
-				x86TurboStats.chainExits.Add(1)
+			if x86JITStatsOn {
+				x86JITStats.chainExits.Add(1)
 			}
 		}
 		if ctx.ChainBudget <= 0 {
@@ -436,34 +434,37 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		}
 
 		// Self-modifying code: invalidate cache
-		invalidated := false
 		if ctx.NeedInval != 0 {
-			cpu.x86JitCache.Invalidate()
-			execMem.Reset()
-			if x86TurboStatsOn {
-				x86TurboStats.invalidations.Add(1)
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptSMC)
+			if jitSMCRangeDisabled {
+				cpu.x86JitCache.Invalidate()
+				execMem.Reset()
+				clear(cpu.x86JitCodeBM)
+				x86ClearRTSCache(ctx)
+			} else {
+				removed := x86InvalidateSMCRange(cpu.x86JitCache, cpu.x86JitCodeBM, ctx)
+				if removed != 0 {
+					resetExecMemWhenCacheEmpty(cpu.x86JitCache, execMem)
+				}
 			}
-			invalidated = true
+			if x86JITStatsOn {
+				x86JITStats.invalidations.Add(1)
+			}
 			ctx.NeedInval = 0
-			clear(cpu.x86JitCodeBM)
-			// Clear RTS cache (old chain entry addresses invalid)
-			ctx.RTSCache0PC = 0
-			ctx.RTSCache0Addr = 0
-			ctx.RTSCache1PC = 0
-			ctx.RTSCache1Addr = 0
+			ctx.InvalAddr = 0
+			ctx.InvalSize = 0
 		}
 
 		// I/O fallback: sync to named, then either execute a recognized
 		// MMIO byte write directly or fall back to the full interpreter.
-		ioFallback := false
 		if ctx.NeedIOFallback != 0 {
-			ioFallback = true
 			ctx.NeedIOFallback = 0
+			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
 			block.ioBails++ // profile counter for promotion decisions
-			cpu.syncJITRegsToNamed()
-			if fastCount, ok := cpu.tryFastMMIOWriteFallback(); ok {
+			if fastCount, ok := cpu.tryFastMMIOWriteFallbackJIT(); ok {
 				executed += fastCount
 			} else {
+				cpu.syncJITRegsToNamed()
 				var stepT0 time.Time
 				if perfAcctOn {
 					stepT0 = time.Now()
@@ -474,20 +475,11 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				}
 				diagFallbackInstr++
 				executed++
+				cpu.syncJITRegsFromNamed()
 			}
-			cpu.syncJITRegsFromNamed()
 			diagIOBails++
 			if cpu.Halted || !cpu.Running() {
 				break
-			}
-		}
-
-		if !invalidated && !ioFallback && !cpu.Halted && cpu.Running() && !x86TurboDisabled && cpu.EIP < uint32(len(cpu.memory)) {
-			op := cpu.memory[cpu.EIP]
-			if op == 0x01 || op == 0x89 || op == 0xE8 {
-				if turboExecuted, ok := cpu.tryX86TurboTrace(); ok {
-					executed += turboExecuted
-				}
 			}
 		}
 
@@ -553,11 +545,57 @@ func x86PatchCompatibleChainsTo(cache *CodeCache, target *JITBlock) {
 	}
 }
 
+// x86RetargetPromotionChainsTo is the replacement-block variant of
+// x86PatchCompatibleChainsTo. Region promotion can leave older native code
+// mapped after the cache entry is replaced, so every live inbound slot for the
+// promoted PC must be rewritten: compatible sources jump to the new entry,
+// incompatible sources fall through to the dispatcher.
+func x86RetargetPromotionChainsTo(cache *CodeCache, target *JITBlock) {
+	if cache == nil || target == nil {
+		return
+	}
+	for _, source := range cache.blocks {
+		for _, slot := range source.chainSlots {
+			if slot.targetPC != target.startPC || slot.patchAddr == 0 {
+				continue
+			}
+			if source.regMap == target.regMap && target.chainEntry != 0 {
+				PatchRel32At(slot.patchAddr, target.chainEntry)
+				continue
+			}
+			PatchRel32At(slot.patchAddr, slot.patchAddr+4)
+		}
+	}
+}
+
+func x86InvalidateRTSCacheForPC(ctx *X86JITContext, pc uint32) {
+	if ctx == nil {
+		return
+	}
+	if ctx.RTSCache0PC != pc && ctx.RTSCache1PC != pc {
+		return
+	}
+	ctx.RTSCache0PC = 0
+	ctx.RTSCache0Addr = 0
+	ctx.RTSCache0RegMap = 0
+	ctx.RTSCache1PC = 0
+	ctx.RTSCache1Addr = 0
+	ctx.RTSCache1RegMap = 0
+}
+
 // tryFastMMIOWriteFallback handles the byte-store MMIO instructions that are
 // common in raster-effect loops after the native block has already bailed on an
 // I/O page. It preserves the architectural effect of the interpreter handlers
 // for these no-prefix forms while avoiding the full fetch/decode Step path.
 func (cpu *CPU_X86) tryFastMMIOWriteFallback() (uint64, bool) {
+	return cpu.tryFastMMIOWriteFallbackWithRegs(false)
+}
+
+func (cpu *CPU_X86) tryFastMMIOWriteFallbackJIT() (uint64, bool) {
+	return cpu.tryFastMMIOWriteFallbackWithRegs(true)
+}
+
+func (cpu *CPU_X86) tryFastMMIOWriteFallbackWithRegs(useJITRegs bool) (uint64, bool) {
 	var executed uint64
 	for executed < 64 {
 		if cpu.hasPendingX86Interrupt() {
@@ -578,7 +616,7 @@ func (cpu *CPU_X86) tryFastMMIOWriteFallback() (uint64, bool) {
 			if !cpu.isX86GuestIOPage(addr) {
 				return executed, executed != 0
 			}
-			cpu.write8(addr, cpu.AL())
+			cpu.write8(addr, cpu.getReg8ForFallback(useJITRegs, 0))
 			cpu.finishFastMMIOWrite(pc + 5)
 			executed++
 
@@ -594,7 +632,7 @@ func (cpu *CPU_X86) tryFastMMIOWriteFallback() (uint64, bool) {
 			if !cpu.isX86GuestIOPage(addr) {
 				return executed, executed != 0
 			}
-			cpu.write8(addr, cpu.getReg8((modrm>>3)&7))
+			cpu.write8(addr, cpu.getReg8ForFallback(useJITRegs, (modrm>>3)&7))
 			cpu.finishFastMMIOWrite(pc + 6)
 			executed++
 
@@ -619,7 +657,7 @@ func (cpu *CPU_X86) tryFastMMIOWriteFallback() (uint64, bool) {
 				if pc+2 > uint32(len(cpu.memory)) {
 					return executed, executed != 0
 				}
-				cpu.setReg8(cpu.memory[pc]-0xB0, cpu.memory[pc+1])
+				cpu.setReg8ForFallback(useJITRegs, cpu.memory[pc]-0xB0, cpu.memory[pc+1])
 				cpu.finishFastMMIOWrite(pc + 2)
 				executed++
 				continue
@@ -629,6 +667,32 @@ func (cpu *CPU_X86) tryFastMMIOWriteFallback() (uint64, bool) {
 	}
 
 	return executed, executed != 0
+}
+
+func (cpu *CPU_X86) getReg8ForFallback(useJITRegs bool, idx byte) byte {
+	if !useJITRegs {
+		return cpu.getReg8(idx)
+	}
+	regIdx, shift := x86JITReg8Index(idx)
+	return byte(cpu.jitRegs[regIdx] >> shift)
+}
+
+func (cpu *CPU_X86) setReg8ForFallback(useJITRegs bool, idx byte, value byte) {
+	if !useJITRegs {
+		cpu.setReg8(idx, value)
+		return
+	}
+	regIdx, shift := x86JITReg8Index(idx)
+	mask := uint32(0xFF) << shift
+	cpu.jitRegs[regIdx] = (cpu.jitRegs[regIdx] &^ mask) | (uint32(value) << shift)
+}
+
+func x86JITReg8Index(idx byte) (int, uint) {
+	idx &= 7
+	if idx < 4 {
+		return int(idx), 0
+	}
+	return int(idx - 4), 8
 }
 
 func (cpu *CPU_X86) hasPendingX86Interrupt() bool {
