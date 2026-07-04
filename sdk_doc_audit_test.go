@@ -3380,6 +3380,169 @@ func TestSDKCompanionDocs_ArchitectureVoodooStateBindingMatchesSource(t *testing
 	}
 }
 
+func TestSDKCompanionDocs_ArchitecturePerformanceRoadmapClaimsMatchSource(t *testing.T) {
+	doc := readAuditFile(t, "sdk/docs/architecture.md")
+	sourceInventory := readAuditFile(t, "sdk/docs/verify/SDK_ARCH_SOURCE_AUDIT.md")
+	helperResume := readAuditFile(t, "jit_helper_resume_common.go")
+	jitExec := readAuditFile(t, "jit_exec.go")
+	jitCommon := readAuditFile(t, "jit_common.go")
+	microTLB := readAuditFile(t, "jit_mmu_microtlb_common.go")
+	mmu := readAuditFile(t, "mmu_ie64.go")
+	ie64SMC := readAuditFile(t, "jit_ie64_smc_range.go")
+	x86SMC := readAuditFile(t, "jit_x86_smc_range.go")
+	perfAcct := readAuditFile(t, "perf_accounting.go")
+	perfSubsys := readAuditFile(t, "perf_accounting_subsys.go")
+	deopts := readAuditFile(t, "jit_deopt_reasons.go")
+	audio := readAuditFile(t, "audio_chip.go")
+	videoCompositor := readAuditFile(t, "video_compositor.go")
+	videoLease := readAuditFile(t, "video_frame_lease.go")
+	ebiten := readAuditFile(t, "video_backend_ebiten.go")
+
+	for _, needle := range []string{
+		"IE64_JIT_RESUME",
+		"case \"0\", \"false\", \"off\", \"no\":",
+		"helperRetired != 1",
+		"cpu.timerEnabled.Load()",
+		"cpu.debugBreakpointsActive",
+		"ctx.ResumeMMUEnabled != currentMMU || ctx.ResumePTBR != cpu.ptbr",
+	} {
+		if !strings.Contains(helperResume, needle) {
+			t.Fatalf("jit_helper_resume_common.go helper-resume contract changed; review architecture.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"cpu.deliverPendingExternalInterrupt()",
+		"globalIE64JITStats.helperResumes.Add(1)",
+		"globalIE64JITStats.helperResumeCancels.Add(1)",
+	} {
+		if !strings.Contains(jitExec, needle) {
+			t.Fatalf("jit_exec.go helper-resume dispatch changed; review architecture.md: %s", needle)
+		}
+	}
+	if !regexp.MustCompile(`jitCtxMicroTLBEntries\s*=\s*4`).MatchString(jitCommon) {
+		t.Fatal("jit_common.go micro-TLB entry count changed; review architecture.md")
+	}
+	for _, needle := range []string{
+		"func (cpu *CPU64) fillJITMicroTLB",
+		"phys >= uint64(len(cpu.memory)) || phys >= uint64(IO_REGION_START)",
+		"ie64MicroTLBAccessRead",
+		"ie64MicroTLBAccessWrite",
+		"ie64MicroTLBModeBits",
+	} {
+		if !strings.Contains(microTLB, needle) {
+			t.Fatalf("jit_mmu_microtlb_common.go micro-TLB contract changed; review architecture.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"cpu.jitCtx.flushMicroTLB()",
+		"cpu.jitCtx.invalidateMicroTLBVPN(vpn)",
+	} {
+		if !strings.Contains(mmu, needle) {
+			t.Fatalf("mmu_ie64.go micro-TLB invalidation changed; review architecture.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"startPage := r[0] >> 8",
+		"ie64MarkPhysicalCodePagesForBlock",
+		"ie64InvalidateSMCRangeWithPhysical",
+		"ctx.InvalSize == 0",
+	} {
+		if !strings.Contains(ie64SMC, needle) {
+			t.Fatalf("jit_ie64_smc_range.go SMC range contract changed; review architecture.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"startPage := r[0] >> 8",
+		"cache.InvalidateRange(lo, hi)",
+	} {
+		if !strings.Contains(x86SMC, needle) {
+			t.Fatalf("jit_x86_smc_range.go SMC range contract changed; review architecture.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"IE_PERF_ACCT",
+		"type PerfAcct struct",
+		"if !perfAcctOn",
+	} {
+		if !strings.Contains(perfAcct, needle) {
+			t.Fatalf("perf_accounting.go contract changed; review architecture.md: %s", needle)
+		}
+	}
+	if !strings.Contains(perfSubsys, "type PerfSubsysAcct struct") {
+		t.Fatal("perf_accounting_subsys.go subsystem counter contract changed; review architecture.md")
+	}
+	for _, needle := range []string{
+		"DeoptUnsupported:   \"unsupported\"",
+		"DeoptHelper:        \"helper\"",
+		"DeoptMMIO:          \"mmio\"",
+		"DeoptSMC:           \"smc\"",
+		"DeoptInterrupt:     \"interrupt\"",
+		"DeoptCachePressure: \"cache_pressure\"",
+		"DeoptDebug:         \"debug\"",
+	} {
+		if !strings.Contains(deopts, needle) {
+			t.Fatalf("jit_deopt_reasons.go deopt taxonomy changed; review architecture.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"func (chip *SoundChip) canUseReadSamplesBlockGraph",
+		"chip.hasSampleMixers()",
+		"chip.sfx != nil && !chip.sfx.CanTickBlockForReadSamples()",
+		"ticker.(ReadSamplesBlockTicker).TickBlock(samples)",
+	} {
+		if !strings.Contains(audio, needle) {
+			t.Fatalf("audio_chip.go ReadSamples block contract changed; review architecture.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"IE_VIDEO_FRAME_LEASES",
+		"NewVideoFrameLeaseRing(3, frameBytes)",
+		"c.finalFrameLease.Retain()",
+	} {
+		if !strings.Contains(videoCompositor, needle) {
+			t.Fatalf("video_compositor.go frame-lease contract changed; review architecture.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"func (l *VideoFrameLease) Retain() bool",
+		"func (l *VideoFrameLease) Release()",
+		"func (l *VideoFrameLease) Snapshot() []byte",
+	} {
+		if !strings.Contains(videoLease, needle) {
+			t.Fatalf("video_frame_lease.go frame-lease contract changed; review architecture.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"layer.Lease != nil && !layer.Lease.Retain()",
+		"stageHardwareCompositorBuffer",
+	} {
+		if !strings.Contains(ebiten, needle) {
+			t.Fatalf("video_backend_ebiten.go hardware-compositor lease contract changed; review architecture.md: %s", needle)
+		}
+	}
+
+	for _, required := range []string{
+		"IE_PERF_ACCT=1 enables per-CPU JIT/interpreter time, instruction, subsystem, and deopt counters; disabled accounting avoids atomic hot-path updates.",
+		"Deopt reasons are `unsupported`, `helper`, `mmio`, `smc`, `interrupt`, `cache_pressure`, and `debug`.",
+		"IE64 helper resume is enabled by default and can be disabled with `IE64_JIT_RESUME=0`, `false`, `off`, or `no`.",
+		"IE64 helper resume is cancelled by timer delivery, debug breakpoints, pending invalidation, PC changes, MMU mode changes, or PTBR changes.",
+		"IE64 JIT MMU helpers use a four-entry read/write micro-TLB for translated low-window RAM pages.",
+		"`TLBFLUSH` clears the IE64 JIT micro-TLB and `TLBINVAL` invalidates matching micro-TLB VPN entries",
+		"IE64 self-modifying-code tracking uses 256-byte guest code pages and physical code-page tracking for MMU-compiled blocks.",
+		"x86 self-modifying-code tracking uses 256-byte code pages and range invalidation.",
+		"Video frame leases are enabled by default and can be disabled with `IE_VIDEO_FRAME_LEASES=0`.",
+		"Frame leases keep compositor handoff buffers stable until release; hardware layers retain leases or stage copies when leases are unavailable.",
+		"ReadSamples uses safe block ticking only when every active sample ticker implements `ReadSamplesBlockTicker`, SFX allows block ticking, and no sample mixers are registered.",
+	} {
+		if !normalizedContains(doc, required) {
+			t.Fatalf("architecture.md missing performance-roadmap source-backed claim: %s", required)
+		}
+		if !normalizedContains(sourceInventory, required) {
+			t.Fatalf("SDK_ARCH_SOURCE_AUDIT.md missing performance-roadmap source-backed claim: %s", required)
+		}
+	}
+}
+
 func TestSDKCompanionDocs_IEMonSFXIOViewMatchesSource(t *testing.T) {
 	doc := readAuditFile(t, "sdk/docs/iemon.md")
 	source := readAuditFile(t, "debug_ioview.go")

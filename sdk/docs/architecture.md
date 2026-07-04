@@ -494,6 +494,11 @@ flowchart LR
   translation share the page-table walk result (`MMUSharedWalkResult`). CPU
   policy applies trap causes and A/D updates; hostfs policy requires `PTE_U` and
   leaves A/D bits untouched.
+- **Performance accounting** - `IE_PERF_ACCT=1` enables per-CPU
+  JIT/interpreter time, instruction, subsystem, and deopt counters; disabled
+  accounting avoids atomic hot-path updates. Deopt reasons are `unsupported`,
+  `helper`, `mmio`, `smc`, `interrupt`, `cache_pressure`, and `debug`. These
+  counters are diagnostics only and do not change guest-visible execution.
 
 ## Platform JIT Matrix
 
@@ -586,6 +591,12 @@ Interrupt Delivery" section of this manual for the full model.
   request (`handleJITHelper`) and re-enters the JIT. Helper ops cover
   `LOAD`/`STORE`, `FLOAD`/`FSTORE`, `DLOAD`/`DSTORE`, `PUSH`/`POP`, and the
   control-flow `JSR`/`RTS`/`JSR_IND`.
+- **Helper resume**: when a helper retires exactly one instruction and the CPU
+  state still matches the emitted continuation, `ExecuteJIT` may resume directly
+  at that native continuation. IE64 helper resume is enabled by default and can
+  be disabled with `IE64_JIT_RESUME=0`, `false`, `off`, or `no`. IE64 helper
+  resume is cancelled by timer delivery, debug breakpoints, pending invalidation,
+  PC changes, MMU mode changes, or PTBR changes.
 - **Interpreter parity**: helpers use `cpu.loadMem`/`storeMem` for data and
   `cpu.mmuStackWrite`/`mmuStackRead` for the stack -- the same paths as the
   interpreter. JSR sets PC to the call target, RTS sets PC to the popped return
@@ -599,6 +610,13 @@ Interrupt Delivery" section of this manual for the full model.
   helper exit (virtual-to-physical mapping is not a direct offset). The
   dispatcher refreshes `ctx.MMUEnabled` before every `callNative` so the native
   guards are never stale.
+- **JIT MMU micro-TLB**: IE64 JIT MMU helpers use a four-entry read/write
+  micro-TLB for translated low-window RAM pages. Helper dispatch fills the cache
+  only after a successful translation to dense RAM below `IO_REGION_START`; high
+  physical backing and MMIO are not inserted. Native probes include the access
+  type and CPU privilege/SUA/SKAC/SKEF mode bits in the key. `TLBFLUSH` clears
+  the IE64 JIT micro-TLB and `TLBINVAL` invalidates matching micro-TLB VPN
+  entries. Dispatch refreshes the mode prefixes before every native call.
 - **Fault contract**: the handler sets `cpu.PC = HelperPC` before the operation,
   so `trapFault` records the correct `faultPC`; faulting instructions are not
   counted and re-execute after the trap. Pre-decrement ops (PUSH/JSR/JSR_IND)
@@ -614,6 +632,13 @@ Interrupt Delivery" section of this manual for the full model.
   neither the raw fused fast path nor the guarded helper exit runs. In non-MMU
   mode `mmuBail` is unset, so the raw fused fast path is used (see the
   fused-leaf high-SP exception above).
+- **Range-scoped self-modifying code**: IE64 self-modifying-code tracking uses
+  256-byte guest code pages and physical code-page tracking for MMU-compiled
+  blocks. When a compiled store overlaps marked guest code and the write range
+  is known, the dispatcher invalidates only the changed guest range; MMU stores
+  that overlap compiled physical backing fall back to whole-cache invalidation.
+  x86 self-modifying-code tracking uses 256-byte code pages and range
+  invalidation.
 
 ## Build Profiles and Observable Runtime
 
@@ -980,6 +1005,8 @@ Two rendering paths:
 
 All-zero frame pixels are transparent; any nonzero alpha or RGB value is opaque. During compositing, zero-alpha nonzero-RGB pixels are promoted to opaque `0xFFRRGGBB` before they overwrite the destination. The compositor tick remains fixed at 60 Hz for guest VBlank compatibility; `GetRefreshRate()` reports the output backend rate, while `GetTickRate()` reports the compositor tick.
 
+Video frame leases are enabled by default and can be disabled with `IE_VIDEO_FRAME_LEASES=0`. Copy-buffer paths use three-slot lease rings to keep source-layer buffers alive while the hardware compositor or snapshot path still references them. The software output path can also retain a lease-backed final frame for `UpdateFrame` instead of copying through the legacy output buffer. Frame leases keep compositor handoff buffers stable until release; hardware layers retain leases or stage copies when leases are unavailable. Snapshot APIs still return deep copies.
+
 ### Triple-Buffer Protocol
 
 All video systems except VideoChip use a lock-free triple-buffer protocol for `GetFrame()`:
@@ -1085,7 +1112,7 @@ The SoundChip's global resonant filter (`0xF0820-0xF0830`) supports low-pass, ba
 
 `ReadSample` advances registered sample tickers before mixing the same sample. `GenerateSample` then takes `chip.mu` only for channel-state mutation, channel mixing, register-visible smoothing state, and a post-processing configuration snapshot. SID mixer options, overdrive, the global filter, reverb, and the master normaliser run after `chip.mu` is released. Their mutable DSP state is protected by `postFXMu`, which is also used by reset, debug snapshot, and restore.
 
-`ReadSamples(dst)` is the block-rendering API used by the OTO backend. It records each sample's ticker output and mixer contribution in order, then flushes pending segments of up to 64 samples under one channel-mix lock. Any register write or SoundChip setter reached from a ticker first flushes the pending segment, so single-threaded `ReadSamples` output matches the `ReadSample` loop. Concurrent CPU writes remain bounded by the segment size and are allowed to apply earlier than a sample-at-a-time interleaving.
+`ReadSamples(dst)` is the block-rendering API used by the OTO backend. It installs a pending audio-block state for the duration of the pull. ReadSamples uses safe block ticking only when every active sample ticker implements `ReadSamplesBlockTicker`, SFX allows block ticking, and no sample mixers are registered. In that case it advances eligible tickers in bounded blocks and flushes each block immediately. Otherwise it records each sample's ticker output and mixer contribution in order, then flushes pending segments of up to 64 samples under one channel-mix lock. Any register write or SoundChip setter reached from a ticker first flushes the pending segment, so single-threaded `ReadSamples` output matches the `ReadSample` loop. Concurrent CPU writes remain bounded by the segment size and are allowed to apply earlier than a sample-at-a-time interleaving.
 
 The master normaliser separates setter-owned configuration from audio-thread-owned dynamics. Configuration setters publish a generation counter; the audio thread applies pending envelope and lookahead resets before the next normaliser step. Register-driven engine synchronisation can batch SoundChip writes through `HandleRegisterWrites`, preserving write order while taking the chip mutex once. Idle playback paths for SID, TED, MIDI, MOD, AHX, POKEY, and SFX use atomic gates before taking their engine or channel mutexes. POKEY event playback drains current-sample events through a reusable scratch buffer prepared when events are loaded.
 
