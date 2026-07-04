@@ -1801,6 +1801,9 @@ VOODOO_TEX_BASE0      equ $F830C            ; Texture base address (LOD 0)
 VOODOO_TEX_WIDTH      equ $F8330            ; Texture width for upload (IE extension)
 VOODOO_TEX_HEIGHT     equ $F8334            ; Texture height for upload (IE extension)
 VOODOO_TEX_UPLOAD     equ $F8338            ; Write to trigger texture upload (IE extension)
+VOODOO_CMD_PTR        equ $F833C            ; Guest RAM command stream pointer
+VOODOO_CMD_COUNT      equ $F8340            ; Command stream addr/value pair count
+VOODOO_CMD_SUBMIT     equ $F8344            ; Write 1 to replay command stream
 VOODOO_TEXMEM_BASE    equ $D0000            ; Texture memory base (64KB)
 VOODOO_TEXMEM_SIZE    equ $10000            ; Texture memory size
 VOODOO_PALETTE_BASE   equ $F8400            ; Texture palette base

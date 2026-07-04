@@ -174,12 +174,17 @@ const (
 	VOODOO_TEX_WIDTH    = VOODOO_BASE + 0x330 // Texture width for upload (IE extension)
 	VOODOO_TEX_HEIGHT   = VOODOO_BASE + 0x334 // Texture height for upload (IE extension)
 	VOODOO_TEX_UPLOAD   = VOODOO_BASE + 0x338 // Write to trigger texture upload (IE extension)
+	VOODOO_CMD_PTR      = VOODOO_BASE + 0x33C // Guest RAM command stream pointer (IE extension)
+	VOODOO_CMD_COUNT    = VOODOO_BASE + 0x340 // Number of addr/value pairs in command stream
+	VOODOO_CMD_SUBMIT   = VOODOO_BASE + 0x344 // Write 1 to replay command stream
 	VOODOO_PALETTE_BASE = VOODOO_BASE + 0x400 // Texture palette (256 entries)
 )
 
 const (
-	VOODOO_PALETTE_SIZE = 256
-	VOODOO_REG_COUNT    = ((VOODOO_PALETTE_BASE - VOODOO_BASE) / 4) + VOODOO_PALETTE_SIZE
+	VOODOO_PALETTE_SIZE          = 256
+	VOODOO_REG_COUNT             = ((VOODOO_PALETTE_BASE - VOODOO_BASE) / 4) + VOODOO_PALETTE_SIZE
+	VOODOO_CMD_SUBMIT_REPLAY     = 1
+	VOODOO_CMD_STREAM_MAX_WRITES = 65536
 )
 
 // Texture memory base for texture uploads

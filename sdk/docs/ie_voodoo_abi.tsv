@@ -78,4 +78,7 @@ VOODOO_TEX_BASE8	0x32C	32	RW	0x00000000	implemented	set texture base LOD 8	byte 
 VOODOO_TEX_WIDTH	0x330	32	RW	0x00000000	implemented	set upload width	pixels
 VOODOO_TEX_HEIGHT	0x334	32	RW	0x00000000	implemented	set upload height	pixels
 VOODOO_TEX_UPLOAD	0x338	32	W	0x00000000	implemented	upload texmem to backend	command
+VOODOO_CMD_PTR	0x33C	32	RW	0x00000000	implemented	set guest RAM command stream pointer	byte address
+VOODOO_CMD_COUNT	0x340	32	RW	0x00000000	implemented	set command stream pair count	addr/value pairs
+VOODOO_CMD_SUBMIT	0x344	32	W	0x00000000	implemented	replay guest RAM command stream	command
 VOODOO_PALETTE_BASE	0x400	32	RW	0x00000000	implemented	set backend palette entry	table

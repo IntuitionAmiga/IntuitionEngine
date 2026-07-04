@@ -222,6 +222,14 @@ type VoodooEngine struct {
 	textureMemory []byte
 	textureWidth  int
 	textureHeight int
+
+	// Guest RAM command stream. The stream is a big-endian array of
+	// {absolute Voodoo register address, value} u32 pairs. Writing
+	// VOODOO_CMD_SUBMIT replays the stream through the normal register
+	// path under the same lock, avoiding per-register guest MMIO exits.
+	cmdStreamPtr     uint32
+	cmdStreamCount   uint32
+	cmdStreamScratch []byte
 }
 
 // voodooSwapJob carries one frame's rendering work to the swap worker.
@@ -572,6 +580,14 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 		v.textureWidth = int(value)
 	case VOODOO_TEX_HEIGHT:
 		v.textureHeight = int(value)
+	case VOODOO_CMD_PTR:
+		v.cmdStreamPtr = value
+	case VOODOO_CMD_COUNT:
+		v.cmdStreamCount = value
+	case VOODOO_CMD_SUBMIT:
+		if value&VOODOO_CMD_SUBMIT_REPLAY != 0 {
+			v.executeCommandStreamLocked()
+		}
 	case VOODOO_TLOD:
 		v.tlod = value
 		if v.backend != nil {
@@ -710,6 +726,39 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 		v.executeSwapBufferCmd(value)
 	case VOODOO_NOP_CMD:
 		// No operation
+	}
+}
+
+func voodooCommandStreamControlRegister(addr uint32) bool {
+	return addr == VOODOO_CMD_PTR || addr == VOODOO_CMD_COUNT || addr == VOODOO_CMD_SUBMIT
+}
+
+func (v *VoodooEngine) executeCommandStreamLocked() {
+	count := v.cmdStreamCount
+	if count == 0 || count > VOODOO_CMD_STREAM_MAX_WRITES || v.bus == nil {
+		return
+	}
+
+	byteLen := int(count) * 8
+	if cap(v.cmdStreamScratch) < byteLen {
+		v.cmdStreamScratch = make([]byte, byteLen)
+	}
+	buf := v.cmdStreamScratch[:byteLen]
+	if err := ReadGuestBytes(v.bus, v.cmdStreamPtr, 0, buf); err != nil {
+		return
+	}
+
+	for i := 0; i < byteLen; i += 8 {
+		addr := binary.BigEndian.Uint32(buf[i : i+4])
+		value := binary.BigEndian.Uint32(buf[i+4 : i+8])
+
+		if addr&3 != 0 || addr < VOODOO_BASE || addr > VOODOO_END {
+			continue
+		}
+		if voodooCommandStreamControlRegister(addr) {
+			continue
+		}
+		v.writeReg32Locked(addr, value)
 	}
 }
 
