@@ -25,6 +25,26 @@ type ioRegisterReader interface {
 	ReadIORegister(addr uint64, width int) (uint32, bool)
 }
 
+func makeSFXIORegisters() []IORegisterDesc {
+	regs := make([]IORegisterDesc, 0, IE_SFX_CHANNELS*9)
+	for ch := 0; ch < IE_SFX_CHANNELS; ch++ {
+		base := ieSFXChannelBase(ch)
+		prefix := fmt.Sprintf("CH%d_", ch)
+		regs = append(regs,
+			IORegisterDesc{prefix + "PTR", base + SFX_PTR, 4, "RW"},
+			IORegisterDesc{prefix + "LEN", base + SFX_LEN, 4, "RW"},
+			IORegisterDesc{prefix + "LOOP_PTR", base + SFX_LOOP_PTR, 4, "RW"},
+			IORegisterDesc{prefix + "LOOP_LEN", base + SFX_LOOP_LEN, 4, "RW"},
+			IORegisterDesc{prefix + "FREQ", base + SFX_FREQ, 4, "RW"},
+			IORegisterDesc{prefix + "VOL", base + SFX_VOL, 2, "RW"},
+			IORegisterDesc{prefix + "PAN", base + SFX_PAN_RESERVED, 2, "RW"},
+			IORegisterDesc{prefix + "FORMAT", base + SFX_FORMAT, 1, "RW"},
+			IORegisterDesc{prefix + "CTRL", base + SFX_CTRL, 4, "RW"},
+		)
+	}
+	return regs
+}
+
 var ioDevices = map[string]*IODeviceDesc{
 	"video": {
 		Name: "VideoChip",
@@ -438,41 +458,8 @@ var ioDevices = map[string]*IODeviceDesc{
 		},
 	},
 	"sfx": {
-		Name: "SFX Trigger",
-		Registers: []IORegisterDesc{
-			{"CH0_PTR", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_PTR, 4, "RW"},
-			{"CH0_LEN", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_LEN, 4, "RW"},
-			{"CH0_LOOP_PTR", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_LOOP_PTR, 4, "RW"},
-			{"CH0_LOOP_LEN", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_LOOP_LEN, 4, "RW"},
-			{"CH0_FREQ", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_FREQ, 4, "RW"},
-			{"CH0_VOL", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_VOL, 2, "RW"},
-			{"CH0_FORMAT", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_FORMAT, 1, "RW"},
-			{"CH0_CTRL", IE_SFX_CH_BASE + 0*IE_SFX_CH_STRIDE + SFX_CTRL, 4, "RW"},
-			{"CH1_PTR", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_PTR, 4, "RW"},
-			{"CH1_LEN", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_LEN, 4, "RW"},
-			{"CH1_LOOP_PTR", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_LOOP_PTR, 4, "RW"},
-			{"CH1_LOOP_LEN", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_LOOP_LEN, 4, "RW"},
-			{"CH1_FREQ", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_FREQ, 4, "RW"},
-			{"CH1_VOL", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_VOL, 2, "RW"},
-			{"CH1_FORMAT", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_FORMAT, 1, "RW"},
-			{"CH1_CTRL", IE_SFX_CH_BASE + 1*IE_SFX_CH_STRIDE + SFX_CTRL, 4, "RW"},
-			{"CH2_PTR", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_PTR, 4, "RW"},
-			{"CH2_LEN", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_LEN, 4, "RW"},
-			{"CH2_LOOP_PTR", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_LOOP_PTR, 4, "RW"},
-			{"CH2_LOOP_LEN", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_LOOP_LEN, 4, "RW"},
-			{"CH2_FREQ", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_FREQ, 4, "RW"},
-			{"CH2_VOL", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_VOL, 2, "RW"},
-			{"CH2_FORMAT", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_FORMAT, 1, "RW"},
-			{"CH2_CTRL", IE_SFX_CH_BASE + 2*IE_SFX_CH_STRIDE + SFX_CTRL, 4, "RW"},
-			{"CH3_PTR", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_PTR, 4, "RW"},
-			{"CH3_LEN", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_LEN, 4, "RW"},
-			{"CH3_LOOP_PTR", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_LOOP_PTR, 4, "RW"},
-			{"CH3_LOOP_LEN", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_LOOP_LEN, 4, "RW"},
-			{"CH3_FREQ", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_FREQ, 4, "RW"},
-			{"CH3_VOL", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_VOL, 2, "RW"},
-			{"CH3_FORMAT", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_FORMAT, 1, "RW"},
-			{"CH3_CTRL", IE_SFX_CH_BASE + 3*IE_SFX_CH_STRIDE + SFX_CTRL, 4, "RW"},
-		},
+		Name:      "SFX Trigger",
+		Registers: makeSFXIORegisters(),
 	},
 	"ted": {
 		Name: "TED",

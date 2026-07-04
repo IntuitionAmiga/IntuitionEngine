@@ -37,6 +37,7 @@ func TestAudioMMIORegionsDoNotOverlap(t *testing.T) {
 		{"SID3_FLEX", SID3_FLEX_BASE, SID3_FLEX_END},
 		{"SID", SID_BASE, SID_END},
 		{"SFX", IE_SFX_REGION_BASE, IE_SFX_REGION_END},
+		{"SFX_EXT", IE_SFX_EXT_REGION_BASE, IE_SFX_EXT_REGION_END},
 		{"TED", TED_REGION_BASE, TED_REGION_END},
 	}
 	for i := range regions {

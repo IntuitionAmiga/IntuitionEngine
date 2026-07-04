@@ -71,7 +71,8 @@ import (
 // F0A80-F0B7F: Flexible 4-channel register block (preferred)
 // F0C40-F0CFF: SID2 flexible register block (channels 4-6)
 // F0D40-F0DFF: SID3 flexible register block (channels 7-9)
-// F0E80-F0EFF: IE_SFX trigger sample block
+// F0E80-F0EFF: IE_SFX legacy trigger sample block (channels 0-3)
+// F2600-F29FF: IE_SFX extended trigger sample block (channels 0-31)
 const (
 	SQUARE_REG_START = 0xF0900
 	SQUARE_REG_END   = 0xF093F

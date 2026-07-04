@@ -376,14 +376,26 @@ SID_PLAY_STATUS = $FE2C         ; Play status (IE32 $F0E2C)
 SID_SUBSONG     = $FE2D         ; Subsong selection (0-255)
 
 ; ============================================================================
-; IE SFX TRIGGER REGISTERS (4-channel sample trigger block)
+; IE SFX TRIGGER REGISTERS
+; Legacy $FE80-$FEFF aliases channels 0-3. For the 32-channel extended
+; window, set BANK1 to IE_SFX_EXT_BANK and use IE_SFX_EXT_CH_BASE.
 ; ============================================================================
-IE_SFX_CH_BASE    = $FE80       ; SFX channel 0 base (IE32 $F0E80)
-IE_SFX_CH_STRIDE  = $20
-IE_SFX_CH0_BASE   = $FE80
-IE_SFX_CH1_BASE   = $FEA0
-IE_SFX_CH2_BASE   = $FEC0
-IE_SFX_CH3_BASE   = $FEE0
+IE_SFX_CH_BASE           = $FE80       ; SFX channel 0 base (IE32 $F0E80)
+IE_SFX_CH_STRIDE         = $20
+IE_SFX_LEGACY_CHANNELS   = 4
+IE_SFX_CHANNELS          = 32
+IE_SFX_CH0_BASE          = $FE80
+IE_SFX_CH1_BASE          = $FEA0
+IE_SFX_CH2_BASE          = $FEC0
+IE_SFX_CH3_BASE          = $FEE0
+IE_SFX_EXT_REGION_BASE   = $F2600
+IE_SFX_EXT_REGION_END    = $F29FF
+IE_SFX_EXT_BANK          = $79
+IE_SFX_EXT_WINDOW_BASE   = $2600
+IE_SFX_EXT_WINDOW_END    = $29FF
+IE_SFX_EXT_CH_BASE       = $2600
+IE_SFX_EXT_CH0_BASE      = $2600
+IE_SFX_EXT_CH31_BASE     = $29E0
 SFX_PTR           = $00
 SFX_LEN           = $04
 SFX_LOOP_PTR      = $08

@@ -7098,6 +7098,8 @@ func execStmtTestWithSoundChip(t *testing.T, asmBin string, program string, with
 		if withSFX {
 			h.bus.MapIO(IE_SFX_REGION_BASE, IE_SFX_REGION_END, sound.sfx.HandleRead, sound.sfx.HandleWrite)
 			h.bus.MapIOByte(IE_SFX_REGION_BASE, IE_SFX_REGION_END, sound.sfx.HandleWrite8)
+			h.bus.MapIO(IE_SFX_EXT_REGION_BASE, IE_SFX_EXT_REGION_END, sound.sfx.HandleRead, sound.sfx.HandleWrite)
+			h.bus.MapIOByte(IE_SFX_EXT_REGION_BASE, IE_SFX_EXT_REGION_END, sound.sfx.HandleWrite8)
 		}
 	})
 	return out, h, sound

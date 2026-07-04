@@ -247,6 +247,54 @@ aot_consttab:
     dc.l AOT_MNEM_CAP
     dc.b 14, "AOT_SYMTAB_CAP"
     dc.l AOT_SYMTAB_CAP
+    dc.b 20, "AOT_FOR_NATIVE_STACK"
+    dc.l AOT_FOR_NATIVE_STACK
+    dc.b 17, "AOT_FOR_VAR_STACK"
+    dc.l AOT_FOR_VAR_STACK
+    dc.b 17, "AOT_FOR_END_STACK"
+    dc.l AOT_FOR_END_STACK
+    dc.b 18, "AOT_FOR_STEP_STACK"
+    dc.l AOT_FOR_STEP_STACK
+    dc.b 18, "AOT_FOR_SIGN_STACK"
+    dc.l AOT_FOR_SIGN_STACK
+    dc.b 15, "AOT_FOR_TMP_VAR"
+    dc.l AOT_FOR_TMP_VAR
+    dc.b 17, "AOT_FOR_TMP_START"
+    dc.l AOT_FOR_TMP_START
+    dc.b 15, "AOT_FOR_TMP_END"
+    dc.l AOT_FOR_TMP_END
+    dc.b 16, "AOT_FOR_TMP_STEP"
+    dc.l AOT_FOR_TMP_STEP
+    dc.b 16, "AOT_FOR_TMP_SIGN"
+    dc.l AOT_FOR_TMP_SIGN
+    dc.b 17, "AOT_FOR_TMP_AFTER"
+    dc.l AOT_FOR_TMP_AFTER
+    dc.b 17, "AOT_FOR_TMP_LABEL"
+    dc.l AOT_FOR_TMP_LABEL
+    dc.b 18, "AOT_POKE_STORE_TMP"
+    dc.l AOT_POKE_STORE_TMP
+    dc.b 18, "AOT_NATIVE_VAR_TAB"
+    dc.l AOT_NATIVE_VAR_TAB
+    dc.b 20, "AOT_NATIVE_VAR_COUNT"
+    dc.l AOT_NATIVE_VAR_COUNT
+    dc.b 19, "AOT_NATIVE_MEM_NEXT"
+    dc.l AOT_NATIVE_MEM_NEXT
+    dc.b 20, "AOT_NATIVE_MEM_RANGE"
+    dc.l AOT_NATIVE_MEM_RANGE
+    dc.b 18, "AOT_LAST_OOM_STAGE"
+    dc.l AOT_LAST_OOM_STAGE
+    dc.b 13, "AOT_LAST_LINE"
+    dc.l AOT_LAST_LINE
+    dc.b 14, "AOT_LAST_TOKEN"
+    dc.l AOT_LAST_TOKEN
+    dc.b 17, "AOT_EMIT_OVERFLOW"
+    dc.l AOT_EMIT_OVERFLOW
+    dc.b 18, "AOT_NATIVE_VAR_SEG"
+    dc.l AOT_NATIVE_VAR_SEG
+    dc.b 18, "AOT_NATIVE_VAR_MAX"
+    dc.l AOT_NATIVE_VAR_MAX
+    dc.b 20, "AOT_NATIVE_VAR_BYTES"
+    dc.l AOT_NATIVE_VAR_BYTES
     dc.b 10, "ERR_SYNTAX"
     dc.l ERR_SYNTAX
     dc.b 8, "ERR_DIV0"
@@ -299,6 +347,10 @@ aot_consttab:
     dc.l IE_SFX_CH_BASE
     dc.b 16, "IE_SFX_CH_STRIDE"
     dc.l IE_SFX_CH_STRIDE
+    dc.b 22, "IE_SFX_LEGACY_CHANNELS"
+    dc.l IE_SFX_LEGACY_CHANNELS
+    dc.b 15, "IE_SFX_CHANNELS"
+    dc.l IE_SFX_CHANNELS
     dc.b 15, "IE_SFX_CH0_BASE"
     dc.l IE_SFX_CH0_BASE
     dc.b 15, "IE_SFX_CH1_BASE"
@@ -307,6 +359,22 @@ aot_consttab:
     dc.l IE_SFX_CH2_BASE
     dc.b 15, "IE_SFX_CH3_BASE"
     dc.l IE_SFX_CH3_BASE
+    dc.b 22, "IE_SFX_EXT_REGION_BASE"
+    dc.l IE_SFX_EXT_REGION_BASE
+    dc.b 21, "IE_SFX_EXT_REGION_END"
+    dc.l IE_SFX_EXT_REGION_END
+    dc.b 18, "IE_SFX_EXT_CH_BASE"
+    dc.l IE_SFX_EXT_CH_BASE
+    dc.b 19, "IE_SFX_EXT_CH0_BASE"
+    dc.l IE_SFX_EXT_CH0_BASE
+    dc.b 20, "IE_SFX_EXT_CH31_BASE"
+    dc.l IE_SFX_EXT_CH31_BASE
+    dc.b 17, "IE_MIDI_LIVE_DATA"
+    dc.l IE_MIDI_LIVE_DATA
+    dc.b 19, "IE_MIDI_LIVE_STATUS"
+    dc.l IE_MIDI_LIVE_STATUS
+    dc.b 17, "IE_MIDI_LIVE_CTRL"
+    dc.l IE_MIDI_LIVE_CTRL
     dc.b 12, "MODE_640x480"
     dc.l MODE_640x480
     dc.b 12, "MODE_800x600"

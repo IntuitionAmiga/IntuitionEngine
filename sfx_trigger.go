@@ -23,6 +23,7 @@ type SFXTrigger struct {
 
 type sfxChannel struct {
 	mu          sync.Mutex
+	active      atomic.Bool
 	shadow      [IE_SFX_CH_STRIDE]byte
 	ptr         uint32
 	length      uint32
@@ -149,6 +150,7 @@ func (s *SFXTrigger) Reset() {
 		c.playing = false
 		c.ptrOOBError = false
 		c.cursor = 0
+		c.active.Store(false)
 		c.mu.Unlock()
 	}
 	s.mixMu.Lock()
@@ -158,16 +160,27 @@ func (s *SFXTrigger) Reset() {
 	s.active.Store(false)
 }
 
+func ieSFXChannelBase(ch int) uint32 {
+	return IE_SFX_EXT_REGION_BASE + uint32(ch)*IE_SFX_CH_STRIDE
+}
+
 func (s *SFXTrigger) channelFor(addr uint32) (int, uint32, bool) {
-	if addr < IE_SFX_REGION_BASE || addr > IE_SFX_REGION_END {
+	if addr >= IE_SFX_REGION_BASE && addr <= IE_SFX_REGION_END {
+		rel := addr - IE_SFX_REGION_BASE
+		ch := int(rel / IE_SFX_CH_STRIDE)
+		if ch >= 0 && ch < IE_SFX_LEGACY_CHANNELS {
+			return ch, rel % IE_SFX_CH_STRIDE, true
+		}
 		return 0, 0, false
 	}
-	rel := addr - IE_SFX_REGION_BASE
-	ch := int(rel / IE_SFX_CH_STRIDE)
-	if ch < 0 || ch >= IE_SFX_CHANNELS {
-		return 0, 0, false
+	if addr >= IE_SFX_EXT_REGION_BASE && addr <= IE_SFX_EXT_REGION_END {
+		rel := addr - IE_SFX_EXT_REGION_BASE
+		ch := int(rel / IE_SFX_CH_STRIDE)
+		if ch >= 0 && ch < IE_SFX_CHANNELS {
+			return ch, rel % IE_SFX_CH_STRIDE, true
+		}
 	}
-	return ch, rel % IE_SFX_CH_STRIDE, true
+	return 0, 0, false
 }
 
 func (s *SFXTrigger) applyLocked(c *sfxChannel, offset uint32, value uint32) {
@@ -184,6 +197,7 @@ func (s *SFXTrigger) applyLocked(c *sfxChannel, offset uint32, value uint32) {
 		c.frequency = value
 	case SFX_VOL:
 		c.volume = uint16(value & 0xFFFF)
+		c.panReserved = uint16(value >> 16)
 	case SFX_PAN_RESERVED:
 		c.panReserved = uint16(value & 0xFFFF)
 	case SFX_FORMAT:
@@ -191,6 +205,7 @@ func (s *SFXTrigger) applyLocked(c *sfxChannel, offset uint32, value uint32) {
 	case SFX_CTRL:
 		if value&SFX_CTRL_STOP != 0 {
 			c.playing = false
+			c.active.Store(false)
 			c.cursor = 0
 		}
 		c.loopEnabled = value&SFX_CTRL_LOOP_EN != 0
@@ -215,6 +230,7 @@ func (s *SFXTrigger) triggerLocked(c *sfxChannel) {
 		return
 	}
 	c.playing = true
+	c.active.Store(true)
 	s.clearMix.Store(false)
 	s.active.Store(true)
 }
@@ -235,16 +251,21 @@ func (s *SFXTrigger) sampleRangeValid(ptr, length uint32) bool {
 }
 
 func (s *SFXTrigger) tickChannel(c *sfxChannel) (float32, bool) {
+	if !c.active.Load() {
+		return 0, false
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if !c.playing {
+		c.active.Store(false)
 		return 0, false
 	}
 	bytesPerSample := c.bytesPerSampleLocked()
 	endSample := c.playbackEndSampleLocked(bytesPerSample)
 	if endSample <= 0 {
 		c.playing = false
+		c.active.Store(false)
 		return 0, false
 	}
 
@@ -277,6 +298,7 @@ func (s *SFXTrigger) tickChannel(c *sfxChannel) (float32, bool) {
 func (s *SFXTrigger) wrapLoopLocked(c *sfxChannel, bytesPerSample int) bool {
 	if !c.loopEnabled || c.loopPtr == 0 || c.loopLength == 0 {
 		c.playing = false
+		c.active.Store(false)
 		c.loopActive = false
 		c.cursor = 0
 		return false
@@ -284,6 +306,7 @@ func (s *SFXTrigger) wrapLoopLocked(c *sfxChannel, bytesPerSample int) bool {
 	loopSamples := int(c.loopLength) / bytesPerSample
 	if loopSamples <= 0 {
 		c.playing = false
+		c.active.Store(false)
 		c.loopActive = false
 		c.cursor = 0
 		return false

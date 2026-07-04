@@ -1163,6 +1163,10 @@ func main() {
 		soundChip.sfx.HandleRead,
 		soundChip.sfx.HandleWrite)
 	sysBus.MapIOByte(IE_SFX_REGION_BASE, IE_SFX_REGION_END, soundChip.sfx.HandleWrite8)
+	sysBus.MapIO(IE_SFX_EXT_REGION_BASE, IE_SFX_EXT_REGION_END,
+		soundChip.sfx.HandleRead,
+		soundChip.sfx.HandleWrite)
+	sysBus.MapIOByte(IE_SFX_EXT_REGION_BASE, IE_SFX_EXT_REGION_END, soundChip.sfx.HandleWrite8)
 
 	sysBus.MapIO(VIDEO_CTRL, VIDEO_REG_END,
 		videoChip.HandleRead,

@@ -374,14 +374,26 @@
 .set SID_SUBSONG,0xF0E2D
 
 ; ============================================================================
-; IE SFX TRIGGER REGISTERS (4-channel sample trigger block)
+; IE SFX TRIGGER REGISTERS
+; Legacy 0xF0E80-0xF0EFF aliases channels 0-3. For the 32-channel extended
+; window, set BANK1 to IE_SFX_EXT_BANK and use IE_SFX_EXT_CH_BASE.
 ; ============================================================================
 .set IE_SFX_CH_BASE,0xF0E80
 .set IE_SFX_CH_STRIDE,0x20
+.set IE_SFX_LEGACY_CHANNELS,4
+.set IE_SFX_CHANNELS,32
 .set IE_SFX_CH0_BASE,0xF0E80
 .set IE_SFX_CH1_BASE,0xF0EA0
 .set IE_SFX_CH2_BASE,0xF0EC0
 .set IE_SFX_CH3_BASE,0xF0EE0
+.set IE_SFX_EXT_REGION_BASE,0xF2600
+.set IE_SFX_EXT_REGION_END,0xF29FF
+.set IE_SFX_EXT_BANK,0x79
+.set IE_SFX_EXT_WINDOW_BASE,0x2600
+.set IE_SFX_EXT_WINDOW_END,0x29FF
+.set IE_SFX_EXT_CH_BASE,0x2600
+.set IE_SFX_EXT_CH0_BASE,0x2600
+.set IE_SFX_EXT_CH31_BASE,0x29E0
 .set SFX_PTR,0x00
 .set SFX_LEN,0x04
 .set SFX_LOOP_PTR,0x08

@@ -4092,7 +4092,7 @@ func TestIOViewSFXAndPaulaDescriptors(t *testing.T) {
 	}
 	var wantSFX []IORegisterDesc
 	for ch := 0; ch < IE_SFX_CHANNELS; ch++ {
-		base := IE_SFX_CH_BASE + uint32(ch)*IE_SFX_CH_STRIDE
+		base := ieSFXChannelBase(ch)
 		prefix := fmt.Sprintf("CH%d_", ch)
 		wantSFX = append(wantSFX,
 			IORegisterDesc{prefix + "PTR", base + SFX_PTR, 4, "RW"},
@@ -4101,6 +4101,7 @@ func TestIOViewSFXAndPaulaDescriptors(t *testing.T) {
 			IORegisterDesc{prefix + "LOOP_LEN", base + SFX_LOOP_LEN, 4, "RW"},
 			IORegisterDesc{prefix + "FREQ", base + SFX_FREQ, 4, "RW"},
 			IORegisterDesc{prefix + "VOL", base + SFX_VOL, 2, "RW"},
+			IORegisterDesc{prefix + "PAN", base + SFX_PAN_RESERVED, 2, "RW"},
 			IORegisterDesc{prefix + "FORMAT", base + SFX_FORMAT, 1, "RW"},
 			IORegisterDesc{prefix + "CTRL", base + SFX_CTRL, 4, "RW"},
 		)
@@ -4189,8 +4190,8 @@ func TestIOViewReadsWordWideMMIORegistersAtNativeWidth(t *testing.T) {
 		{"midiplay", "io midiplay", "PLAY_PTR", MIDI_PLAY_PTR, 4, 0x12345678, "$12345678"},
 		{"mod", "io mod", "PLAY_PTR", MOD_PLAY_PTR, 4, 0x23456789, "$23456789"},
 		{"wav", "io wav", "PLAY_PTR", WAV_PLAY_PTR, 4, 0x3456789A, "$3456789A"},
-		{"sfx", "io sfx", "CH0_FREQ", IE_SFX_CH_BASE + SFX_FREQ, 4, 0x456789AB, "$456789AB"},
-		{"sfx16", "io sfx", "CH0_VOL", IE_SFX_CH_BASE + SFX_VOL, 2, 0xBEEF, "$BEEF"},
+		{"sfx", "io sfx", "CH0_FREQ", ieSFXChannelBase(0) + SFX_FREQ, 4, 0x456789AB, "$456789AB"},
+		{"sfx16", "io sfx", "CH0_VOL", ieSFXChannelBase(0) + SFX_VOL, 2, 0xBEEF, "$BEEF"},
 		{"hosthelper", "io hosthelper", "COMMAND", HostMMIOBase + HostMMIOCommand, 4, 0x56789ABC, "$56789ABC"},
 		{"arosdos", "io arosdos", "ARG1", AROS_DOS_ARG1, 4, 0x6789ABCD, "$6789ABCD"},
 		{"paula", "io paula", "CH0_PTR", AROS_AUD_REGION_BASE + AROS_AUD_OFF_PTR, 4, 0x789ABCDE, "$789ABCDE"},

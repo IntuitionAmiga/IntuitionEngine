@@ -294,14 +294,22 @@
 .equ SID_SUBSONG       0xF0E2D          ; Subsong selection (0-255)
 
 ; ============================================================================
-; IE SFX TRIGGER REGISTERS (4-channel sample trigger block)
+; IE SFX TRIGGER REGISTERS
+; Legacy window aliases channels 0-3; extended window exposes channels 0-31.
 ; ============================================================================
-.equ IE_SFX_CH_BASE     0xF0E80
-.equ IE_SFX_CH_STRIDE   0x20
-.equ IE_SFX_CH0_BASE    0xF0E80
-.equ IE_SFX_CH1_BASE    0xF0EA0
-.equ IE_SFX_CH2_BASE    0xF0EC0
-.equ IE_SFX_CH3_BASE    0xF0EE0
+.equ IE_SFX_CH_BASE           0xF0E80
+.equ IE_SFX_CH_STRIDE         0x20
+.equ IE_SFX_LEGACY_CHANNELS   4
+.equ IE_SFX_CHANNELS          32
+.equ IE_SFX_CH0_BASE          0xF0E80
+.equ IE_SFX_CH1_BASE          0xF0EA0
+.equ IE_SFX_CH2_BASE          0xF0EC0
+.equ IE_SFX_CH3_BASE          0xF0EE0
+.equ IE_SFX_EXT_REGION_BASE   0xF2600
+.equ IE_SFX_EXT_REGION_END    0xF29FF
+.equ IE_SFX_EXT_CH_BASE       0xF2600
+.equ IE_SFX_EXT_CH0_BASE      0xF2600
+.equ IE_SFX_EXT_CH31_BASE     0xF29E0
 .equ SFX_PTR            0x00
 .equ SFX_LEN            0x04
 .equ SFX_LOOP_PTR       0x08

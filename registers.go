@@ -44,7 +44,7 @@ Address Range       Size    Device              Constants File
 0xF0D00-0xF0D20     33B     POKEY               pokey_constants.go
 0xF0D40-0xF0DFF     192B    SID3 Flex Audio     audio_chip.go
 0xF0E00-0xF0E2D     45B     SID (6581/8580)     sid_constants.go
-0xF0E80-0xF0EFF     128B    SFX Trigger         sfx_constants.go
+0xF0E80-0xF0EFF     128B    SFX Trigger legacy aliases sfx_constants.go
 0xF0F00-0xF0F6B     108B    TED (audio+video)   ted_constants.go, ted_video_constants.go
 0xF1000-0xF13FF     1KB     VGA Registers       vga_constants.go
 0xF1400-0xF140F     16B     Host Helper         host_helper.go
@@ -63,6 +63,7 @@ Address Range       Size    Device              Constants File
 0xF23E0-0xF23FF     32B     Bootstrap HostFS    bootstrap_hostfs_constants.go
 0xF2400-0xF24FF     256B    SysInfo             sysinfo_mmio.go
 0xF2500-0xF257F     128B    AROS Host Sockets   aros_host_socket_constants.go
+0xF2600-0xF29FF     1KB     SFX Trigger extended aliases sfx_constants.go
 0xD0000-0xDFFFF     64KB    Voodoo Texture Memory voodoo_constants.go
 0xF8000-0xF87FF     2KB     Voodoo 3D Graphics  voodoo_constants.go
 0xFA000-0xFBAFF     6912B   ULA VRAM Aperture   ula_constants.go
@@ -106,9 +107,9 @@ SID - 6581/8580 (0xF0E00-0xF0E2D) - sid_constants.go
   SID_FC_*, SID_RES_FILT, SID_MODE_VOL (Filter/volume)
   SID_PLAY_* (Player registers)
 
-SFX Trigger (0xF0E80-0xF0EFF) - sfx_constants.go
-  4 channels, 32-byte stride
-  SFX_PTR/LEN/LOOP_PTR/LOOP_LEN/FREQ/VOL/FORMAT/CTRL
+SFX Trigger (legacy 0xF0E80-0xF0EFF, extended 0xF2600-0xF29FF) - sfx_constants.go
+  Legacy aliases channels 0-3; extended aliases channels 0-31, 32-byte stride
+  SFX_PTR/LEN/LOOP_PTR/LOOP_LEN/FREQ/VOL/PAN_RESERVED/FORMAT/CTRL
 
 TED (0xF0F00-0xF0F6B) - ted_constants.go, ted_video_constants.go
   Audio: TED_FREQ1_*, TED_FREQ2_*, TED_SND_CTRL (0xF0F00-0xF0F05)

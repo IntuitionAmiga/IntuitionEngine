@@ -1236,7 +1236,8 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0xF0E20-0xF0E2D` | 14B | MMIO | SID player | All CPU cores | Audio subsystem | Player-facing register block. |
 | `0xF0E30-0xF0E4C` | 29B | MMIO | SID2 engine (6581/8580) | All CPU cores | Audio subsystem | Secondary SID register block. |
 | `0xF0E50-0xF0E6C` | 29B | MMIO | SID3 engine (6581/8580) | All CPU cores | Audio subsystem | Tertiary SID register block. |
-| `0xF0E80-0xF0EFF` | 128B | MMIO | SoundChip SFX trigger channels | All CPU cores | Audio subsystem | Trigger-oriented SFX range. |
+| `0xF0E80-0xF0EFF` | 128B | MMIO | SoundChip SFX trigger legacy aliases | All CPU cores | Audio subsystem | Channels 0-3 aliases for the trigger-oriented SFX range. |
+| `0xF2600-0xF29FF` | 1KB | MMIO | SoundChip SFX trigger extended channels | All CPU cores | Audio subsystem | Channels 0-31 trigger-oriented SFX range. |
 | `0xF0F00-0xF0F05` | 6B | MMIO | TED audio engine | All CPU cores | Audio subsystem | TED audio registers. |
 | `0xF0F10-0xF0F1F` | 16B | MMIO | TED player | All CPU cores | Audio subsystem | Player-facing register block. |
 | `0xF0F20-0xF0F6B` | 76B | MMIO | TED video | All CPU cores | TED video subsystem | Stride-4 TED video register mapping. |

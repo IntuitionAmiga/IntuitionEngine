@@ -296,18 +296,26 @@ SID_PLAY_STATUS equ $F0E2C              ; Play status
 SID_SUBSONG     equ $F0E2D              ; Subsong selection (0-255)
 
 ; ============================================================================
-; IE SFX TRIGGER REGISTERS (4-channel sample trigger block)
+; IE SFX TRIGGER REGISTERS
 ;
+; Legacy window aliases channels 0-3; extended window exposes channels 0-31.
 ; SFX_PAN_RESERVED is accepted but ignored in mono Phase 1 output.
 ; SFX_CTRL writes: bit0 trigger, bit1 stop, bit2 loop enable.
 ; SFX_CTRL reads return status: bit0 playing, bit1 pointer/range error.
 ; ============================================================================
-IE_SFX_CH_BASE    equ $F0E80            ; Base address of SFX channel 0
-IE_SFX_CH_STRIDE  equ $20               ; Bytes per SFX channel
-IE_SFX_CH0_BASE   equ $F0E80
-IE_SFX_CH1_BASE   equ $F0EA0
-IE_SFX_CH2_BASE   equ $F0EC0
-IE_SFX_CH3_BASE   equ $F0EE0
+IE_SFX_CH_BASE           equ $F0E80     ; Legacy base address of SFX channel 0
+IE_SFX_CH_STRIDE         equ $20        ; Bytes per SFX channel
+IE_SFX_LEGACY_CHANNELS   equ 4
+IE_SFX_CHANNELS          equ 32
+IE_SFX_CH0_BASE          equ $F0E80
+IE_SFX_CH1_BASE          equ $F0EA0
+IE_SFX_CH2_BASE          equ $F0EC0
+IE_SFX_CH3_BASE          equ $F0EE0
+IE_SFX_EXT_REGION_BASE   equ $F2600     ; Extended base, channels 0-31
+IE_SFX_EXT_REGION_END    equ $F29FF
+IE_SFX_EXT_CH_BASE       equ $F2600
+IE_SFX_EXT_CH0_BASE      equ $F2600
+IE_SFX_EXT_CH31_BASE     equ $F29E0
 
 SFX_PTR           equ $00               ; Sample base pointer (u32)
 SFX_LEN           equ $04               ; Sample length in bytes (u32)

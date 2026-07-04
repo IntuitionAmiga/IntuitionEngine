@@ -17,6 +17,8 @@ func newSFXTestRig(t *testing.T) (*SoundChip, *MachineBus) {
 	bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, chip.HandleRegisterWrite8)
 	bus.MapIO(IE_SFX_REGION_BASE, IE_SFX_REGION_END, chip.sfx.HandleRead, chip.sfx.HandleWrite)
 	bus.MapIOByte(IE_SFX_REGION_BASE, IE_SFX_REGION_END, chip.sfx.HandleWrite8)
+	bus.MapIO(IE_SFX_EXT_REGION_BASE, IE_SFX_EXT_REGION_END, chip.sfx.HandleRead, chip.sfx.HandleWrite)
+	bus.MapIOByte(IE_SFX_EXT_REGION_BASE, IE_SFX_EXT_REGION_END, chip.sfx.HandleWrite8)
 	bus.Write32(AUDIO_CTRL, 1)
 	return chip, bus
 }
@@ -277,8 +279,90 @@ func TestSFXTrigger_PanByteIgnored(t *testing.T) {
 	}
 }
 
+func TestSFXTrigger_ExtChannel31_Plays(t *testing.T) {
+	chip, bus := newSFXTestRig(t)
+	ptr := uint32(0x2900)
+	bus.memory[ptr] = 127
+	triggerSFX(bus, 31, ptr, 1, SAMPLE_RATE, 255, SFX_FORMAT_SIGNED8, 0)
+
+	if status := bus.Read32(ieSFXChannelBase(31) + SFX_CTRL); status&SFX_STATUS_PLAYING == 0 {
+		t.Fatalf("ch31 status after trigger: got 0x%X, want playing bit", status)
+	}
+	if got := chip.ReadSample(); got <= 0.9 {
+		t.Fatalf("ch31 sample: got %f, want audible positive sample", got)
+	}
+}
+
+func TestSFXTrigger_LegacyWindowAliasesChannels0To3(t *testing.T) {
+	chip, bus := newSFXTestRig(t)
+	ptr := uint32(0x2940)
+	bus.memory[ptr] = 127
+	legacyCh2 := uint32(IE_SFX_REGION_BASE + 2*IE_SFX_CH_STRIDE)
+	input := []struct {
+		off uint32
+		val uint32
+	}{
+		{SFX_PTR, ptr},
+		{SFX_LEN, 1},
+		{SFX_FREQ, SAMPLE_RATE},
+		{SFX_VOL, 255},
+		{SFX_FORMAT, SFX_FORMAT_SIGNED8},
+		{SFX_CTRL, SFX_CTRL_TRIGGER},
+	}
+	for _, wr := range input {
+		bus.Write32(legacyCh2+wr.off, wr.val)
+	}
+
+	if status := bus.Read32(ieSFXChannelBase(2) + SFX_CTRL); status&SFX_STATUS_PLAYING == 0 {
+		t.Fatalf("ext alias status after legacy trigger: got 0x%X, want playing", status)
+	}
+	if got := chip.ReadSample(); got <= 0.9 {
+		t.Fatalf("legacy alias sample: got %f, want audible positive sample", got)
+	}
+	bus.Write32(ieSFXChannelBase(2)+SFX_CTRL, SFX_CTRL_STOP)
+	if status := bus.Read32(legacyCh2 + SFX_CTRL); status&SFX_STATUS_PLAYING != 0 {
+		t.Fatalf("legacy status after ext stop: got 0x%X, want stopped", status)
+	}
+}
+
+func TestSFXTrigger_ChannelForRejectsBeyondExtWindow(t *testing.T) {
+	trigger := NewSFXTrigger()
+	if _, _, ok := trigger.channelFor(IE_SFX_EXT_REGION_BASE + IE_SFX_CHANNELS*IE_SFX_CH_STRIDE); ok {
+		t.Fatal("channelFor accepted address past channel 31")
+	}
+}
+
+func TestSFXTrigger_VolPanCombinedWriteAndByteRouting(t *testing.T) {
+	chip, bus := newSFXTestRig(t)
+	base := ieSFXChannelBase(0)
+	bus.Write32(base+SFX_VOL, 0xA55A00C8)
+	if got := chip.sfx.channels[0].volume; got != 0x00C8 {
+		t.Fatalf("combined write volume = 0x%X, want 0xC8", got)
+	}
+	if got := chip.sfx.channels[0].panReserved; got != 0xA55A {
+		t.Fatalf("combined write pan = 0x%X, want 0xA55A", got)
+	}
+
+	bus.Write8(base+SFX_PAN_RESERVED, 0x34)
+	bus.Write8(base+SFX_PAN_RESERVED+1, 0x12)
+	if got := chip.sfx.channels[0].panReserved; got != 0x1234 {
+		t.Fatalf("byte-routed pan = 0x%X, want 0x1234", got)
+	}
+	if got := chip.sfx.channels[0].volume; got != 0x00C8 {
+		t.Fatalf("pan byte write changed volume = 0x%X, want 0xC8", got)
+	}
+
+	bus.Write16(base+SFX_VOL, 0x00FF)
+	if got := chip.sfx.channels[0].volume; got != 0x00FF {
+		t.Fatalf("word-routed volume = 0x%X, want 0xFF", got)
+	}
+	if got := chip.sfx.channels[0].panReserved; got != 0x1234 {
+		t.Fatalf("volume word write changed pan = 0x%X, want 0x1234", got)
+	}
+}
+
 func triggerSFX(bus *MachineBus, channel int, ptr, length, freq uint32, vol uint16, format uint8, ctrl uint32) {
-	base := IE_SFX_CH_BASE + uint32(channel)*IE_SFX_CH_STRIDE
+	base := ieSFXChannelBase(channel)
 	bus.Write32(base+SFX_PTR, ptr)
 	bus.Write32(base+SFX_LEN, length)
 	bus.Write32(base+SFX_FREQ, freq)
