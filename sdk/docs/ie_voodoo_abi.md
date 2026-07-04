@@ -27,7 +27,7 @@ The expanded register window includes fog registers and the 256-entry palette ar
 - IE32, M68K, x86: 8/16/32-bit access to the register aperture. Aligned 16-bit and 32-bit writes are supported; misaligned wider writes are treated as the bus delivers them.
 - Z80: no direct `0xF8xxx` MMIO. Use the port adapter at `0xB0..0xB7`.
 - 6502: no direct `0xF8xxx` MMIO. Use the banked aperture at `VOODOO_6502_WINDOW_BASE = 0xE000`, selecting the 4KB target page through `VOODOO_6502_BANK_HI = 0xF7F2` and `VOODOO_6502_BANK_PAGE_HI = 0xF7F3` (`0x00F8` for registers, `0x00D0..0x00DF` for texture memory).
-- Texture uploads: IE64/IE32/M68K/x86 can stream bytes, words, or dwords into `VOODOO_TEXMEM_BASE`. Z80 uses the existing `VOODOO_PORT_TEXSRC_*` adapter and triggers `VOODOO_TEX_UPLOAD`. 6502 streams through the banked aperture.
+- Texture uploads: IE64/IE32/M68K/x86 can either stream bytes, words, or dwords into `VOODOO_TEXMEM_BASE`, or set `VOODOO_TEX_SRC_PTR`/`VOODOO_TEX_SRC_BYTES` to bulk-copy big-endian u32 texel words from guest RAM when `VOODOO_TEX_UPLOAD` is written. Z80 uses the existing `VOODOO_PORT_TEXSRC_*` adapter and triggers `VOODOO_TEX_UPLOAD`. 6502 streams through the banked aperture.
 
 ## Partial-Write Commit Model
 
@@ -43,7 +43,7 @@ Fog table and palette contents are not snapshotted (their rasterizer lookups rem
 
 ## Texture Model
 
-Implemented texture upload uses the IE texture memory window and `VOODOO_TEXTURE_MODE`, `VOODOO_TEX_WIDTH`, `VOODOO_TEX_HEIGHT`, and `VOODOO_TEX_UPLOAD`. Supported guest-facing formats are ARGB8888, ARGB1555, ARGB4444, I8, A8, and P8. YIQ is reserved. Nearest and bilinear sampling are ABI-visible; mip/trilinear behavior is `compat-readback` until LOD registers are promoted.
+Implemented texture upload uses `VOODOO_TEXTURE_MODE`, `VOODOO_TEX_WIDTH`, `VOODOO_TEX_HEIGHT`, and `VOODOO_TEX_UPLOAD`. Upload data may come from the IE texture memory window or, when `VOODOO_TEX_SRC_PTR` and `VOODOO_TEX_SRC_BYTES` cover the upload size, directly from guest RAM as big-endian u32 texel words. Supported guest-facing formats are ARGB8888, ARGB1555, ARGB4444, I8, A8, and P8. YIQ is reserved. Nearest and bilinear sampling are ABI-visible; mip/trilinear behavior is `compat-readback` until LOD registers are promoted.
 
 Texture coordinates use 14.18 fixed point. W uses 2.30 fixed point and defaults to 1.0 for rasterization purposes.
 

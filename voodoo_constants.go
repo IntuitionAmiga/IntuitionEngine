@@ -159,25 +159,27 @@ const (
 
 // Texture mapping unit (TMU) registers
 const (
-	VOODOO_TEXTURE_MODE = VOODOO_BASE + 0x300 // Texture mode configuration
-	VOODOO_TLOD         = VOODOO_BASE + 0x304 // Texture LOD control
-	VOODOO_TDETAIL      = VOODOO_BASE + 0x308 // Texture detail control
-	VOODOO_TEX_BASE0    = VOODOO_BASE + 0x30C // Texture base address (LOD 0)
-	VOODOO_TEX_BASE1    = VOODOO_BASE + 0x310 // Texture base address (LOD 1)
-	VOODOO_TEX_BASE2    = VOODOO_BASE + 0x314 // Texture base address (LOD 2)
-	VOODOO_TEX_BASE3    = VOODOO_BASE + 0x318 // Texture base address (LOD 3)
-	VOODOO_TEX_BASE4    = VOODOO_BASE + 0x31C // Texture base address (LOD 4)
-	VOODOO_TEX_BASE5    = VOODOO_BASE + 0x320 // Texture base address (LOD 5)
-	VOODOO_TEX_BASE6    = VOODOO_BASE + 0x324 // Texture base address (LOD 6)
-	VOODOO_TEX_BASE7    = VOODOO_BASE + 0x328 // Texture base address (LOD 7)
-	VOODOO_TEX_BASE8    = VOODOO_BASE + 0x32C // Texture base address (LOD 8)
-	VOODOO_TEX_WIDTH    = VOODOO_BASE + 0x330 // Texture width for upload (IE extension)
-	VOODOO_TEX_HEIGHT   = VOODOO_BASE + 0x334 // Texture height for upload (IE extension)
-	VOODOO_TEX_UPLOAD   = VOODOO_BASE + 0x338 // Write to trigger texture upload (IE extension)
-	VOODOO_CMD_PTR      = VOODOO_BASE + 0x33C // Guest RAM command stream pointer (IE extension)
-	VOODOO_CMD_COUNT    = VOODOO_BASE + 0x340 // Number of addr/value pairs in command stream
-	VOODOO_CMD_SUBMIT   = VOODOO_BASE + 0x344 // Write 1 to replay command stream
-	VOODOO_PALETTE_BASE = VOODOO_BASE + 0x400 // Texture palette (256 entries)
+	VOODOO_TEXTURE_MODE  = VOODOO_BASE + 0x300 // Texture mode configuration
+	VOODOO_TLOD          = VOODOO_BASE + 0x304 // Texture LOD control
+	VOODOO_TDETAIL       = VOODOO_BASE + 0x308 // Texture detail control
+	VOODOO_TEX_BASE0     = VOODOO_BASE + 0x30C // Texture base address (LOD 0)
+	VOODOO_TEX_BASE1     = VOODOO_BASE + 0x310 // Texture base address (LOD 1)
+	VOODOO_TEX_BASE2     = VOODOO_BASE + 0x314 // Texture base address (LOD 2)
+	VOODOO_TEX_BASE3     = VOODOO_BASE + 0x318 // Texture base address (LOD 3)
+	VOODOO_TEX_BASE4     = VOODOO_BASE + 0x31C // Texture base address (LOD 4)
+	VOODOO_TEX_BASE5     = VOODOO_BASE + 0x320 // Texture base address (LOD 5)
+	VOODOO_TEX_BASE6     = VOODOO_BASE + 0x324 // Texture base address (LOD 6)
+	VOODOO_TEX_BASE7     = VOODOO_BASE + 0x328 // Texture base address (LOD 7)
+	VOODOO_TEX_BASE8     = VOODOO_BASE + 0x32C // Texture base address (LOD 8)
+	VOODOO_TEX_WIDTH     = VOODOO_BASE + 0x330 // Texture width for upload (IE extension)
+	VOODOO_TEX_HEIGHT    = VOODOO_BASE + 0x334 // Texture height for upload (IE extension)
+	VOODOO_TEX_UPLOAD    = VOODOO_BASE + 0x338 // Write to trigger texture upload (IE extension)
+	VOODOO_CMD_PTR       = VOODOO_BASE + 0x33C // Guest RAM command stream pointer (IE extension)
+	VOODOO_CMD_COUNT     = VOODOO_BASE + 0x340 // Number of addr/value pairs in command stream
+	VOODOO_CMD_SUBMIT    = VOODOO_BASE + 0x344 // Write 1 to replay command stream
+	VOODOO_TEX_SRC_PTR   = VOODOO_BASE + 0x348 // Guest RAM texture upload source pointer
+	VOODOO_TEX_SRC_BYTES = VOODOO_BASE + 0x34C // Guest RAM texture upload source byte count
+	VOODOO_PALETTE_BASE  = VOODOO_BASE + 0x400 // Texture palette (256 entries)
 )
 
 const (

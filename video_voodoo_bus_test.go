@@ -235,6 +235,63 @@ func TestVoodoo_TexMem_DirectUpload(t *testing.T) {
 	}
 }
 
+func TestVoodoo_TexUpload_FromGuestSource(t *testing.T) {
+	bus, v := newMappedTestVoodoo(t)
+	sw := testVoodooSoftwareBackend(t, v)
+	src := uint32(0x3000)
+	want := []byte{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88}
+	guest := []byte{0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55}
+
+	copy(bus.GetMemory()[src:], guest)
+	for i := range want {
+		v.textureMemory[i] = 0xA5
+	}
+
+	bus.Write32(VOODOO_TEX_WIDTH, 2)
+	bus.Write32(VOODOO_TEX_HEIGHT, 1)
+	bus.Write32(VOODOO_TEX_SRC_PTR, src)
+	bus.Write32(VOODOO_TEX_SRC_BYTES, uint32(len(want)))
+	bus.Write32(VOODOO_TEX_UPLOAD, 1)
+
+	if got := sw.textureData; len(got) != len(want) {
+		t.Fatalf("backend texture length = %d, want %d", len(got), len(want))
+	} else {
+		for i, wantByte := range want {
+			if got[i] != wantByte {
+				t.Fatalf("backend textureData[%d] = %#02x, want %#02x", i, got[i], wantByte)
+			}
+			if v.textureMemory[i] != wantByte {
+				t.Fatalf("textureMemory[%d] = %#02x, want %#02x", i, v.textureMemory[i], wantByte)
+			}
+		}
+	}
+}
+
+func TestVoodoo_TexUpload_InvalidGuestSourceFallsBackToTexmem(t *testing.T) {
+	bus, v := newMappedTestVoodoo(t)
+	sw := testVoodooSoftwareBackend(t, v)
+	want := []byte{0xCA, 0xFE, 0xBA, 0xBE}
+
+	copy(v.textureMemory, want)
+	copy(bus.GetMemory()[0x3000:], []byte{0x10, 0x20, 0x30, 0x40})
+
+	bus.Write32(VOODOO_TEX_WIDTH, 1)
+	bus.Write32(VOODOO_TEX_HEIGHT, 1)
+	bus.Write32(VOODOO_TEX_SRC_PTR, 0x3000)
+	bus.Write32(VOODOO_TEX_SRC_BYTES, 3)
+	bus.Write32(VOODOO_TEX_UPLOAD, 1)
+
+	if got := sw.textureData; len(got) != len(want) {
+		t.Fatalf("backend texture length = %d, want %d", len(got), len(want))
+	} else {
+		for i, wantByte := range want {
+			if got[i] != wantByte {
+				t.Fatalf("fallback textureData[%d] = %#02x, want %#02x", i, got[i], wantByte)
+			}
+		}
+	}
+}
+
 func TestVoodoo_TexMem_Z80PortUpload(t *testing.T) {
 	bus, v := newMappedTestVoodoo(t)
 	z80 := NewZ80BusAdapterWithVoodoo(bus, nil, v)

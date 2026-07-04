@@ -1804,6 +1804,8 @@ VOODOO_TEX_UPLOAD     equ $F8338            ; Write to trigger texture upload (I
 VOODOO_CMD_PTR        equ $F833C            ; Guest RAM command stream pointer
 VOODOO_CMD_COUNT      equ $F8340            ; Command stream addr/value pair count
 VOODOO_CMD_SUBMIT     equ $F8344            ; Write 1 to replay command stream
+VOODOO_TEX_SRC_PTR    equ $F8348            ; Guest RAM texture upload pointer
+VOODOO_TEX_SRC_BYTES  equ $F834C            ; Guest RAM texture upload byte count
 VOODOO_TEXMEM_BASE    equ $D0000            ; Texture memory base (64KB)
 VOODOO_TEXMEM_SIZE    equ $10000            ; Texture memory size
 VOODOO_PALETTE_BASE   equ $F8400            ; Texture palette base

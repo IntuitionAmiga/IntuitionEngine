@@ -81,4 +81,6 @@ VOODOO_TEX_UPLOAD	0x338	32	W	0x00000000	implemented	upload texmem to backend	com
 VOODOO_CMD_PTR	0x33C	32	RW	0x00000000	implemented	set guest RAM command stream pointer	byte address
 VOODOO_CMD_COUNT	0x340	32	RW	0x00000000	implemented	set command stream pair count	addr/value pairs
 VOODOO_CMD_SUBMIT	0x344	32	W	0x00000000	implemented	replay guest RAM command stream	command
+VOODOO_TEX_SRC_PTR	0x348	32	RW	0x00000000	implemented	set guest RAM texture upload pointer	byte address
+VOODOO_TEX_SRC_BYTES	0x34C	32	RW	0x00000000	implemented	set guest RAM texture upload byte count	bytes
 VOODOO_PALETTE_BASE	0x400	32	RW	0x00000000	implemented	set backend palette entry	table

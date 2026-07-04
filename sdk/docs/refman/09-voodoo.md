@@ -367,6 +367,8 @@ stipple word lets every pixel through.
 | `$F8330`  | `TEX_WIDTH`       | Upload width. |
 | `$F8334`  | `TEX_HEIGHT`      | Upload height. |
 | `$F8338`  | `TEX_UPLOAD`      | Commit texture memory to the sampler. |
+| `$F8348`  | `TEX_SRC_PTR`     | Guest RAM bulk texture source. |
+| `$F834C`  | `TEX_SRC_BYTES`   | Bulk texture source byte count. |
 | `$F8400` to `$F87FF` | `PALETTE_BASE` | 256 texture palette entries. |
 
 `TEXTURE_MODE` bits:

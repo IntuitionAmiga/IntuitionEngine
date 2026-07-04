@@ -222,6 +222,8 @@ type VoodooEngine struct {
 	textureMemory []byte
 	textureWidth  int
 	textureHeight int
+	texSrcPtr     uint32
+	texSrcBytes   uint32
 
 	// Guest RAM command stream. The stream is a big-endian array of
 	// {absolute Voodoo register address, value} u32 pairs. Writing
@@ -588,6 +590,10 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 		if value&VOODOO_CMD_SUBMIT_REPLAY != 0 {
 			v.executeCommandStreamLocked()
 		}
+	case VOODOO_TEX_SRC_PTR:
+		v.texSrcPtr = value
+	case VOODOO_TEX_SRC_BYTES:
+		v.texSrcBytes = value
 	case VOODOO_TLOD:
 		v.tlod = value
 		if v.backend != nil {
@@ -605,15 +611,13 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 	case VOODOO_TEX_UPLOAD:
 		// Trigger texture upload to backend
 		if v.textureWidth > 0 && v.textureHeight > 0 && v.backend != nil {
-			size := v.textureWidth * v.textureHeight * 4
-			if size <= len(v.textureMemory) {
+			if size, ok := v.textureUploadSizeLocked(); ok {
 				format := int((v.textureMode >> 8) & 0xF)
 				// Immutable copy shared by the state snapshot and the
 				// backend upload: triangles already batched keep sampling
 				// the texture they were submitted with, and backends can
 				// match snapshots to the live upload by slice identity.
-				data := make([]byte, size)
-				copy(data, v.textureMemory[:size])
+				data := v.textureUploadDataLocked(size)
 				v.currentTexture = &VoodooTexture{
 					Width:  v.textureWidth,
 					Height: v.textureHeight,
@@ -727,6 +731,33 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 	case VOODOO_NOP_CMD:
 		// No operation
 	}
+}
+
+func (v *VoodooEngine) textureUploadSizeLocked() (int, bool) {
+	if v.textureWidth <= 0 || v.textureHeight <= 0 {
+		return 0, false
+	}
+	size := uint64(v.textureWidth) * uint64(v.textureHeight) * 4
+	if size == 0 || size > uint64(len(v.textureMemory)) {
+		return 0, false
+	}
+	return int(size), true
+}
+
+func (v *VoodooEngine) textureUploadDataLocked(size int) []byte {
+	data := make([]byte, size)
+	if v.bus != nil && v.texSrcPtr != 0 && v.texSrcBytes >= uint32(size) {
+		if err := ReadGuestBytes(v.bus, v.texSrcPtr, 0, data); err == nil {
+			for i := 0; i < size; i += 4 {
+				word := binary.BigEndian.Uint32(data[i : i+4])
+				binary.LittleEndian.PutUint32(data[i:i+4], word)
+			}
+			copy(v.textureMemory[:size], data)
+			return data
+		}
+	}
+	copy(data, v.textureMemory[:size])
+	return data
 }
 
 func voodooCommandStreamControlRegister(addr uint32) bool {
