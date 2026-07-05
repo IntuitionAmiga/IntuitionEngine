@@ -502,6 +502,7 @@ func (cpu *M68KCPU) initM68KJIT() error {
 		cpu.m68kJitCodePageMin[i] = 0xFFFF
 	}
 	cpu.m68kJitCodeLoAddr = 0xFFFFFFFF
+	cpu.m68kJitCodeEnv.Store(uint64(0xFFFFFFFF) << 32)
 	cpu.m68kJitCodeHiAddr = 0
 	cpu.m68kJitCtx = newM68KJITContext(cpu, cpu.m68kJitCodeBitmap, cpu.m68kJitCodePageMin, cpu.m68kJitCodePageMax)
 	cpu.m68kJitNativeActive.Store(false)
@@ -527,6 +528,7 @@ func (cpu *M68KCPU) freeM68KJIT() {
 	cpu.m68kJitCodePageMax = nil
 	cpu.m68kJitCodePageBlocks = nil
 	cpu.m68kJitCodeLoAddr = 0xFFFFFFFF
+	cpu.m68kJitCodeEnv.Store(uint64(0xFFFFFFFF) << 32)
 	cpu.m68kJitCodeHiAddr = 0
 	cpu.m68kJitNativeActive.Store(false)
 	cpu.m68kJitDeferredInval.Store(false)
@@ -580,6 +582,7 @@ func (cpu *M68KCPU) m68kResetJITCodeCache() {
 		clear(cpu.m68kJitCodePageBlocks)
 	}
 	cpu.m68kJitCodeLoAddr = 0xFFFFFFFF
+	cpu.m68kJitCodeEnv.Store(uint64(0xFFFFFFFF) << 32)
 	cpu.m68kJitCodeHiAddr = 0
 	cpu.m68kClearJITRTSCache()
 }
@@ -606,6 +609,7 @@ func (cpu *M68KCPU) m68kRebuildJITCodeMetadata() {
 	// tight union of surviving blocks (M68K never uses mmuBlocks, so blocks are
 	// the complete set — see m68kWriteOutsideCodeBounds).
 	cpu.m68kJitCodeLoAddr = 0xFFFFFFFF
+	cpu.m68kJitCodeEnv.Store(uint64(0xFFFFFFFF) << 32)
 	cpu.m68kJitCodeHiAddr = 0
 	if cpu.m68kJitCache == nil {
 		return
@@ -1188,6 +1192,10 @@ func (cpu *M68KCPU) m68kMarkJITCodeRanges(block *JITBlock) {
 			}
 		}
 	}
+	// Publish the widened envelope for the cross-thread invalidator gate.
+	// Blocks are marked BEFORE they become reachable in the cache, so a bus
+	// goroutine can never observe a reachable block outside the envelope.
+	cpu.m68kJitCodeEnv.Store(uint64(cpu.m68kJitCodeLoAddr)<<32 | uint64(cpu.m68kJitCodeHiAddr))
 }
 
 func invalidateM68KJITForGuestWrite(bus Bus32, addr uint64, size uint64) {
@@ -1964,6 +1972,9 @@ func (cpu *M68KCPU) m68kTryPromoteJITRegion(block *JITBlock, execMem *ExecMem, m
 	newBlock.execCount = block.execCount
 	newBlock.tier = 1
 	m68kStampGuestBlockBytes(memory, newBlock)
+	// Mark before Put: see the block-compile site for the envelope-gate
+	// ordering rationale.
+	cpu.m68kMarkJITCodeRanges(newBlock)
 	cpu.m68kJitCache.Put(newBlock)
 	if !disableChains && newBlock.chainEntry != 0 {
 		cpu.m68kJitCache.PatchChainsTo(newBlock.startPC, newBlock.chainEntry)
@@ -1985,7 +1996,6 @@ func (cpu *M68KCPU) m68kTryPromoteJITRegion(block *JITBlock, execMem *ExecMem, m
 			PatchRel32At(slot.patchAddr, target.chainEntry)
 		}
 	}
-	cpu.m68kMarkJITCodeRanges(newBlock)
 	cpu.m68kJitRegionPromotions.Add(1)
 	return newBlock
 }
@@ -2970,10 +2980,13 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				continue
 			}
 
-			// Cache block and mark code pages
+			// Mark code pages BEFORE the block becomes reachable in the
+			// cache: the cross-thread invalidator gate reads the published
+			// envelope, and a reachable-but-unmarked block would let a bus
+			// write to its code bytes skip invalidation.
 			m68kStampGuestBlockBytes(cpu.memory, block)
-			cpu.m68kJitCache.Put(block)
 			cpu.m68kMarkJITCodeRanges(block)
+			cpu.m68kJitCache.Put(block)
 
 			// Patch chain slots bidirectionally:
 			// 1. Existing blocks exiting to this block → patch their slots to our chainEntry

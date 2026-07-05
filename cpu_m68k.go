@@ -741,8 +741,13 @@ type M68KCPU struct {
 	// Conservative global envelope [lo,hi) of all compiled JIT code, widened on
 	// m68kMarkJITCodeRanges and reset with the page metadata. Drives the O(1)
 	// negative reject in invalidateM68KJITForGuestWrite. Empty when hi<=lo.
-	m68kJitCodeLoAddr    uint32
-	m68kJitCodeHiAddr    uint32
+	m68kJitCodeLoAddr uint32
+	m68kJitCodeHiAddr uint32
+	// Atomically published (lo<<32)|hi copy of the code envelope, readable
+	// from bus goroutines (coprocessor workers, DMA, video) so the
+	// cross-thread invalidator can reject data-only writes without taking
+	// the pending-invalidation mutex or bumping the generation.
+	m68kJitCodeEnv       atomic.Uint64
 	m68kJitNativeActive  atomic.Bool
 	m68kJitDeferredInval atomic.Bool
 	// m68kJitDispatchActive is true only while the M68KExecuteJIT dispatcher
@@ -1021,6 +1026,22 @@ func NewM68KCPU(bus Bus32) *M68KCPU {
 			}
 			if size > uint64(^uint32(0)) {
 				size = uint64(^uint32(0))
+			}
+			// O(1) envelope gate: bus writers (coprocessor workers, DMA,
+			// video) stream into data regions far more often than into
+			// compiled code. An enqueue is not just queue work - it bumps
+			// the invalidation generation and forces the dispatcher to
+			// re-loop, so unconditional enqueues from a busy worker can
+			// livelock the JIT. The envelope is published before a block
+			// becomes reachable; an empty envelope means no compiled code.
+			env := cpu.m68kJitCodeEnv.Load()
+			envLo, envHi := uint32(env>>32), uint32(env)
+			if envHi <= envLo {
+				return // no compiled code at all
+			}
+			end := addr + size
+			if end <= uint64(envLo) || addr >= uint64(envHi) {
+				return // entirely outside the code envelope
 			}
 			// The bus invalidator is the cross-thread entry (video, DMA,
 			// loaders run on host goroutines). If a dispatcher loop is live,
