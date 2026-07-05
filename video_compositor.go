@@ -224,6 +224,7 @@ type VideoCompositor struct {
 	lastHardwareLayers []CompositorFrameLayer
 	frameLeaseRings    map[uint64]*VideoFrameLeaseRing
 	frameLeaseBytes    map[uint64]int
+	lastSourceGens     map[uint64]uint64
 	softwareFrameRing  *VideoFrameLeaseRing
 	softwareFrameBytes int
 	finalFrameLease    *VideoFrameLease
@@ -500,6 +501,16 @@ func (c *VideoCompositor) composite() {
 		}
 	}
 
+	// Frame-generation gate: if every enabled source tracks a frame
+	// generation and none has advanced since the last composite, this
+	// tick has no new pixels — skip the collect/copy/blend/upload work.
+	// Source TickFrame calls above (VBlank edges, chip state) have
+	// already run, so guest-visible timing is unaffected.
+	if c.canSkipUnchangedCompositeLocked() {
+		c.mu.Unlock()
+		return
+	}
+
 	useHardwareCompositor := c.canUseHardwareCompositorLocked()
 	layers, hasContent := c.collectCompositeLayers(useHardwareCompositor)
 	shouldOutput := hasContent || c.prevHasContent
@@ -582,6 +593,47 @@ func (c *VideoCompositor) composite() {
 		c.forceFullFrame = false
 		c.mu.Unlock()
 	}
+}
+
+// canSkipUnchangedCompositeLocked reports whether this compositor tick
+// can skip all pixel work because no enabled source published a new
+// frame since the last composite. Conservative by construction: any
+// enabled source that does not implement FrameGenerationSource, a
+// pending force-full-frame, a frame-complete consumer (recorder), or a
+// scanline-compositing frame all disable the skip. On a false return
+// the caller proceeds to composite and this function has already
+// recorded the new generations.
+func (c *VideoCompositor) canSkipUnchangedCompositeLocked() bool {
+	if c.forceFullFrame || c.onFrameComplete != nil || !c.prevHasContent {
+		return false
+	}
+	if c.frameCounter == 0 {
+		return false
+	}
+	unchanged := true
+	for i := range c.sources {
+		source := c.sources[i].source
+		if !source.IsEnabled() {
+			continue
+		}
+		if selector, ok := source.(ScanlineCompositingSource); ok && selector.NeedsScanlineCompositing() {
+			return false
+		}
+		gen, ok := source.(FrameGenerationSource)
+		if !ok {
+			return false
+		}
+		id := c.sources[i].id
+		current := gen.FrameGeneration()
+		if c.lastSourceGens == nil {
+			c.lastSourceGens = make(map[uint64]uint64)
+		}
+		if last, seen := c.lastSourceGens[id]; !seen || last != current {
+			c.lastSourceGens[id] = current
+			unchanged = false
+		}
+	}
+	return unchanged
 }
 
 func (c *VideoCompositor) canUseHardwareCompositorLocked() bool {

@@ -188,17 +188,23 @@ type VoodooEngine struct {
 
 	// Asynchronous swap worker. SWAP_BUFFER_CMD packages the batched
 	// frame into a job and hands it to a render goroutine so the guest
-	// CPU does not stall on the backend flush/readback round-trip. At
-	// most one job is in flight; the next swap waits for completion
-	// (one frame of run-ahead, matching a FIFO that fills up). STATUS
-	// reports busy/swap-pending while the job runs; frame consumers
-	// (GetFrame, resize, Destroy, SetBackend) drain first.
+	// CPU does not stall on the backend flush/readback round-trip. Up
+	// to voodooMaxSwapJobsInFlight jobs are in flight so the guest sim
+	// overlaps the render/readback chain of the previous frame instead
+	// of fencing on it; the next swap waits only when the pipeline is
+	// full. STATUS reports busy/swap-pending while jobs run; frame
+	// consumers (GetFrame, resize, Destroy, SetBackend) drain first.
 	swapJobs      chan voodooSwapJob
 	swapWorkerEnd chan struct{}
-	swapIdle      *sync.Cond // signals jobInFlight -> false; L is &mu
-	jobInFlight   bool
-	swapInFlight  atomic.Bool // lock-free mirror of jobInFlight for GetFrame
-	spareBatch    []VoodooTriangle
+	swapIdle      *sync.Cond // signals jobsInFlight decrement; L is &mu
+	jobsInFlight  int
+	swapInFlight  atomic.Bool // lock-free mirror of jobsInFlight > 0 for GetFrame
+	spareBatches  [][]VoodooTriangle
+
+	// Frame generation counter: incremented once per published frame
+	// (present swaps, not flush-only jobs). The compositor uses it to
+	// skip collect/copy/upload work on ticks where no new frame exists.
+	frameGen atomic.Uint64
 
 	// FAST_FILL is deferred into the next swap job: clearing the
 	// backend immediately would race the in-flight frame's render
@@ -233,6 +239,17 @@ type VoodooEngine struct {
 	cmdStreamCount   uint32
 	cmdStreamScratch []byte
 }
+
+// voodooMaxSwapJobsInFlight bounds the swap pipeline depth. Depth 2
+// would let the guest build frame N+1 while frame N renders, but
+// measures slower for render-heavy guests: the render then overlaps
+// the guest's build phase, and the backend mutex is held across the
+// whole software raster / Vulkan fence, so the guest's forwarded
+// register writes and texture uploads stall mid-frame. Until backend
+// rendering stops holding the lock across the full frame, keep depth 1
+// (render serialised before the next build, so the guest never
+// contends mid-build).
+const voodooMaxSwapJobsInFlight = 1
 
 // voodooSwapJob carries one frame's rendering work to the swap worker.
 // All referenced data is owned by the job (the triangle slice is handed
@@ -314,7 +331,7 @@ func NewVoodooEngine(bus *MachineBus) (*VoodooEngine, error) {
 	// enabled defaults to false (atomic.Bool zero value) - programs enable via VOODOO_ENABLE write
 
 	v.swapIdle = sync.NewCond(&v.mu)
-	v.swapJobs = make(chan voodooSwapJob, 1)
+	v.swapJobs = make(chan voodooSwapJob, voodooMaxSwapJobsInFlight)
 	v.swapWorkerEnd = make(chan struct{})
 	go v.swapWorker(v.swapJobs, v.swapWorkerEnd)
 
@@ -999,7 +1016,7 @@ func (v *VoodooEngine) executeFastFillCmd() {
 	if v.backend == nil {
 		return
 	}
-	if v.jobInFlight {
+	if v.jobsInFlight > 0 {
 		v.pendingClear = true
 		v.pendingClearColor = v.color0
 		return
@@ -1024,7 +1041,7 @@ func (v *VoodooEngine) flushBatchLocked() {
 	if v.backend == nil || v.swapJobs == nil || len(v.triangleBatch) == 0 {
 		return
 	}
-	for v.jobInFlight {
+	for v.jobsInFlight >= voodooMaxSwapJobsInFlight {
 		v.swapIdle.Wait()
 	}
 	job := voodooSwapJob{
@@ -1039,15 +1056,23 @@ func (v *VoodooEngine) flushBatchLocked() {
 	}
 	v.pipelineDirty = false
 	v.pendingClear = false
-	if v.spareBatch == nil {
-		v.spareBatch = make([]VoodooTriangle, 0, VOODOO_MAX_BATCH_TRIANGLES)
-	}
-	v.triangleBatch = v.spareBatch
-	v.spareBatch = nil
+	v.triangleBatch = v.takeSpareBatchLocked()
 	v.busy = true
-	v.jobInFlight = true
+	v.jobsInFlight++
 	v.swapInFlight.Store(true)
 	v.swapJobs <- job
+}
+
+// takeSpareBatchLocked pops a recycled triangle buffer or allocates a
+// fresh one. With a pipeline depth of N the steady state needs N+1
+// buffers (one per in-flight job plus the one the guest is filling).
+func (v *VoodooEngine) takeSpareBatchLocked() []VoodooTriangle {
+	if n := len(v.spareBatches); n > 0 {
+		batch := v.spareBatches[n-1]
+		v.spareBatches = v.spareBatches[:n-1]
+		return batch
+	}
+	return make([]VoodooTriangle, 0, VOODOO_MAX_BATCH_TRIANGLES)
 }
 
 func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
@@ -1059,7 +1084,7 @@ func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
 		return
 	}
 
-	for v.jobInFlight {
+	for v.jobsInFlight >= voodooMaxSwapJobsInFlight {
 		v.swapIdle.Wait()
 	}
 
@@ -1080,19 +1105,15 @@ func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
 	v.pipelineDirty = false
 	v.pendingClear = false
 
-	// The guest batches the next frame into the recycled spare buffer
-	// while the worker renders this one.
-	if v.spareBatch == nil {
-		v.spareBatch = make([]VoodooTriangle, 0, VOODOO_MAX_BATCH_TRIANGLES)
-	}
-	v.triangleBatch = v.spareBatch
-	v.spareBatch = nil
+	// The guest batches the next frame into a recycled spare buffer
+	// while the worker renders the in-flight ones.
+	v.triangleBatch = v.takeSpareBatchLocked()
 
 	v.busy = true
 	v.swapPending = true
-	v.jobInFlight = true
+	v.jobsInFlight++
 	v.swapInFlight.Store(true)
-	v.swapJobs <- job // cap 1, single job in flight: never blocks
+	v.swapJobs <- job // chan cap == pipeline depth: never blocks
 }
 
 // swapWorker renders swap jobs off the guest CPU thread. Backend calls
@@ -1131,10 +1152,12 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 				backend.FlushTriangles(job.triangles)
 			}
 			v.mu.Lock()
-			v.spareBatch = clearVoodooTriangleBatch(job.triangles)
-			v.busy = false
-			v.jobInFlight = false
-			v.swapInFlight.Store(false)
+			v.spareBatches = append(v.spareBatches, clearVoodooTriangleBatch(job.triangles))
+			v.jobsInFlight--
+			if v.jobsInFlight == 0 {
+				v.busy = false
+				v.swapInFlight.Store(false)
+			}
 			v.mu.Unlock()
 			v.swapIdle.Broadcast()
 			continue
@@ -1153,8 +1176,9 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 		if frame != nil && len(frame) == len(v.frameBufs[v.writeIdx]) {
 			copy(v.frameBufs[v.writeIdx], frame)
 			v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
+			v.frameGen.Add(1)
 		}
-		v.spareBatch = clearVoodooTriangleBatch(job.triangles)
+		v.spareBatches = append(v.spareBatches, clearVoodooTriangleBatch(job.triangles))
 		onFIFOEmpty := v.OnFIFOEmpty
 		onSwapComplete := v.OnSwapComplete
 		v.mu.Unlock()
@@ -1170,10 +1194,12 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 		}
 
 		v.mu.Lock()
-		v.busy = false
-		v.swapPending = false
-		v.jobInFlight = false
-		v.swapInFlight.Store(false)
+		v.jobsInFlight--
+		if v.jobsInFlight == 0 {
+			v.busy = false
+			v.swapPending = false
+			v.swapInFlight.Store(false)
+		}
 		v.mu.Unlock()
 		v.swapIdle.Broadcast()
 	}
@@ -1182,7 +1208,7 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 // waitSwapIdleLocked blocks until no swap job is in flight. The caller
 // holds v.mu; Wait releases and reacquires it.
 func (v *VoodooEngine) waitSwapIdleLocked() {
-	for v.jobInFlight {
+	for v.jobsInFlight > 0 {
 		v.swapIdle.Wait()
 	}
 }
@@ -1199,7 +1225,7 @@ func (v *VoodooEngine) WaitSwapIdle() {
 func (v *VoodooEngine) getStatus() uint32 {
 	var status uint32
 
-	if v.busy || v.jobInFlight {
+	if v.busy || v.jobsInFlight > 0 {
 		status |= VOODOO_STATUS_FBI_BUSY | VOODOO_STATUS_SST_BUSY
 	}
 	// Time-based vretrace: active during last 10% of 60Hz frame (~1.67ms)
@@ -1301,6 +1327,13 @@ func (v *VoodooEngine) GetFrame() []byte {
 // IsEnabled returns whether the Voodoo is active (lock-free)
 func (v *VoodooEngine) IsEnabled() bool {
 	return v.enabled.Load()
+}
+
+// FrameGeneration implements FrameGenerationSource: the counter advances
+// once per published (presented) frame, so compositor ticks between
+// guest swaps can skip their collect/copy/upload work.
+func (v *VoodooEngine) FrameGeneration() uint64 {
+	return v.frameGen.Load()
 }
 
 // GetLayer returns the compositor layer for the Voodoo

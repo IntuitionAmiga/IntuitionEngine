@@ -110,6 +110,16 @@ type OpaqueFrameSource interface {
 	IsOpaqueFrame() bool
 }
 
+// FrameGenerationSource reports a counter that advances exactly when the
+// source publishes new frame content. The compositor skips the
+// collect/copy/blend/upload work for a tick when every enabled source
+// implements this and no generation has advanced since the last
+// composite; a source that cannot track this must not implement the
+// interface (its presence disables the skip).
+type FrameGenerationSource interface {
+	FrameGeneration() uint64
+}
+
 // CompositorFrameLayer is one ordered native-resolution source layer in a
 // complete compositor frame. The buffer is RGBA and must contain at least
 // SourceWidth*SourceHeight*4 bytes.
