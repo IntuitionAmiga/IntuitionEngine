@@ -609,6 +609,51 @@ func TestX86JIT_FPU_FNSTSW_AX_RemappedEAX(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// BSWAP r32 (0F C8+r, 486+): guests that byte-swap bus data (big-endian
+// callers on the shared bus) execute this in their hottest loops.
+// ---------------------------------------------------------------------------
+
+func TestX86JIT_BSWAP_EAX(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0x12345678
+
+	// 0F C8: BSWAP EAX
+	r.compileAndRun(t, 0x1000, 0x0F, 0xC8)
+
+	if r.cpu.EAX != 0x78563412 {
+		t.Errorf("EAX = %#x, want 0x78563412", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_BSWAP_EDI(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EDI = 0xAABBCCDD
+
+	// 0F CF: BSWAP EDI (spilled register exercises the memory path)
+	r.compileAndRun(t, 0x1000, 0x0F, 0xCF)
+
+	if r.cpu.EDI != 0xDDCCBBAA {
+		t.Errorf("EDI = %#x, want 0xDDCCBBAA", r.cpu.EDI)
+	}
+}
+
+func TestX86Interp_BSWAP(t *testing.T) {
+	bus := NewTestX86Bus()
+	cpu := NewCPU_X86(bus)
+	cpu.EBX = 0x01020304
+	writeCode(bus, 0x1000, 0x0F, 0xCB) // BSWAP EBX
+	cpu.EIP = 0x1000
+	cpu.Step()
+
+	if cpu.EBX != 0x04030201 {
+		t.Errorf("EBX = %#x, want 0x04030201", cpu.EBX)
+	}
+	if cpu.EIP != 0x1002 {
+		t.Errorf("EIP = %#x, want 0x1002", cpu.EIP)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Compares: FCOM/FCOMP (reg and m32) and FTST set C0/C2/C3
 // ---------------------------------------------------------------------------
 

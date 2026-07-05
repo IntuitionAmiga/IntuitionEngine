@@ -141,6 +141,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		if cpu.debugHandleBreakInJIT(uint64(cpu.EIP)) {
 			cpu.deoptStats.Add(DeoptDebug)
 			cpu.syncJITSegRegsToNamed()
+			cpu.x86RenormalizeFPUBoundary()
 			return
 		}
 		if bounded {
@@ -151,6 +152,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				cpu.deoptStats.Add(DeoptDebug)
 				cpu.syncJITRegsToNamed()
 				cpu.syncJITSegRegsToNamed()
+				cpu.x86RenormalizeFPUBoundary()
 				return
 			}
 		}
@@ -199,6 +201,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				if perfAcctOn {
 					stepT0 = time.Now()
 				}
+				cpu.x86RenormalizeFPUBoundary()
 				cpu.Step()
 				if perfAcctOn {
 					cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
@@ -219,6 +222,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				if perfAcctOn {
 					stepT0 = time.Now()
 				}
+				cpu.x86RenormalizeFPUBoundary()
 				cpu.Step()
 				if perfAcctOn {
 					cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
@@ -254,6 +258,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 					if perfAcctOn {
 						stepT0 = time.Now()
 					}
+					cpu.x86RenormalizeFPUBoundary()
 					cpu.Step()
 					if perfAcctOn {
 						cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
@@ -365,6 +370,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			if perfAcctOn {
 				stepT0 = time.Now()
 			}
+			cpu.x86RenormalizeFPUBoundary()
 			cpu.Step()
 			if perfAcctOn {
 				cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
@@ -469,6 +475,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				if perfAcctOn {
 					stepT0 = time.Now()
 				}
+				cpu.x86RenormalizeFPUBoundary()
 				cpu.Step()
 				if perfAcctOn {
 					cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
@@ -510,6 +517,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 	}
 
 	// Sync jitRegs -> named fields ONCE at JIT exit
+	cpu.x86RenormalizeFPUBoundary()
 	cpu.syncJITRegsToNamed()
 	cpu.syncJITSegRegsToNamed()
 }
@@ -726,6 +734,7 @@ func (cpu *CPU_X86) x86RunInterpreter() {
 		if cpu.tryFastMMIOPollLoop() {
 			continue
 		}
+		cpu.x86RenormalizeFPUBoundary()
 		cpu.Step()
 		if bounded {
 			cpu.x86InstrBudget--
@@ -733,5 +742,15 @@ func (cpu *CPU_X86) x86RunInterpreter() {
 				return
 			}
 		}
+	}
+}
+
+// x86RenormalizeFPUBoundary restores the interpreter's 3-way FTW tag
+// classification at every JIT->interpreter handoff (single-instruction
+// fallback steps and JIT exit). The JIT tracks tags only as
+// empty-vs-occupied; see FPU_X87.RenormalizeTags.
+func (cpu *CPU_X86) x86RenormalizeFPUBoundary() {
+	if cpu.FPU != nil {
+		cpu.FPU.RenormalizeTags()
 	}
 }

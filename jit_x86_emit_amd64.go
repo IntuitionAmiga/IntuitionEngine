@@ -958,6 +958,8 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 			return ji.hasModRM && ji.modrm>>6 == 3
 		case op2 == 0xBC || op2 == 0xBD:
 			return ji.hasModRM && ji.modrm>>6 == 3
+		case op2 >= 0xC8 && op2 <= 0xCF: // BSWAP r32
+			return true
 		}
 		return false
 	}
@@ -1166,6 +1168,10 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		// BSF (0x0F BC), BSR (0x0F BD)
 		case op2 == 0xBC || op2 == 0xBD:
 			return x86EmitBSx(cb, ji, op2, cs)
+
+		// BSWAP r32 (0x0F C8+r)
+		case op2 >= 0xC8 && op2 <= 0xCF:
+			return x86EmitBSWAP(cb, op2&7)
 		}
 		return false
 	}
@@ -3307,6 +3313,18 @@ func x86EmitFPUBinaryOp(cb *CodeBuffer, stIdx byte, sseOp byte, retPC uint32, in
 	return true
 }
 
+// x86EmitBSWAP emits BSWAP r32 through the active register map: load
+// the guest register into a scratch, byte-swap with the host's own
+// BSWAP, store back. Flags are unaffected, matching the guest ISA.
+func x86EmitBSWAP(cb *CodeBuffer, guestReg byte) bool {
+	x86EmitLoadGuestReg32(cb, amd64R8, guestReg)
+	// BSWAP R8d: 41 0F C8
+	emitREX(cb, false, 0, amd64R8)
+	cb.EmitBytes(0x0F, 0xC8|(amd64R8&7))
+	x86EmitStoreGuestReg32(cb, guestReg, amd64R8)
+	return true
+}
+
 // emitMOVSD_SIB emits MOVSD xmm, [base+index] (op 0x10) or
 // MOVSD [base+index], xmm (op 0x11) with a correct REX prefix. sibByte
 // masks the index to 3 bits, so extended registers (R8-R15) as index
@@ -3363,6 +3381,7 @@ func x86EmitFPUBinaryOpEx(cb *CodeBuffer, stIdx byte, sseOp byte, reversed, dstS
 	}
 
 	if pop {
+		x86EmitFTWMark(cb, true) // free old ST0 (RCX = pre-pop TOP)
 		// TOP = (TOP + 1) & 7
 		amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
 		amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
@@ -3449,6 +3468,7 @@ func x86EmitFSTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx 
 	cb.EmitBytes(0x0F, 0x11, modRM(0, 0, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
 
 	if pop {
+		x86EmitFTWMark(cb, true) // free old ST0 (RCX = pre-pop TOP)
 		amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
 		amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 		x86EmitUpdateFSWTop(cb, amd64RCX)
@@ -3462,6 +3482,7 @@ func x86EmitFLDConst(cb *CodeBuffer, bits uint64) bool {
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 	x86EmitUpdateFSWTop(cb, amd64RCX)
+	x86EmitFTWMark(cb, false) // occupy new ST0
 	amd64SHL_imm32(cb, amd64RCX, 3)
 
 	amd64MOV_reg_imm64(cb, amd64R8, bits)
@@ -3499,6 +3520,7 @@ func x86EmitFILD_mem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx in
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 	x86EmitUpdateFSWTop(cb, amd64RCX)
+	x86EmitFTWMark(cb, false) // occupy new ST0
 	amd64SHL_imm32(cb, amd64RCX, 3)
 	emitMOVSD_SIB(cb, 0x11, 0, amd64RCX, amd64RAX)
 	return true
@@ -3520,33 +3542,35 @@ func x86EmitFISTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx
 	amd64SHL_imm32(cb, amd64R8, 3)
 	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
 
-	// R9d = FCW rounding-control bits
-	emitREX(cb, false, amd64R9, amd64RAX)
-	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R9, amd64RAX), byte(fpuOffFCW))
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R9, 0x0C00)
+	// RDX = FCW rounding-control bits. R9 is the pinned I/O-bitmap
+	// base for the whole block - never a scratch.
+	emitREX(cb, false, amd64RDX, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64RDX, amd64RAX), byte(fpuOffFCW))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 0x0C00)
 
 	// RC=11 -> truncate; RC=00 -> nearest; else bail.
-	amd64ALU_reg_imm32_32bit(cb, 7, amd64R9, 0x0C00)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RDX, 0x0C00)
 	truncJmp := amd64Jcc_rel32(cb, amd64CondE)
-	amd64ALU_reg_imm32_32bit(cb, 7, amd64R9, 0)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RDX, 0)
 	bailJmp := amd64Jcc_rel32(cb, amd64CondNE)
 
-	// Nearest-even: CVTSD2SI R9d, XMM0
+	// Nearest-even: CVTSD2SI EDX, XMM0
 	cb.EmitBytes(0xF2)
-	emitREX(cb, false, amd64R9, 0)
-	cb.EmitBytes(0x0F, 0x2D, modRM(3, amd64R9, 0))
+	emitREX(cb, false, amd64RDX, 0)
+	cb.EmitBytes(0x0F, 0x2D, modRM(3, amd64RDX, 0))
 	storeJmp := amd64JMP_rel32(cb)
 
-	// Truncate: CVTTSD2SI R9d, XMM0
+	// Truncate: CVTTSD2SI EDX, XMM0
 	patchRel32(cb, truncJmp, cb.Len())
 	cb.EmitBytes(0xF2)
-	emitREX(cb, false, amd64R9, 0)
-	cb.EmitBytes(0x0F, 0x2C, modRM(3, amd64R9, 0))
+	emitREX(cb, false, amd64RDX, 0)
+	cb.EmitBytes(0x0F, 0x2C, modRM(3, amd64RDX, 0))
 
 	// Store result and pop
 	patchRel32(cb, storeJmp, cb.Len())
-	emitREX_SIB(cb, false, amd64R9, amd64R10, x86AMD64RegMemBase)
-	cb.EmitBytes(0x89, modRM(0, amd64R9, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	emitREX_SIB(cb, false, amd64RDX, amd64R10, x86AMD64RegMemBase)
+	cb.EmitBytes(0x89, modRM(0, amd64RDX, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	x86EmitFTWMark(cb, true) // free old ST0 (RCX = pre-pop TOP)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 	x86EmitUpdateFSWTop(cb, amd64RCX)
@@ -3605,31 +3629,34 @@ func x86EmitFPUCompare(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx 
 	amd64SETcc(cb, amd64CondP, amd64RDX) // PF -> C2
 	amd64SETcc(cb, amd64CondE, amd64R8)  // ZF -> C3
 
-	// R9d = FSW with the condition codes cleared. 0xB8FF is the 16-bit
-	// complement of C0|C1|C2|C3 (bits 8, 9, 10, 14 = 0x4700): all four
-	// clear, matching the interpreter's doCompare; TOP (bits 11-13) is
-	// preserved.
-	emitREX(cb, false, amd64R9, amd64RAX)
-	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R9, amd64RAX), byte(fpuOffFSW))
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R9, 0xB8FF)
+	// R10d = FSW with the condition codes cleared (the memory EA that
+	// R10 may have held is consumed by this point; R9 is the pinned
+	// I/O-bitmap base for the whole block - never a scratch). 0xB8FF is
+	// the 16-bit complement of C0|C1|C2|C3 (bits 8, 9, 10, 14 = 0x4700):
+	// all four clear, matching the interpreter's doCompare; TOP (bits
+	// 11-13) is preserved.
+	emitREX(cb, false, amd64R10, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R10, amd64RAX), byte(fpuOffFSW))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, 0xB8FF)
 
 	// C0 = CF (bit 8), C2 = PF (bit 10), C3 = ZF (bit 14)
 	amd64MOVZX_B(cb, amd64R11, amd64R11)
 	amd64SHL_imm32(cb, amd64R11, 8)
-	amd64ALU_reg_reg32(cb, 0x09, amd64R9, amd64R11)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R10, amd64R11)
 	amd64MOVZX_B(cb, amd64RDX, amd64RDX)
 	amd64SHL_imm32(cb, amd64RDX, 10)
-	amd64ALU_reg_reg32(cb, 0x09, amd64R9, amd64RDX)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R10, amd64RDX)
 	amd64MOVZX_B(cb, amd64R8, amd64R8)
 	amd64SHL_imm32(cb, amd64R8, 14)
-	amd64ALU_reg_reg32(cb, 0x09, amd64R9, amd64R8)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R10, amd64R8)
 
 	// Store FSW back (16-bit)
 	cb.EmitBytes(0x66)
-	emitREX(cb, false, amd64R9, amd64RAX)
-	cb.EmitBytes(0x89, modRM(1, amd64R9, amd64RAX), byte(fpuOffFSW))
+	emitREX(cb, false, amd64R10, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R10, amd64RAX), byte(fpuOffFSW))
 
 	if pop {
+		x86EmitFTWMark(cb, true) // free old ST0 (RCX = pre-pop TOP)
 		amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
 		amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 		x86EmitUpdateFSWTop(cb, amd64RCX)
@@ -3646,10 +3673,11 @@ func x86EmitFNSTSW_AX(cb *CodeBuffer) bool {
 	emitREX(cb, false, amd64R8, amd64RAX)
 	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R8, amd64RAX), byte(fpuOffFSW))
 
-	x86EmitLoadGuestReg32(cb, amd64R9, 0)                   // R9d = guest EAX
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64R9, int32(-65536)) // keep high 16
-	amd64ALU_reg_reg32(cb, 0x09, amd64R9, amd64R8)          // OR in FSW
-	x86EmitStoreGuestReg32(cb, 0, amd64R9)                  // writes map or spill slot, marks dirty
+	// RDX scratch: R9 is the pinned I/O-bitmap base - never a scratch.
+	x86EmitLoadGuestReg32(cb, amd64RDX, 0)                   // EDX = guest EAX
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, int32(-65536)) // keep high 16
+	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R8)          // OR in FSW
+	x86EmitStoreGuestReg32(cb, 0, amd64RDX)                  // writes map or spill slot, marks dirty
 	return true
 }
 
@@ -3733,6 +3761,7 @@ func x86EmitFLD_STi(cb *CodeBuffer, stIdx byte) bool {
 
 	// Update FSW with new TOP
 	x86EmitUpdateFSWTop(cb, amd64RCX)
+	x86EmitFTWMark(cb, false) // occupy new ST0
 
 	// Store value to new ST(0) = regs[newTOP]
 	amd64SHL_imm32(cb, amd64RCX, 3)
@@ -3760,10 +3789,17 @@ func x86EmitFSTP_STi(cb *CodeBuffer, stIdx byte) bool {
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 7)
 	amd64SHL_imm32(cb, amd64RDX, 3)
 
-	// Store to ST(i)
+	// Store to ST(i): mark the destination occupied (it may have been
+	// empty; the boundary renormalize only reclassifies occupied regs).
 	emitMOVSD_SIB(cb, 0x11, 0, amd64RDX, amd64RAX)
+	cb.EmitBytes(0x51)                         // PUSH RCX
+	amd64MOV_reg_reg32(cb, amd64RCX, amd64RDX) // ECX = physSTi*8
+	amd64SHR_imm32(cb, amd64RCX, 3)            // ECX = physSTi
+	x86EmitFTWMark(cb, false)
+	cb.EmitBytes(0x59) // POP RCX
 
 	// Pop: TOP = (TOP + 1) & 7
+	x86EmitFTWMark(cb, true) // free old ST0 (RCX = pre-pop TOP)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 	x86EmitUpdateFSWTop(cb, amd64RCX)
@@ -3787,6 +3823,12 @@ func x86EmitFST_STi(cb *CodeBuffer, stIdx byte) bool {
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 7)
 	amd64SHL_imm32(cb, amd64RDX, 3)
 	emitMOVSD_SIB(cb, 0x11, 0, amd64RDX, amd64RAX)
+
+	// Mark the destination occupied (it may have been empty; the
+	// boundary renormalize only reclassifies occupied regs).
+	amd64MOV_reg_reg32(cb, amd64RCX, amd64RDX) // ECX = physSTi*8
+	amd64SHR_imm32(cb, amd64RCX, 3)            // ECX = physSTi
+	x86EmitFTWMark(cb, false)
 
 	return true
 }
@@ -3896,6 +3938,7 @@ func x86EmitFLD_mem64(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7) // & 7
 
 	x86EmitUpdateFSWTop(cb, amd64RCX)
+	x86EmitFTWMark(cb, false) // occupy new ST0
 
 	// Store to regs[newTOP]
 	amd64SHL_imm32(cb, amd64RCX, 3)
@@ -3929,6 +3972,7 @@ func x86EmitFLD_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 	x86EmitUpdateFSWTop(cb, amd64RCX)
+	x86EmitFTWMark(cb, false) // occupy new ST0
 	amd64SHL_imm32(cb, amd64RCX, 3)
 	cb.EmitBytes(0xF2, 0x0F, 0x11, modRM(0, 0, 4), sibByte(0, amd64RCX, amd64RAX))
 
@@ -3961,6 +4005,7 @@ func x86EmitFSTP_mem64(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx 
 	cb.EmitBytes(0x0F, 0x11, modRM(0, 0, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
 
 	// Pop: TOP = (TOP + 1) & 7
+	x86EmitFTWMark(cb, true) // free old ST0 (RCX = pre-pop TOP)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 	x86EmitUpdateFSWTop(cb, amd64RCX)
@@ -3991,6 +4036,32 @@ func x86EmitFST_mem64(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	cb.EmitBytes(0x0F, 0x11, modRM(0, 0, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
 
 	return true
+}
+
+// x86EmitFTWMark writes the FTW tag pair for the physical register whose
+// index is in RCX: empty=true stores 11 (freed by a pop), empty=false
+// stores 00 (occupied by a push). Occupied is deliberately always 00: the
+// JIT tracks only empty-vs-occupied, and the JIT->interpreter boundary
+// renormalizes occupied tags to the interpreter's 3-way classification
+// (FPU_X87.RenormalizeTags) before any interpreter code can observe FTW.
+// RAX = FPUPtr. Preserves RCX; clobbers R8, R11.
+func x86EmitFTWMark(cb *CodeBuffer, empty bool) {
+	cb.EmitBytes(0x51) // PUSH RCX
+	// R11d = FTW
+	emitREX(cb, false, amd64R11, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R11, amd64RAX), byte(fpuOffFTW))
+	cb.EmitBytes(0x01, 0xC9)                         // ADD ECX, ECX (shift = phys*2)
+	cb.EmitBytes(0x41, 0xB8, 0x03, 0x00, 0x00, 0x00) // MOV R8d, 3
+	cb.EmitBytes(0x41, 0xD3, 0xE0)                   // SHL R8d, CL
+	if empty {
+		cb.EmitBytes(0x45, 0x09, 0xC3) // OR R11d, R8d
+	} else {
+		cb.EmitBytes(0x41, 0xF7, 0xD0) // NOT R8d
+		cb.EmitBytes(0x45, 0x21, 0xC3) // AND R11d, R8d
+	}
+	// MOV word [RAX + fpuOffFTW], R11w
+	cb.EmitBytes(0x66, 0x44, 0x89, modRM(1, amd64R11, amd64RAX), byte(fpuOffFTW))
+	cb.EmitBytes(0x59) // POP RCX
 }
 
 // x86EmitUpdateFSWTop updates the TOP field in FSW. topReg has the new TOP value (0-7).

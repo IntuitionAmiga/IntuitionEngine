@@ -189,6 +189,19 @@ func (f *FPU_X87) pop() float64 {
 	return v
 }
 
+// RenormalizeTags reclassifies every occupied register's tag from its
+// current value. The JIT maintains FTW only as empty-vs-occupied (occupied
+// always written as tag 00); calling this at the JIT->interpreter boundary
+// restores the 3-way classification the interpreter maintains, so mixed
+// execution is indistinguishable from interpreter-only execution.
+func (f *FPU_X87) RenormalizeTags() {
+	for phys := 0; phys < 8; phys++ {
+		if f.getTag(phys) != x87TagEmpty {
+			f.setTag(phys, f.classifyTag(f.regs[phys]))
+		}
+	}
+}
+
 func (f *FPU_X87) roundPerFCW(v float64) float64 {
 	switch (f.FCW >> x87FCW_RCShift) & 0x3 {
 	case x87FCW_RCDown:

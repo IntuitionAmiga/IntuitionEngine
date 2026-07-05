@@ -474,6 +474,10 @@ func x86ExtendedOpcodeExtra(memory []byte, pc uint32, opcode2 byte, opSize bool)
 	case 0xBC, 0xBD:
 		return x86ModRMExtra(memory, pc, 0)
 
+	// BSWAP r32 - register in the opcode byte, no ModR/M
+	case 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE, 0xCF:
+		return 0
+
 	// CMOVcc (0x0F 40 - 0x0F 4F) - ModR/M
 	case 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
 		0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F:
@@ -939,6 +943,11 @@ func x86AnalyzeBlockRegs(instrs []X86JITInstr, memory []byte, startPC uint32) x8
 						regs.freq[rm]++
 					}
 				}
+			} else if op2 := byte(opcode); op2 >= 0xC8 && op2 <= 0xCF {
+				// BSWAP r32: register in the opcode byte, no ModR/M.
+				regs.read |= 1 << (op2 & 7)
+				regs.written |= 1 << (op2 & 7)
+				regs.freq[op2&7]++
 			}
 			continue
 		}

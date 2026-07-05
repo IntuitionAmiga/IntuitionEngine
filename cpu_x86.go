@@ -1975,6 +1975,16 @@ func (c *CPU_X86) initExtendedOps() {
 	// 0xBE-0xBF: MOVSX
 	c.extendedOps[0xBE] = (*CPU_X86).opMOVSX_Gv_Eb
 	c.extendedOps[0xBF] = (*CPU_X86).opMOVSX_Gv_Ew
+
+	// 0xC8-0xCF: BSWAP r32 (486+). Big-endian guests on the shared bus
+	// byte-swap every crossing value, so this sits in their hot loops.
+	for r := byte(0); r < 8; r++ {
+		reg := r
+		c.extendedOps[0xC8+reg] = func(cpu *CPU_X86) {
+			v := cpu.getReg32(reg)
+			cpu.setReg32(reg, (v>>24)|((v>>8)&0x0000FF00)|((v<<8)&0x00FF0000)|(v<<24))
+		}
+	}
 }
 
 // opTwoBytePrefix handles the 0x0F two-byte opcode prefix
