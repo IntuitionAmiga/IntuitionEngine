@@ -225,6 +225,7 @@ type VideoCompositor struct {
 	frameLeaseRings    map[uint64]*VideoFrameLeaseRing
 	frameLeaseBytes    map[uint64]int
 	lastSourceGens     map[uint64]uint64
+	skipStreak         uint64
 	softwareFrameRing  *VideoFrameLeaseRing
 	softwareFrameBytes int
 	finalFrameLease    *VideoFrameLease
@@ -611,11 +612,13 @@ func (c *VideoCompositor) canSkipUnchangedCompositeLocked() bool {
 		return false
 	}
 	unchanged := true
+	enabledSources := 0
 	for i := range c.sources {
 		source := c.sources[i].source
 		if !source.IsEnabled() {
 			continue
 		}
+		enabledSources++
 		if selector, ok := source.(ScanlineCompositingSource); ok && selector.NeedsScanlineCompositing() {
 			return false
 		}
@@ -633,8 +636,19 @@ func (c *VideoCompositor) canSkipUnchangedCompositeLocked() bool {
 			unchanged = false
 		}
 	}
+	if compositorSkipTraceOn && unchanged {
+		c.skipStreak++
+		if c.skipStreak == 1 || c.skipStreak%120 == 0 {
+			fmt.Printf("compositor-skip: streak=%d enabled=%d gens=%v\n", c.skipStreak, enabledSources, c.lastSourceGens)
+		}
+	} else if compositorSkipTraceOn && !unchanged && c.skipStreak > 0 {
+		fmt.Printf("compositor-skip: streak ended at %d\n", c.skipStreak)
+		c.skipStreak = 0
+	}
 	return unchanged
 }
+
+var compositorSkipTraceOn = os.Getenv("IE_COMPOSITOR_SKIP_TRACE") == "1"
 
 func (c *VideoCompositor) canUseHardwareCompositorLocked() bool {
 	if c.hardwareDisabled || os.Getenv("IE_DISABLE_GPU_COMPOSITOR") != "" || c.output == nil {

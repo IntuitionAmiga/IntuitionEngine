@@ -3336,9 +3336,8 @@ func TestSDKCompanionDocs_ArchitectureVoodooStateBindingMatchesSource(t *testing
 		}
 	}
 	for _, needle := range []string{
-		"vb.presentSoftwareFrame = flushRequiresSoftwareFrame(vb, triangles)",
-		"return vb.software.GetFrame()",
-		"func flushRequiresSoftwareFrame(vb *VulkanBackend, triangles []VoodooTriangle) bool",
+		"return vb.outputFrame",
+		"voodooTraceSoftwareFallback(\"no-clear-composite-gpu\")",
 	} {
 		if !strings.Contains(vulkan, needle) {
 			t.Fatalf("voodoo_vulkan.go software-reference fallback changed; review architecture.md Voodoo text: %s", needle)
@@ -3362,7 +3361,7 @@ func TestSDKCompanionDocs_ArchitectureVoodooStateBindingMatchesSource(t *testing
 		"`VOODOO_SWAP_BUFFER_CMD` may flush the queued batch later, but the batch is rasterised in triangle submission order using each triangle's bound state.",
 		"Fog-table and palette raster lookups remain compatibility-pending.",
 		"Vulkan renders multi-state frames natively by binding each snapshot's pipeline, scissor, push constants, and texture per state group inside one command buffer",
-		"frames using raster features the GPU shaders do not implement (stipple patterns, chroma ranges, front-buffer draws, slope-register interpolation) present the software reference output for that frame.",
+		"the software rasteriser is the headless build's renderer and the conformance reference, never a runtime fallback",
 		"Voodoo swap jobs run asynchronously; oversized triangle batches render mid-frame without presentation or swap callbacks, and STATUS exposes busy and SWAPBUF while a presented swap is pending.",
 		"`VOODOO_SWAP_BUFFER_CMD` hands the current batch to the swap worker",
 		"`VOODOO_STATUS` reports framebuffer and SST busy plus `SWAPBUF` while that presented swap is active.",

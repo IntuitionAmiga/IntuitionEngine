@@ -45,8 +45,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/maphash"
-	"math"
 	"os"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -90,8 +90,10 @@ type VulkanBackend struct {
 	depthImageView   vk.ImageView
 
 	// Render pass and framebuffer
-	renderPass  vk.RenderPass
-	framebuffer vk.Framebuffer
+	renderPass     vk.RenderPass
+	renderPassLoad vk.RenderPass // load-op variant: preserves attachments for no-clear composite flushes
+	gpuFrameValid  bool          // a clear-pass flush has initialised the attachment layouts
+	framebuffer    vk.Framebuffer
 
 	// Pipeline management
 	pipelineLayout     vk.PipelineLayout
@@ -137,9 +139,6 @@ type VulkanBackend struct {
 	// colour AND depth buffers the fallback frame composites over (GPU
 	// depth is never read back). Triangle values and their state
 	// snapshots are immutable, so a shallow copy suffices.
-	lastFlushTriangles []VoodooTriangle
-	lastFlushClear     uint32
-	lastFlushDepth     float32
 
 	// Depth clear value (depends on depth function)
 	depthClearValue float32
@@ -155,14 +154,12 @@ type VulkanBackend struct {
 	initialized bool
 
 	// Software fallback (used if Vulkan init fails)
-	software *VoodooSoftwareBackend
 
 	// Set when the last flush used raster state the GPU shaders cannot
 	// represent (stipple patterns, chroma ranges, front-buffer draws, slope-register interpolation);
 	// those frames rasterise in software (the conformance reference)
 	// and present that output. Multi-state flushes render natively by
 	// binding pipeline/scissor/push-constants/texture per state group.
-	presentSoftwareFrame bool
 
 	// Per-snapshot texture cache for state-group rendering. Keyed by
 	// the engine's immutable texture snapshots; each entry owns a GPU
@@ -182,7 +179,7 @@ type VulkanBackend struct {
 	// GPU-to-software fallback transition: if the guest did not clear,
 	// the stale software colour buffer is seeded from the last GPU
 	// frame before the software rasteriser composites over it.
-	softwareClearedSinceFlush bool
+	clearedSinceFlush bool // guest cleared since the last flush
 
 	// Identity of the texture slice last passed to SetTextureData. The
 	// engine hands backends the same immutable snapshot slice it stamps
@@ -234,7 +231,14 @@ type VulkanBackend struct {
 // voodooTextureCacheCap bounds the per-snapshot texture cache. Sized to
 // hold every distinct texture a frame realistically binds; the
 // descriptor pool reserves one set per entry plus the live-slot set.
-const voodooTextureCacheCap = 64
+// voodooTextureCacheCap bounds distinct cached snapshot textures. It
+// must exceed the largest single-frame texture working set: fully
+// tiled 2D screens (title/menu backdrops, fonts, UI strips) reference
+// hundreds of small textures in one flush, and a frame that overflows
+// the cache cannot render (evicting a pinned entry would dangle an
+// earlier draw group's descriptor). Cached entries are tiny; the pool
+// scales with this constant.
+const voodooTextureCacheCap = 1024
 
 // vulkanCachedTexture owns the GPU resources for one immutable engine
 // texture snapshot referenced by stamped raster states.
@@ -253,7 +257,6 @@ var vulkanInitMutex sync.Mutex
 // NewVulkanBackend creates a new Vulkan backend
 func NewVulkanBackend() (*VulkanBackend, error) {
 	vb := &VulkanBackend{
-		software:         NewVoodooSoftwareBackend(),
 		pipelineVariants: make(map[PipelineKey]vk.Pipeline),
 		textureCache:     make(map[uint64]*vulkanCachedTexture),
 		textureHashSeed:  maphash.MakeSeed(),
@@ -274,18 +277,13 @@ func (vb *VulkanBackend) Init(width, height int) error {
 	vb.height = height
 	vb.outputFrame = make([]byte, width*height*4)
 
-	// Initialize software backend as fallback
-	if err := vb.software.Init(width, height); err != nil {
-		return err
-	}
-	vb.softwareClearedSinceFlush = true // Init zeroes the software buffers
+	vb.clearedSinceFlush = true
 
-	// Try to initialize Vulkan
+	// Vulkan is the only render path: an init failure is fatal rather
+	// than a silent downgrade.
 	if err := vb.initVulkan(); err != nil {
-		// Vulkan initialization failed, will use software fallback
-		fmt.Printf("Vulkan initialization failed, using software backend: %v\n", err)
 		vb.initialized = false
-		return nil
+		return fmt.Errorf("Vulkan initialization failed: %w", err)
 	}
 
 	vb.initialized = true
@@ -324,8 +322,8 @@ func (vb *VulkanBackend) Resize(width, height int) error {
 	vb.width = width
 	vb.height = height
 	vb.outputFrame = make([]byte, width*height*4)
-	vb.softwareClearedSinceFlush = true // Resize reinitialises the software buffers
-	return vb.software.Resize(width, height)
+	vb.clearedSinceFlush = true
+	return nil
 }
 
 // initVulkan performs full Vulkan initialization
@@ -776,61 +774,90 @@ func (vb *VulkanBackend) createOffscreenImages() error {
 	return nil
 }
 
-// createRenderPass creates the render pass
+// createRenderPass creates the render passes: the clear variant wipes
+// both attachments (a guest clear started the frame), the load variant
+// preserves them so flushes WITHOUT a guest clear composite over the
+// previous flush on the GPU instead of falling back to software. The
+// two are render-pass compatible (same formats/samples), so they share
+// the framebuffer and pipelines.
 func (vb *VulkanBackend) createRenderPass() error {
-	colorAttachment := vk.AttachmentDescription{
-		Format:         vk.FormatR8g8b8a8Unorm,
-		Samples:        vk.SampleCount1Bit,
-		LoadOp:         vk.AttachmentLoadOpClear,
-		StoreOp:        vk.AttachmentStoreOpStore,
-		StencilLoadOp:  vk.AttachmentLoadOpDontCare,
-		StencilStoreOp: vk.AttachmentStoreOpDontCare,
-		InitialLayout:  vk.ImageLayoutUndefined,
-		FinalLayout:    vk.ImageLayoutTransferSrcOptimal,
+	build := func(load bool) (vk.RenderPass, error) {
+		colorAttachment := vk.AttachmentDescription{
+			Format:         vk.FormatR8g8b8a8Unorm,
+			Samples:        vk.SampleCount1Bit,
+			LoadOp:         vk.AttachmentLoadOpClear,
+			StoreOp:        vk.AttachmentStoreOpStore,
+			StencilLoadOp:  vk.AttachmentLoadOpDontCare,
+			StencilStoreOp: vk.AttachmentStoreOpDontCare,
+			InitialLayout:  vk.ImageLayoutUndefined,
+			FinalLayout:    vk.ImageLayoutTransferSrcOptimal,
+		}
+
+		depthAttachment := vk.AttachmentDescription{
+			Format:         vk.FormatD32Sfloat,
+			Samples:        vk.SampleCount1Bit,
+			LoadOp:         vk.AttachmentLoadOpClear,
+			StoreOp:        vk.AttachmentStoreOpStore,
+			StencilLoadOp:  vk.AttachmentLoadOpDontCare,
+			StencilStoreOp: vk.AttachmentStoreOpDontCare,
+			InitialLayout:  vk.ImageLayoutUndefined,
+			FinalLayout:    vk.ImageLayoutDepthStencilAttachmentOptimal,
+		}
+
+		if load {
+			// Preserve the previous COLOUR contents (that is the
+			// composite) but clear depth: a no-clear flush draws a new
+			// scene over the old image, and its geometry must not
+			// z-fail against the previous frame's depth. Colour loads
+			// from the layout the previous pass left it in.
+			colorAttachment.LoadOp = vk.AttachmentLoadOpLoad
+			colorAttachment.InitialLayout = vk.ImageLayoutTransferSrcOptimal
+		}
+
+		colorRef := vk.AttachmentReference{
+			Attachment: 0,
+			Layout:     vk.ImageLayoutColorAttachmentOptimal,
+		}
+
+		depthRef := vk.AttachmentReference{
+			Attachment: 1,
+			Layout:     vk.ImageLayoutDepthStencilAttachmentOptimal,
+		}
+
+		subpass := vk.SubpassDescription{
+			PipelineBindPoint:       vk.PipelineBindPointGraphics,
+			ColorAttachmentCount:    1,
+			PColorAttachments:       []vk.AttachmentReference{colorRef},
+			PDepthStencilAttachment: &depthRef,
+		}
+
+		renderPassInfo := vk.RenderPassCreateInfo{
+			SType:           vk.StructureTypeRenderPassCreateInfo,
+			AttachmentCount: 2,
+			PAttachments:    []vk.AttachmentDescription{colorAttachment, depthAttachment},
+			SubpassCount:    1,
+			PSubpasses:      []vk.SubpassDescription{subpass},
+		}
+
+		var renderPass vk.RenderPass
+		if res := vk.CreateRenderPass(vb.device, &renderPassInfo, nil, &renderPass); res != vk.Success {
+			return vk.NullRenderPass, fmt.Errorf("vkCreateRenderPass failed: %d", res)
+		}
+		return renderPass, nil
 	}
 
-	depthAttachment := vk.AttachmentDescription{
-		Format:         vk.FormatD32Sfloat,
-		Samples:        vk.SampleCount1Bit,
-		LoadOp:         vk.AttachmentLoadOpClear,
-		StoreOp:        vk.AttachmentStoreOpDontCare,
-		StencilLoadOp:  vk.AttachmentLoadOpDontCare,
-		StencilStoreOp: vk.AttachmentStoreOpDontCare,
-		InitialLayout:  vk.ImageLayoutUndefined,
-		FinalLayout:    vk.ImageLayoutDepthStencilAttachmentOptimal,
+	clearPass, err := build(false)
+	if err != nil {
+		return err
 	}
-
-	colorRef := vk.AttachmentReference{
-		Attachment: 0,
-		Layout:     vk.ImageLayoutColorAttachmentOptimal,
+	loadPass, err := build(true)
+	if err != nil {
+		// Partial-init: the clear pass is not yet visible to teardown.
+		vk.DestroyRenderPass(vb.device, clearPass, nil)
+		return err
 	}
-
-	depthRef := vk.AttachmentReference{
-		Attachment: 1,
-		Layout:     vk.ImageLayoutDepthStencilAttachmentOptimal,
-	}
-
-	subpass := vk.SubpassDescription{
-		PipelineBindPoint:       vk.PipelineBindPointGraphics,
-		ColorAttachmentCount:    1,
-		PColorAttachments:       []vk.AttachmentReference{colorRef},
-		PDepthStencilAttachment: &depthRef,
-	}
-
-	renderPassInfo := vk.RenderPassCreateInfo{
-		SType:           vk.StructureTypeRenderPassCreateInfo,
-		AttachmentCount: 2,
-		PAttachments:    []vk.AttachmentDescription{colorAttachment, depthAttachment},
-		SubpassCount:    1,
-		PSubpasses:      []vk.SubpassDescription{subpass},
-	}
-
-	var renderPass vk.RenderPass
-	if res := vk.CreateRenderPass(vb.device, &renderPassInfo, nil, &renderPass); res != vk.Success {
-		return fmt.Errorf("vkCreateRenderPass failed: %d", res)
-	}
-
-	vb.renderPass = renderPass
+	vb.renderPass = clearPass
+	vb.renderPassLoad = loadPass
 	return nil
 }
 
@@ -2119,7 +2146,6 @@ func (vb *VulkanBackend) UpdatePipelineState(fbzMode, alphaMode uint32) error {
 	vb.alphaMode = alphaMode
 
 	// Update software backend too
-	vb.software.UpdatePipelineState(fbzMode, alphaMode)
 
 	if !vb.initialized {
 		return nil
@@ -2158,7 +2184,6 @@ func (vb *VulkanBackend) SetScissor(left, top, right, bottom int) {
 		Extent: vk.Extent2D{Width: uint32(right - left), Height: uint32(bottom - top)},
 	}
 
-	vb.software.SetScissor(left, top, right, bottom)
 }
 
 // SetChromaKey sets the chroma key color for transparency keying
@@ -2168,55 +2193,46 @@ func (vb *VulkanBackend) SetChromaKey(chromaKey uint32) {
 	defer vb.mutex.Unlock()
 
 	vb.chromaKey = chromaKey
-	vb.software.SetChromaKey(chromaKey)
 }
 
 func (vb *VulkanBackend) SetChromaRange(chromaRange uint32) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
-	vb.software.SetChromaRange(chromaRange)
 }
 
 func (vb *VulkanBackend) SetStipple(stipple uint32) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
-	vb.software.SetStipple(stipple)
 }
 
 func (vb *VulkanBackend) SetLFBMode(lfbMode uint32) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
-	vb.software.SetLFBMode(lfbMode)
 }
 
 func (vb *VulkanBackend) SetTexBase(level int, addr uint32) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
-	vb.software.SetTexBase(level, addr)
 }
 
 func (vb *VulkanBackend) SetTLOD(tlod uint32) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
-	vb.software.SetTLOD(tlod)
 }
 
 func (vb *VulkanBackend) SetSlopes(slopes VoodooSlopes, valid bool) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
-	vb.software.SetSlopes(slopes, valid)
 }
 
 func (vb *VulkanBackend) SetFogTableEntry(index int, value uint32) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
-	vb.software.SetFogTableEntry(index, value)
 }
 
 func (vb *VulkanBackend) SetPaletteEntry(index int, value uint32) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
-	vb.software.SetPaletteEntry(index, value)
 }
 
 // SetTextureData uploads texture data for texture mapping
@@ -2226,7 +2242,6 @@ func (vb *VulkanBackend) SetTextureData(width, height int, data []byte, format i
 	defer vb.mutex.Unlock()
 
 	// Update software backend
-	vb.software.SetTextureData(width, height, data, format)
 
 	// Upload to Vulkan if initialized
 	if !vb.initialized {
@@ -2284,7 +2299,6 @@ func (vb *VulkanBackend) ensureLiveTextureUploaded(fs *vulkanFlushState) {
 func (vb *VulkanBackend) SetTextureMode(textureMode uint32) {
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
-	vb.software.SetTextureMode(textureMode)
 }
 
 // SetTextureEnabled enables or disables texture mapping
@@ -2294,7 +2308,6 @@ func (vb *VulkanBackend) SetTextureEnabled(enabled bool) {
 	defer vb.mutex.Unlock()
 
 	vb.textureEnabled = enabled
-	vb.software.SetTextureEnabled(enabled)
 }
 
 // SetTextureWrapMode sets texture coordinate wrap/clamp mode
@@ -2305,7 +2318,6 @@ func (vb *VulkanBackend) SetTextureWrapMode(clampS, clampT bool) {
 
 	vb.textureClampS = clampS
 	vb.textureClampT = clampT
-	vb.software.SetTextureWrapMode(clampS, clampT)
 }
 
 // SetColorPath sets the color combine mode from fbzColorPath register
@@ -2316,7 +2328,6 @@ func (vb *VulkanBackend) SetColorPath(fbzColorPath uint32) {
 
 	vb.fbzColorPath = fbzColorPath
 	vb.colorPathSet = true
-	vb.software.SetColorPath(fbzColorPath)
 }
 
 // SetFogState sets the fog mode and color
@@ -2327,7 +2338,6 @@ func (vb *VulkanBackend) SetFogState(fogMode, fogColor uint32) {
 
 	vb.fogMode = fogMode
 	vb.fogColor = fogColor
-	vb.software.SetFogState(fogMode, fogColor)
 }
 
 // FlushTriangles renders all triangles
@@ -2418,7 +2428,7 @@ func (vb *VulkanBackend) FlushTrianglesSync(triangles []VoodooTriangle) {
 	fs := vb.captureFlushState()
 	vb.flushTrianglesLocked(triangles, &fs)
 	vb.restoreUnconsumedLiveTexture(&fs)
-	if vb.initialized && !vb.presentSoftwareFrame {
+	if vb.initialized {
 		vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
 	}
 }
@@ -2427,8 +2437,8 @@ func (vb *VulkanBackend) FlushTrianglesSync(triangles []VoodooTriangle) {
 // live-register inputs arrive in fs, so the state mutex is not needed.
 func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vulkanFlushState) {
 	if !vb.initialized {
-		vb.softwareClearedSinceFlush = false
-		vb.software.FlushTriangles(triangles)
+		// Vulkan-only: nothing can render this batch.
+		vb.clearedSinceFlush = false
 		return
 	}
 
@@ -2438,51 +2448,15 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vu
 	// Only raster features the shaders cannot represent hand the frame
 	// to the software rasteriser (the conformance reference); it runs
 	// solely for those frames.
-	wasGPUFrame := !vb.presentSoftwareFrame
-	vb.presentSoftwareFrame = flushRequiresSoftwareFrame(vb, triangles)
-	cleared := vb.softwareClearedSinceFlush
-	vb.softwareClearedSinceFlush = false
+	cleared := vb.clearedSinceFlush
+	vb.clearedSinceFlush = false
 
-	// The GPU render pass clears its attachments on every flush, so it
-	// cannot represent a frame that composites over previous content:
-	// flushes without a guest clear render in software over the
-	// reference buffers. (A clear-only GPU history is the exception —
-	// the load-op clear reproduces it exactly.)
-	if !cleared && (!wasGPUFrame || len(vb.lastFlushTriangles) > 0) {
-		voodooTraceSoftwareFallback("no-clear-composite")
-		vb.presentSoftwareFrame = true
+	// A flush without a guest clear composites over previous content:
+	// the (gated) load-op pass preserves the previous GPU frame, the
+	// default clear pass renders the flush standalone.
+	if !cleared {
+		voodooTraceSoftwareFallback("no-clear-composite-gpu")
 	}
-
-	renderInSoftware := func() {
-		// The software buffers are stale for frames the GPU rendered.
-		// A guest clear since the last flush already reset them;
-		// otherwise replay the last GPU flush (its clear — with the
-		// depth-clear value in effect then — and its triangle batch,
-		// each triangle under its own immutable state snapshot). A GPU
-		// frame always starts from its own clear, so one frame of
-		// history reconstructs the exact reference colour AND depth
-		// buffers this fallback frame composites over.
-		vb.presentSoftwareFrame = true
-		if !cleared && wasGPUFrame {
-			vb.software.ClearFramebufferWithDepth(vb.lastFlushClear, vb.lastFlushDepth)
-			vb.software.FlushTriangles(vb.lastFlushTriangles)
-		}
-		vb.software.FlushTriangles(triangles)
-	}
-	if vb.presentSoftwareFrame {
-		renderInSoftware()
-		return
-	}
-
-	// GPU frame: record its inputs so a later no-clear fallback can
-	// replay it in software. The caller reuses the triangle slice, so
-	// copy the values (snapshots they reference are immutable).
-	vb.lastFlushClear = fs.clearColorPacked
-	vb.lastFlushDepth = float32(math.MaxFloat32)
-	if fs.depthClearValue == 0 {
-		vb.lastFlushDepth = 0
-	}
-	vb.lastFlushTriangles = append(vb.lastFlushTriangles[:0], triangles...)
 
 	// If no triangles, still need to render an empty frame with clear color
 	if len(triangles) == 0 {
@@ -2549,12 +2523,12 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vu
 		}
 		pipeline, err := vb.getOrCreatePipeline(PipelineKeyFromRegisters(g.state.FbzMode, g.state.AlphaMode))
 		if err != nil {
-			renderInSoftware()
+			fmt.Printf("voodoo: pipeline create failed (frame dropped): %v\n", err)
 			return
 		}
 		descSet, err := vb.descriptorSetForGroup(g.state, fs.liveTextureID)
 		if err != nil {
-			renderInSoftware()
+			fmt.Printf("voodoo: descriptor set failed (frame dropped): %v\n", err)
 			return
 		}
 		g.pipeline = pipeline
@@ -2588,14 +2562,28 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vu
 		vk.NewClearDepthStencil(fs.depthClearValue, 0),
 	}
 
+	// A flush without a guest clear composites over the previous GPU
+	// frame via the load-op pass (valid once a clear pass has
+	// established the attachment layouts). This is the default: it
+	// preserves earlier mid-frame overflow chunks and composite
+	// screens. IE_VOODOO_LOAD_PASS=0 opts out for debugging.
+	pass := vb.renderPass
+	if !cleared && vb.gpuFrameValid && !voodooLoadPassOff {
+		// No guest clear: this flush continues the frame (mid-frame
+		// overflow chunks of oversized batches, composite screens), so
+		// preserve the previous chunks via the load pass instead of
+		// wiping them with the clear pass.
+		pass = vb.renderPassLoad
+	}
 	renderPassBegin := vk.RenderPassBeginInfo{
 		SType:           vk.StructureTypeRenderPassBeginInfo,
-		RenderPass:      vb.renderPass,
+		RenderPass:      pass,
 		Framebuffer:     vb.framebuffer,
 		RenderArea:      vk.Rect2D{Offset: vk.Offset2D{X: 0, Y: 0}, Extent: vk.Extent2D{Width: uint32(vb.width), Height: uint32(vb.height)}},
 		ClearValueCount: uint32(len(clearValues)),
 		PClearValues:    clearValues,
 	}
+	vb.gpuFrameValid = true
 
 	vk.CmdBeginRenderPass(vb.commandBuffer, &renderPassBegin, vk.SubpassContentsInline)
 
@@ -2751,8 +2739,7 @@ func (vb *VulkanBackend) ClearFramebuffer(color uint32) {
 	vb.renderMu.Lock()
 	defer vb.renderMu.Unlock()
 
-	vb.software.ClearFramebuffer(color)
-	vb.softwareClearedSinceFlush = true
+	vb.clearedSinceFlush = true
 
 	vb.mutex.Lock()
 	vb.clearColorPacked = color
@@ -2772,9 +2759,7 @@ func (vb *VulkanBackend) SwapBuffers(waitVSync bool) {
 
 	// Phase 6: GPU shaders now handle fog and dithering natively
 
-	if !vb.initialized || vb.presentSoftwareFrame {
-		// Software frame is being presented; no new GPU work to read back.
-		vb.software.SwapBuffers(waitVSync)
+	if !vb.initialized {
 		return
 	}
 
@@ -2783,8 +2768,6 @@ func (vb *VulkanBackend) SwapBuffers(waitVSync bool) {
 
 	// Read back framebuffer
 	vb.readbackFramebuffer()
-
-	vb.software.SwapBuffers(waitVSync)
 }
 
 // readbackFramebuffer copies the rendered image to CPU memory
@@ -2833,59 +2816,15 @@ func (vb *VulkanBackend) readbackFramebuffer() {
 	vk.UnmapMemory(vb.device, vb.stagingBufferMemory)
 }
 
-// GetFrame returns the rendered frame
+// GetFrame returns the rendered frame. Vulkan is the only render
+// path; the returned slice is the GPU readback buffer.
 func (vb *VulkanBackend) GetFrame() []byte {
 	vb.renderMu.Lock()
 	defer vb.renderMu.Unlock()
-
-	// Phase 6: GPU shaders now handle fog and dithering natively
-
-	if vb.presentSoftwareFrame {
-		return vb.software.GetFrame()
+	if voodooPublishTraceOn {
+		fmt.Println("voodoo-publish: gpu frame")
 	}
-	if vb.initialized {
-		if hasVisibleVoodooPixels(vb.outputFrame) {
-			return vb.outputFrame
-		}
-		if frame := vb.software.GetFrame(); hasVisibleVoodooPixels(frame) {
-			return frame
-		}
-		return vb.outputFrame
-	}
-	return vb.software.GetFrame()
-}
-
-// flushRequiresSoftwareFrame reports whether a flush uses raster state
-// the GPU shaders cannot represent. State-group binding renders
-// multi-state flushes natively, so only per-state feature gaps hand
-// the frame to the software reference rasteriser.
-func flushRequiresSoftwareFrame(vb *VulkanBackend, triangles []VoodooTriangle) bool {
-	_ = vb
-	for i := range triangles {
-		if st := triangles[i].State; st != nil && !voodooStateGPURepresentable(st) {
-			voodooTraceSoftwareFallback(voodooStateFallbackReason(st))
-			return true
-		}
-	}
-	return false
-}
-
-// voodooStateFallbackReason names which representability gap forced a
-// state snapshot onto the software rasteriser, for fallback tracing.
-func voodooStateFallbackReason(st *VoodooRasterState) string {
-	if st.FbzMode&VOODOO_FBZ_STIPPLE != 0 && st.Stipple != 0 && st.Stipple != ^uint32(0) {
-		return "stipple-pattern"
-	}
-	if st.FbzMode&VOODOO_FBZ_CHROMAKEY != 0 && st.ChromaRange != 0 {
-		return "chroma-range"
-	}
-	if st.FbzMode&VOODOO_FBZ_DRAW_FRONT != 0 {
-		return "front-buffer-draw"
-	}
-	if st.SlopesValid {
-		return "slope-interpolation"
-	}
-	return "unknown"
+	return vb.outputFrame
 }
 
 // voodooTraceSoftwareFallback prints each distinct software-fallback
@@ -2902,41 +2841,6 @@ func voodooTraceSoftwareFallback(reason string) {
 	if _, dup := voodooFallbackSeen.LoadOrStore(reason, struct{}{}); !dup {
 		fmt.Printf("voodoo: software-frame fallback: %s\n", reason)
 	}
-}
-
-// voodooStateGPURepresentable reports whether the Vulkan shaders can
-// render a raster state snapshot exactly.
-func voodooStateGPURepresentable(st *VoodooRasterState) bool {
-	// Stipple patterns are not implemented in the fragment shader.
-	// Pattern 0 passes every pixel (matching the software rasteriser)
-	// and all-ones is equivalent, so only real patterns fall back.
-	if st.FbzMode&VOODOO_FBZ_STIPPLE != 0 && st.Stipple != 0 && st.Stipple != ^uint32(0) {
-		return false
-	}
-	// The shader implements exact-key chroma tests only, not ranges.
-	if st.FbzMode&VOODOO_FBZ_CHROMAKEY != 0 && st.ChromaRange != 0 {
-		return false
-	}
-	// Front-buffer draws bypass the offscreen colour attachment.
-	if st.FbzMode&VOODOO_FBZ_DRAW_FRONT != 0 {
-		return false
-	}
-	// Slope-register interpolation: the software reference derives
-	// R/G/B/A/Z/S/T from the slope registers, while the GPU path only
-	// interpolates vertex attributes barycentrically.
-	if st.SlopesValid {
-		return false
-	}
-	return true
-}
-
-func hasVisibleVoodooPixels(frame []byte) bool {
-	for i := 0; i+3 < len(frame); i += 4 {
-		if frame[i+3] != 0 && (frame[i] != 0 || frame[i+1] != 0 || frame[i+2] != 0) {
-			return true
-		}
-	}
-	return false
 }
 
 func (vb *VulkanBackend) Reset() {
@@ -2969,11 +2873,7 @@ func (vb *VulkanBackend) Reset() {
 	vb.textureFormat = 0
 	vb.textureData = nil
 	vb.textureDataID = nil
-	vb.presentSoftwareFrame = false
-	vb.softwareClearedSinceFlush = true // software.Reset zeroes the buffers
-	vb.lastFlushTriangles = nil
-	vb.lastFlushClear = 0
-	vb.lastFlushDepth = float32(math.MaxFloat32)
+	vb.clearedSinceFlush = true
 	vb.clearColorPacked = 0
 	vb.clearColor = [4]float32{0, 0, 0, 1}
 	vb.depthClearValue = 1.0
@@ -2982,9 +2882,6 @@ func (vb *VulkanBackend) Reset() {
 			Offset: vk.Offset2D{X: 0, Y: 0},
 			Extent: vk.Extent2D{Width: uint32(vb.width), Height: uint32(vb.height)},
 		}
-	}
-	if vb.software != nil {
-		vb.software.Reset()
 	}
 }
 
@@ -3011,9 +2908,6 @@ func (vb *VulkanBackend) Destroy() {
 		vb.destroyInstance()
 	}
 
-	if vb.software != nil {
-		vb.software.Destroy()
-	}
 }
 
 // Cleanup helpers
@@ -3064,6 +2958,13 @@ func (vb *VulkanBackend) destroyRenderPass() {
 		vk.DestroyRenderPass(vb.device, vb.renderPass, nil)
 		vb.renderPass = vk.NullRenderPass
 	}
+	if vb.renderPassLoad != vk.NullRenderPass {
+		vk.DestroyRenderPass(vb.device, vb.renderPassLoad, nil)
+		vb.renderPassLoad = vk.NullRenderPass
+	}
+	// Attachment layouts are gone with the passes; the next flush must
+	// re-establish them through the clear pass before load is legal.
+	vb.gpuFrameValid = false
 }
 
 func (vb *VulkanBackend) destroyFramebuffer() {
@@ -3141,3 +3042,25 @@ func sliceToBytes(vertices []VulkanVertex) []byte {
 	size := len(vertices) * int(unsafe.Sizeof(VulkanVertex{}))
 	return unsafe.Slice((*byte)(unsafe.Pointer(&vertices[0])), size)
 }
+
+// voodooGPUOnly keeps every frame on the GPU render path: no-clear
+// composite flushes use the load-op render pass, and per-state feature
+// gaps render with their nearest GPU approximation instead of the
+// software reference rasteriser. Policy on Linux; overridable off via
+// IE_VOODOO_SW_FALLBACK=1 for reference-rasteriser debugging.
+// voodooLoadPassOff opts OUT of the load-op render pass for no-clear
+// flushes (falls back to clear-per-flush; mid-frame overflow chunks of
+// oversized frames then lose earlier geometry - debugging escape only).
+var voodooLoadPassOff = os.Getenv("IE_VOODOO_LOAD_PASS") == "0"
+
+var voodooPublishTraceOn = os.Getenv("IE_VOODOO_PUBLISH_TRACE") == "1"
+
+func init() {
+	if os.Getenv("IE_VOODOO_PUBLISH_TRACE") == "1" {
+		fmt.Printf("voodoo-policy: gpuOnly=%v loadPass=%v goos=%s\n",
+			voodooGPUOnly, !voodooLoadPassOff, runtime.GOOS)
+	}
+}
+
+var voodooGPUOnly = (runtime.GOOS == "linux" || os.Getenv("IE_VOODOO_NO_SW_FALLBACK") == "1") &&
+	os.Getenv("IE_VOODOO_SW_FALLBACK") != "1"

@@ -343,12 +343,19 @@ func NewVoodooEngine(bus *MachineBus) (*VoodooEngine, error) {
 	v.sharedIdx.Store(1)  // Buffer 1 in shared slot
 	v.readingIdx.Store(2) // Consumer starts with buffer 2
 
-	// Initialize with Vulkan backend (falls back to software internally if Vulkan unavailable)
+	// Vulkan is the only windowed render path; init failure is fatal.
+	// The swap worker is already running, so stop it before returning
+	// or every failed engine creation leaks the goroutine.
 	vulkanBackend, err := NewVulkanBackend()
 	if err != nil {
+		close(v.swapJobs) // stop signal: the worker ranges over jobs
+		<-v.swapWorkerEnd // worker's own completion close
 		return nil, err
 	}
 	if err := vulkanBackend.Init(int(v.width.Load()), int(v.height.Load())); err != nil {
+		vulkanBackend.Destroy()
+		close(v.swapJobs)
+		<-v.swapWorkerEnd
 		return nil, err
 	}
 	v.backend = vulkanBackend
@@ -1325,15 +1332,47 @@ func fixed2_30ToFloat(value uint32) float32 {
 
 // VideoSource interface implementation
 
+// getFrameDrainBound caps how long GetFrame waits for an in-flight
+// swap job. Normal jobs complete in well under this, so readers that
+// use GetFrame as a render sync point still see the freshest frame; a
+// pathologically long flush returns the previous published frame
+// instead of stalling the caller. The compositor calls GetFrame while
+// holding its own lock - the one the windowed UI's input update also
+// needs - so an unbounded wait here freezes input and blacks the
+// window for the duration of the flush.
+const getFrameDrainBound = 100 * time.Millisecond
+
+// waitSwapIdleBounded blocks until no swap job is in flight or the
+// bound elapses; reports whether the swap went idle.
+func (v *VoodooEngine) waitSwapIdleBounded(bound time.Duration) bool {
+	deadline := time.Now().Add(bound)
+	timer := time.AfterFunc(bound, func() {
+		v.mu.Lock()
+		v.swapIdle.Broadcast()
+		v.mu.Unlock()
+	})
+	defer timer.Stop()
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	for v.jobsInFlight > 0 {
+		if time.Now().After(deadline) {
+			return false
+		}
+		v.swapIdle.Wait()
+	}
+	return true
+}
+
 // GetFrame returns the current rendered frame for the compositor
-// (lock-free triple-buffer read when no swap job is in flight; an
-// in-flight job is drained first so the newest frame is visible).
+// (lock-free triple-buffer read; an in-flight swap job is drained for
+// at most getFrameDrainBound so the newest frame is visible without
+// ever stalling the caller behind a long-running flush).
 func (v *VoodooEngine) GetFrame() []byte {
 	if !v.enabled.Load() {
 		return nil
 	}
-	if v.swapInFlight.Load() {
-		v.WaitSwapIdle()
+	if v.swapInFlight.Load() && !v.waitSwapIdleBounded(getFrameDrainBound) {
+		return v.frameBufs[v.readingIdx.Load()]
 	}
 	// Swap our read buffer into the shared slot, get back the latest frame.
 	// This is lock-free: single atomic Swap ensures no tearing.

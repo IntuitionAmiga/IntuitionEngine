@@ -20,14 +20,19 @@ func monitorText(lines []OutputLine) string {
 
 func testVoodooSoftwareBackend(t *testing.T, v *VoodooEngine) *VoodooSoftwareBackend {
 	t.Helper()
-	vb, ok := v.backend.(*VulkanBackend)
-	if !ok {
-		t.Fatalf("backend type = %T, want *VulkanBackend", v.backend)
+	// The Vulkan backend no longer embeds the reference rasteriser;
+	// conformance tests swap the engine onto a standalone one so the
+	// MMIO-driven state and draws land in its buffers directly.
+	sw := NewVoodooSoftwareBackend()
+	if err := sw.Init(640, 480); err != nil {
+		t.Fatalf("software backend init: %v", err)
 	}
-	if vb.software == nil {
-		t.Fatal("VulkanBackend has nil software backend")
+	if v.backend != nil {
+		v.backend.Destroy()
 	}
-	return vb.software
+	v.backend = sw
+	t.Cleanup(sw.Destroy)
+	return sw
 }
 
 func installRealULA(bus *MachineBus) *ULAEngine {
