@@ -74,6 +74,12 @@ var x86CurrentCS *x86CompileState
 var x86CompileIOBitmap []byte
 var x86CompileCodeBitmap []byte
 
+// x86CompileRegMapOverrideForTest, when non-nil, replaces the default
+// register map in x86CompileBlock. Tests use it to prove emitters stay
+// correct under non-default allocations (Tier-2 regions remap or spill
+// guest registers); production never sets it.
+var x86CompileRegMapOverrideForTest *[8]byte
+
 // x86GuestRegToHost maps guest x86 register index (0=EAX..7=EDI) to host register.
 // Uses the current compile state's register mapping.
 func x86GuestRegToHost(guestReg byte) (byte, bool) {
@@ -3073,18 +3079,78 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 
 	switch escape {
-	case 0xD8: // FADD/FMUL/FCOM/FCOMP/FSUB/FSUBR/FDIV/FDIVR ST(0), ST(i)
+	case 0xD8: // FADD/FMUL/FCOM/FCOMP/FSUB/FSUBR/FDIV/FDIVR ST(0), src
+		if sseOp, reversed, ok := x86FPUArithForm(regOp); ok {
+			if mod == 3 {
+				return x86EmitFPUBinaryOpEx(cb, rm, sseOp, reversed, false, false)
+			}
+			return x86EmitFPUArithMem(cb, ji, memory, instrIdx, sseOp, reversed, fpuSrcF32)
+		}
 		if mod == 3 {
 			switch regOp {
-			case 0: // FADD ST(0), ST(i)
-				return x86EmitFPUBinaryOp(cb, rm, 0x58, ji.opcodePC, instrIdx) // ADDSD
-			case 1: // FMUL ST(0), ST(i)
-				return x86EmitFPUBinaryOp(cb, rm, 0x59, ji.opcodePC, instrIdx) // MULSD
-			case 4: // FSUB ST(0), ST(i)
-				return x86EmitFPUBinaryOp(cb, rm, 0x5C, ji.opcodePC, instrIdx) // SUBSD
-			case 6: // FDIV ST(0), ST(i)
-				return x86EmitFPUBinaryOp(cb, rm, 0x5E, ji.opcodePC, instrIdx) // DIVSD
+			case 2: // FCOM ST(i)
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 1, rm, false)
+			case 3: // FCOMP ST(i)
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 1, rm, true)
 			}
+		} else {
+			switch regOp {
+			case 2: // FCOM m32
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 0, 0, false)
+			case 3: // FCOMP m32
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 0, 0, true)
+			}
+		}
+
+	case 0xDA: // integer m32 arithmetic (FIADD/FIMUL/FISUB/.../m32)
+		if mod != 3 {
+			if sseOp, reversed, ok := x86FPUArithForm(regOp); ok {
+				return x86EmitFPUArithMem(cb, ji, memory, instrIdx, sseOp, reversed, fpuSrcI32)
+			}
+		}
+
+	case 0xDB:
+		if mod != 3 {
+			switch regOp {
+			case 0: // FILD m32
+				return x86EmitFILD_mem(cb, ji, memory, instrIdx, false)
+			case 3: // FISTP m32
+				return x86EmitFISTP_mem32(cb, ji, memory, instrIdx)
+			}
+		}
+
+	case 0xDC: // arithmetic with ST(i) destination (reg) or m64 source (mem)
+		if sseOp, reversed, ok := x86FPUArithForm(regOp); ok {
+			if mod == 3 {
+				// The /4-/7 encodings swap their R sense when the
+				// destination is ST(i): DC E0+i is FSUBR ST(i),ST(0)
+				// = ST(0) - ST(i), i.e. reversed relative to the D8
+				// mnemonic mapping.
+				if regOp >= 4 {
+					reversed = !reversed
+				}
+				return x86EmitFPUBinaryOpEx(cb, rm, sseOp, reversed, true, false)
+			}
+			return x86EmitFPUArithMem(cb, ji, memory, instrIdx, sseOp, reversed, fpuSrcF64)
+		}
+
+	case 0xDE: // pop forms: ST(i) = ST(i) op ST(0), then pop
+		if mod == 3 {
+			if sseOp, reversed, ok := x86FPUArithForm(regOp); ok {
+				if regOp >= 4 {
+					reversed = !reversed // same swap as DC (see above)
+				}
+				return x86EmitFPUBinaryOpEx(cb, rm, sseOp, reversed, true, true)
+			}
+		}
+
+	case 0xDF:
+		if mod == 3 {
+			if modrm == 0xE0 { // FNSTSW AX
+				return x86EmitFNSTSW_AX(cb)
+			}
+		} else if regOp == 0 { // FILD m16
+			return x86EmitFILD_mem(cb, ji, memory, instrIdx, true)
 		}
 
 	case 0xD9:
@@ -3095,16 +3161,30 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 			if modrm >= 0xC8 && modrm <= 0xCF { // FXCH ST(i)
 				return x86EmitFXCH(cb, rm)
 			}
-			if modrm == 0xE0 { // FCHS
+			switch modrm {
+			case 0xE0: // FCHS
 				return x86EmitFCHS(cb)
-			}
-			if modrm == 0xE1 { // FABS
+			case 0xE1: // FABS
 				return x86EmitFABS(cb)
+			case 0xE4: // FTST
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 2, 0, false)
+			case 0xE8: // FLD1
+				return x86EmitFLDConst(cb, 0x3FF0000000000000) // 1.0
+			case 0xEE: // FLDZ
+				return x86EmitFLDConst(cb, 0)
 			}
 		} else {
-			// D9 /0: FLD mem32 (single-precision)
-			if regOp == 0 {
+			switch regOp {
+			case 0: // FLD m32
 				return x86EmitFLD_mem32(cb, ji, memory, instrIdx)
+			case 2: // FST m32
+				return x86EmitFSTP_mem32(cb, ji, memory, instrIdx, false)
+			case 3: // FSTP m32
+				return x86EmitFSTP_mem32(cb, ji, memory, instrIdx, true)
+			case 5: // FLDCW m16
+				return x86EmitFLDCW(cb, ji, memory, instrIdx)
+			case 7: // FNSTCW m16
+				return x86EmitFNSTCW(cb, ji, memory, instrIdx)
 			}
 		}
 
@@ -3212,6 +3292,408 @@ func x86EmitFPUBinaryOp(cb *CodeBuffer, stIdx byte, sseOp byte, retPC uint32, in
 	return true
 }
 
+// emitMOVSD_SIB emits MOVSD xmm, [base+index] (op 0x10) or
+// MOVSD [base+index], xmm (op 0x11) with a correct REX prefix. sibByte
+// masks the index to 3 bits, so extended registers (R8-R15) as index
+// silently alias RAX-RDI without the REX.X bit — always emit through
+// this helper for stack-slot addressing.
+func emitMOVSD_SIB(cb *CodeBuffer, op byte, xmm, index, base byte) {
+	cb.EmitBytes(0xF2)
+	emitREX_SIB(cb, false, xmm, index, base)
+	cb.EmitBytes(0x0F, op, modRM(0, xmm, 4), sibByte(0, index, base))
+}
+
+// x86EmitFPUBinaryOpEx generalises the ST-stack arithmetic forms:
+//
+//	dstSTi=false: D8 form, ST(0) = ST(0) op ST(i)
+//	dstSTi=true:  DC form, ST(i) = ST(i) op ST(0)
+//	reversed:     the R variants (operands swapped before the op)
+//	pop:          DE form (DC semantics followed by a stack pop)
+//
+// sseOp is the SSE2 scalar opcode byte (0x58 ADDSD, 0x59 MULSD,
+// 0x5C SUBSD, 0x5E DIVSD). The caller has RAX = FPUPtr.
+func x86EmitFPUBinaryOpEx(cb *CodeBuffer, stIdx byte, sseOp byte, reversed, dstSTi, pop bool) bool {
+	// TOP -> ECX
+	x86EmitFPUReadTOP(cb, amd64RCX)
+
+	// physSTi -> EDX
+	amd64MOV_reg_reg32(cb, amd64RDX, amd64RCX)
+	if stIdx != 0 {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RDX, int32(stIdx))
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 7)
+	}
+
+	// Byte offsets: R8 = physST0*8, RDX = physSTi*8. Keep ECX = TOP for
+	// the pop update.
+	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
+	amd64SHL_imm32(cb, amd64R8, 3)
+	amd64SHL_imm32(cb, amd64RDX, 3)
+
+	// XMM0 = dst value, XMM1 = src value.
+	dstOff, srcOff := byte(amd64R8), byte(amd64RDX) // D8: dst=ST(0), src=ST(i)
+	if dstSTi {
+		dstOff, srcOff = amd64RDX, amd64R8 // DC/DE: dst=ST(i), src=ST(0)
+	}
+	emitMOVSD_SIB(cb, 0x10, 0, dstOff, amd64RAX)
+	emitMOVSD_SIB(cb, 0x10, 1, srcOff, amd64RAX)
+
+	if reversed {
+		// dst = src op dst: compute in XMM1, store XMM1.
+		cb.EmitBytes(0xF2, 0x0F, sseOp, modRM(3, 1, 0))
+		emitMOVSD_SIB(cb, 0x11, 1, dstOff, amd64RAX)
+	} else {
+		// dst = dst op src: compute in XMM0, store XMM0.
+		cb.EmitBytes(0xF2, 0x0F, sseOp, modRM(3, 0, 1))
+		emitMOVSD_SIB(cb, 0x11, 0, dstOff, amd64RAX)
+	}
+
+	if pop {
+		// TOP = (TOP + 1) & 7
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+		x86EmitUpdateFSWTop(cb, amd64RCX)
+	}
+	return true
+}
+
+// Memory-operand source kinds for x86EmitFPUArithMem.
+const (
+	fpuSrcF32 = iota // m32 single precision
+	fpuSrcF64        // m64 double precision
+	fpuSrcI32        // m32 signed integer (FIADD/FIMUL/... family)
+)
+
+// x86EmitFPUArithMem emits the memory-operand arithmetic forms:
+// ST(0) = ST(0) op mem (or reversed for the R variants).
+func x86EmitFPUArithMem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int, sseOp byte, reversed bool, srcKind int) bool {
+	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+
+	// RAX = FPUPtr (reload since IOCheck may have clobbered)
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+
+	// XMM1 = memory operand (widened to double).
+	switch srcKind {
+	case fpuSrcF64:
+		cb.EmitBytes(0xF2)
+		emitREX_SIB(cb, false, 1, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x0F, 0x10, modRM(0, 1, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	case fpuSrcF32:
+		cb.EmitBytes(0xF3)
+		emitREX_SIB(cb, false, 1, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x0F, 0x10, modRM(0, 1, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+		// CVTSS2SD XMM1, XMM1
+		cb.EmitBytes(0xF3, 0x0F, 0x5A, modRM(3, 1, 1))
+	case fpuSrcI32:
+		// MOV R8d, [memBase + R10]; CVTSI2SD XMM1, R8d
+		emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x8B, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+		cb.EmitBytes(0xF2)
+		emitREX(cb, false, 1, amd64R8)
+		cb.EmitBytes(0x0F, 0x2A, modRM(3, 1, amd64R8))
+	}
+
+	// XMM0 = ST(0)
+	x86EmitFPUReadTOP(cb, amd64RCX)
+	amd64SHL_imm32(cb, amd64RCX, 3)
+	cb.EmitBytes(0xF2, 0x0F, 0x10, modRM(0, 0, 4), sibByte(0, amd64RCX, amd64RAX))
+
+	if reversed {
+		// ST(0) = mem op ST(0)
+		cb.EmitBytes(0xF2, 0x0F, sseOp, modRM(3, 1, 0))
+		cb.EmitBytes(0xF2, 0x0F, 0x11, modRM(0, 1, 4), sibByte(0, amd64RCX, amd64RAX))
+	} else {
+		// ST(0) = ST(0) op mem
+		cb.EmitBytes(0xF2, 0x0F, sseOp, modRM(3, 0, 1))
+		cb.EmitBytes(0xF2, 0x0F, 0x11, modRM(0, 0, 4), sibByte(0, amd64RCX, amd64RAX))
+	}
+	return true
+}
+
+// x86EmitFSTP_mem32 emits FST/FSTP dword [mem]: narrow ST(0) to single
+// precision and store; pop for the FSTP form.
+func x86EmitFSTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int, pop bool) bool {
+	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+
+	x86EmitFPUReadTOP(cb, amd64RCX)
+	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
+	amd64SHL_imm32(cb, amd64R8, 3)
+	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
+
+	// CVTSD2SS XMM0, XMM0
+	cb.EmitBytes(0xF2, 0x0F, 0x5A, modRM(3, 0, 0))
+	// MOVSS [memBase + R10], XMM0
+	cb.EmitBytes(0xF3)
+	emitREX_SIB(cb, false, 0, amd64R10, x86AMD64RegMemBase)
+	cb.EmitBytes(0x0F, 0x11, modRM(0, 0, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+
+	if pop {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+		x86EmitUpdateFSWTop(cb, amd64RCX)
+	}
+	return true
+}
+
+// x86EmitFLDConst pushes a compile-time constant (FLD1/FLDZ).
+func x86EmitFLDConst(cb *CodeBuffer, bits uint64) bool {
+	x86EmitFPUReadTOP(cb, amd64RCX)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitUpdateFSWTop(cb, amd64RCX)
+	amd64SHL_imm32(cb, amd64RCX, 3)
+
+	amd64MOV_reg_imm64(cb, amd64R8, bits)
+	// MOV [RAX + RCX], R8 (64-bit)
+	emitREX_SIB(cb, true, amd64R8, amd64RCX, amd64RAX)
+	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64RCX, amd64RAX))
+	return true
+}
+
+// x86EmitFILD_mem emits FILD word/dword [mem]: push the sign-extended
+// integer converted to double.
+func x86EmitFILD_mem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int, is16 bool) bool {
+	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+
+	if is16 {
+		// MOVSX R8, word [memBase + R10]
+		emitREX_SIB(cb, true, amd64R8, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x0F, 0xBF, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	} else {
+		// MOV R8d, dword [memBase + R10]
+		emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x8B, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	}
+	// CVTSI2SD XMM0, R8d
+	cb.EmitBytes(0xF2)
+	emitREX(cb, false, 0, amd64R8)
+	cb.EmitBytes(0x0F, 0x2A, modRM(3, 0, amd64R8))
+
+	// Push
+	x86EmitFPUReadTOP(cb, amd64RCX)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitUpdateFSWTop(cb, amd64RCX)
+	amd64SHL_imm32(cb, amd64RCX, 3)
+	emitMOVSD_SIB(cb, 0x11, 0, amd64RCX, amd64RAX)
+	return true
+}
+
+// x86EmitFISTP_mem32 emits FISTP dword [mem]. Rounding follows the
+// guest FCW rounding-control field: nearest-even and truncate are
+// emitted natively (the pair compilers generate); the rare up/down
+// modes bail to the interpreter.
+func x86EmitFISTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+
+	x86EmitFPUReadTOP(cb, amd64RCX)
+	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
+	amd64SHL_imm32(cb, amd64R8, 3)
+	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
+
+	// R9d = FCW rounding-control bits
+	emitREX(cb, false, amd64R9, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R9, amd64RAX), byte(fpuOffFCW))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R9, 0x0C00)
+
+	// RC=11 -> truncate; RC=00 -> nearest; else bail.
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64R9, 0x0C00)
+	truncJmp := amd64Jcc_rel32(cb, amd64CondE)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64R9, 0)
+	bailJmp := amd64Jcc_rel32(cb, amd64CondNE)
+
+	// Nearest-even: CVTSD2SI R9d, XMM0
+	cb.EmitBytes(0xF2)
+	emitREX(cb, false, amd64R9, 0)
+	cb.EmitBytes(0x0F, 0x2D, modRM(3, amd64R9, 0))
+	storeJmp := amd64JMP_rel32(cb)
+
+	// Truncate: CVTTSD2SI R9d, XMM0
+	patchRel32(cb, truncJmp, cb.Len())
+	cb.EmitBytes(0xF2)
+	emitREX(cb, false, amd64R9, 0)
+	cb.EmitBytes(0x0F, 0x2C, modRM(3, amd64R9, 0))
+
+	// Store result and pop
+	patchRel32(cb, storeJmp, cb.Len())
+	emitREX_SIB(cb, false, amd64R9, amd64R10, x86AMD64RegMemBase)
+	cb.EmitBytes(0x89, modRM(0, amd64R9, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitUpdateFSWTop(cb, amd64RCX)
+	doneJmp := amd64JMP_rel32(cb)
+
+	// Bail: unsupported rounding mode -> interpreter
+	patchRel32(cb, bailJmp, cb.Len())
+	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
+	x86EmitRetPC(cb, ji.opcodePC, uint32(instrIdx))
+	x86EmitLightweightEpilogue(cb)
+	x86EmitFullEpilogueEnd(cb)
+
+	patchRel32(cb, doneJmp, cb.Len())
+	return true
+}
+
+// x86EmitFPUCompare emits the FCOM/FCOMP/FTST family: compare ST(0)
+// against a comparand and set C0/C2/C3 in the FSW the way UCOMISD sets
+// CF/PF/ZF. src selects the comparand: 0 = m32, 1 = ST(i), 2 = +0.0.
+func x86EmitFPUCompare(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int, src byte, stIdx byte, pop bool) bool {
+	switch src {
+	case 0: // m32
+		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+			return false
+		}
+		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+		cb.EmitBytes(0xF3)
+		emitREX_SIB(cb, false, 1, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x0F, 0x10, modRM(0, 1, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+		cb.EmitBytes(0xF3, 0x0F, 0x5A, modRM(3, 1, 1)) // CVTSS2SD XMM1, XMM1
+	case 2: // +0.0
+		cb.EmitBytes(0x66, 0x0F, 0x57, modRM(3, 1, 1)) // XORPD XMM1, XMM1
+	}
+
+	x86EmitFPUReadTOP(cb, amd64RCX)
+	if src == 1 { // ST(i)
+		amd64MOV_reg_reg32(cb, amd64RDX, amd64RCX)
+		if stIdx != 0 {
+			amd64ALU_reg_imm32_32bit(cb, 0, amd64RDX, int32(stIdx))
+			amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 7)
+		}
+		amd64SHL_imm32(cb, amd64RDX, 3)
+		emitMOVSD_SIB(cb, 0x10, 1, amd64RDX, amd64RAX)
+	}
+	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
+	amd64SHL_imm32(cb, amd64R8, 3)
+	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
+
+	// UCOMISD XMM0, XMM1: CF/PF/ZF <- <, unordered, ==
+	cb.EmitBytes(0x66, 0x0F, 0x2E, modRM(3, 0, 1))
+
+	// Capture all three conditions BEFORE any flag-modifying ALU work:
+	// the shifts and ORs below overwrite the UCOMISD flags.
+	amd64SETcc(cb, amd64CondB, amd64R11) // CF -> C0
+	amd64SETcc(cb, amd64CondP, amd64RDX) // PF -> C2
+	amd64SETcc(cb, amd64CondE, amd64R8)  // ZF -> C3
+
+	// R9d = FSW with the condition codes cleared. 0xB8FF is the 16-bit
+	// complement of C0|C1|C2|C3 (bits 8, 9, 10, 14 = 0x4700): all four
+	// clear, matching the interpreter's doCompare; TOP (bits 11-13) is
+	// preserved.
+	emitREX(cb, false, amd64R9, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R9, amd64RAX), byte(fpuOffFSW))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R9, 0xB8FF)
+
+	// C0 = CF (bit 8), C2 = PF (bit 10), C3 = ZF (bit 14)
+	amd64MOVZX_B(cb, amd64R11, amd64R11)
+	amd64SHL_imm32(cb, amd64R11, 8)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R9, amd64R11)
+	amd64MOVZX_B(cb, amd64RDX, amd64RDX)
+	amd64SHL_imm32(cb, amd64RDX, 10)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R9, amd64RDX)
+	amd64MOVZX_B(cb, amd64R8, amd64R8)
+	amd64SHL_imm32(cb, amd64R8, 14)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R9, amd64R8)
+
+	// Store FSW back (16-bit)
+	cb.EmitBytes(0x66)
+	emitREX(cb, false, amd64R9, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R9, amd64RAX), byte(fpuOffFSW))
+
+	if pop {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+		x86EmitUpdateFSWTop(cb, amd64RCX)
+	}
+	return true
+}
+
+// x86EmitFNSTSW_AX copies the FSW into the guest AX, routed through the
+// active register map so blocks whose allocator placed EAX in a
+// non-default host register (or spilled it) stay correct.
+func x86EmitFNSTSW_AX(cb *CodeBuffer) bool {
+	// R8d = FSW (RAX = FPUPtr here; the guest-reg helpers below may
+	// clobber RAX for their spill-slot addressing, so read FSW first).
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R8, amd64RAX), byte(fpuOffFSW))
+
+	x86EmitLoadGuestReg32(cb, amd64R9, 0)                   // R9d = guest EAX
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R9, int32(-65536)) // keep high 16
+	amd64ALU_reg_reg32(cb, 0x09, amd64R9, amd64R8)          // OR in FSW
+	x86EmitStoreGuestReg32(cb, 0, amd64R9)                  // writes map or spill slot, marks dirty
+	return true
+}
+
+// x86EmitFLDCW / x86EmitFNSTCW move the control word between guest
+// memory and the FPU struct.
+func x86EmitFLDCW(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+
+	// MOVZX R8d, word [memBase + R10]
+	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
+	cb.EmitBytes(0x0F, 0xB7, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	// Store to FCW (16-bit)
+	cb.EmitBytes(0x66)
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R8, amd64RAX), byte(fpuOffFCW))
+	return true
+}
+
+func x86EmitFNSTCW(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R8, amd64RAX), byte(fpuOffFCW))
+	// MOV word [memBase + R10], R8w
+	cb.EmitBytes(0x66)
+	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
+	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	return true
+}
+
+// x86FPUArithForm maps an x87 arithmetic /reg field to its SSE2 opcode
+// and operand order. ok is false for the compare encodings (/2, /3),
+// which are not arithmetic.
+func x86FPUArithForm(regOp byte) (sseOp byte, reversed, ok bool) {
+	switch regOp {
+	case 0:
+		return 0x58, false, true // FADD
+	case 1:
+		return 0x59, false, true // FMUL
+	case 4:
+		return 0x5C, false, true // FSUB
+	case 5:
+		return 0x5C, true, true // FSUBR
+	case 6:
+		return 0x5E, false, true // FDIV
+	case 7:
+		return 0x5E, true, true // FDIVR
+	}
+	return 0, false, false
+}
+
 // x86EmitFLD_STi emits FLD ST(i) -- push ST(i) onto stack.
 func x86EmitFLD_STi(cb *CodeBuffer, stIdx byte) bool {
 	// RAX = FPUPtr (already loaded)
@@ -3255,7 +3737,7 @@ func x86EmitFSTP_STi(cb *CodeBuffer, stIdx byte) bool {
 	// Load ST(0): MOVSD XMM0, [RAX + TOP*8]
 	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
 	amd64SHL_imm32(cb, amd64R8, 3)
-	cb.EmitBytes(0xF2, 0x0F, 0x10, modRM(0, 0, 4), sibByte(0, amd64R8, amd64RAX))
+	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
 
 	// physSTi = (TOP + i) & 7
 	amd64MOV_reg_reg32(cb, amd64RDX, amd64RCX)
@@ -3264,7 +3746,7 @@ func x86EmitFSTP_STi(cb *CodeBuffer, stIdx byte) bool {
 	amd64SHL_imm32(cb, amd64RDX, 3)
 
 	// Store to ST(i)
-	cb.EmitBytes(0xF2, 0x0F, 0x11, modRM(0, 0, 4), sibByte(0, amd64RDX, amd64RAX))
+	emitMOVSD_SIB(cb, 0x11, 0, amd64RDX, amd64RAX)
 
 	// Pop: TOP = (TOP + 1) & 7
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
@@ -3283,13 +3765,13 @@ func x86EmitFST_STi(cb *CodeBuffer, stIdx byte) bool {
 
 	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
 	amd64SHL_imm32(cb, amd64R8, 3)
-	cb.EmitBytes(0xF2, 0x0F, 0x10, modRM(0, 0, 4), sibByte(0, amd64R8, amd64RAX))
+	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
 
 	amd64MOV_reg_reg32(cb, amd64RDX, amd64RCX)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RDX, int32(stIdx))
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 7)
 	amd64SHL_imm32(cb, amd64RDX, 3)
-	cb.EmitBytes(0xF2, 0x0F, 0x11, modRM(0, 0, 4), sibByte(0, amd64RDX, amd64RAX))
+	emitMOVSD_SIB(cb, 0x11, 0, amd64RDX, amd64RAX)
 
 	return true
 }
@@ -3313,12 +3795,12 @@ func x86EmitFXCH(cb *CodeBuffer, stIdx byte) bool {
 	amd64SHL_imm32(cb, amd64RDX, 3)
 
 	// XMM0 = ST(0), XMM1 = ST(i)
-	cb.EmitBytes(0xF2, 0x0F, 0x10, modRM(0, 0, 4), sibByte(0, amd64R8, amd64RAX))
-	cb.EmitBytes(0xF2, 0x0F, 0x10, modRM(0, 1, 4), sibByte(0, amd64RDX, amd64RAX))
+	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
+	emitMOVSD_SIB(cb, 0x10, 1, amd64RDX, amd64RAX)
 
 	// ST(0) = XMM1, ST(i) = XMM0
-	cb.EmitBytes(0xF2, 0x0F, 0x11, modRM(0, 1, 4), sibByte(0, amd64R8, amd64RAX))
-	cb.EmitBytes(0xF2, 0x0F, 0x11, modRM(0, 0, 4), sibByte(0, amd64RDX, amd64RAX))
+	emitMOVSD_SIB(cb, 0x11, 1, amd64R8, amd64RAX)
+	emitMOVSD_SIB(cb, 0x11, 0, amd64RDX, amd64RAX)
 
 	return true
 }
@@ -4650,6 +5132,9 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 	cs.host = x86Host
 
 	cs.regMap = x86DefaultRegMap()
+	if x86CompileRegMapOverrideForTest != nil {
+		cs.regMap = *x86CompileRegMapOverrideForTest
+	}
 
 	// Run peephole optimizer for flag analysis (all tiers benefit). Limit the
 	// analysis to the prefix this compiler can actually emit; fallback

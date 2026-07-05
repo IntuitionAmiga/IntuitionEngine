@@ -596,6 +596,7 @@ const (
 	amd64CondNE = 0x5
 	amd64CondBE = 0x6 // unsigned below-or-equal
 	amd64CondA  = 0x7 // unsigned above
+	amd64CondP  = 0xA // parity (PF=1)
 	amd64CondL  = 0xC // signed less
 	amd64CondGE = 0xD // signed greater-or-equal
 	amd64CondLE = 0xE // signed less-or-equal

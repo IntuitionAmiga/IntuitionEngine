@@ -985,6 +985,15 @@ func x86AnalyzeBlockRegs(instrs []X86JITInstr, memory []byte, startPC uint32) x8
 			continue
 		}
 
+		// FNSTSW AX (DF E0) is the one FPU escape that writes a GPR;
+		// without this the epilogue never syncs the guest EAX back.
+		if op == 0xDF && ji.hasModRM && ji.modrm == 0xE0 {
+			regs.read |= 1 << 0
+			regs.written |= 1 << 0
+			regs.freq[0]++
+			continue
+		}
+
 		// ALU with ModR/M: extract reg and rm fields
 		if ji.hasModRM {
 			mod := ji.modrm >> 6
