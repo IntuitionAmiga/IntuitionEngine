@@ -2254,21 +2254,16 @@ func (vb *VulkanBackend) SetTextureData(width, height int, data []byte, format i
 // ensureLiveTextureUploaded performs the deferred live-slot texture
 // upload. Called with renderMu held, on the flush path, so the
 // QueueWaitIdle inside the upload lands on the swap worker instead of
-// the guest thread. The pixel bytes are taken over under the state
-// mutex (swapped against the spare buffer), so the guest can record
-// the next texture while this one uploads.
-func (vb *VulkanBackend) ensureLiveTextureUploaded() {
-	vb.mutex.Lock()
-	if !vb.liveTextureDirty || !vb.initialized {
-		vb.mutex.Unlock()
+// the guest thread. The bytes were taken over by captureFlushState
+// atomically with liveTextureID, so the live slot always holds the
+// texture the captured ID refers to — never a later guest upload.
+func (vb *VulkanBackend) ensureLiveTextureUploaded(fs *vulkanFlushState) {
+	if !vb.initialized || fs.liveTexture == nil {
 		return
 	}
-	vb.liveTextureDirty = false
-	width, height := vb.textureWidth, vb.textureHeight
-	data := vb.textureData
-	vb.textureData, vb.textureSpare = vb.textureSpare[:0], data
-	vb.mutex.Unlock()
-
+	width, height := fs.liveTexW, fs.liveTexH
+	data := fs.liveTexture
+	fs.liveTexture = nil // consumed; flushes that return early instead re-arm it
 	if width <= 0 || height <= 0 || len(data) == 0 {
 		return
 	}
@@ -2346,13 +2341,22 @@ type vulkanFlushState struct {
 	clearColorPacked uint32
 	clearColor       [4]float32
 	depthClearValue  float32
-	liveTextureID    *byte
+
+	// Live-slot texture ownership, taken over atomically with the ID
+	// under one state-mutex hold. The upload must use exactly these
+	// bytes: reading the pending buffer later instead would let a guest
+	// upload landing between capture and upload put the next frame's
+	// texels behind descriptors the ID matched to the previous
+	// snapshot.
+	liveTextureID      *byte
+	liveTexture        []byte
+	liveTexW, liveTexH int
 }
 
 func (vb *VulkanBackend) captureFlushState() vulkanFlushState {
-	vb.mutex.RLock()
-	defer vb.mutex.RUnlock()
-	return vulkanFlushState{
+	vb.mutex.Lock()
+	defer vb.mutex.Unlock()
+	fs := vulkanFlushState{
 		fbzMode:          vb.fbzMode,
 		scissor:          vb.scissor,
 		push:             vb.livePushConstants(),
@@ -2361,6 +2365,19 @@ func (vb *VulkanBackend) captureFlushState() vulkanFlushState {
 		depthClearValue:  vb.depthClearValue,
 		liveTextureID:    vb.textureDataID,
 	}
+	if vb.liveTextureDirty {
+		vb.liveTextureDirty = false
+		fs.liveTexture = vb.textureData
+		fs.liveTexW, fs.liveTexH = vb.textureWidth, vb.textureHeight
+		// Hand the guest the spare buffer for its next upload. The
+		// captured bytes become the spare only after this flush's
+		// upload has consumed them: uploads complete before the flush
+		// returns, and the next capture runs after that, so the swap
+		// cannot alias an in-progress upload.
+		vb.textureData = vb.textureSpare[:0]
+		vb.textureSpare = fs.liveTexture
+	}
+	return fs
 }
 
 func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
@@ -2368,6 +2385,27 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	defer vb.renderMu.Unlock()
 	fs := vb.captureFlushState()
 	vb.flushTrianglesLocked(triangles, &fs)
+	vb.restoreUnconsumedLiveTexture(&fs)
+}
+
+// restoreUnconsumedLiveTexture re-arms a captured live-slot texture
+// that the flush never uploaded (software-reference frames return
+// before the upload point). A newer guest upload wins: if the pending
+// slot went dirty again since capture, the captured bytes are simply
+// left as the spare buffer.
+func (vb *VulkanBackend) restoreUnconsumedLiveTexture(fs *vulkanFlushState) {
+	if fs.liveTexture == nil {
+		return
+	}
+	vb.mutex.Lock()
+	if !vb.liveTextureDirty {
+		vb.textureSpare = vb.textureData[:0]
+		vb.textureData = fs.liveTexture
+		vb.textureWidth, vb.textureHeight = fs.liveTexW, fs.liveTexH
+		vb.liveTextureDirty = true
+	}
+	vb.mutex.Unlock()
+	fs.liveTexture = nil
 }
 
 // FlushTrianglesSync renders the batch and waits for its GPU work
@@ -2379,6 +2417,7 @@ func (vb *VulkanBackend) FlushTrianglesSync(triangles []VoodooTriangle) {
 	defer vb.renderMu.Unlock()
 	fs := vb.captureFlushState()
 	vb.flushTrianglesLocked(triangles, &fs)
+	vb.restoreUnconsumedLiveTexture(&fs)
 	if vb.initialized && !vb.presentSoftwareFrame {
 		vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
 	}
@@ -2455,7 +2494,7 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vu
 
 	// Deferred live-slot texture upload lands here, on the swap worker,
 	// before any descriptor referencing the live slot is resolved.
-	vb.ensureLiveTextureUploaded()
+	vb.ensureLiveTextureUploaded(fs)
 
 	// Group consecutive triangles sharing a state snapshot (the engine
 	// reuses one snapshot pointer until a state register changes) and
