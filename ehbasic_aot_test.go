@@ -38,6 +38,7 @@ if_else_boundary equ 0
 expr_eval       equ 0
 expr_truthy     equ 0
 var_lookup      equ 0
+arr_find        equ 0
 exec_do_for     equ 0
 exec_do_next    equ 0
 exec_reset_control_stack equ 0

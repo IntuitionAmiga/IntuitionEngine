@@ -7202,10 +7202,10 @@ aot_emit_array_read_atom:
     la      r9, aot_str_movel_r14
     move.q  r10, r14
     jsr     aot_emit_movel
-    la      r9, aot_str_movel_r6
-    move.q  r10, #arr_find
-    jsr     aot_emit_movel
-    la      r9, aot_str_jsr_r6
+    la      r9, aot_str_movel_r6    ; resident arr_find: this atom is emitted
+    move.q  r10, #arr_find          ; on the arena (RUN AOT) path, where the
+    jsr     aot_emit_movel          ; interpreter image is resident and the
+    la      r9, aot_str_jsr_r6      ; RT_ blob table is NOT bootstrapped
     jsr     aot_emit_str
     la      r9, aot_str_pop_r1      ; R1 = subscript, R8 = array base
     jsr     aot_emit_str

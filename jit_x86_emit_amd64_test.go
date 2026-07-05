@@ -46,6 +46,16 @@ func newX86JITTestRig(t *testing.T) *x86JITTestRig {
 	}
 }
 
+// enableNativeStackOpsForTest lets a focused test compile stack/control
+// instructions through their native emitters. Production routes these
+// through the interpreter (x86ShouldStepInInterpreter); the emitters
+// stay covered by tests via this seam.
+func enableNativeStackOpsForTest(t *testing.T) {
+	t.Helper()
+	x86StepInInterpreterDisabledForTest = true
+	t.Cleanup(func() { x86StepInInterpreterDisabledForTest = false })
+}
+
 // compileAndRun writes raw x86 machine code to memory at startPC, appends HLT,
 // scans, compiles, and executes via JIT.
 func (r *x86JITTestRig) compileAndRun(t *testing.T, startPC uint32, code ...byte) {
@@ -847,6 +857,7 @@ func TestX86JIT_MOVZX_Gv_Ew(t *testing.T) {
 // ===========================================================================
 
 func TestX86JIT_PUSH_POP_r32(t *testing.T) {
+	enableNativeStackOpsForTest(t)
 	r := newX86JITTestRig(t)
 	r.cpu.EAX = 0x12345678
 	r.cpu.ESP = 0x10000
@@ -866,6 +877,7 @@ func TestX86JIT_PUSH_POP_r32(t *testing.T) {
 }
 
 func TestX86JIT_PUSH_imm32(t *testing.T) {
+	enableNativeStackOpsForTest(t)
 	r := newX86JITTestRig(t)
 	r.cpu.ESP = 0x10000
 
@@ -1679,6 +1691,7 @@ func TestX86JIT_ERMS_MOVSB_Large(t *testing.T) {
 }
 
 func TestX86JIT_LEAVE(t *testing.T) {
+	enableNativeStackOpsForTest(t)
 	r := newX86JITTestRig(t)
 	r.cpu.EBP = 0x10004
 	r.cpu.ESP = 0x0FF00

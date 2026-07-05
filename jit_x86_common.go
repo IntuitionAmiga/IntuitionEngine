@@ -847,7 +847,16 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 // semantics; keeping these instructions on the canonical interpreter path
 // preserves correctness while the JIT still handles surrounding straight-line
 // ALU/memory blocks by default.
+// x86StepInInterpreterDisabledForTest, when true, lets focused tests
+// compile stack/control instructions through their native emitters,
+// which production deliberately routes to the interpreter (see below).
+// The emitters stay covered without changing the production policy.
+var x86StepInInterpreterDisabledForTest bool
+
 func x86ShouldStepInInterpreter(ji X86JITInstr) bool {
+	if x86StepInInterpreterDisabledForTest {
+		return false
+	}
 	if ji.opcode >= 0x0F00 {
 		return false
 	}

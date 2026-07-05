@@ -773,6 +773,7 @@ func TestX86JIT_Chain_JMP(t *testing.T) {
 }
 
 func TestX86JIT_Chain_CALL(t *testing.T) {
+	enableNativeStackOpsForTest(t)
 	// Block 1 at 0x1000: MOV EAX, 0; CALL 0x100A (rel32 = 0)
 	// Block 2 at 0x100A: ADD EAX, 42; HLT
 	// CALL pushes return address and jumps to target

@@ -80,6 +80,21 @@ var x86CompileCodeBitmap []byte
 // guest registers); production never sets it.
 var x86CompileRegMapOverrideForTest *[8]byte
 
+// x86OpSizePrefixIgnored reports opcodes whose operand size is fixed at
+// one byte, making a 0x66 prefix architecturally meaningless: the
+// prefixed encoding must compile and behave exactly like the bare one.
+func x86OpSizePrefixIgnored(op byte) bool {
+	switch op {
+	case 0xA0, 0xA2: // MOV AL, moffs8 / MOV moffs8, AL
+		return true
+	case 0x88, 0x8A: // MOV r/m8, r8 / MOV r8, r/m8
+		return true
+	case 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7: // MOV r8, imm8
+		return true
+	}
+	return false
+}
+
 // x86GuestRegToHost maps guest x86 register index (0=EAX..7=EDI) to host register.
 // Uses the current compile state's register mapping.
 func x86GuestRegToHost(guestReg byte) (byte, bool) {
@@ -948,7 +963,7 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 	}
 
 	op := byte(opcode)
-	if ji.prefixes&x86PrefOpSize != 0 && (op < 0xB8 || op > 0xBF) {
+	if ji.prefixes&x86PrefOpSize != 0 && !x86OpSizePrefixIgnored(op) && (op < 0xB8 || op > 0xBF) {
 		return false
 	}
 
@@ -1156,7 +1171,7 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 	}
 
 	op := byte(opcode)
-	if ji.prefixes&x86PrefOpSize != 0 && (op < 0xB8 || op > 0xBF) {
+	if ji.prefixes&x86PrefOpSize != 0 && !x86OpSizePrefixIgnored(op) && (op < 0xB8 || op > 0xBF) {
 		return false
 	}
 
