@@ -479,6 +479,14 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		return nil
 
 	case EXEC_TYPE_M68K:
+		// A flat image must fit this machine's backing RAM. The BASIC/
+		// IE64 runtime allocates the low-memory window only, so a large
+		// self-contained image (which the loader relocates high) cannot
+		// run here - refuse cleanly instead of bus-faulting mid-copy.
+		if uint64(len(data))+uint64(M68K_ENTRY_POINT) > uint64(len(e.bus.GetMemory())) {
+			return fmt.Errorf("program (%.1f MiB) exceeds this machine's RAM (%.1f MiB): launch it directly (engine <image>.ie68)",
+				float64(len(data))/1048576.0, float64(len(e.bus.GetMemory()))/1048576.0)
+		}
 		if e.videoChip != nil {
 			applyM68KFlatProgramVideoConfig(e.bus, e.videoChip)
 		}

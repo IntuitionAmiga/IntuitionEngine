@@ -584,6 +584,8 @@ func (m *CoprocessorManager) dispatchCmd() {
 	switch m.cmd {
 	case COPROC_CMD_START:
 		m.cmdStart()
+	case COPROC_CMD_START_MEM:
+		m.cmdStartMem()
 	case COPROC_CMD_STOP:
 		m.cmdStop()
 	case COPROC_CMD_ENQUEUE:
@@ -605,6 +607,31 @@ func (m *CoprocessorManager) cmdStart() {
 	m.setCmdResultFromLifecycleErr(err)
 
 	// Auto-calibrate dispatch overhead on first IE64 worker start
+	if err == nil && cpuType == EXEC_TYPE_IE64 && m.dispatchOverheadNs.Load() == 0 {
+		go m.calibrateDispatchOverhead()
+	}
+}
+
+// cmdStartMem starts a worker from a service image in guest RAM:
+// COPROC_REQ_PTR/COPROC_REQ_LEN describe the blob. Self-contained
+// program images use this to start embedded services with no host
+// filesystem access.
+func (m *CoprocessorManager) cmdStartMem() {
+	cpuType := m.cpuType
+	blobPtr := m.reqPtr
+	blobLen := m.reqLen
+	mem := m.bus.GetMemory()
+	end := uint64(blobPtr) + uint64(blobLen)
+	if blobLen == 0 || end > uint64(len(mem)) {
+		m.setCmdResultFromLifecycleErr(coprocLifecycleErr(COPROC_ERR_NOT_FOUND,
+			"service blob out of range: ptr=%#x len=%d", blobPtr, blobLen))
+		return
+	}
+	data := make([]byte, blobLen)
+	copy(data, mem[blobPtr:end])
+	err := m.startWorkerFromDataLocked(cpuType, "guest-ram", data, true)
+	m.setCmdResultFromLifecycleErr(err)
+
 	if err == nil && cpuType == EXEC_TYPE_IE64 && m.dispatchOverheadNs.Load() == 0 {
 		go m.calibrateDispatchOverhead()
 	}
@@ -1051,6 +1078,16 @@ func (m *CoprocessorManager) startWorkerLocked(cpuType uint32, filename string, 
 	if err != nil {
 		return coprocLifecycleErr(COPROC_ERR_NOT_FOUND, "coprocessor service %q is not readable: %w", filename, err)
 	}
+	return m.startWorkerFromDataLocked(cpuType, filename, data, replace)
+}
+
+// startWorkerFromDataLocked runs the shared worker lifecycle for a
+// service image already in memory - either read from a file or handed
+// over directly from guest RAM (COPROC_CMD_START_MEM), which is how a
+// self-contained program image starts its embedded services without
+// any host filesystem.
+func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType uint32, label string, data []byte, replace bool) error {
+	filename := label
 
 	if existing := m.workers[cpuType]; existing != nil {
 		if !replace {

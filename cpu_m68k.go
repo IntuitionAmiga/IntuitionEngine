@@ -1179,30 +1179,47 @@ func (cpu *M68KCPU) LoadProgram(filename string) error {
 	return nil
 }
 
-// LoadProgramBytes loads a program from a byte slice into memory at
-// M68K_ENTRY_POINT, clamped to M68K_STACK_START. PLAN_MAX_RAM
-// reload-hardening slice: F10/reload of an oversize cached program
-// must not spill past the program window into the stack region or
-// MMIO that lives above it.
+// LoadProgramBytes deposits a program image into RAM at
+// M68K_ENTRY_POINT. Large self-contained images span device apertures
+// and the stack region, so bytes are written RAW to memory, skipping
+// I/O-mapped pages (loading a program must never poke device
+// registers) and the stack window at M68K_STACK_START (the image pads
+// that hole with zeros; RAM is already zero). Bytes beyond RAM are
+// dropped.
 func (cpu *M68KCPU) LoadProgramBytes(program []byte) {
 	entryPoint := uint32(M68K_ENTRY_POINT)
-	progEnd := uint32(M68K_STACK_START)
-	maxLen := 0
-	if progEnd > entryPoint {
-		maxLen = int(progEnd - entryPoint)
+	mem := cpu.memory
+	var ioBM []bool
+	if mb, ok := cpu.bus.(*MachineBus); ok {
+		ioBM = mb.ioPageBitmap
 	}
-	src := program
-	if len(src) > maxLen {
-		src = src[:maxLen]
-	}
-	for i := 0; i+(M68K_WORD_SIZE-1) < len(src); i += M68K_WORD_SIZE {
+	stackLo := uint32(M68K_STACK_START) - 0x10000 // 64 KiB stack guard
+	stackHi := uint32(M68K_STACK_START)           // inclusive: the boot SP itself
+	for i := 0; i < len(program); i++ {
 		addr := entryPoint + uint32(i)
-
-		// Programme files are big-endian per 68K conventions
-		beValue := binary.BigEndian.Uint16(src[i : i+M68K_WORD_SIZE])
-
-		// Write16 handles endian conversion to host format
-		cpu.Write16(addr, beValue)
+		if int(addr) >= len(mem) {
+			break
+		}
+		if addr >= stackLo && addr <= stackHi {
+			continue
+		}
+		if ioBM != nil {
+			page := addr >> 8
+			if int(page) < len(ioBM) && ioBM[page] {
+				continue
+			}
+		}
+		mem[addr] = program[i]
+	}
+	// Raw deposits bypass the write path's JIT bookkeeping: a reload
+	// over previously compiled code must invalidate it, or the guest
+	// keeps executing the old image. One range covers the whole load.
+	if len(program) > 0 {
+		if cpu.m68kJitDispatchActive.Load() {
+			cpu.m68kEnqueueJITInvalidation(entryPoint, uint32(len(program)))
+		} else {
+			cpu.invalidateM68KJITForGuestWrite(entryPoint, uint32(len(program)))
+		}
 	}
 
 	cpu.PC = M68K_ENTRY_POINT

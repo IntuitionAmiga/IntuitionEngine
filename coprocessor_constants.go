@@ -39,11 +39,12 @@ const (
 
 // Coprocessor commands (written to COPROC_CMD)
 const (
-	COPROC_CMD_START   = 1 // Start worker from file
-	COPROC_CMD_STOP    = 2 // Stop worker
-	COPROC_CMD_ENQUEUE = 3 // Submit request, returns ticket in COPROC_TICKET
-	COPROC_CMD_POLL    = 4 // Check ticket status, returns in COPROC_TICKET_STATUS
-	COPROC_CMD_WAIT    = 5 // Block until ticket completes or timeout
+	COPROC_CMD_START     = 1 // Start worker from file
+	COPROC_CMD_STOP      = 2 // Stop worker
+	COPROC_CMD_ENQUEUE   = 3 // Submit request, returns ticket in COPROC_TICKET
+	COPROC_CMD_POLL      = 4 // Check ticket status, returns in COPROC_TICKET_STATUS
+	COPROC_CMD_WAIT      = 5 // Block until ticket completes or timeout
+	COPROC_CMD_START_MEM = 6 // Start worker from a guest-RAM blob (REQ_PTR/REQ_LEN)
 )
 
 // Coprocessor command status (read from COPROC_CMD_STATUS)

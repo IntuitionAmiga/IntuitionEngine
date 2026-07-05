@@ -1433,6 +1433,14 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Without an explicit -file-root, a program loaded by path gets its
+	// own directory as the guest file root: a self-contained image then
+	// keeps its saves beside itself, like a cartridge.
+	if fileRoot == "" && filename != "" {
+		if fi, statErr := os.Stat(filename); statErr == nil && !fi.IsDir() {
+			fileRoot = filepath.Dir(filename)
+		}
+	}
 	runtimeBaseDir, err := resolveRuntimeFileRoot(fileRoot, ".")
 	if err != nil {
 		fmt.Printf("Error resolving guest file root: %v\n", err)
