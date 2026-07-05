@@ -72,7 +72,9 @@ func createZ80Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 
 	done := make(chan struct{})
 	stopFn := func() { cpu.SetRunning(false) }
-	execFn := func() { cpu.SetRunning(true); cpu.Execute() }
+	// Workers run under the JIT like the main runner; interpreted service
+	// loops stall guests that wait on their results.
+	execFn := func() { cpu.SetRunning(true); cpu.z80JitExecute() }
 
 	adapter := NewDebugZ80(cpu, nil)
 
@@ -93,7 +95,7 @@ func createZ80Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 
 	go func() {
 		defer close(done)
-		cpu.Execute()
+		cpu.z80JitExecute()
 	}()
 
 	return worker, nil

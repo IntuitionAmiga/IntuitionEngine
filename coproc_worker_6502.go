@@ -98,7 +98,9 @@ func create6502Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 
 	done := make(chan struct{})
 	stopFn := func() { cpu.SetRunning(false) }
-	execFn := func() { cpu.SetRunning(true); cpu.Execute() }
+	// Workers run under the JIT router like the main runner (it falls back
+	// to the interpreter for debug mode or unsupported hosts).
+	execFn := func() { cpu.SetRunning(true); cpu.jit6502Execute() }
 
 	adapter := NewDebug6502(cpu, nil)
 
@@ -119,7 +121,7 @@ func create6502Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 
 	go func() {
 		defer close(done)
-		cpu.Execute()
+		cpu.jit6502Execute()
 	}()
 
 	return worker, nil

@@ -1,6 +1,9 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 func createX86Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	if len(data) > int(WORKER_X86_SIZE) {
@@ -19,8 +22,13 @@ func createX86Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	// Create x86 bus adapter (32-bit addressing, no VGA/Voodoo for workers)
 	adapter := NewX86BusAdapter(bus)
 
-	// Create x86 CPU with the adapter
+	// Create x86 CPU with the adapter, with the same JIT wiring as the
+	// main runner: flat memory base and the I/O page bitmap the emitted
+	// code consults on every memory access.
 	cpu := NewCPU_X86(adapter)
+	cpu.memory = adapter.GetMemory()
+	cpu.x86JitEnabled = x86JitAvailable
+	cpu.x86JitIOBitmap = buildX86IOBitmap(adapter, bus)
 	cpu.EIP = WORKER_X86_BASE
 	cpu.ESP = WORKER_X86_END - 0xFF // Stack at top of worker region
 
@@ -28,9 +36,17 @@ func createX86Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	stopFn := func() { cpu.SetRunning(false) }
 	execFn := func() {
 		cpu.SetRunning(true)
-		for cpu.Running() {
-			cpu.Step()
+		// Interpreter by default: the JIT-executed worker miscompiles
+		// service stores under full-machine conditions (ring writes land
+		// at wrong addresses; interp-vs-JIT service parity passes in
+		// isolation, so the trigger is machine-state dependent and still
+		// open). The interpreter sustains full mailbox throughput.
+		// IE_COPROC_X86_JIT=1 opts back in for debugging that fault.
+		if os.Getenv("IE_COPROC_X86_JIT") == "1" {
+			cpu.x86JitExecute()
+			return
 		}
+		cpu.x86RunInterpreter()
 	}
 
 	dbg := NewDebugX86(cpu, nil)

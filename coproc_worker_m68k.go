@@ -26,7 +26,9 @@ func createM68KWorker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 
 	done := make(chan struct{})
 	stopFn := func() { cpu.SetRunning(false) }
-	execFn := func() { cpu.SetRunning(true); cpu.ExecuteInstruction() }
+	// Workers run under the JIT like the main runner; interpreted service
+	// loops stall guests that wait on their results.
+	execFn := func() { cpu.SetRunning(true); cpu.m68kJitExecute() }
 
 	adapter := NewDebugM68K(cpu, nil)
 
@@ -47,7 +49,7 @@ func createM68KWorker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 
 	go func() {
 		defer close(done)
-		cpu.ExecuteInstruction()
+		cpu.m68kJitExecute()
 	}()
 
 	return worker, nil
