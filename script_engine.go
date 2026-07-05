@@ -799,6 +799,8 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"copy_file":          se.luaSysCopyFile(),
 		"capture_output":     se.luaSysCaptureOutput(),
 		"capture_output_off": se.luaSysCaptureOutputOff(),
+		"perf_report":        se.luaSysPerfReport(),
+		"perf_reset":         se.luaSysPerfReset(),
 	})
 	L.SetGlobal("sys", sys)
 
@@ -1262,6 +1264,25 @@ func (se *ScriptEngine) luaSysTimeMS() lua.LGFunction {
 	return func(L *lua.LState) int {
 		L.Push(lua.LNumber(time.Now().UnixMilli()))
 		return 1
+	}
+}
+
+// luaSysPerfReport returns the subsystem perf-accounting report as a
+// string (empty when IE_PERF_ACCT is off or nothing ran). Measurement
+// scripts call perf_reset at the start of their span and perf_report at
+// the end, so the report covers exactly the measured window.
+func (se *ScriptEngine) luaSysPerfReport() lua.LGFunction {
+	return func(L *lua.LState) int {
+		L.Push(lua.LString(perfSubsysAcct.Report()))
+		return 1
+	}
+}
+
+// luaSysPerfReset zeroes the subsystem perf-accounting counters.
+func (se *ScriptEngine) luaSysPerfReset() lua.LGFunction {
+	return func(L *lua.LState) int {
+		perfSubsysAcct.Reset()
+		return 0
 	}
 }
 

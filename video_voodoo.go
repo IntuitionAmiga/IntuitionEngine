@@ -1162,13 +1162,31 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 			v.swapIdle.Broadcast()
 			continue
 		}
+		var perfT0 time.Time
+		if perfAcctOn {
+			perfT0 = time.Now()
+		}
 		backend.FlushTriangles(job.triangles)
+		if perfAcctOn {
+			perfSubsysAcct.VoodooFlush.AddSince(perfT0, 1)
+			perfT0 = time.Now()
+		}
 		backend.SwapBuffers(job.waitVSync)
+		if perfAcctOn {
+			perfSubsysAcct.VoodooSwapWait.AddSince(perfT0, 1)
+			perfT0 = time.Now()
+		}
 		frame := backend.GetFrame()
+		if perfAcctOn {
+			perfSubsysAcct.VoodooReadback.AddSince(perfT0, 1)
+		}
 		if job.postClear {
 			backend.ClearFramebuffer(job.postClearColor)
 		}
 
+		if perfAcctOn {
+			perfT0 = time.Now()
+		}
 		v.mu.Lock()
 		// Copy rendered frame to write buffer for triple-buffer publish:
 		// swap our write buffer into the shared slot, get back the old
@@ -1177,6 +1195,9 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 			copy(v.frameBufs[v.writeIdx], frame)
 			v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
 			v.frameGen.Add(1)
+		}
+		if perfAcctOn {
+			perfSubsysAcct.VoodooPublish.AddSince(perfT0, 1)
 		}
 		v.spareBatches = append(v.spareBatches, clearVoodooTriangleBatch(job.triangles))
 		onFIFOEmpty := v.OnFIFOEmpty
