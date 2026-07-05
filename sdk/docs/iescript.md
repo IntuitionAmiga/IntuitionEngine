@@ -1,6 +1,6 @@
 # IEScript Lua Automation Manual
 
-*Last modified: 2026-07-04*
+*Last modified: 2026-07-05*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
@@ -245,6 +245,10 @@ Timing, diagnostics, lifecycle.
 `sys.frame_time()` - Milliseconds elapsed since the last yield point (wait_frames, wait_ms, or visual wait). Useful for detecting slow scripts. Returns: number.
 
 `sys.fps()` - Current output backend refresh rate in Hz. The compositor tick used for frame callbacks remains 60 Hz. Returns: number.
+
+`sys.perf_report()` - `sys.perf_report()` returns a string subsystem performance report; it is empty when `IE_PERF_ACCT` is off or no subsystem counters have recorded work. The report contains one line per non-empty bucket in the form `name: total-ms ops avg-us/op`. Returns: string.
+
+`sys.perf_reset()` - `sys.perf_reset()` resets subsystem performance counters and returns nothing. Use it at the start of a measurement window before calling `sys.perf_report()`. Returns: nothing.
 
 `sys.quit()` - Stop any active recording and shut down the emulator. Returns: nothing.
 
@@ -1218,6 +1222,16 @@ addresses.
 | `value` | number | Current register value |
 | `access` | string | Access mode (e.g. `"RW"`, `"RO"`) |
 
+`dbg.mmio_stats()` - `dbg.mmio_stats()` returns rows with `start`, `end`, `name`, `reads`, and `writes`. Counters are recorded only when `IE_MMIO_STATS=1` was set at process start. When the bus is unavailable, returns an empty table. Returns: table (array) of entries, each with fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `start` | number | Inclusive mapped-region start address |
+| `end` | number | Inclusive mapped-region end address |
+| `name` | string | I/O device name when the region can be matched, otherwise empty |
+| `reads` | number | Recorded 32-bit read count |
+| `writes` | number | Recorded 32-bit write count |
+
 ### Scripting
 
 `dbg.run_script(path)` - Execute a monitor script file from an approved read path. Before execution, every line and semicolon-separated command is validated with the same sandbox filter used by `dbg.command`. Host-file monitor commands are rejected. Returns: nothing.
@@ -1614,7 +1628,7 @@ State *not* auto-released: breakpoints, watchpoints, monitor macros, trace watch
 
 Compact reference for IEScript API functions.
 
-### sys (17)
+### sys (19)
 
 | Function | Returns |
 |----------|---------|
@@ -1626,6 +1640,8 @@ Compact reference for IEScript API functions.
 | `sys.frame_count()` | number |
 | `sys.frame_time()` | number |
 | `sys.fps()` | number |
+| `sys.perf_report()` | string |
+| `sys.perf_reset()` | - |
 | `sys.quit()` | - |
 | `sys.exit([code])` | - |
 | `sys.emutos_drive(path [, drive])` | - |
@@ -1921,6 +1937,7 @@ Compact reference for IEScript API functions.
 | `dbg.thaw_audio()` | - |
 | `dbg.io_devices()` | table |
 | `dbg.io(device)` | table |
+| `dbg.mmio_stats()` | table |
 | `dbg.run_script(path)` | - |
 | `dbg.macro(name, cmds)` | - |
 | `dbg.layout(name)` | string |

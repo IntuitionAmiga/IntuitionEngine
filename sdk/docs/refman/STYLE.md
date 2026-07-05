@@ -126,6 +126,33 @@ The current editorial pass is driven by the final review:
 
 Current controlled polish pass:
 
+- Add RawlandMini MIDI lookup material without turning the PRG into an
+  internal synth-source dump. Check `midi_constants.go`,
+  `midi_engine.go`, `midi_parser.go`, `midi_live.go`, and focused MIDI
+  tests before writing. The reader-facing contract is that
+  RawlandMini is the fixed IE-native patch table for MIDI/MUS and live
+  MIDI, with `128` melodic programme numbers, channel `9` percussion,
+  drum notes `35`-`81`, a `10`-voice pool, and no reader-facing
+  replacement patch-table loader in this register block.
+
+  Execute this pass in book order:
+
+  1. Chapter 21: keep the RawlandMini section short, add a compact
+     family/range table, and point readers to Appendix E for the full
+     programme and drum-number lookup. Do not list internal waveform,
+     envelope, volume, priority, or voice-stealing implementation
+     details beyond the existing public limits.
+  2. Appendix E: add a dense RawlandMini programme-number table and a
+     drum-note table. Label them as GM-style selection numbers used by
+     RawlandMini, not as a promise of sampled General MIDI instrument
+     identity.
+  3. Appendix L: add lookup entries for the RawlandMini programme and
+     drum tables.
+  4. Claim ledger: record the checked canonical sources and the changed
+     RawlandMini lookup claim.
+  5. Run scans for forbidden non-PRG topics, dash punctuation, and stale
+     replacement-patch-loader wording. Publish and print PDFs only after
+     the source files pass.
 - Integrate the PRG-facing coprocessor-status precision from commit
   `27ca532c570a8364e923f8f710c45eee589f52f1`. Treat this as a narrow
   source-backed wording pass, not as a performance-architecture tour.
@@ -181,8 +208,9 @@ Current controlled polish pass:
     as a render-only mid-frame job and then accepts more triangles. Do
     not say further `TRIANGLE_CMD` writes are ignored while the batch is
     full. `SWAP_BUFFER_CMD` hands the frame to the rasteriser and
-    returns while that work may still be in progress; the next swap waits
-    if one frame is already in flight.
+    returns while that work may still be in progress. Current source
+    allows two Voodoo swap jobs in flight; a later swap waits only when
+    that pipeline is full.
   - Voodoo `FBI_BUSY` and `SST_BUSY` mean render/swap work is in
     progress, `SWAPBUF` means a publish swap is pending, `MEMFIFO` is a
     coarse ready field for the current batch, and `PCIFIFO` is the
@@ -196,8 +224,9 @@ Current controlled polish pass:
      range wording, and typed examples only where needed.
   3. Chapter 33: clarify that `io sfx` shows the 32 extended trigger
      channels.
-  4. Chapter 9 and Appendix D: update Voodoo batch, overflow, swap, and
-     status wording against `video_voodoo.go` and `voodoo_constants.go`.
+  4. Chapter 9 and Appendix D: update Voodoo batch, overflow, swap,
+     two-job pipeline, and status wording against `video_voodoo.go` and
+     `voodoo_constants.go`.
   5. Appendices D, H, J, K, and L: update SFX ranges, terminal aliases,
      Voodoo lookup terms, and the audio diagram.
   6. Claim ledger: record the checked canonical sources and the changed
@@ -205,6 +234,62 @@ Current controlled polish pass:
   7. Run targeted stale-term scans for SFX four-channel wording, stale
      Voodoo ignored-batch wording, and missing terminal aliases. Publish
      and print PDFs only after those checks pass.
+- Integrate the current `3dfx` branch reader-facing Voodoo and IE
+  Script changes as a narrow PRG pass. This pass is about the machine
+  contract visible from BASIC, documented MMIO, IE Mon, and IE Script.
+  Do not mention graphics backend selection, host render APIs,
+  descriptor pools, staging buffers, cache hashes, command-buffer
+  internals, JIT internals, diagnostic environment variables, guest
+  operating systems, packaging scripts, or benchmark workflow in the
+  PRG.
+
+  Canonical sources to check before writing:
+
+  - `video_voodoo.go`, `voodoo_constants.go`, `voodoo_software.go`,
+    `voodoo_vulkan.go`, `voodoo_shaders.go`, and Voodoo tests for
+    triangle submission, texture/state snapshots, full-batch overflow
+    flushes, no-clear continuation, swap pipeline depth, and status
+    bits.
+  - `script_engine.go` and `perf_accounting_subsys.go` for
+    `sys.perf_report()` and `sys.perf_reset()`.
+
+  Reader-facing claims to preserve:
+
+  - `TRIANGLE_CMD` queues a triangle and latches the current vertices,
+    per-vertex attributes, raster state, and currently uploaded texture.
+    Later mode, texture, clip, fog, chroma, stipple, slope, or upload
+    writes affect later triangles only.
+  - A full `4096`-triangle batch is rendered into the current drawing
+    buffer as a render-only flush, without publishing the frame. Later
+    triangles continue the same frame until `SWAP_BUFFER_CMD`.
+  - `SWAP_BUFFER_CMD` hands the current batch to the rasteriser,
+    returns while render or publish work may still be active, and may
+    run with up to two Voodoo swap jobs in flight. A later swap waits
+    only when that pipeline is full.
+  - `VOODOO_STATUS` reports `FBI_BUSY` and `SST_BUSY` while any render
+    or publish job is active; `SWAPBUF` reports a pending publish swap;
+    `MEMFIFO` is a coarse current-batch ready field; `PCIFIFO` is the
+    high-level command-space field.
+  - `sys.perf_report()` returns a subsystem performance report string
+    and `sys.perf_reset()` clears the subsystem counters. The report is
+    empty when performance accounting is disabled or when no
+    instrumented path ran.
+
+  Execute this pass in book order:
+
+  1. Chapter 9: tighten Voodoo submission, texture upload, full-batch
+     overflow, no-clear continuation, swap pipeline, status, and limits
+     wording. Keep the prose at programmer level.
+  2. Chapter 34: add `sys.perf_report()` and `sys.perf_reset()` to the
+     system module and explain the report shape briefly.
+  3. Appendix D: mirror the Voodoo MMIO side effects and add the script
+     performance helpers only if a relevant lookup row already exists.
+  4. Appendix L: add lookup entries for the new script performance
+     helpers and Voodoo swap/status terms.
+  5. Claim ledger: record the checked canonical sources and the
+     reader-facing contracts changed.
+  6. Run targeted stale-term, forbidden-term, dash, and publish
+     consistency scans, then publish and print PDFs.
 - Put the `DEF` / `TROFF` token-collision note in Chapter 2 as well
   as Appendix A, because it affects what a reader sees after `LIST`.
 - Add a Chapter 11 comparison table that starts with the IE-native

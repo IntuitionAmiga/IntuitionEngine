@@ -61,6 +61,8 @@ Strings may use single or double quotes.
 | `sys.frame_count()` | Number of completed frames. |
 | `sys.frame_time()` | Most recent frame time. |
 | `sys.fps()` | Current frame-rate estimate. |
+| `sys.perf_report()` | Return the subsystem performance report string. |
+| `sys.perf_reset()` | Clear subsystem performance counters. |
 | `sys.quit()` | Stop the script and return to the caller. |
 | `sys.exit(code)` | Stop Intuition Engine with status `code`. |
 | `sys.mkdir(name)` | Create a directory in approved script storage. |
@@ -72,6 +74,14 @@ Strings may use single or double quotes.
 
 Long loops should call `sys.wait_frames` or `sys.wait_ms`; this
 keeps cancellation responsive.
+
+`sys.perf_reset()` and `sys.perf_report()` are for repeatable
+measurement scripts. The report is empty when performance accounting is
+off, or when no instrumented subsystem path ran during the measured
+span. When it is non-empty, each line gives a bucket name, total time,
+operation count, and average time per operation. The current subsystem
+buckets include video frame work, audio pulls, slow bus `Read32` and
+`Write32`, and Voodoo swap stages.
 
 ## 34.4 CPU Module
 

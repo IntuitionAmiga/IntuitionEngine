@@ -67,9 +67,9 @@ The submission point matters. When `TRIANGLE` writes `TRIANGLE_CMD`,
 Voodoo latches the current raster state for that triangle: draw mode,
 alpha mode, colour combine, fog, chroma key, stipple, clip rectangle,
 slopes, texture mode, and the currently uploaded texture. Later writes
-to those registers affect later triangles only. This lets one batch mix
-plain, shaded, textured, fogged, and clipped triangles before one final
-`VOODOO SWAP`.
+to those registers, or a later `TEXTURE UPLOAD`, affect later triangles
+only. This lets one batch mix plain, shaded, textured, fogged, and
+clipped triangles before one final `VOODOO SWAP`.
 
 The simplest triangle is a typed BASIC program:
 
@@ -193,11 +193,13 @@ publishing the frame, then starts a fresh batch for the new triangle.
 
 `FBI_BUSY` and `SST_BUSY` are set while Voodoo is rendering a queued
 batch or publishing a frame. `SWAPBUF` is set while a publish swap is
-pending. A simple BASIC program may not see these bits because small
-frames finish before the next `PEEK`, but machine code and IE Mon can
-still poll them around a large frame. `TRIANGLE_CMD` itself normally
-only appends work to the batch; when the batch is already full it first
-flushes that full batch as a render-only step.
+pending. Up to two swap jobs may be in flight, so a later
+`SWAP_BUFFER_CMD` waits only when that small pipeline is full. A simple
+BASIC program may not see these bits because small frames finish before
+the next `PEEK`, but machine code and IE Mon can still poll them around
+a large frame. `TRIANGLE_CMD` itself normally only appends work to the
+batch; when the batch is already full it first flushes that full batch
+as a render-only step.
 
 ### 9.5.2 Vertex and attribute registers
 
@@ -248,10 +250,11 @@ remain complete.
 Pixels appear after `SWAP_BUFFER_CMD`. That command hands the queued
 triangles to the rasteriser using the state each one latched when it
 was submitted, clears the batch, swaps buffers, and publishes the frame
-to the compositor. If one frame is already in progress, the next swap
-waits until that work is finished before starting the new publish. During
-render or publish work the status register reports `FBI_BUSY` and
-`SST_BUSY`; during a pending publish it also reports `SWAPBUF`.
+to the compositor. It returns while render or publish work may still be
+active. Voodoo can keep two swap jobs in flight, so a later swap waits
+only when that pipeline is full. During render or publish work the
+status register reports `FBI_BUSY` and `SST_BUSY`; during a pending
+publish it also reports `SWAPBUF`.
 
 ### 9.5.4 Mode and state
 
@@ -414,6 +417,11 @@ Upload sequence:
 
 Upload is ignored if width or height is zero, or if `w * h * 4`
 exceeds `64` KB.
+
+`TEXTURE UPLOAD` makes the current texture available for later triangle
+submissions. A triangle samples the texture that was current when
+`TRIANGLE_CMD` queued it. Uploading a different texture afterwards does
+not change triangles already in the queue.
 
 ## 9.8 Colour pipeline
 
@@ -612,7 +620,7 @@ Voodoo has these programming boundaries:
 | `VOODOO DIM w,h` | Ignored unless both dimensions are positive and no larger than `800` by `600`. |
 | `VOODOO CLEAR colour` | Clears the drawing buffer and resets depth to a far value for `LESS` style depth functions. |
 | `TRIANGLE` | Queues one triangle and latches its raster state and current texture. A full `4096`-triangle batch is rendered into the drawing buffer without publishing, then the new triangle starts the next batch. |
-| `VOODOO SWAP` | Flushes queued triangles, sets busy while render or publish work runs, swaps buffers, publishes the frame, and clears the batch. |
+| `VOODOO SWAP` | Hands queued triangles to the rasteriser, sets busy while render or publish work runs, swaps buffers, publishes the frame, and clears the batch. Up to two swap jobs may be active; a later swap waits when that pipeline is full. |
 | `SWAP_BUFFER_CMD` bit `1` | Clears the drawing buffer after the swap using current `COLOR0`. |
 | `POKE8` to registers | Updates the shadow byte immediately, but command side effects run only when byte `3` of the word is written. |
 | Texture upload | Copies `w * h * 4` bytes from `$D0000` if the size fits in `64` KB. |

@@ -112,7 +112,8 @@ symbols, and Appendix J gives the full memory map.
 
 | Term | See |
 |------|-----|
-| General MIDI-style programs | Chapter 21 |
+| General MIDI-style programmes | Chapter 21, Appendix E |
+| General MIDI-style drum notes | Chapter 21, Appendix E |
 | GTIA | Chapter 7, Chapter 28, Appendix D, Appendix H |
 | Graphics overview | Chapter 3 |
 
@@ -200,7 +201,9 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | Raster bands | Chapter 4 |
-| RawlandMini | Chapter 21 |
+| RawlandMini | Chapter 21, Appendix E |
+| RawlandMini drum table | Chapter 21, Appendix E |
+| RawlandMini programme table | Chapter 21, Appendix E |
 | Registers | Chapter 24, Appendix D |
 | Reverse history | Chapter 33, Chapter 34 |
 | RTC_MONO_USEC_HI | Chapter 37, Appendix D, Appendix H |
@@ -224,8 +227,11 @@ symbols, and Appendix J gives the full memory map.
 | SN76489 | Chapter 14, Chapter 26, Appendix D |
 | SoundChip | Chapter 11, Chapter 12, Chapter 39, Appendix D |
 | SoundChip flex channels | Chapter 11, Appendix D, Appendix J |
+| SWAP_BUFFER_CMD | Chapter 9, Appendix D |
 | SYSINFO_ACTIVE_RAM_LO | Chapter 24, Appendix D, Appendix J |
 | SYSINFO_TOTAL_RAM_LO | Chapter 24, Appendix D, Appendix J |
+| sys.perf_report | Chapter 34 |
+| sys.perf_reset | Chapter 34 |
 | SysInfo | Chapter 24, Appendix D, Appendix J |
 
 ## T
@@ -265,6 +271,8 @@ symbols, and Appendix J gives the full memory map.
 | Voodoo | Chapter 9, Chapter 29, Appendix D, Appendix H |
 | Voodoo batch limit | Chapter 9, Appendix D |
 | Voodoo state binding | Chapter 9, Appendix D |
+| Voodoo status bits | Chapter 9, Appendix D |
+| Voodoo swap pipeline | Chapter 9, Appendix D |
 | VRAM | Chapter 3, Chapter 4, Chapter 24, Appendix J |
 
 ## W

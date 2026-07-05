@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-04*
+*Last modified: 2026-07-05*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -1005,6 +1005,8 @@ Two rendering paths:
 
 All-zero frame pixels are transparent; any nonzero alpha or RGB value is opaque. During compositing, zero-alpha nonzero-RGB pixels are promoted to opaque `0xFFRRGGBB` before they overwrite the destination. The compositor tick remains fixed at 60 Hz for guest VBlank compatibility; `GetRefreshRate()` reports the output backend rate, while `GetTickRate()` reports the compositor tick.
 
+FrameGenerationSource lets the compositor skip collect/copy/blend/upload work only after source TickFrame hooks run and only when every enabled source generation is unchanged. A pending full-frame update, a frame-complete callback, an enabled source without generation tracking, or a scanline-compositing source disables this skip for that tick.
+
 Video frame leases are enabled by default and can be disabled with `IE_VIDEO_FRAME_LEASES=0`. Copy-buffer paths use three-slot lease rings to keep source-layer buffers alive while the hardware compositor or snapshot path still references them. The software output path can also retain a lease-backed final frame for `UpdateFrame` instead of copying through the legacy output buffer. Frame leases keep compositor handoff buffers stable until release; hardware layers retain leases or stage copies when leases are unavailable. Snapshot APIs still return deep copies.
 
 ### Triple-Buffer Protocol
@@ -1292,6 +1294,7 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0xF23E0-0xF23FF` | 32B | MMIO | Bootstrap HostFS | All CPU cores | Bootstrap profile | HostFS boot helper register block. |
 | `0xF2400-0xF24FF` | 256B | MMIO | SYSINFO RAM-size discovery | All CPU cores | System information ABI | Reports total and active visible RAM. |
 | `0xF2500-0xF257F` | 128B | MMIO | AROS host socket bridge | AROS M68K profile | AROS profile | Host-backed `bsdsocket.library` command bridge. |
+| `0xF2580-0xF259F` | 32B | MMIO | CPU wait service | All CPU cores | Timing/wait ABI | CPU wait writes park until the next VBlank edge or a latched `RTC_MONO_USEC` deadline, capped by a 50 ms safety timeout; reads return 0. |
 | `0xF8000-0xF87FF` | 2KB | MMIO | Voodoo 3D registers and palette | All CPU cores | Voodoo subsystem | 3D control, state, and palette register block. |
 | `0xF8140-0xF823F` | 256B | MMIO | Voodoo fog table | All CPU cores | Voodoo subsystem | 64 entries x 4 bytes. |
 | `0x100000-0x5FFFFF` | 5MB | Shared RAM / VRAM-backed region | Main video framebuffer and graphics-visible memory | All CPU cores | Video subsystem plus guest convention | Subranges may be reserved for coprocessor worker buffers. |

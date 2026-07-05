@@ -344,6 +344,27 @@ percussion, organ, guitar, bass, strings, ensemble, brass, reed, pipe,
 synth lead, synth pad, synth effects, ethnic, percussive melodic, and
 sound effects.
 
+The programme families are eight numbers wide:
+
+| Programmes | Family |
+|------------|--------|
+| `0`-`7` | Piano |
+| `8`-`15` | Chromatic percussion |
+| `16`-`23` | Organ |
+| `24`-`31` | Guitar |
+| `32`-`39` | Bass |
+| `40`-`47` | Strings |
+| `48`-`55` | Ensemble |
+| `56`-`63` | Brass |
+| `64`-`71` | Reed |
+| `72`-`79` | Pipe |
+| `80`-`87` | Synth lead |
+| `88`-`95` | Synth pad |
+| `96`-`103` | Synth effects |
+| `104`-`111` | Ethnic |
+| `112`-`119` | Percussive melodic |
+| `120`-`127` | Sound effects |
+
 Each RawlandMini patch chooses one IE waveform, ADSR-like timing, and a
 level. Channel volume, expression, velocity, and `MIDI_VOLUME` then
 scale the final voice. Pitch bend covers two semitones either side of
@@ -352,9 +373,10 @@ centre.
 Channel `9` is the drum channel. Notes `35` through `81` use distinct
 drum-family patches for kicks, snares, toms, hats, cymbals, bells, and
 small percussion. Other drum notes still produce a default noise hit.
+Appendix E lists the full GM-style programme and drum-note numbers.
 
-RawlandMini is built into Intuition Engine. There is no reader-facing
-soundfont loader in this register block.
+RawlandMini is built into Intuition Engine. This register block does
+not load replacement patch tables.
 
 ## 21.10 Media loader path
 

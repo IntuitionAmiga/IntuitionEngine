@@ -302,6 +302,8 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"mem.read_block(addr, len) returns a raw byte string; len must be >= 0", "`script_engine.go` `luaMemReadBlock` length check and `lua.LString` return"},
 		{"mem.write_block(addr, bytes) writes a raw byte string and returns nothing", "`script_engine.go` `luaMemWriteBlock` byte loop"},
 		{"mem.fill(addr, len, value) fills bytes, returns nothing, and requires len >= 0", "`script_engine.go` `luaMemFill` length check and write loop"},
+		{"sys.perf_report() returns a string subsystem performance report; it is empty when IE_PERF_ACCT is off or no subsystem counters have recorded work", "`script_engine.go` `luaSysPerfReport`, `perf_accounting_subsys.go` `Report`"},
+		{"sys.perf_reset() resets subsystem performance counters and returns nothing", "`script_engine.go` `luaSysPerfReset`, `perf_accounting_subsys.go` `Reset`"},
 		{"bit32.lshift(x, disp) masks disp to 0..31 and returns number", "`script_engine.go` `registerBit32` `lshift`"},
 		{"bit32.rshift(x, disp) masks disp to 0..31 and returns number", "`script_engine.go` `registerBit32` `rshift`"},
 		{"bit32.arshift(x, disp) masks disp to 0..31, sign-extends, and returns number", "`script_engine.go` `registerBit32` `arshift`"},
@@ -313,6 +315,7 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"dbg.history_horizon() returns snapshots, checkpoints, deltas, capacity, delta_bytes, checkpoint_interval, checkpoint_mib, retained_checkpoints, and devices", "`script_engine.go` `luaDbgHistoryHorizon` table fields"},
 		{"dbg.history_config([opts]) accepts delta_interval, delta_mib, checkpoints, and snapshots as positive table fields", "`script_engine.go` `luaDbgHistoryConfig` option fields and positive-value check"},
 		{"dbg.history_config([opts]) returns delta_interval, delta_mib, checkpoints, and snapshots", "`script_engine.go` `luaDbgHistoryConfig` return table fields"},
+		{"dbg.mmio_stats() returns rows with start, end, name, reads, and writes", "`script_engine.go` `luaDbgMMIOStats`, `mmio_stats.go` `MMIOStatsSnapshot`"},
 		{"media.type() returns sid, psg, ted, ahx, pokey, mod, wav, midi, or none", "`script_engine.go` `mediaTypeToString`, `media_loader.go` MIDI extension detection"},
 	} {
 		facts = append(facts, sdkSourceFact{
@@ -508,9 +511,11 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"Video compositor default scale mode is stretch-fill; F11 toggles non-16:9 sources to aspect-fit.", "`video_compositor.go` `NewVideoCompositor`/`ToggleScaleModeIfNonNative`, `video_compositor_test.go` default-scale regression"},
 		{"Video frame leases are enabled by default and can be disabled with IE_VIDEO_FRAME_LEASES=0.", "`video_compositor.go` `videoFrameLeasesEnabled`, `video_frame_lease.go` `VideoFrameLeaseRing`, and `video_compositor_test.go` lease kill-switch coverage"},
 		{"Frame leases keep compositor handoff buffers stable until release; hardware layers retain leases or stage copies when leases are unavailable.", "`video_frame_lease.go` `Retain`/`Release`, `video_backend_ebiten.go` hardware layer lease retention, and `video_compositor_test.go` handoff stability coverage"},
+		{"FrameGenerationSource lets the compositor skip collect/copy/blend/upload work only after source TickFrame hooks run and only when every enabled source generation is unchanged.", "`video_interface.go` `FrameGenerationSource`, `video_compositor.go` `canSkipUnchangedCompositeLocked`"},
 		{"VideoChip Mode7 honours the BLT_FLAGS BPP field: RGBA32 samples and writes 4-byte pixels, while CLUT8 samples and writes 1-byte palette indices with BPP-aware default strides.", "`video_chip.go` `blitMode7Locked`, `bppFromFlags`, `defaultStrideBPP`, and `video_blitter_test.go` Mode7 CLUT8 coverage"},
 		{"A write that commits VOODOO_TRIANGLE_CMD binds the current Voodoo raster state to that triangle", "`video_voodoo.go` `rasterStateRegister`/`captureRasterStateLocked`/`rasterStateDirty`/`VOODOO_TEX_UPLOAD`, `voodoo_software.go` state-group flush, `voodoo_vulkan.go` software reference fallback, and `video_voodoo_state_batch_test.go` state-stamped batching coverage"},
 		{"Voodoo swap jobs run asynchronously; oversized triangle batches render mid-frame without presentation or swap callbacks, and STATUS exposes busy and SWAPBUF while a presented swap is pending.", "`video_voodoo.go` `executeSwapBufferCmd`/`flushBatchLocked`/`swapWorker`/`getStatus`, `video_voodoo_batch_overflow_test.go` overflow coverage"},
+		{"CPU wait writes park until the next VBlank edge or a latched RTC_MONO_USEC deadline, capped by a 50 ms safety timeout; reads return 0.", "`cpu_wait_mmio.go` `HandleWrite`/`HandleRead` and `cpuWaitSafetyTimeout`"},
 		{"IE_PERF_ACCT=1 enables per-CPU JIT/interpreter time, instruction, subsystem, and deopt counters; disabled accounting avoids atomic hot-path updates.", "`perf_accounting.go` `PerfAcct`, `perf_accounting_subsys.go` subsystem counters, and `jit_deopt_reasons.go` `DeoptStats`"},
 		{"Deopt reasons are unsupported, helper, mmio, smc, interrupt, cache_pressure, and debug.", "`jit_deopt_reasons.go` `deoptReasonNames`"},
 		{"IE64 helper resume is enabled by default and can be disabled with IE64_JIT_RESUME=0, false, off, or no.", "`jit_helper_resume_common.go` `ie64JITResumeEnabled`, `jit_exec.go` resume loop, and `jit_helper_resume_test.go` environment coverage"},

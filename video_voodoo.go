@@ -122,7 +122,7 @@ type VoodooEngine struct {
 	mu  sync.Mutex
 	bus *MachineBus
 
-	// Rendering backend (Vulkan or software fallback)
+	// Rendering backend used by this build profile.
 	backend VoodooBackend
 
 	// Display configuration - lock-free for compositor reads

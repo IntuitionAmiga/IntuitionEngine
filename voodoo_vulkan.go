@@ -175,10 +175,9 @@ type VulkanBackend struct {
 	textureHashSeed maphash.Seed
 	flushCount      uint64
 
-	// True when ClearFramebuffer ran since the last flush. Used on a
-	// GPU-to-software fallback transition: if the guest did not clear,
-	// the stale software colour buffer is seeded from the last GPU
-	// frame before the software rasteriser composites over it.
+	// True when ClearFramebuffer ran since the last flush. No-clear
+	// flushes normally render as standalone Vulkan passes; the optional
+	// load-pass path can use this state to preserve previous GPU content.
 	clearedSinceFlush bool // guest cleared since the last flush
 
 	// Identity of the texture slice last passed to SetTextureData. The

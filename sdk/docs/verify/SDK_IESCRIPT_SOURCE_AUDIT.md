@@ -14,6 +14,7 @@
 | IEScript | api contract | `dbg.history_config([opts]) accepts delta_interval, delta_mib, checkpoints, and snapshots as positive table fields` | `script_engine.go` `luaDbgHistoryConfig` option fields and positive-value check |
 | IEScript | api contract | `dbg.history_config([opts]) returns delta_interval, delta_mib, checkpoints, and snapshots` | `script_engine.go` `luaDbgHistoryConfig` return table fields |
 | IEScript | api contract | `dbg.history_horizon() returns snapshots, checkpoints, deltas, capacity, delta_bytes, checkpoint_interval, checkpoint_mib, retained_checkpoints, and devices` | `script_engine.go` `luaDbgHistoryHorizon` table fields |
+| IEScript | api contract | `dbg.mmio_stats() returns rows with start, end, name, reads, and writes` | `script_engine.go` `luaDbgMMIOStats`, `mmio_stats.go` `MMIOStatsSnapshot` |
 | IEScript | api contract | `media.type() returns sid, psg, ted, ahx, pokey, mod, wav, midi, or none` | `script_engine.go` `mediaTypeToString`, `media_loader.go` MIDI extension detection |
 | IEScript | api contract | `mem.fill(addr, len, value) fills bytes, returns nothing, and requires len >= 0` | `script_engine.go` `luaMemFill` length check and write loop |
 | IEScript | api contract | `mem.read16(addr) returns number and truncates addr to uint32` | `script_engine.go` `luaMemRead16` `uint32(L.CheckInt(1))` |
@@ -24,6 +25,8 @@
 | IEScript | api contract | `mem.write32(addr, value) returns nothing and truncates addr to uint32` | `script_engine.go` `luaMemWrite32` `uint32(L.CheckInt(1))` |
 | IEScript | api contract | `mem.write8(addr, value) returns nothing and truncates addr to uint32` | `script_engine.go` `luaMemWrite8` `uint32(L.CheckInt(1))` |
 | IEScript | api contract | `mem.write_block(addr, bytes) writes a raw byte string and returns nothing` | `script_engine.go` `luaMemWriteBlock` byte loop |
+| IEScript | api contract | `sys.perf_report() returns a string subsystem performance report; it is empty when IE_PERF_ACCT is off or no subsystem counters have recorded work` | `script_engine.go` `luaSysPerfReport`, `perf_accounting_subsys.go` `Report` |
+| IEScript | api contract | `sys.perf_reset() resets subsystem performance counters and returns nothing` | `script_engine.go` `luaSysPerfReset`, `perf_accounting_subsys.go` `Reset` |
 | IEScript | binding | `audio.ahx_is_playing` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `audio.ahx_load` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `audio.ahx_play` | `script_engine.go` `registerModules` binding |
@@ -155,6 +158,7 @@
 | IEScript | binding | `dbg.load_mem_file` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `dbg.load_state` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `dbg.macro` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `dbg.mmio_stats` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `dbg.on_fault` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `dbg.open` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `dbg.poll_faults` | `script_engine.go` `registerModules` binding |
@@ -304,6 +308,8 @@
 | IEScript | binding | `sys.frame_time` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `sys.log` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `sys.mkdir` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `sys.perf_report` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `sys.perf_reset` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `sys.print` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `sys.quit` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `sys.read_file` | `script_engine.go` `registerModules` binding |

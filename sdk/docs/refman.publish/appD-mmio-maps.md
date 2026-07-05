@@ -414,6 +414,7 @@ Extended monitor block (`$F23B0`-`$F23BF`):
 | `+$04` | `SYSINFO_TOTAL_RAM_HI`. |
 | `+$08` | `SYSINFO_ACTIVE_RAM_LO`. |
 | `+$0C` | `SYSINFO_ACTIVE_RAM_HI`. |
+| `+$10` | `SYSINFO_FEATURES`: bit `0` CPU Wait, bit `1` Voodoo command stream, bit `2` MMIO stats enabled. |
 
 ## D.21 HOST appliance block (`$F1400`-`$F140F`)
 
@@ -428,16 +429,31 @@ See Chapter 36 for the subverb enum and the state machine.
 Reachable from IE64, IE32, M68K, and x86; not reachable from the
 6502 or Z80.
 
-## D.22 Voodoo 3D (`$F8000`-`$F87FF`)
+## D.22 CPU Wait (`$F2580`-`$F259F`)
+
+| Offset | Register |
+|--------|----------|
+| `+$00` | `CPU_WAIT_VBLANK`: write parks until the next VBlank rising edge, waiting out any current VBlank first. |
+| `+$04` | `CPU_WAIT_UNTIL_LO`: low `32` bits of the `RTC_MONO_USEC` deadline. |
+| `+$08` | `CPU_WAIT_UNTIL_HI`: high `32` bits of the `RTC_MONO_USEC` deadline. |
+| `+$0C` | `CPU_WAIT_UNTIL_GO`: write parks until monotonic time reaches the latched deadline. |
+
+Waits have a short safety timeout so a programme continues if video
+presentation is unavailable.
+
+## D.23 Voodoo 3D (`$F8000`-`$F87FF`)
 
 Status, framebuffer base, clip rect, triangle setup, texture
 descriptors, fog, alpha, chroma-key, Z-buffer. Documented in
 Chapter 9. Texture RAM at `$D0000`-`$DFFFF`.
 
 `TRIANGLE_CMD` queues a triangle and binds the current raster state
-and uploaded texture to that triangle. Later Voodoo register writes
-affect later triangles only. A full `4096`-triangle batch is flushed
-into the drawing buffer without publishing, then submission continues.
-`SWAP_BUFFER_CMD` hands the current batch to the rasteriser and
-publishes the visible frame. `FBI_BUSY` and `SST_BUSY` report render or
-publish work in progress; `SWAPBUF` reports a pending publish swap.
+and uploaded texture to that triangle. Later Voodoo register writes or
+texture uploads affect later triangles only. A full `4096`-triangle
+batch is flushed into the drawing buffer without publishing, then
+submission continues. `SWAP_BUFFER_CMD` hands the current batch to the
+rasteriser and publishes the visible frame. Up to two swap jobs may be
+active; a later swap waits only when that pipeline is full. `FBI_BUSY`
+and `SST_BUSY` report render or publish work in progress; `SWAPBUF`
+reports a pending publish swap. `MEMFIFO` is a coarse current-batch
+ready field, and `PCIFIFO` is the high-level command-space field.
