@@ -176,7 +176,7 @@ type VulkanBackend struct {
 	// per frame. Content keys turn the steady state into pure cache hits.
 	textureCache    map[uint64]*vulkanCachedTexture
 	textureHashSeed maphash.Seed
-	flushCount   uint64
+	flushCount      uint64
 
 	// True when ClearFramebuffer ran since the last flush. Used on a
 	// GPU-to-software fallback transition: if the guest did not clear,
@@ -207,9 +207,21 @@ type VulkanBackend struct {
 	// texture and marks it dirty; the flush path uploads it at most once
 	// per frame (see ensureLiveTextureUploaded). The image dims track
 	// the allocated GPU image, which now changes only at upload time.
+	// textureSpare double-buffers the pixel bytes so the guest can write
+	// the next texture while the flush uploads the previous one.
 	liveTextureDirty  bool
 	liveTextureImageW int
 	liveTextureImageH int
+	textureSpare      []byte
+
+	// renderMu serialises GPU work and the render bookkeeping
+	// (pipelines, caches, command buffer, fence, output frame, the
+	// software reference backend's frame history). The state mutex is
+	// taken only briefly inside render entry points to snapshot live
+	// registers, so guest-forwarded state writes never wait out a
+	// render or fence. Lock order: renderMu before mutex, never the
+	// reverse.
+	renderMu sync.Mutex
 
 	// Descriptor set for texture
 	descriptorPool      vk.DescriptorPool
@@ -253,6 +265,8 @@ func NewVulkanBackend() (*VulkanBackend, error) {
 
 // Init initializes the Vulkan backend
 func (vb *VulkanBackend) Init(width, height int) error {
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
 
@@ -279,6 +293,8 @@ func (vb *VulkanBackend) Init(width, height int) error {
 }
 
 func (vb *VulkanBackend) Resize(width, height int) error {
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
 
@@ -2005,12 +2021,12 @@ func (vb *VulkanBackend) textureContentKey(tex *VoodooTexture) uint64 {
 // texture); the live-slot fast path covers the newest upload because
 // the engine hands SetTextureData the same immutable snapshot slice it
 // stamps into raster states.
-func (vb *VulkanBackend) descriptorSetForGroup(st *VoodooRasterState) (vk.DescriptorSet, error) {
+func (vb *VulkanBackend) descriptorSetForGroup(st *VoodooRasterState, liveTextureID *byte) (vk.DescriptorSet, error) {
 	if st.Texture == nil || len(st.Texture.Data) == 0 ||
 		st.TextureMode&VOODOO_TEX_ENABLE == 0 {
 		return vb.descriptorSet, nil
 	}
-	if vb.textureDataID != nil && vb.textureDataID == unsafe.SliceData(st.Texture.Data) {
+	if liveTextureID != nil && liveTextureID == unsafe.SliceData(st.Texture.Data) {
 		return vb.descriptorSet, nil
 	}
 	key := vb.textureContentKey(st.Texture)
@@ -2236,16 +2252,24 @@ func (vb *VulkanBackend) SetTextureData(width, height int, data []byte, format i
 }
 
 // ensureLiveTextureUploaded performs the deferred live-slot texture
-// upload. Called with the backend mutex held, on the flush path, so
-// the QueueWaitIdle inside the upload lands on the swap worker instead
-// of the guest thread.
+// upload. Called with renderMu held, on the flush path, so the
+// QueueWaitIdle inside the upload lands on the swap worker instead of
+// the guest thread. The pixel bytes are taken over under the state
+// mutex (swapped against the spare buffer), so the guest can record
+// the next texture while this one uploads.
 func (vb *VulkanBackend) ensureLiveTextureUploaded() {
+	vb.mutex.Lock()
 	if !vb.liveTextureDirty || !vb.initialized {
+		vb.mutex.Unlock()
 		return
 	}
 	vb.liveTextureDirty = false
 	width, height := vb.textureWidth, vb.textureHeight
-	if width <= 0 || height <= 0 || len(vb.textureData) == 0 {
+	data := vb.textureData
+	vb.textureData, vb.textureSpare = vb.textureSpare[:0], data
+	vb.mutex.Unlock()
+
+	if width <= 0 || height <= 0 || len(data) == 0 {
 		return
 	}
 	if width != vb.liveTextureImageW || height != vb.liveTextureImageH {
@@ -2256,7 +2280,7 @@ func (vb *VulkanBackend) ensureLiveTextureUploaded() {
 		vb.liveTextureImageW = width
 		vb.liveTextureImageH = height
 	}
-	if err := vb.uploadTextureData(vb.textureData, width, height); err != nil {
+	if err := vb.uploadTextureData(data, width, height); err != nil {
 		return
 	}
 	vb.updateDescriptorSet()
@@ -2312,10 +2336,38 @@ func (vb *VulkanBackend) SetFogState(fogMode, fogColor uint32) {
 }
 
 // FlushTriangles renders all triangles
+// vulkanFlushState is the live-register snapshot a flush renders with.
+// Captured under the state mutex at flush entry so the render itself
+// runs without blocking guest state writes.
+type vulkanFlushState struct {
+	fbzMode          uint32
+	scissor          vk.Rect2D
+	push             VoodooPushConstants
+	clearColorPacked uint32
+	clearColor       [4]float32
+	depthClearValue  float32
+	liveTextureID    *byte
+}
+
+func (vb *VulkanBackend) captureFlushState() vulkanFlushState {
+	vb.mutex.RLock()
+	defer vb.mutex.RUnlock()
+	return vulkanFlushState{
+		fbzMode:          vb.fbzMode,
+		scissor:          vb.scissor,
+		push:             vb.livePushConstants(),
+		clearColorPacked: vb.clearColorPacked,
+		clearColor:       vb.clearColor,
+		depthClearValue:  vb.depthClearValue,
+		liveTextureID:    vb.textureDataID,
+	}
+}
+
 func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
-	vb.flushTrianglesLocked(triangles)
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
+	fs := vb.captureFlushState()
+	vb.flushTrianglesLocked(triangles, &fs)
 }
 
 // FlushTrianglesSync renders the batch and waits for its GPU work
@@ -2323,15 +2375,18 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 // (texture upload, resource destroy) can slip between the submit and
 // the wait. Used by the swap worker's render-only overflow path.
 func (vb *VulkanBackend) FlushTrianglesSync(triangles []VoodooTriangle) {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
-	vb.flushTrianglesLocked(triangles)
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
+	fs := vb.captureFlushState()
+	vb.flushTrianglesLocked(triangles, &fs)
 	if vb.initialized && !vb.presentSoftwareFrame {
 		vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
 	}
 }
 
-func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle) {
+// flushTrianglesLocked renders a batch. The caller holds renderMu; all
+// live-register inputs arrive in fs, so the state mutex is not needed.
+func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vulkanFlushState) {
 	if !vb.initialized {
 		vb.softwareClearedSinceFlush = false
 		vb.software.FlushTriangles(triangles)
@@ -2383,16 +2438,16 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle) {
 	// GPU frame: record its inputs so a later no-clear fallback can
 	// replay it in software. The caller reuses the triangle slice, so
 	// copy the values (snapshots they reference are immutable).
-	vb.lastFlushClear = vb.clearColorPacked
+	vb.lastFlushClear = fs.clearColorPacked
 	vb.lastFlushDepth = float32(math.MaxFloat32)
-	if vb.depthClearValue == 0 {
+	if fs.depthClearValue == 0 {
 		vb.lastFlushDepth = 0
 	}
 	vb.lastFlushTriangles = append(vb.lastFlushTriangles[:0], triangles...)
 
 	// If no triangles, still need to render an empty frame with clear color
 	if len(triangles) == 0 {
-		vb.renderEmptyFrame()
+		vb.renderEmptyFrame(fs)
 		return
 	}
 
@@ -2421,7 +2476,7 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle) {
 		if len(groups) == 0 || groups[len(groups)-1].state != st {
 			groups = append(groups, voodooDrawGroup{state: st, firstVertex: uint32(len(vertices))})
 		}
-		fbzMode := vb.fbzMode
+		fbzMode := fs.fbzMode
 		if st != nil {
 			fbzMode = st.FbzMode
 		}
@@ -2449,8 +2504,8 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle) {
 		if g.state == nil {
 			g.pipeline = vb.pipeline
 			g.descSet = vb.descriptorSet
-			g.scissor = vb.scissor
-			g.push = vb.livePushConstants()
+			g.scissor = fs.scissor
+			g.push = fs.push
 			continue
 		}
 		pipeline, err := vb.getOrCreatePipeline(PipelineKeyFromRegisters(g.state.FbzMode, g.state.AlphaMode))
@@ -2458,7 +2513,7 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle) {
 			renderInSoftware()
 			return
 		}
-		descSet, err := vb.descriptorSetForGroup(g.state)
+		descSet, err := vb.descriptorSetForGroup(g.state, fs.liveTextureID)
 		if err != nil {
 			renderInSoftware()
 			return
@@ -2488,10 +2543,10 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle) {
 	}
 	vk.BeginCommandBuffer(vb.commandBuffer, &beginInfo)
 
-	// Begin render pass with stored clear color and depth clear value
+	// Begin render pass with the snapshot clear color and depth clear value
 	clearValues := []vk.ClearValue{
-		vk.NewClearValue([]float32{vb.clearColor[0], vb.clearColor[1], vb.clearColor[2], vb.clearColor[3]}),
-		vk.NewClearDepthStencil(vb.depthClearValue, 0),
+		vk.NewClearValue([]float32{fs.clearColor[0], fs.clearColor[1], fs.clearColor[2], fs.clearColor[3]}),
+		vk.NewClearDepthStencil(fs.depthClearValue, 0),
 	}
 
 	renderPassBegin := vk.RenderPassBeginInfo{
@@ -2604,7 +2659,7 @@ func voodooScissorForState(st *VoodooRasterState, width, height int) vk.Rect2D {
 }
 
 // renderEmptyFrame renders a frame with just the clear color (no triangles)
-func (vb *VulkanBackend) renderEmptyFrame() {
+func (vb *VulkanBackend) renderEmptyFrame(fs *vulkanFlushState) {
 	// Wait for previous frame
 	vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
 	vk.ResetFences(vb.device, 1, []vk.Fence{vb.fence})
@@ -2648,27 +2703,33 @@ func (vb *VulkanBackend) renderEmptyFrame() {
 	vk.QueueSubmit(vb.graphicsQueue, 1, []vk.SubmitInfo{submitInfo}, vb.fence)
 }
 
-// ClearFramebuffer clears the framebuffer
+// ClearFramebuffer clears the framebuffer. The engine issues clears
+// only when no render job is in flight, so taking renderMu here never
+// waits in practice; it keeps the flush's render bookkeeping
+// (softwareClearedSinceFlush, reference-buffer contents) exclusively
+// under the render lock.
 func (vb *VulkanBackend) ClearFramebuffer(color uint32) {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
 
 	vb.software.ClearFramebuffer(color)
 	vb.softwareClearedSinceFlush = true
-	vb.clearColorPacked = color
 
+	vb.mutex.Lock()
+	vb.clearColorPacked = color
 	// Store clear color for Vulkan (ARGB format to RGBA floats)
 	vb.clearColor[0] = float32((color>>16)&0xFF) / 255.0 // R
 	vb.clearColor[1] = float32((color>>8)&0xFF) / 255.0  // G
 	vb.clearColor[2] = float32(color&0xFF) / 255.0       // B
 	vb.clearColor[3] = 1.0                               // A (opaque)
 	vb.needsClear = true
+	vb.mutex.Unlock()
 }
 
 // SwapBuffers presents the frame
 func (vb *VulkanBackend) SwapBuffers(waitVSync bool) {
-	vb.mutex.Lock()
-	defer vb.mutex.Unlock()
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
 
 	// Phase 6: GPU shaders now handle fog and dithering natively
 
@@ -2735,8 +2796,8 @@ func (vb *VulkanBackend) readbackFramebuffer() {
 
 // GetFrame returns the rendered frame
 func (vb *VulkanBackend) GetFrame() []byte {
-	vb.mutex.RLock()
-	defer vb.mutex.RUnlock()
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
 
 	// Phase 6: GPU shaders now handle fog and dithering natively
 
@@ -2840,6 +2901,8 @@ func hasVisibleVoodooPixels(frame []byte) bool {
 }
 
 func (vb *VulkanBackend) Reset() {
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
 
@@ -2888,6 +2951,8 @@ func (vb *VulkanBackend) Reset() {
 
 // Destroy cleans up all resources
 func (vb *VulkanBackend) Destroy() {
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
 	vb.mutex.Lock()
 	defer vb.mutex.Unlock()
 

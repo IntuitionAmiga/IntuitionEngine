@@ -241,15 +241,13 @@ type VoodooEngine struct {
 }
 
 // voodooMaxSwapJobsInFlight bounds the swap pipeline depth. Depth 2
-// would let the guest build frame N+1 while frame N renders, but
-// measures slower for render-heavy guests: the render then overlaps
-// the guest's build phase, and the backend mutex is held across the
-// whole software raster / Vulkan fence, so the guest's forwarded
-// register writes and texture uploads stall mid-frame. Until backend
-// rendering stops holding the lock across the full frame, keep depth 1
-// (render serialised before the next build, so the guest never
-// contends mid-build).
-const voodooMaxSwapJobsInFlight = 1
+// lets the guest build frame N+1 while frame N renders. This is only
+// profitable now that both backends carry render inputs in per-flush
+// snapshots and hold their state locks only briefly: with the earlier
+// whole-raster locking, the overlapped render stalled the guest's
+// forwarded register writes mid-frame and depth 2 measured slower
+// than depth 1.
+const voodooMaxSwapJobsInFlight = 2
 
 // voodooSwapJob carries one frame's rendering work to the swap worker.
 // All referenced data is owned by the job (the triangle slice is handed

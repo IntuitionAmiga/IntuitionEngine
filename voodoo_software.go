@@ -45,7 +45,16 @@ import (
 
 // VoodooSoftwareBackend implements software rasterization as a fallback
 type VoodooSoftwareBackend struct {
+	// mutex guards the live register state (the Set* fields below).
+	// Setters take only this lock, so guest-forwarded state writes never
+	// wait for an in-flight raster.
 	mutex sync.RWMutex
+
+	// fbMu guards the framebuffers (color/depth/front/back and their
+	// dimensions). Rasterisation runs entirely under fbMu with state
+	// carried in per-flush snapshots, so a full-frame raster blocks only
+	// other framebuffer operations, never state writes.
+	fbMu sync.Mutex
 
 	// Framebuffer
 	width, height int
@@ -104,6 +113,8 @@ func NewVoodooSoftwareBackend() *VoodooSoftwareBackend {
 func (b *VoodooSoftwareBackend) Init(width, height int) error {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
+	b.fbMu.Lock()
+	defer b.fbMu.Unlock()
 
 	b.width = width
 	b.height = height
@@ -140,6 +151,8 @@ func (b *VoodooSoftwareBackend) Resize(width, height int) error {
 func (b *VoodooSoftwareBackend) Reset() {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
+	b.fbMu.Lock()
+	defer b.fbMu.Unlock()
 
 	for i := range b.colorBuffer {
 		b.colorBuffer[i] = 0
@@ -445,30 +458,31 @@ func combineVoodooColors(fbzColorPath uint32, colorPathSet bool, vertR, vertG, v
 
 // FlushTriangles rasterizes all triangles in the batch
 func (b *VoodooSoftwareBackend) FlushTriangles(triangles []VoodooTriangle) {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
-
 	// Each triangle rasterises under the state bound at its
 	// triangleCMD write (hardware-accurate binding); consecutive
-	// triangles share snapshots, so state is re-applied only on
-	// group boundaries. Triangles without a snapshot (nil State)
-	// keep the legacy behaviour of using the current global state.
+	// triangles share snapshots, so the working state is rebuilt only
+	// on group boundaries. Triangles without a snapshot (nil State)
+	// use the live register state captured on entry.
 	//
-	// The backend's fields on entry are the live register state
-	// (the engine forwards state writes immediately); restore them
-	// afterwards so registers written after the last triangleCMD
-	// survive the flush for subsequent operations.
-	var applied *VoodooRasterState
+	// State is carried in a per-flush snapshot rather than installed
+	// into the backend fields, so the raster holds only the
+	// framebuffer lock and guest-forwarded state writes proceed
+	// concurrently with the pixel loop.
+	b.mutex.RLock()
 	live := b.captureLiveStateLocked()
+	b.mutex.RUnlock()
+
+	b.fbMu.Lock()
+	defer b.fbMu.Unlock()
+
+	var applied *VoodooRasterState
+	state := live
 	for i := range triangles {
 		if st := triangles[i].State; st != nil && st != applied {
-			b.applyRasterStateLocked(st)
+			state = softwareLiveStateFromSnapshot(st)
 			applied = st
 		}
-		b.rasterizeTriangle(&triangles[i])
-	}
-	if applied != nil {
-		b.restoreLiveStateLocked(live)
+		b.rasterizeTriangle(&triangles[i], &state)
 	}
 }
 
@@ -512,73 +526,54 @@ func (b *VoodooSoftwareBackend) captureLiveStateLocked() softwareLiveState {
 	}
 }
 
-func (b *VoodooSoftwareBackend) restoreLiveStateLocked(s softwareLiveState) {
-	b.fbzMode, b.alphaMode = s.fbzMode, s.alphaMode
-	b.pipelineKey = s.pipelineKey
-	b.fbzColorPath, b.colorPathSet = s.fbzColorPath, s.colorPathSet
-	b.textureMode, b.textureEnabled = s.textureMode, s.textureEnabled
-	b.textureClampS, b.textureClampT = s.textureClampS, s.textureClampT
-	b.fogMode, b.fogColor = s.fogMode, s.fogColor
-	b.chromaKey, b.chromaRange = s.chromaKey, s.chromaRange
-	b.stipple = s.stipple
-	b.scissorLeft, b.scissorTop = s.scissorLeft, s.scissorTop
-	b.scissorRight, b.scissorBottom = s.scissorRight, s.scissorBottom
-	b.slopes, b.slopesValid = s.slopes, s.slopesValid
-	b.textureData, b.textureWidth = s.textureData, s.textureWidth
-	b.textureHeight, b.textureFormat = s.textureHeight, s.textureFormat
-}
-
-// applyRasterStateLocked installs a raster state snapshot. Field
-// assignments mirror the individual backend setters; the caller holds
-// b.mutex. Snapshot textures are immutable, so Data is referenced
-// without copying.
-func (b *VoodooSoftwareBackend) applyRasterStateLocked(st *VoodooRasterState) {
-	b.fbzMode = st.FbzMode
-	b.alphaMode = st.AlphaMode
-	b.pipelineKey = PipelineKeyFromRegisters(st.FbzMode, st.AlphaMode)
-	b.fbzColorPath = st.FbzColorPath
-	b.colorPathSet = st.ColorPathWritten
-	b.textureMode = st.TextureMode
-	b.textureEnabled = st.TextureMode&1 != 0
-	b.textureClampS = st.TextureMode&(1<<5) != 0
-	b.textureClampT = st.TextureMode&(1<<6) != 0
-	b.fogMode = st.FogMode
-	b.fogColor = st.FogColor
-	b.chromaKey = st.ChromaKey
-	b.chromaRange = st.ChromaRange
-	b.stipple = st.Stipple
-	b.scissorLeft = st.ClipLeft
-	b.scissorRight = st.ClipRight
-	b.scissorTop = st.ClipTop
-	b.scissorBottom = st.ClipBottom
-	b.slopes = st.Slopes
-	b.slopesValid = st.SlopesValid
-	if st.Texture != nil {
-		b.textureData = st.Texture.Data
-		b.textureWidth = st.Texture.Width
-		b.textureHeight = st.Texture.Height
-		b.textureFormat = st.Texture.Format
-	} else {
-		b.textureData = nil
-		b.textureWidth = 0
-		b.textureHeight = 0
-		b.textureFormat = 0
+// softwareLiveStateFromSnapshot builds the raster working state from a
+// raster-state snapshot. Field derivations mirror the individual
+// backend setters. Snapshot textures are immutable, so Data is
+// referenced without copying.
+func softwareLiveStateFromSnapshot(st *VoodooRasterState) softwareLiveState {
+	s := softwareLiveState{
+		fbzMode:        st.FbzMode,
+		alphaMode:      st.AlphaMode,
+		pipelineKey:    PipelineKeyFromRegisters(st.FbzMode, st.AlphaMode),
+		fbzColorPath:   st.FbzColorPath,
+		colorPathSet:   st.ColorPathWritten,
+		textureMode:    st.TextureMode,
+		textureEnabled: st.TextureMode&1 != 0,
+		textureClampS:  st.TextureMode&(1<<5) != 0,
+		textureClampT:  st.TextureMode&(1<<6) != 0,
+		fogMode:        st.FogMode,
+		fogColor:       st.FogColor,
+		chromaKey:      st.ChromaKey, chromaRange: st.ChromaRange,
+		stipple:     st.Stipple,
+		scissorLeft: st.ClipLeft, scissorRight: st.ClipRight,
+		scissorTop: st.ClipTop, scissorBottom: st.ClipBottom,
+		slopes: st.Slopes, slopesValid: st.SlopesValid,
 	}
+	if st.Texture != nil {
+		s.textureData = st.Texture.Data
+		s.textureWidth = st.Texture.Width
+		s.textureHeight = st.Texture.Height
+		s.textureFormat = st.Texture.Format
+	}
+	return s
 }
 
 // ClearFramebuffer clears the color and depth buffers
 func (b *VoodooSoftwareBackend) ClearFramebuffer(color uint32) {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
-
 	// Clear depth based on the current depth function
+	b.mutex.RLock()
+	depthCompareOp := b.pipelineKey.DepthCompareOp
+	b.mutex.RUnlock()
 	var depthClearValue float32
-	switch b.pipelineKey.DepthCompareOp {
+	switch depthCompareOp {
 	case VOODOO_DEPTH_GREATER, VOODOO_DEPTH_GREATEREQUAL:
 		depthClearValue = 0.0
 	default:
 		depthClearValue = math.MaxFloat32
 	}
+
+	b.fbMu.Lock()
+	defer b.fbMu.Unlock()
 	b.clearLocked(color, depthClearValue)
 }
 
@@ -586,8 +581,8 @@ func (b *VoodooSoftwareBackend) ClearFramebuffer(color uint32) {
 // Used when replaying a recorded GPU flush: the depth mode current at
 // that flush may differ from the mode current now.
 func (b *VoodooSoftwareBackend) ClearFramebufferWithDepth(color uint32, depthClearValue float32) {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
+	b.fbMu.Lock()
+	defer b.fbMu.Unlock()
 	b.clearLocked(color, depthClearValue)
 }
 
@@ -618,8 +613,8 @@ func (b *VoodooSoftwareBackend) clearLocked(color uint32, depthClearValue float3
 
 // SwapBuffers swaps front and back buffers
 func (b *VoodooSoftwareBackend) SwapBuffers(waitVSync bool) {
-	b.mutex.Lock()
-	defer b.mutex.Unlock()
+	b.fbMu.Lock()
+	defer b.fbMu.Unlock()
 
 	// Copy color buffer to front buffer
 	copy(b.frontBuffer, b.colorBuffer)
@@ -627,8 +622,8 @@ func (b *VoodooSoftwareBackend) SwapBuffers(waitVSync bool) {
 
 // GetFrame returns the current front buffer
 func (b *VoodooSoftwareBackend) GetFrame() []byte {
-	b.mutex.RLock()
-	defer b.mutex.RUnlock()
+	b.fbMu.Lock()
+	defer b.fbMu.Unlock()
 
 	return b.frontBuffer
 }
@@ -637,6 +632,8 @@ func (b *VoodooSoftwareBackend) GetFrame() []byte {
 func (b *VoodooSoftwareBackend) Destroy() {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
+	b.fbMu.Lock()
+	defer b.fbMu.Unlock()
 
 	b.colorBuffer = nil
 	b.depthBuffer = nil
@@ -668,12 +665,14 @@ type voodooTriangleSetup struct {
 	alphaTestFunc                     int
 	alphaTestRef                      float32
 	chromaKeyEnable                   bool
+	chromaKey, chromaRange            uint32
 	alphaBlendEnable                  bool
 	srcBlendFactor, dstBlendFactor    int
 	fogEnable                         bool
 	fogR, fogG, fogB                  float32
 	ditherEnable, dither2x2           bool
 	stippleEnable                     bool
+	stipple                           uint32
 	yFlip                             bool
 	forceOpaqueAlpha                  bool
 	targets                           [][]byte
@@ -695,14 +694,16 @@ type voodooTriangleSetup struct {
 	dsdx, dsdy, dtdx, dtdy             float32
 }
 
-// rasterizeTriangle performs software triangle rasterization
-func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
+// rasterizeTriangle performs software triangle rasterization. Raster
+// state comes from the caller's snapshot; the backend contributes only
+// the framebuffers (the caller holds fbMu).
+func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle, st *softwareLiveState) {
 	v0 := &tri.Vertices[0]
 	v1 := &tri.Vertices[1]
 	v2 := &tri.Vertices[2]
 
 	// Check if clipping is enabled
-	enableClipping := (b.fbzMode & VOODOO_FBZ_CLIPPING) != 0
+	enableClipping := (st.fbzMode & VOODOO_FBZ_CLIPPING) != 0
 
 	// Compute bounding box
 	minX := int(math.Floor(float64(min3f(v0.X, v1.X, v2.X))))
@@ -726,17 +727,17 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 
 	// Clip to scissor rectangle if enabled
 	if enableClipping {
-		if minX < b.scissorLeft {
-			minX = b.scissorLeft
+		if minX < st.scissorLeft {
+			minX = st.scissorLeft
 		}
-		if minY < b.scissorTop {
-			minY = b.scissorTop
+		if minY < st.scissorTop {
+			minY = st.scissorTop
 		}
-		if maxX > b.scissorRight {
-			maxX = b.scissorRight
+		if maxX > st.scissorRight {
+			maxX = st.scissorRight
 		}
-		if maxY > b.scissorBottom {
-			maxY = b.scissorBottom
+		if maxY > st.scissorBottom {
+			maxY = st.scissorBottom
 		}
 	}
 
@@ -761,55 +762,58 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle) {
 		e2: v1.Y - v0.Y, f2: v1.X - v0.X,
 		minX: minX, maxX: maxX,
 
-		depthEnable:      (b.fbzMode & VOODOO_FBZ_DEPTH_ENABLE) != 0,
-		depthWrite:       (b.fbzMode & VOODOO_FBZ_DEPTH_WRITE) != 0,
-		rgbWrite:         (b.fbzMode & VOODOO_FBZ_RGB_WRITE) != 0,
-		depthFunc:        int((b.fbzMode >> 5) & 0x7),
-		alphaTestEnable:  (b.alphaMode & VOODOO_ALPHA_TEST_EN) != 0,
-		alphaTestFunc:    int((b.alphaMode >> 1) & 0x7),
-		alphaTestRef:     float32((b.alphaMode>>24)&0xFF) / 255.0,
-		chromaKeyEnable:  (b.fbzMode & VOODOO_FBZ_CHROMAKEY) != 0,
-		alphaBlendEnable: (b.alphaMode & VOODOO_ALPHA_BLEND_EN) != 0,
-		srcBlendFactor:   b.pipelineKey.SrcBlendFactor,
-		dstBlendFactor:   b.pipelineKey.DstBlendFactor,
-		fogEnable:        (b.fogMode & VOODOO_FOG_ENABLE) != 0,
-		ditherEnable:     (b.fbzMode & VOODOO_FBZ_DITHER) != 0,
-		dither2x2:        (b.fbzMode & VOODOO_FBZ_DITHER_2X2) != 0,
-		stippleEnable:    (b.fbzMode & VOODOO_FBZ_STIPPLE) != 0,
-		yFlip:            b.fbzMode&VOODOO_FBZ_Y_ORIGIN != 0,
-		forceOpaqueAlpha: b.fbzMode&VOODOO_FBZ_ALPHA_PLANES == 0,
-		targets:          b.drawTargets(),
-		texActive:        b.textureEnabled && b.textureData != nil,
-		texPerspective:   b.textureMode&VOODOO_TEX_PERSPECTIVE != 0,
-		texData:          b.textureData,
-		texWidth:         b.textureWidth,
-		texHeight:        b.textureHeight,
-		texClampS:        b.textureClampS,
-		texClampT:        b.textureClampT,
-		fbzColorPath:     b.fbzColorPath,
-		colorPathSet:     b.colorPathSet,
-		slopesValid:      b.slopesValid,
+		depthEnable:      (st.fbzMode & VOODOO_FBZ_DEPTH_ENABLE) != 0,
+		depthWrite:       (st.fbzMode & VOODOO_FBZ_DEPTH_WRITE) != 0,
+		rgbWrite:         (st.fbzMode & VOODOO_FBZ_RGB_WRITE) != 0,
+		depthFunc:        int((st.fbzMode >> 5) & 0x7),
+		alphaTestEnable:  (st.alphaMode & VOODOO_ALPHA_TEST_EN) != 0,
+		alphaTestFunc:    int((st.alphaMode >> 1) & 0x7),
+		alphaTestRef:     float32((st.alphaMode>>24)&0xFF) / 255.0,
+		chromaKeyEnable:  (st.fbzMode & VOODOO_FBZ_CHROMAKEY) != 0,
+		chromaKey:        st.chromaKey,
+		chromaRange:      st.chromaRange,
+		alphaBlendEnable: (st.alphaMode & VOODOO_ALPHA_BLEND_EN) != 0,
+		srcBlendFactor:   st.pipelineKey.SrcBlendFactor,
+		dstBlendFactor:   st.pipelineKey.DstBlendFactor,
+		fogEnable:        (st.fogMode & VOODOO_FOG_ENABLE) != 0,
+		ditherEnable:     (st.fbzMode & VOODOO_FBZ_DITHER) != 0,
+		dither2x2:        (st.fbzMode & VOODOO_FBZ_DITHER_2X2) != 0,
+		stippleEnable:    (st.fbzMode & VOODOO_FBZ_STIPPLE) != 0,
+		stipple:          st.stipple,
+		yFlip:            st.fbzMode&VOODOO_FBZ_Y_ORIGIN != 0,
+		forceOpaqueAlpha: st.fbzMode&VOODOO_FBZ_ALPHA_PLANES == 0,
+		targets:          b.drawTargetsFor(st.fbzMode),
+		texActive:        st.textureEnabled && st.textureData != nil,
+		texPerspective:   st.textureMode&VOODOO_TEX_PERSPECTIVE != 0,
+		texData:          st.textureData,
+		texWidth:         st.textureWidth,
+		texHeight:        st.textureHeight,
+		texClampS:        st.textureClampS,
+		texClampT:        st.textureClampT,
+		fbzColorPath:     st.fbzColorPath,
+		colorPathSet:     st.colorPathSet,
+		slopesValid:      st.slopesValid,
 	}
 	if setup.fogEnable {
-		setup.fogR = float32((b.fogColor>>16)&0xFF) / 255.0
-		setup.fogG = float32((b.fogColor>>8)&0xFF) / 255.0
-		setup.fogB = float32(b.fogColor&0xFF) / 255.0
+		setup.fogR = float32((st.fogColor>>16)&0xFF) / 255.0
+		setup.fogG = float32((st.fogColor>>8)&0xFF) / 255.0
+		setup.fogB = float32(st.fogColor&0xFF) / 255.0
 	}
 	if setup.slopesValid {
-		setup.drdx = fixed12_12ToFloat(b.slopes.DRDX)
-		setup.drdy = fixed12_12ToFloat(b.slopes.DRDY)
-		setup.dgdx = fixed12_12ToFloat(b.slopes.DGDX)
-		setup.dgdy = fixed12_12ToFloat(b.slopes.DGDY)
-		setup.dbdx = fixed12_12ToFloat(b.slopes.DBDX)
-		setup.dbdy = fixed12_12ToFloat(b.slopes.DBDY)
-		setup.dadx = fixed12_12ToFloat(b.slopes.DADX)
-		setup.dady = fixed12_12ToFloat(b.slopes.DADY)
-		setup.dzdx = fixed20_12ToFloat(b.slopes.DZDX)
-		setup.dzdy = fixed20_12ToFloat(b.slopes.DZDY)
-		setup.dsdx = fixed14_18ToFloat(b.slopes.DSDX)
-		setup.dsdy = fixed14_18ToFloat(b.slopes.DSDY)
-		setup.dtdx = fixed14_18ToFloat(b.slopes.DTDX)
-		setup.dtdy = fixed14_18ToFloat(b.slopes.DTDY)
+		setup.drdx = fixed12_12ToFloat(st.slopes.DRDX)
+		setup.drdy = fixed12_12ToFloat(st.slopes.DRDY)
+		setup.dgdx = fixed12_12ToFloat(st.slopes.DGDX)
+		setup.dgdy = fixed12_12ToFloat(st.slopes.DGDY)
+		setup.dbdx = fixed12_12ToFloat(st.slopes.DBDX)
+		setup.dbdy = fixed12_12ToFloat(st.slopes.DBDY)
+		setup.dadx = fixed12_12ToFloat(st.slopes.DADX)
+		setup.dady = fixed12_12ToFloat(st.slopes.DADY)
+		setup.dzdx = fixed20_12ToFloat(st.slopes.DZDX)
+		setup.dzdy = fixed20_12ToFloat(st.slopes.DZDY)
+		setup.dsdx = fixed14_18ToFloat(st.slopes.DSDX)
+		setup.dsdy = fixed14_18ToFloat(st.slopes.DSDY)
+		setup.dtdx = fixed14_18ToFloat(st.slopes.DTDX)
+		setup.dtdy = fixed14_18ToFloat(st.slopes.DTDY)
 	}
 
 	// Parallelise large triangles across row bands. Bands write disjoint
@@ -878,7 +882,7 @@ func (b *VoodooSoftwareBackend) rasterizeRows(s *voodooTriangleSetup, minY, maxY
 			}
 			inside = true
 
-			if s.stippleEnable && !b.stippleAllowsPixel(x, y) {
+			if s.stippleEnable && !stippleAllowsVoodooPixel(s.stipple, x, y) {
 				continue
 			}
 
@@ -941,7 +945,7 @@ func (b *VoodooSoftwareBackend) rasterizeRows(s *voodooTriangleSetup, minY, maxY
 			}
 
 			// Chroma key test (discard if matches key color)
-			if s.chromaKeyEnable && b.chromaKeyTest(r, g, bVal) {
+			if s.chromaKeyEnable && voodooChromaTest(s.chromaKey, s.chromaRange, r, g, bVal) {
 				continue
 			}
 
@@ -1021,9 +1025,11 @@ func (b *VoodooSoftwareBackend) interpolateTextureCoords(w0, w1, w2 float32, v0,
 	return s, t
 }
 
-func (b *VoodooSoftwareBackend) drawTargets() [][]byte {
-	drawFront := b.fbzMode&VOODOO_FBZ_DRAW_FRONT != 0
-	drawBack := b.fbzMode&VOODOO_FBZ_DRAW_BACK != 0
+// drawTargetsFor resolves the colour buffers a raster writes, from the
+// flush snapshot's fbzMode. The caller holds fbMu.
+func (b *VoodooSoftwareBackend) drawTargetsFor(fbzMode uint32) [][]byte {
+	drawFront := fbzMode&VOODOO_FBZ_DRAW_FRONT != 0
+	drawBack := fbzMode&VOODOO_FBZ_DRAW_BACK != 0
 	switch {
 	case drawFront && drawBack:
 		return [][]byte{b.colorBuffer, b.frontBuffer}
@@ -1088,28 +1094,34 @@ func abs32(x float32) float32 {
 	return x
 }
 
-// chromaKeyTest checks if a color matches the chroma key (returns true if should discard)
+// chromaKeyTest checks the live chroma state; the raster loop uses the
+// parameterised voodooChromaTest with per-flush snapshot state.
 func (b *VoodooSoftwareBackend) chromaKeyTest(r, g, bVal float32) bool {
-	if b.chromaRange != 0 {
+	return voodooChromaTest(b.chromaKey, b.chromaRange, r, g, bVal)
+}
+
+// voodooChromaTest checks if a color matches the chroma key (returns true if should discard)
+func voodooChromaTest(chromaKey, chromaRange uint32, r, g, bVal float32) bool {
+	if chromaRange != 0 {
 		r8 := int(clampf(r, 0, 1)*255 + 0.5)
 		g8 := int(clampf(g, 0, 1)*255 + 0.5)
 		b8 := int(clampf(bVal, 0, 1)*255 + 0.5)
 
-		minR := int((b.chromaKey >> 16) & 0xFF)
-		minG := int((b.chromaKey >> 8) & 0xFF)
-		minB := int(b.chromaKey & 0xFF)
-		maxR := int((b.chromaRange >> 16) & 0xFF)
-		maxG := int((b.chromaRange >> 8) & 0xFF)
-		maxB := int(b.chromaRange & 0xFF)
+		minR := int((chromaKey >> 16) & 0xFF)
+		minG := int((chromaKey >> 8) & 0xFF)
+		minB := int(chromaKey & 0xFF)
+		maxR := int((chromaRange >> 16) & 0xFF)
+		maxG := int((chromaRange >> 8) & 0xFF)
+		maxB := int(chromaRange & 0xFF)
 		return r8 >= minR && r8 <= maxR &&
 			g8 >= minG && g8 <= maxG &&
 			b8 >= minB && b8 <= maxB
 	}
 
 	const inv255 = float32(1.0 / 255.0)
-	keyR := float32((b.chromaKey>>16)&0xFF) * inv255
-	keyG := float32((b.chromaKey>>8)&0xFF) * inv255
-	keyB := float32(b.chromaKey&0xFF) * inv255
+	keyR := float32((chromaKey>>16)&0xFF) * inv255
+	keyG := float32((chromaKey>>8)&0xFF) * inv255
+	keyB := float32(chromaKey&0xFF) * inv255
 
 	const tolerance = inv255
 
@@ -1120,12 +1132,12 @@ func (b *VoodooSoftwareBackend) chromaKeyTest(r, g, bVal float32) bool {
 	return rMatch && gMatch && bMatch
 }
 
-func (b *VoodooSoftwareBackend) stippleAllowsPixel(x, y int) bool {
-	if b.stipple == 0 {
+func stippleAllowsVoodooPixel(stipple uint32, x, y int) bool {
+	if stipple == 0 {
 		return true
 	}
 	bit := uint((y&3)*8 + (x & 7))
-	return (b.stipple & (1 << bit)) != 0
+	return (stipple & (1 << bit)) != 0
 }
 
 // bayer4x4Flat is a flattened 4x4 Bayer ordered dither matrix (normalized 0.0-1.0)

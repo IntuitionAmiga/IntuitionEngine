@@ -3328,8 +3328,8 @@ func TestSDKCompanionDocs_ArchitectureVoodooStateBindingMatchesSource(t *testing
 	}
 	for _, needle := range []string{
 		"if st := triangles[i].State; st != nil && st != applied",
-		"b.applyRasterStateLocked(st)",
-		"b.restoreLiveStateLocked(live)",
+		"state = softwareLiveStateFromSnapshot(st)",
+		"b.rasterizeTriangle(&triangles[i], &state)",
 	} {
 		if !strings.Contains(software, needle) {
 			t.Fatalf("voodoo_software.go state-group flush changed; review architecture.md Voodoo text: %s", needle)
