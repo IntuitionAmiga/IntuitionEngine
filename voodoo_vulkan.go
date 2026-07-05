@@ -42,8 +42,11 @@ Software Backend:
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
+	"hash/maphash"
 	"math"
+	"os"
 	"sync"
 	"unsafe"
 
@@ -165,7 +168,14 @@ type VulkanBackend struct {
 	// the engine's immutable texture snapshots; each entry owns a GPU
 	// image and descriptor set. Bounded by voodooTextureCacheCap with
 	// least-recently-used eviction.
-	textureCache map[*VoodooTexture]*vulkanCachedTexture
+	// Snapshot textures are cached by CONTENT (dims/format/pixels), not
+	// by snapshot pointer: guests that stream textures through a single
+	// upload window produce a fresh snapshot pointer for every texture
+	// switch, and pointer keys then miss on every draw group — one
+	// synchronous GPU upload (staging copy + QueueWaitIdle) per switch,
+	// per frame. Content keys turn the steady state into pure cache hits.
+	textureCache    map[uint64]*vulkanCachedTexture
+	textureHashSeed maphash.Seed
 	flushCount   uint64
 
 	// True when ClearFramebuffer ran since the last flush. Used on a
@@ -192,6 +202,14 @@ type VulkanBackend struct {
 	textureEnabled     bool
 	textureClampS      bool
 	textureClampT      bool
+
+	// Deferred live-slot upload state: SetTextureData records the newest
+	// texture and marks it dirty; the flush path uploads it at most once
+	// per frame (see ensureLiveTextureUploaded). The image dims track
+	// the allocated GPU image, which now changes only at upload time.
+	liveTextureDirty  bool
+	liveTextureImageW int
+	liveTextureImageH int
 
 	// Descriptor set for texture
 	descriptorPool      vk.DescriptorPool
@@ -225,7 +243,8 @@ func NewVulkanBackend() (*VulkanBackend, error) {
 	vb := &VulkanBackend{
 		software:         NewVoodooSoftwareBackend(),
 		pipelineVariants: make(map[PipelineKey]vk.Pipeline),
-		textureCache:     make(map[*VoodooTexture]*vulkanCachedTexture),
+		textureCache:     make(map[uint64]*vulkanCachedTexture),
+		textureHashSeed:  maphash.MakeSeed(),
 		depthClearValue:  1.0,                  // Default depth clear for LESS comparison
 		fbzColorPath:     VOODOO_COMBINE_UNSET, // Not set = use defaults
 	}
@@ -1945,7 +1964,8 @@ func (vb *VulkanBackend) destroyTextureCache(freeDescSets bool) {
 // dangling). Returns false when every entry is pinned by the current
 // flush; the caller degrades to the software reference frame.
 func (vb *VulkanBackend) evictTextureCacheLRU() bool {
-	var oldestKey *VoodooTexture
+	var oldestKey uint64
+	found := false
 	oldestUse := ^uint64(0)
 	for key, e := range vb.textureCache {
 		if e.lastUse == vb.flushCount {
@@ -1954,14 +1974,30 @@ func (vb *VulkanBackend) evictTextureCacheLRU() bool {
 		if e.lastUse < oldestUse {
 			oldestUse = e.lastUse
 			oldestKey = key
+			found = true
 		}
 	}
-	if oldestKey == nil {
+	if !found {
 		return false
 	}
 	vb.destroyCachedTexture(vb.textureCache[oldestKey], true)
 	delete(vb.textureCache, oldestKey)
 	return true
+}
+
+// textureContentKey hashes a snapshot texture's dimensions, format and
+// pixel bytes into the cache key. Hashing a 64 KiB texture costs a few
+// microseconds; a cache hit saves a synchronous GPU upload.
+func (vb *VulkanBackend) textureContentKey(tex *VoodooTexture) uint64 {
+	var h maphash.Hash
+	h.SetSeed(vb.textureHashSeed)
+	var dims [12]byte
+	binary.LittleEndian.PutUint32(dims[0:], uint32(tex.Width))
+	binary.LittleEndian.PutUint32(dims[4:], uint32(tex.Height))
+	binary.LittleEndian.PutUint32(dims[8:], uint32(tex.Format))
+	h.Write(dims[:])
+	h.Write(tex.Data)
+	return h.Sum64()
 }
 
 // descriptorSetForGroup resolves the descriptor set a state group's
@@ -1977,7 +2013,8 @@ func (vb *VulkanBackend) descriptorSetForGroup(st *VoodooRasterState) (vk.Descri
 	if vb.textureDataID != nil && vb.textureDataID == unsafe.SliceData(st.Texture.Data) {
 		return vb.descriptorSet, nil
 	}
-	if e, ok := vb.textureCache[st.Texture]; ok {
+	key := vb.textureContentKey(st.Texture)
+	if e, ok := vb.textureCache[key]; ok {
 		e.lastUse = vb.flushCount
 		return e.descSet, nil
 	}
@@ -1999,7 +2036,7 @@ func (vb *VulkanBackend) descriptorSetForGroup(st *VoodooRasterState) (vk.Descri
 		return vk.NullDescriptorSet, err
 	}
 	e.lastUse = vb.flushCount
-	vb.textureCache[st.Texture] = e
+	vb.textureCache[key] = e
 	return e.descSet, nil
 }
 
@@ -2180,29 +2217,48 @@ func (vb *VulkanBackend) SetTextureData(width, height int, data []byte, format i
 		return
 	}
 
-	// Check if we need to recreate texture resources (size changed)
-	if width != vb.textureWidth || height != vb.textureHeight {
-		vb.destroyTextureImage()
-		if err := vb.createTextureImage(width, height); err != nil {
-			return
-		}
-	}
-
+	// Defer the GPU upload to the next flush. This setter runs on the
+	// guest's forwarded-write path, and an eager upload costs a staging
+	// copy plus a full QueueWaitIdle per call — guests that stream
+	// textures through one upload window pay that dozens of times per
+	// frame. The flush (swap worker) uploads the newest live texture at
+	// most once per frame; draw groups with their own snapshot textures
+	// resolve through the content-keyed cache and never touch this slot.
 	vb.textureWidth = width
 	vb.textureHeight = height
 	vb.textureFormat = format
-
-	// Upload texture data via staging buffer
-	if err := vb.uploadTextureData(data, width, height); err != nil {
-		return
-	}
 	vb.textureData = append(vb.textureData[:0], data...)
 	vb.textureDataID = nil
 	if len(data) > 0 {
 		vb.textureDataID = unsafe.SliceData(data)
 	}
+	vb.liveTextureDirty = true
+}
 
-	// Update descriptor set with new texture
+// ensureLiveTextureUploaded performs the deferred live-slot texture
+// upload. Called with the backend mutex held, on the flush path, so
+// the QueueWaitIdle inside the upload lands on the swap worker instead
+// of the guest thread.
+func (vb *VulkanBackend) ensureLiveTextureUploaded() {
+	if !vb.liveTextureDirty || !vb.initialized {
+		return
+	}
+	vb.liveTextureDirty = false
+	width, height := vb.textureWidth, vb.textureHeight
+	if width <= 0 || height <= 0 || len(vb.textureData) == 0 {
+		return
+	}
+	if width != vb.liveTextureImageW || height != vb.liveTextureImageH {
+		vb.destroyTextureImage()
+		if err := vb.createTextureImage(width, height); err != nil {
+			return
+		}
+		vb.liveTextureImageW = width
+		vb.liveTextureImageH = height
+	}
+	if err := vb.uploadTextureData(vb.textureData, width, height); err != nil {
+		return
+	}
 	vb.updateDescriptorSet()
 }
 
@@ -2299,6 +2355,7 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle) {
 	// reference buffers. (A clear-only GPU history is the exception —
 	// the load-op clear reproduces it exactly.)
 	if !cleared && (!wasGPUFrame || len(vb.lastFlushTriangles) > 0) {
+		voodooTraceSoftwareFallback("no-clear-composite")
 		vb.presentSoftwareFrame = true
 	}
 
@@ -2340,6 +2397,10 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle) {
 	}
 
 	vb.flushCount++
+
+	// Deferred live-slot texture upload lands here, on the swap worker,
+	// before any descriptor referencing the live slot is resolved.
+	vb.ensureLiveTextureUploaded()
 
 	// Group consecutive triangles sharing a state snapshot (the engine
 	// reuses one snapshot pointer until a state register changes) and
@@ -2702,10 +2763,45 @@ func flushRequiresSoftwareFrame(vb *VulkanBackend, triangles []VoodooTriangle) b
 	_ = vb
 	for i := range triangles {
 		if st := triangles[i].State; st != nil && !voodooStateGPURepresentable(st) {
+			voodooTraceSoftwareFallback(voodooStateFallbackReason(st))
 			return true
 		}
 	}
 	return false
+}
+
+// voodooStateFallbackReason names which representability gap forced a
+// state snapshot onto the software rasteriser, for fallback tracing.
+func voodooStateFallbackReason(st *VoodooRasterState) string {
+	if st.FbzMode&VOODOO_FBZ_STIPPLE != 0 && st.Stipple != 0 && st.Stipple != ^uint32(0) {
+		return "stipple-pattern"
+	}
+	if st.FbzMode&VOODOO_FBZ_CHROMAKEY != 0 && st.ChromaRange != 0 {
+		return "chroma-range"
+	}
+	if st.FbzMode&VOODOO_FBZ_DRAW_FRONT != 0 {
+		return "front-buffer-draw"
+	}
+	if st.SlopesValid {
+		return "slope-interpolation"
+	}
+	return "unknown"
+}
+
+// voodooTraceSoftwareFallback prints each distinct software-fallback
+// reason once per process when IE_VOODOO_TRACE_FALLBACK=1, so a run
+// that silently rasterises on the CPU can be attributed to the raster
+// feature responsible.
+var voodooFallbackTraceOn = os.Getenv("IE_VOODOO_TRACE_FALLBACK") == "1"
+var voodooFallbackSeen sync.Map
+
+func voodooTraceSoftwareFallback(reason string) {
+	if !voodooFallbackTraceOn {
+		return
+	}
+	if _, dup := voodooFallbackSeen.LoadOrStore(reason, struct{}{}); !dup {
+		fmt.Printf("voodoo: software-frame fallback: %s\n", reason)
+	}
 }
 
 // voodooStateGPURepresentable reports whether the Vulkan shaders can
