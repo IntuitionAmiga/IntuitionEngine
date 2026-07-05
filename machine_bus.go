@@ -1889,7 +1889,9 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 	}
 
 	if bus.hasMappedLegacySpan(addr, 4) {
-		bus.mmioStatsRecordWrite(bus.mmioStatsIndexForAddr(addr))
+		if mmioStatsOn {
+			bus.mmioStatsRecordWrite(bus.mmioStatsIndexForAddr(addr))
+		}
 		bus.writeLegacySpanBytes(addr, uint64(value), 4, false)
 		bus.notifyCoprocessorCompletionWrite(addr, value)
 		return
@@ -2018,7 +2020,9 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 	}
 
 	if bus.hasMappedLegacySpan(addr, 4) {
-		bus.mmioStatsRecordRead(bus.mmioStatsIndexForAddr(addr))
+		if mmioStatsOn {
+			bus.mmioStatsRecordRead(bus.mmioStatsIndexForAddr(addr))
+		}
 		value, _ := bus.readLegacySpanBytes(addr, 4, false)
 		return uint32(value)
 	}

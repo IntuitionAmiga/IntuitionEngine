@@ -109,9 +109,22 @@ func m68kJITInterruptSampleInterval() uint32 {
 	return m68kJITInterruptSampleIntervalDefault
 }
 
+// Cached at startup: this gate sits in the per-block dispatch path, and
+// os.Getenv there (RWMutex + string-map lookup) costs more than the guarded
+// diagnostic itself when tracing is off.
+var m68kJITTraceExtensionPCEnabled = os.Getenv("IE_M68K_JIT_TRACE_EXTENSION_PC") == "1"
+
 func m68kJITTraceExtensionPC() bool {
-	return os.Getenv("IE_M68K_JIT_TRACE_EXTENSION_PC") == "1"
+	return m68kJITTraceExtensionPCEnabled
 }
+
+// IE_M68K_JIT_DISPATCH_HASH=0 skips the per-dispatch guest-byte re-hash before
+// callNative. SMC is still guarded by the native code-page write detection
+// (ctx.NeedInval) and the cross-thread invalidation queue/generation check;
+// the re-hash is a belt-and-suspenders pass worth ~2% of total host cycles on
+// hot guests. Default stays on. Chain-patch stamp validation (cold path) is
+// unaffected by this flag.
+var m68kJITDispatchHashEnabled = os.Getenv("IE_M68K_JIT_DISPATCH_HASH") != "0"
 
 func m68kJITCompileWarmupLimit() uint8 {
 	if raw := os.Getenv("IE_M68K_JIT_COMPILE_WARMUP"); raw != "" {
@@ -3063,7 +3076,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		if cpu.m68kJitInvalGen.Load() != genAtDispatch {
 			continue
 		}
-		if !m68kGuestBlockBytesStillMatch(cpu.memory, block) {
+		if m68kJITDispatchHashEnabled && !m68kGuestBlockBytesStillMatch(cpu.memory, block) {
 			cpu.m68kInvalidateJITCodeRange(uint32(block.startPC), uint32(block.endPC))
 			continue
 		}
