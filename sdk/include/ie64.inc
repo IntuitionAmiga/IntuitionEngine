@@ -38,6 +38,10 @@ BASIC_CTRL_BYTES  equ 0x00010000           ; Dynamic BASIC control-flow stack re
 BASIC_STACK_GUARD_BYTES equ 0x00001000     ; Guard page below active visible RAM
 BASIC_LINE_BUF_BYTES equ 0x00000400        ; BASIC-owned dynamic input/list scratch
 BASIC_RESIDENT_LOW32_CAP equ 0x10000000    ; BASIC low memory window cap (256 MiB)
+; The interpreter heap base above the 32-bit window is 4 GiB (1<<32),
+; built with a shift in code because immediates encode as 32-bit.
+; The AOT high reserve (2 GiB, 1<<31) is also shift-built in code.
+BASIC_HIGH_HEAP_MIN      equ 0x40000000    ; Minimum heap span to bother going high
 BASIC_LOW32_INTERNAL_BASE equ 0x01000000   ; Shared low32 fallback internal arena base
 
 ; ============================================================================
@@ -259,6 +263,8 @@ AOT_LAST_OOM_STAGE equ 0x042BF8            ; q: last AOT OOM stage for diagnosti
 AOT_LAST_LINE     equ 0x042C00             ; q: last BASIC source line seen by AOT transpiler
 AOT_LAST_TOKEN    equ 0x042C08             ; q: last BASIC token seen by AOT transpiler
 AOT_EMIT_OVERFLOW equ 0x042C10             ; q: asm text emitter overflow latch
+AOT_NATIVE_TYPES_OFF equ 0x042C18          ; q: nonzero disables compile-time scalar typing
+AOT_NATIVE_TYPES_CHANGED equ 0x042C20       ; q: type scan cleared a flag this pass (fixpoint latch)
 
 ; Native AOT scalar variable segment. It uses the ordinary BASIC numeric segment
 ; layout so any remaining runtime helper can find the same variables. Generated
@@ -1242,6 +1248,14 @@ COP_SETBASE_GTIA  equ 0x8003C850            ; GTIA_BASE (0xF2140 >> 2)
 ; affect it. See ie68.inc for detailed documentation.
 
 ; SysInfo and CPU wait MMIO constants
+; PLAN_MAX_RAM slice 2/4 SYSINFO RAM registers: total guest RAM and
+; active visible RAM, little-endian uint64 assembled from lo/hi pairs.
+SYSINFO_TOTAL_RAM_LO  equ 0xF2400
+SYSINFO_TOTAL_RAM_HI  equ 0xF2404
+SYSINFO_ACTIVE_RAM_LO equ 0xF2408
+SYSINFO_ACTIVE_RAM_HI equ 0xF240C
+SYSINFO_LOW_WINDOW_LO equ 0xF2414
+SYSINFO_LOW_WINDOW_HI equ 0xF2418
 SYSINFO_FEATURES      equ 0xF2410
 SYSINFO_FEATURE_WAIT  equ 0x00000001
 SYSINFO_FEATURE_VOODOO_CMD_STREAM equ 0x00000002

@@ -540,11 +540,23 @@ block boundaries by both the interpreter and the JIT dispatcher; see the "Extern
 Interrupt Delivery" section of this manual for the full model.
 
 - **Low memory window**: each guest sees a contiguous low RAM window backed by
-  the dense `cpu.memory[]` slice, capped at 256 MiB for the IE64 family
-  (`lowMemWindowBytes`). The actual `len(bus.memory)` is
-  `min(autodetected TotalGuestRAM, busMemCap)` (main.go), so on a small host the
-  window can be smaller than the cap. Addresses above the window resolve through
-  the bus's 64-bit physical path, backed by the `Backing` interface. Production
+  the dense `cpu.memory[]` slice. All full-machine modes, including the IE64
+  family, size the window at the full 32-bit range (`busMemMaxBytes`) so a flat
+  32-bit program launched from the BASIC REPL can occupy the same address space
+  it would get from a direct boot; on mmap-backed hosts the window is reserved
+  lazily and resident memory grows only with pages actually touched, while
+  `busMemBootClamp` keeps non-mmap hosts at a heap-safe size. The actual
+  `len(bus.memory)` is `min(autodetected TotalGuestRAM, busMemCap)` (main.go),
+  so on a small host the window can be smaller than the cap. Addresses above
+  the window resolve through the bus's 64-bit physical path, backed by the
+  `Backing` interface; the split derives from `len(bus.memory)`, so the two
+  regions are complementary by construction. IE64 BASIC keeps its whole
+  interpreter arena (programme text, variables, strings, stack) inside the
+  dense 32-bit window so every pointer stays 32-bit clean; the arena simply
+  grows to fill that window, up to just below the resident stack. The SYSINFO
+  low-window register pair (0xF2414/0xF2418) reports the dense window size so
+  the stack, heap top and AOT arena are all bounded by it rather than by the
+  larger backed total. Production
   IE64 boots on Linux/darwin bind high RAM via `MmapBacking`; `SparseBacking` is
   the test implementation. SparseBacking uses a sparse two-level atomic page
   table: missing pages read as zero, writes allocate leaves and pages with
@@ -634,9 +646,15 @@ Interrupt Delivery" section of this manual for the full model.
   fused-leaf high-SP exception above).
 - **Range-scoped self-modifying code**: IE64 self-modifying-code tracking uses
   256-byte guest code pages and physical code-page tracking for MMU-compiled
-  blocks. When a compiled store overlaps marked guest code and the write range
-  is known, the dispatcher invalidates only the changed guest range; MMU stores
-  that overlap compiled physical backing fall back to whole-cache invalidation.
+  blocks. The 256-byte page mark is a prefilter: helper-side writes and
+  native-store dispatcher exits with a known nonzero virtual range validate that
+  range against `JITBlockCoveredRanges` before mutating the cache. Non-MMU
+  checks scan only the non-MMU cache; MMU checks are scoped to the current
+  `PTBR`, so a same-VA block in another address space does not cancel helper
+  resume, record an SMC deopt, increment invalidation stats, or evict cached
+  code. When a compiled store overlaps cached code, the dispatcher invalidates
+  only the changed guest range; MMU stores that overlap compiled physical
+  backing through an alias still fall back to whole-cache invalidation.
   x86 self-modifying-code tracking uses 256-byte code pages and range
   invalidation.
 

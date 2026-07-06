@@ -37,11 +37,21 @@ basic_layout_init:
 .bli_have_ram:
     lsr.q   r1, r1, #12
     lsl.q   r1, r1, #12                 ; page-align active RAM down
-    ; Keep the resident interpreter stack/control area in BASIC's mapped
-    ; low memory window. Production IE64 BASIC can expose sparse RAM above
-    ; this, but the current BASIC/JIT resident paths still expect their own
-    ; stack and scratch pointers to be directly low-window addressable.
+    ; Keep the resident interpreter stack/control area inside the dense
+    ; low RAM window: the JIT's fused leaf stack path indexes that slice
+    ; directly, so the stack must never sit above it. The window size
+    ; comes from the SYSINFO low-window registers; a zero read (SYSINFO
+    ; absent, e.g. bare test harnesses) falls back to the historical
+    ; 256 MiB resident cap.
+    la      r5, SYSINFO_LOW_WINDOW_LO
+    load.l  r5, (r5)
+    la      r6, SYSINFO_LOW_WINDOW_HI
+    load.l  r6, (r6)
+    lsl.q   r6, r6, #32
+    or.q    r5, r5, r6
+    bnez    r5, .bli_have_window
     move.q  r5, #BASIC_RESIDENT_LOW32_CAP
+.bli_have_window:
     blt     r1, r5, .bli_stack_top_ready
     move.q  r1, r5
 .bli_stack_top_ready:
@@ -96,7 +106,26 @@ basic_layout_init:
     store.q r6, (r2)
     add.q   r2, r16, #ST_HEAP_TOP
     store.q r4, (r2)
+
+.bli_heap_done:
     push    r7                         ; move return PC to the new stack
+    rts
+
+; ============================================================================
+; basic_prog_arena_base - programme arena base for a fresh programme
+; ============================================================================
+; The post-scratch low arena base. NEW and LOAD reset ST_HEAP_BOTTOM from
+; this before line_init republishes ST_PROG_START.
+; Input:  R16 = state base. Output: R8 = arena base. Clobbers R1-R3.
+
+basic_prog_arena_base:
+    ; The interpreter arena is 32-bit: the post-scratch low base, or the
+    ; documented fallback for focused harnesses that skip layout init.
+    add.q   r1, r16, #ST_SCRATCH_END
+    load.q  r8, (r1)
+    bnez    r8, .bpab_done
+    move.q  r8, #(BASIC_LOW32_INTERNAL_BASE + BASIC_LINE_BUF_BYTES)
+.bpab_done:
     rts
 
 ; ============================================================================

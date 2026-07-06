@@ -252,6 +252,189 @@ func TestMode7_StrideOverflowSetsError(t *testing.T) {
 	}
 }
 
+func TestBlitterFillLowBusMemoryInvalidatesOnce(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	const (
+		dst    = uint32(0x0094C000)
+		width  = 3
+		height = 2
+		stride = uint32(16)
+		color  = uint32(0x11223344)
+	)
+	invalidations := 0
+	var invalAddr, invalSize uint32
+	video.invalidateBusMemoryWriteHook = func(addr, size uint32) {
+		invalidations++
+		invalAddr, invalSize = addr, size
+	}
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, width)
+	bus.Write32(BLT_HEIGHT, height)
+	bus.Write32(BLT_DST_STRIDE, stride)
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("low-bus fill set error: 0x%X", got)
+	}
+	for y := range height {
+		for x := range width {
+			addr := dst + uint32(y)*stride + uint32(x)*BYTES_PER_PIXEL
+			if got := binary.LittleEndian.Uint32(bus.memory[addr : addr+BYTES_PER_PIXEL]); got != color {
+				t.Fatalf("low-bus fill pixel (%d,%d) = 0x%08X, want 0x%08X", x, y, got, color)
+			}
+		}
+	}
+	if invalidations != 1 || invalAddr != dst || invalSize != 28 {
+		t.Fatalf("low-bus fill invalidation = (%d, 0x%X, %d), want (1, 0x%X, 28)", invalidations, invalAddr, invalSize, dst)
+	}
+}
+
+func TestBlitterLowBusMappedMMIODestinationUsesBusHandler(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	const (
+		dst   = uint32(0x0094C000)
+		color = uint32(0x55667788)
+	)
+	writes := 0
+	var wroteAddr, wroteValue uint32
+	bus.MapIONoShadow(dst, dst+BYTES_PER_PIXEL-1,
+		func(addr uint32) uint32 { return 0 },
+		func(addr uint32, value uint32) {
+			writes++
+			wroteAddr, wroteValue = addr, value
+		})
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 1)
+	bus.Write32(BLT_HEIGHT, 1)
+	bus.Write32(BLT_DST_STRIDE, BYTES_PER_PIXEL)
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("mapped low-bus fill set error: 0x%X", got)
+	}
+	if writes != 1 || wroteAddr != dst || wroteValue != color {
+		t.Fatalf("mapped low-bus fill writes = (%d, 0x%X, 0x%X), want (1, 0x%X, 0x%X)", writes, wroteAddr, wroteValue, dst, color)
+	}
+	if got := binary.LittleEndian.Uint32(bus.memory[dst : dst+BYTES_PER_PIXEL]); got == color {
+		t.Fatalf("mapped low-bus fill bypassed MMIO shadow policy and wrote raw memory: 0x%08X", got)
+	}
+}
+
+func TestBlitterCopyLowBusMemoryInvalidatesOnce(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	const (
+		src    = uint32(0x00820000)
+		dst    = uint32(0x0094C000)
+		width  = 3
+		height = 2
+		stride = uint32(16)
+	)
+	want := []uint32{0x01020304, 0x11121314, 0x21222324, 0x31323334, 0x41424344, 0x51525354}
+	for y := range height {
+		for x := range width {
+			addr := src + uint32(y)*stride + uint32(x)*BYTES_PER_PIXEL
+			binary.LittleEndian.PutUint32(bus.memory[addr:addr+BYTES_PER_PIXEL], want[y*width+x])
+		}
+	}
+	invalidations := 0
+	var invalAddr, invalSize uint32
+	video.invalidateBusMemoryWriteHook = func(addr, size uint32) {
+		invalidations++
+		invalAddr, invalSize = addr, size
+	}
+
+	bus.Write32(BLT_OP, bltOpCopy)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, width)
+	bus.Write32(BLT_HEIGHT, height)
+	bus.Write32(BLT_SRC_STRIDE, stride)
+	bus.Write32(BLT_DST_STRIDE, stride)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("low-bus copy set error: 0x%X", got)
+	}
+	for y := range height {
+		for x := range width {
+			addr := dst + uint32(y)*stride + uint32(x)*BYTES_PER_PIXEL
+			if got := binary.LittleEndian.Uint32(bus.memory[addr : addr+BYTES_PER_PIXEL]); got != want[y*width+x] {
+				t.Fatalf("low-bus copy pixel (%d,%d) = 0x%08X, want 0x%08X", x, y, got, want[y*width+x])
+			}
+		}
+	}
+	if invalidations != 1 || invalAddr != dst || invalSize != 28 {
+		t.Fatalf("low-bus copy invalidation = (%d, 0x%X, %d), want (1, 0x%X, 28)", invalidations, invalAddr, invalSize, dst)
+	}
+}
+
+func TestBlitterMode7LowBusMemoryInvalidatesOnce(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	const (
+		src       = uint32(0x00820000)
+		dst       = uint32(0x0094C000)
+		width     = 4
+		height    = 4
+		srcStride = uint32(16)
+		dstStride = uint32(32)
+	)
+	for y := range height {
+		for x := range width {
+			addr := src + uint32(y)*srcStride + uint32(x)*BYTES_PER_PIXEL
+			binary.LittleEndian.PutUint32(bus.memory[addr:addr+BYTES_PER_PIXEL], 0xA0000000+uint32(y*width+x))
+		}
+	}
+	invalidations := 0
+	var invalAddr, invalSize uint32
+	video.invalidateBusMemoryWriteHook = func(addr, size uint32) {
+		invalidations++
+		invalAddr, invalSize = addr, size
+	}
+
+	bus.Write32(BLT_OP, bltOpMode7)
+	bus.Write32(BLT_SRC, src)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, width)
+	bus.Write32(BLT_HEIGHT, height)
+	bus.Write32(BLT_SRC_STRIDE, srcStride)
+	bus.Write32(BLT_DST_STRIDE, dstStride)
+	bus.Write32(BLT_MODE7_U0, 0)
+	bus.Write32(BLT_MODE7_V0, 0)
+	bus.Write32(BLT_MODE7_DU_COL, 0x10000)
+	bus.Write32(BLT_MODE7_DV_COL, 0)
+	bus.Write32(BLT_MODE7_DU_ROW, 0)
+	bus.Write32(BLT_MODE7_DV_ROW, 0x10000)
+	bus.Write32(BLT_MODE7_TEX_W, 3)
+	bus.Write32(BLT_MODE7_TEX_H, 3)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+	video.RunBlitterForTest()
+
+	if got := bus.Read32(BLT_STATUS); got&bltStatusErr != 0 {
+		t.Fatalf("low-bus Mode7 set error: 0x%X", got)
+	}
+	for y := range height {
+		for x := range width {
+			addr := dst + uint32(y)*dstStride + uint32(x)*BYTES_PER_PIXEL
+			want := 0xA0000000 + uint32(y*width+x)
+			if got := binary.LittleEndian.Uint32(bus.memory[addr : addr+BYTES_PER_PIXEL]); got != want {
+				t.Fatalf("low-bus Mode7 pixel (%d,%d) = 0x%08X, want 0x%08X", x, y, got, want)
+			}
+		}
+	}
+	if invalidations != 1 || invalAddr != dst || invalSize != 112 {
+		t.Fatalf("low-bus Mode7 invalidation = (%d, 0x%X, %d), want (1, 0x%X, 112)", invalidations, invalAddr, invalSize, dst)
+	}
+}
+
 func TestGetFrame_PaletteRace(t *testing.T) {
 	video, bus := newMappedVideoRig(t)
 	bus.Write32(VIDEO_CTRL, 1)

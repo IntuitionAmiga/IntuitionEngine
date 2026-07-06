@@ -1093,6 +1093,10 @@ func resetExecMemWhenCacheEmpty(cc *CodeCache, execMem *ExecMem) bool {
 	return true
 }
 
+func jitRangesOverlap(lo, hi uint64, r [2]uint64) bool {
+	return r[1] > r[0] && r[1] > lo && r[0] < hi
+}
+
 // GetMMU looks up an MMU-scoped block with an exact composite key.
 func (cc *CodeCache) GetMMU(ptbr, pc uint64) *JITBlock {
 	if block := cc.dispatch.get(pc, ptbr, cc.generation); block != nil {
@@ -1101,6 +1105,37 @@ func (cc *CodeCache) GetMMU(ptbr, pc uint64) *JITBlock {
 	block := cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}]
 	cc.dispatch.put(pc, ptbr, cc.generation, block)
 	return block
+}
+
+func (cc *CodeCache) OverlapsRange(lo, hi uint64) bool {
+	if cc == nil || hi <= lo {
+		return false
+	}
+	for _, block := range cc.blocks {
+		for _, r := range JITBlockCoveredRanges(block) {
+			if jitRangesOverlap(lo, hi, r) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (cc *CodeCache) OverlapsRangeScoped(ptbr, lo, hi uint64) bool {
+	if cc == nil || hi <= lo {
+		return false
+	}
+	for key, block := range cc.mmuBlocks {
+		if key.ptbr != ptbr && block.ptbr != ptbr {
+			continue
+		}
+		for _, r := range JITBlockCoveredRanges(block) {
+			if jitRangesOverlap(lo, hi, r) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // PutMMU stores an MMU-scoped block under its exact composite key.
@@ -1178,7 +1213,7 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint64) int {
 	removed := 0
 	for key, block := range cc.blocks {
 		for _, r := range JITBlockCoveredRanges(block) {
-			if r[1] > lo && r[0] < hi {
+			if jitRangesOverlap(lo, hi, r) {
 				cc.unpatchChainsToBlock(block)
 				cc.unregisterChainSlots(block)
 				delete(cc.blocks, key)
@@ -1190,7 +1225,31 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint64) int {
 	}
 	for key, block := range cc.mmuBlocks {
 		for _, r := range JITBlockCoveredRanges(block) {
-			if r[1] > lo && r[0] < hi {
+			if jitRangesOverlap(lo, hi, r) {
+				cc.unpatchChainsToBlock(block)
+				cc.unregisterChainSlots(block)
+				delete(cc.mmuBlocks, key)
+				releaseJITBlockExecMem(block)
+				removed++
+				break
+			}
+		}
+	}
+	if removed != 0 {
+		cc.generation++
+		cc.dispatch.reset()
+	}
+	return removed
+}
+
+func (cc *CodeCache) InvalidateRangeScoped(ptbr, lo, hi uint64) int {
+	removed := 0
+	for key, block := range cc.mmuBlocks {
+		if key.ptbr != ptbr && block.ptbr != ptbr {
+			continue
+		}
+		for _, r := range JITBlockCoveredRanges(block) {
+			if jitRangesOverlap(lo, hi, r) {
 				cc.unpatchChainsToBlock(block)
 				cc.unregisterChainSlots(block)
 				delete(cc.mmuBlocks, key)

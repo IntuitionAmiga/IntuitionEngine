@@ -42,11 +42,16 @@ arr_find        equ 0
 exec_do_for     equ 0
 exec_do_next    equ 0
 exec_reset_control_stack equ 0
+var_cache       equ 0
 
     org 0x1000
 
 test_entry:
     la      r31, STACK_TOP
+    ; Production entry points reset the allocator cursors before compiling;
+    ; unit snippets that call the transpiler or allocators directly need the
+    ; same reset so the retained frontier starts at top of RAM, not zero.
+    jsr     aot_alloc_reset
     ; Default symbol-table base for direct aot_asm_program/aot_sym_* unit tests
     ; (the RUN AOT / COMPILE paths allocate this from the compiler workspace).
     la      r1, AOT_SYMTAB_PTR
@@ -309,6 +314,58 @@ func TestAOT_AllocResetClampsBelowBasicControlStack(t *testing.T) {
 	}
 }
 
+// TestAOT_AllocResetLegacyLayoutClamp pins the arena-top decision for the two
+// legacy full layouts, where basic_layout_init publishes heap top == ctrl low:
+// stacks topping out at RAM top (small host) must pull the retained arena
+// below ST_CTRL_LOW, while a resident window below RAM top (large host with
+// the stack window capped low) must keep the top-of-RAM frontier.
+func TestAOT_AllocResetLegacyLayoutClamp(t *testing.T) {
+	asmBin := buildAssembler(t)
+
+	cases := []struct {
+		name      string
+		ramBytes  uint64
+		ctrlLow   uint64
+		stackHigh uint64
+		wantTop   uint64
+	}{
+		// 32 MiB host: resident window == RAM top, arena sits below the stacks.
+		{"stacks_at_ram_top_clamp", 0x02000000, 0x01FDF000, 0x01FFF000, 0x01FDF000},
+		// 1 GiB host with the 256 MiB resident window: stacks live far below
+		// the arena frontier, so the arena keeps the top of RAM.
+		{"stack_window_below_top_no_clamp", 0x40000000, 0x0FFDF000, 0x0FFFF000, 0x40000000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`    la      r16, BASIC_STATE
+    add.q   r1, r16, #ST_CTRL_LOW
+    li      r2, #%#x
+    store.q r2, (r1)
+    add.q   r1, r16, #ST_HEAP_TOP
+    store.q r2, (r1)
+    add.q   r1, r16, #ST_STACK_HIGH
+    li      r2, #%#x
+    store.q r2, (r1)
+    jsr     aot_alloc_reset
+
+    la      r1, AOT_ARENA_HIGH_NEXT
+    load.q  r2, (r1)
+    la      r1, 0x031000
+    store.q r2, (r1)`, tc.ctrlLow, tc.stackHigh)
+
+			bin := assembleAOTUnit(t, asmBin, body)
+			h := newEhbasicHarness(t)
+			h.bus.ApplyProfileVisibleCeiling(tc.ramBytes)
+			h.loadBytes(bin)
+			h.runCycles(1_000_000)
+
+			if got := h.bus.Read64(0x031000); got != tc.wantTop {
+				t.Fatalf("AOT_ARENA_HIGH_NEXT = %#x, want %#x", got, tc.wantTop)
+			}
+		})
+	}
+}
+
 func TestAOT_CompileOutputBuffersUseLow32FileBridge(t *testing.T) {
 	asmBin := buildAssembler(t)
 	body := `    la      r16, BASIC_STATE
@@ -443,7 +500,9 @@ func TestAOT_FileBridgeSharesFrontierBelowLow32Cap(t *testing.T) {
 
 	const wantText = aotTestGuestRAM - 0x80000
 	const wantCode = wantText - 0x18000
-	const wantSymtab = wantCode - 0x10000
+	// AOT_SYMTAB_BYTES (1 MiB): the retained symbol-table allocation
+	// continues top-down from the shared low32 frontier.
+	const wantSymtab = wantCode - 0x100000
 
 	if textStatus != 0 || codeStatus != 0 || symtabStatus != 0 {
 		t.Fatalf("mixed bridge/retained allocations failed: text=%d code=%d symtab=%d", textStatus, codeStatus, symtabStatus)
@@ -2756,6 +2815,65 @@ func TestREPL_AOT_NativeNumericLetSharedByRunTranspileCompile(t *testing.T) {
 	}
 }
 
+func TestREPL_AOT_NativeIntFunctionLetKeepsI64(t *testing.T) {
+	asmBin := buildAssembler(t)
+	prog := []string{
+		"10 X=INT(9/2)",
+		"20 POKE32 327680,X",
+		"30 END",
+	}
+
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, h, line)
+	}
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327680); got != 4 {
+		t.Fatalf("RUN AOT native INT LET result memory=%d, want 4\n%s", got, readAOTAsmDebug(h))
+	}
+
+	compileDir := t.TempDir()
+	hc := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, compileDir)
+	hc.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range prog {
+		storeLine(t, hc, line)
+	}
+	if out := hc.runCommand(`COMPILE "intfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("COMPILE failed: %q", out)
+	}
+	compileAsmBytes, err := os.ReadFile(filepath.Join(compileDir, "intfast.asm"))
+	if err != nil {
+		t.Fatalf("COMPILE asm not written: %v", err)
+	}
+	assertNativeIntLetAsm(t, string(compileAsmBytes))
+}
+
+func TestREPL_RunAOT_TypeScanDisabledKeepsFPScalarLet(t *testing.T) {
+	asmBin := buildAssembler(t)
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	for _, line := range []string{
+		"10 A=1.5",
+		"20 B=A+1",
+		"30 IF B>2.25 THEN POKE32 327680,77 ELSE POKE32 327680,11",
+		"40 END",
+		`50 LOAD "not-run.bas"`,
+	} {
+		storeLine(t, h, line)
+	}
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(327680); got != 77 {
+		t.Fatalf("RUN AOT with disabled scalar typing wrote %d, want 77 for B=2.5\n%s", got, readAOTAsmDebug(h))
+	}
+}
+
 func TestREPL_AOT_NativePrescanIgnoresREM(t *testing.T) {
 	asmBin := buildAssembler(t)
 	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
@@ -3334,6 +3452,31 @@ func assertNativeLetAsm(t *testing.T, asm string) {
 	}
 }
 
+func assertNativeIntLetAsm(t *testing.T, asm string) {
+	t.Helper()
+	body := excerptGeneratedAsm(asm)
+	for _, bad := range []string{
+		"expr_eval",
+		"RT_EXPR_EVAL",
+		"RT_EXPR_TO_I64",
+		"fp_fix",
+		"exec_do_let",
+	} {
+		if strings.Contains(body, bad) {
+			t.Fatalf("native INT LET asm should not call %q:\n%s", bad, body)
+		}
+	}
+	for _, want := range []string{
+		"divs.q r8, r1, r8",
+		"move.l r9, #2",
+		"store.q r8, (r1)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("native INT LET asm missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func excerptGeneratedAsm(asm string) string {
 	if idx := strings.Index(asm, "\n__rtpay:"); idx >= 0 {
 		return asm[:idx]
@@ -3482,9 +3625,12 @@ func TestREPL_RunAOT_ForNext(t *testing.T) {
 func TestAOTTranspileForNextUsesQwordLoopSP(t *testing.T) {
 	asmBin := buildAssembler(t)
 	body := `    ; Build line records for:
-    ; 10 FOR I=1 TO 3
+    ; 10 FOR I=1 TO 3.5
     ; 20 PRINT I
     ; 30 NEXT
+    ; The fractional TO bound rejects the native integer FOR form, so this
+    ; pins the delegated exec_do_for/exec_do_next lowering and its 64-bit
+    ; ST_FOR_SP handling.
     ; terminator
     la      r1, 0x030000
     la      r2, 0x030040
@@ -3510,7 +3656,11 @@ func TestAOTTranspileForNextUsesQwordLoopSP(t *testing.T) {
     store.b r2, 23(r1)
     move.q  r2, #0x33              ; 3
     store.b r2, 24(r1)
-    store.b r0, 25(r1)
+    move.q  r2, #0x2E              ; .
+    store.b r2, 25(r1)
+    move.q  r2, #0x35              ; 5
+    store.b r2, 26(r1)
+    store.b r0, 27(r1)
 
     la      r1, 0x030040
     la      r2, 0x030080
@@ -6547,7 +6697,14 @@ func TestREPL_PrebuiltBasicImageRunsResonanceAOT(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	h := newEhbasicHarness(t)
+	// The advertised RAM must be backed: CR_RAM_SIZE_BYTES drives the
+	// interpreter layout and the RUN AOT arena, so a small legacy bus with
+	// a large published ceiling would send guest stores out of range.
+	bus, err := NewMachineBusSized(aotTestGuestRAM)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized(%d): %v", uint64(aotTestGuestRAM), err)
+	}
+	h := newEhbasicHarnessOnBus(t, bus)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	fio := NewFileIODevice(h.bus, dir)
 	fio.SetRuntimeBlob(runtimeBlobForTests(t))

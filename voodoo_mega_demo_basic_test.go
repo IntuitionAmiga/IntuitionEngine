@@ -177,7 +177,7 @@ func TestVoodooMegaDemoBasicRunAOTSmoke(t *testing.T) {
 		}
 		capturedFrame = append(capturedFrame[:0], frame...)
 		return true
-	}, 120*time.Second)
+	}, 60*time.Second)
 	out := h.readOutput()
 	if strings.Contains(out, "?COMPILE ERROR") || strings.Contains(out, "?SYNTAX ERROR") || strings.Contains(out, "?FC ERROR") || strings.Contains(out, "?OUT OF MEMORY") {
 		t.Fatalf("RUN AOT failed: %q", out)
@@ -220,7 +220,8 @@ func TestVoodooMegaDemoBasicRunAOTSmoke(t *testing.T) {
 		pixels++
 	}
 	if !nonBlack {
-		t.Fatalf("Voodoo frame remained black after bounded RUN AOT smoke; pc=%#x instr=%#x asm=%#x code=%#x text len=%#x code len=%#x current line=%d error=%d error line=%d output=%q",
+		vars := readAOTNativeVarsForVoodoo(t, h, "FC", "SO", "SI", "CI", "I", "ZZ", "SX", "SY2", "QP", "CO", "RX", "RY")
+		t.Fatalf("Voodoo frame remained black after bounded RUN AOT smoke; pc=%#x instr=%#x asm=%#x code=%#x text len=%#x code len=%#x current line=%d error=%d error line=%d vars=%#v batch=%d jobs=%d busy=%v swapPending=%v status=%#x fbz=%#x color0=%#x swap=%#x output=%q\n%s\n%s",
 			h.cpu.PC,
 			h.bus.Read64(uint32(h.cpu.PC)),
 			h.bus.Read64(0x042818),
@@ -230,11 +231,55 @@ func TestVoodooMegaDemoBasicRunAOTSmoke(t *testing.T) {
 			h.bus.Read32(0x042000+0x200),
 			h.bus.Read32(0x042000+0x208),
 			h.bus.Read32(0x042000+0x228),
-			out)
+			vars, v.GetTriangleBatchCount(), v.jobsInFlight, v.busy, v.swapPending,
+			v.HandleRead(VOODOO_STATUS), v.HandleRead(VOODOO_FBZ_MODE), v.HandleRead(VOODOO_COLOR0), v.HandleRead(VOODOO_SWAP_BUFFER_CMD),
+			out, readAOTStateDebug(h), readAOTAsmTailDebug(h))
 	}
 	if whiteish*100 > pixels*80 {
 		t.Fatalf("Voodoo frame is mostly white after bounded RUN AOT smoke: %d/%d pixels", whiteish, pixels)
 	}
+}
+
+func readAOTNativeVarsForVoodoo(t *testing.T, h *ehbasicTestHarness, names ...string) map[string]uint64 {
+	t.Helper()
+	const (
+		aotNativeVarSeg = 0x00071000
+		valOffset       = 16
+		recSize         = 24
+	)
+	count := h.bus.Read32(aotNativeVarSeg + 8)
+	out := make(map[string]uint64, len(names))
+	for _, name := range names {
+		want := basicAOTVarTagForVoodoo(name)
+		for i := uint32(0); i < count; i++ {
+			rec := uint32(aotNativeVarSeg + 16 + i*recSize)
+			if h.bus.Read32(rec) == want {
+				out[name] = h.bus.Read64(rec + valOffset)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func basicAOTVarTagForVoodoo(name string) uint32 {
+	var tag uint32
+	count := 0
+	for _, ch := range strings.ToUpper(name) {
+		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9' || count == 0) {
+			break
+		}
+		c := uint32(byte(ch))
+		if count < 4 {
+			tag = (tag << 8) | c
+		}
+		count++
+	}
+	for count < 4 {
+		tag <<= 8
+		count++
+	}
+	return tag
 }
 
 func voodooFrameHasNonBlack(frame []byte) bool {

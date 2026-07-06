@@ -1173,6 +1173,32 @@ func (bus *MachineBus) hasMappedLegacySpan(addr uint32, width int) bool {
 	return false
 }
 
+func (bus *MachineBus) hasMappedLegacyRange(addr uint32, width uint64) bool {
+	if bus == nil || width == 0 {
+		return false
+	}
+	start := uint64(addr)
+	end := start + width
+	if end < start || end > 0x100000000 {
+		return false
+	}
+	snap := bus.currentMapSnapshot()
+	for page := addr & PAGE_MASK; ; page += PAGE_SIZE {
+		if regions, exists := snap.mapping[page]; exists {
+			for i := len(regions) - 1; i >= 0; i-- {
+				region := regions[i]
+				if uint64(region.start) < end && uint64(region.end) >= start {
+					return true
+				}
+			}
+		}
+		if uint64(page)+PAGE_SIZE >= end {
+			break
+		}
+	}
+	return false
+}
+
 func (bus *MachineBus) readLegacySpanBytes(addr uint32, width int, fault bool) (uint64, bool) {
 	var value uint64
 	for i := 0; i < width; i++ {

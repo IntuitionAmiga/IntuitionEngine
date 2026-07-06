@@ -287,6 +287,8 @@ const (
 	SYSINFO_ACTIVE_RAM_LO = 0xF2408 // low 32 bits of active CPU/profile visible RAM
 	SYSINFO_ACTIVE_RAM_HI = 0xF240C // high 32 bits of active CPU/profile visible RAM
 	SYSINFO_FEATURES      = 0xF2410 // bit0=CPU wait, bit1=Voodoo CMD stream, bit2=MMIO stats
+	SYSINFO_LOW_WINDOW_LO = 0xF2414 // low 32 bits of the dense low RAM window (len(bus.memory))
+	SYSINFO_LOW_WINDOW_HI = 0xF2418 // high 32 bits of the dense low RAM window
 
 	SYSINFO_FEATURE_WAIT              = 1 << 0
 	SYSINFO_FEATURE_VOODOO_CMD_STREAM = 1 << 1

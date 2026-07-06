@@ -1617,11 +1617,32 @@ func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, strid
 		return
 	}
 
-	// Non-VRAM: per-pixel bus writes
+	// Non-VRAM low bus memory: bulk-fill directly through the cached dense
+	// slice. MEMALLOC-backed framebuffers/textures use this path.
 	if !chip.blitRectWritableLocked(dst, width, height, stride, BYTES_PER_PIXEL) {
 		chip.bltErr = true
 		return
 	}
+	if _, endAddr, ok := chip.blitLowBusRectSliceLocked(dst, width, height, stride, BYTES_PER_PIXEL); ok {
+		addr := dst
+		for range width {
+			binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], color)
+			addr += BYTES_PER_PIXEL
+		}
+		firstRow := chip.busMemory[dst : dst+rowBytes]
+		rowAddr := dst + stride
+		for y := 1; y < height; y++ {
+			copy(chip.busMemory[rowAddr:rowAddr+rowBytes], firstRow)
+			rowAddr += stride
+		}
+		chip.invalidateBusMemoryWriteLocked(dst, uint32(endAddr-uint64(dst)))
+		if !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		return
+	}
+
+	// Non-VRAM high/backing path: per-pixel bus writes.
 	rowAddr := dst
 	for range height {
 		addr := rowAddr
@@ -1701,11 +1722,30 @@ func (chip *VideoChip) blitBulkFill8Locked(dst uint32, width, height int, stride
 		return
 	}
 
-	// Non-VRAM: per-byte bus writes
+	// Non-VRAM low bus memory: bulk-fill directly through the cached dense
+	// slice. MEMALLOC-backed CLUT8 buffers use this path.
 	if !chip.blitRectWritableLocked(dst, width, height, stride, 1) {
 		chip.bltErr = true
 		return
 	}
+	if _, endAddr, ok := chip.blitLowBusRectSliceLocked(dst, width, height, stride, 1); ok {
+		firstRow := chip.busMemory[dst : dst+rowBytes]
+		for i := range width {
+			firstRow[i] = color
+		}
+		rowAddr := dst + stride
+		for y := 1; y < height; y++ {
+			copy(chip.busMemory[rowAddr:rowAddr+rowBytes], firstRow)
+			rowAddr += stride
+		}
+		chip.invalidateBusMemoryWriteLocked(dst, uint32(endAddr-uint64(dst)))
+		if !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		return
+	}
+
+	// Non-VRAM high/backing path: per-byte bus writes.
 	rowAddr := dst
 	for range height {
 		addr := rowAddr
@@ -1851,6 +1891,35 @@ func (chip *VideoChip) blitCopyLocked(mode VideoMode) {
 		}
 	}
 
+	// Non-VRAM low bus memory: row-copy directly through the cached dense
+	// slice. This is the common MEMALLOC texture/framebuffer path.
+	if _, srcEnd, srcOK := chip.blitLowBusRectSliceLocked(src, width, height, srcStride, bpp); srcOK {
+		if _, dstEnd, dstOK := chip.blitLowBusRectSliceLocked(dst, width, height, dstStride, bpp); dstOK {
+			if dst > src && uint64(dst) < srcEnd {
+				srcRow := src + srcStride*uint32(height-1)
+				dstRow := dst + dstStride*uint32(height-1)
+				for y := height - 1; y >= 0; y-- {
+					copy(chip.busMemory[dstRow:dstRow+rowBytes], chip.busMemory[srcRow:srcRow+rowBytes])
+					srcRow -= srcStride
+					dstRow -= dstStride
+				}
+			} else {
+				srcRow := src
+				dstRow := dst
+				for range height {
+					copy(chip.busMemory[dstRow:dstRow+rowBytes], chip.busMemory[srcRow:srcRow+rowBytes])
+					srcRow += srcStride
+					dstRow += dstStride
+				}
+			}
+			chip.invalidateBusMemoryWriteLocked(dst, uint32(dstEnd-uint64(dst)))
+			if !chip.resetting && !chip.hasContent.Load() {
+				chip.hasContent.Store(true)
+			}
+			return
+		}
+	}
+
 	// Fallback: per-pixel copy
 	srcRow := chip.bltSrc
 	dstRow := chip.bltDst
@@ -1925,6 +1994,24 @@ func (chip *VideoChip) blitRectReadableLocked(addr uint32, width, height int, st
 
 func (chip *VideoChip) blitRectWritableLocked(addr uint32, width, height int, stride uint32, bpp int) bool {
 	return chip.blitRectInBoundsLocked(addr, width, height, stride, bpp)
+}
+
+func (chip *VideoChip) blitLowBusRectSliceLocked(addr uint32, width, height int, stride uint32, bpp int) ([]byte, uint64, bool) {
+	if chip.busMemory == nil || width <= 0 || height <= 0 || bpp <= 0 {
+		return nil, 0, false
+	}
+	if addr >= VRAM_START && addr < VRAM_START+VRAM_SIZE {
+		return nil, 0, false
+	}
+	rowBytes := uint64(width * bpp)
+	end := uint64(addr) + uint64(stride)*uint64(height-1) + rowBytes
+	if end < uint64(addr) || end > math.MaxUint32+1 || end > uint64(len(chip.busMemory)) {
+		return nil, 0, false
+	}
+	if bus, ok := chip.bus.(*MachineBus); ok && bus.hasMappedLegacyRange(addr, end-uint64(addr)) {
+		return nil, 0, false
+	}
+	return chip.busMemory[addr:end], end, true
 }
 
 func (chip *VideoChip) blitRectInBoundsLocked(addr uint32, width, height int, stride uint32, bpp int) bool {
@@ -2294,6 +2381,44 @@ func (chip *VideoChip) blitMode7Locked(mode VideoMode) {
 	dvCol := int32(chip.bltMode7DvCol)
 	duRow := int32(chip.bltMode7DuRow)
 	dvRow := int32(chip.bltMode7DvRow)
+
+	if _, srcEnd, srcOK := chip.blitLowBusRectSliceLocked(chip.bltSrc, int(texMaskU)+1, int(texMaskV)+1, srcStride, bpp); srcOK {
+		if _, dstEnd, dstOK := chip.blitLowBusRectSliceLocked(chip.bltDst, width, height, dstStride, bpp); dstOK {
+			dstRow := chip.bltDst
+			for range height {
+				u := rowU
+				v := rowV
+				dstAddr := dstRow
+				for range width {
+					uInt := (u >> 16) & texMaskU
+					vInt := (v >> 16) & texMaskV
+					texOff := uint64(uint32(vInt))*uint64(srcStride) + uint64(uint32(uInt))*bytesPerPx
+					texAddr := uint64(chip.bltSrc) + texOff
+					if texAddr+bytesPerPx > srcEnd {
+						chip.bltErr = true
+						return
+					}
+					if bpp == 1 {
+						chip.busMemory[dstAddr] = chip.busMemory[uint32(texAddr)]
+					} else {
+						value := binary.LittleEndian.Uint32(chip.busMemory[uint32(texAddr) : uint32(texAddr)+BYTES_PER_PIXEL])
+						binary.LittleEndian.PutUint32(chip.busMemory[dstAddr:dstAddr+BYTES_PER_PIXEL], value)
+					}
+					dstAddr += uint32(bytesPerPx)
+					u += duCol
+					v += dvCol
+				}
+				rowU += duRow
+				rowV += dvRow
+				dstRow += dstStride
+			}
+			chip.invalidateBusMemoryWriteLocked(chip.bltDst, uint32(dstEnd-uint64(chip.bltDst)))
+			if !chip.resetting && !chip.hasContent.Load() {
+				chip.hasContent.Store(true)
+			}
+			return
+		}
+	}
 
 	dstRow := chip.bltDst
 

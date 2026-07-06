@@ -23,9 +23,12 @@ func TestResolveModeCaps_TableMatch(t *testing.T) {
 		wantBusMem        uint64
 		wantBackingMaxLen uint64
 	}{
-		{"ie64-8gib", modeIE64, eightGiB, lowMemWindowBytes, eightGiB},
-		{"intuition-os-8gib", modeIntuitionOS, eightGiB, lowMemWindowBytes, eightGiB},
-		{"basic-8gib", modeBasic, eightGiB, lowMemWindowBytes, eightGiB},
+		// IE64-family modes take the full 32-bit window so the REPL can
+		// launch any flat 32-bit image; 64-bit RAM above the window is
+		// served by the backing as before.
+		{"ie64-8gib", modeIE64, eightGiB, busMemMaxBytes, eightGiB},
+		{"intuition-os-8gib", modeIntuitionOS, eightGiB, busMemMaxBytes, eightGiB},
+		{"basic-8gib", modeBasic, eightGiB, busMemMaxBytes, eightGiB},
 		{"ie32-8gib", modeIE32, eightGiB, busMemMaxBytes, busMemMaxBytes},
 		{"x86-8gib", modeX86, eightGiB, busMemMaxBytes, busMemMaxBytes},
 		{"bare-m68k-8gib", modeM68KBare, eightGiB, busMemMaxBytes, busMemMaxBytes},
@@ -122,17 +125,21 @@ func emutosBootExpectedTotal() uint64 {
 
 func TestBootMode_EmuTOS_LowDetectedTotalDoesNotGrowBacking(t *testing.T) {
 	bus := bootSimulate(t, modeEmuTOS, lowMemWindowBytes, sparseAllocator)
+	want := clampProfileCapToDetected(EmuTOSProfileTopBytes, lowMemWindowBytes)
+	if want > busMemBootClamp {
+		want = busMemBootClamp
+	}
 	if bus.Backing() != nil {
 		t.Fatal("EmuTOS low-total boot should not allocate backing above detected total")
 	}
-	if got := bus.TotalGuestRAM(); got != lowMemWindowBytes {
-		t.Fatalf("TotalGuestRAM = %d, want detected total %d", got, lowMemWindowBytes)
+	if got := bus.TotalGuestRAM(); got != want {
+		t.Fatalf("TotalGuestRAM = %d, want profile-capped detected total %d", got, want)
 	}
-	if got := bus.ActiveVisibleRAM(); got != lowMemWindowBytes {
-		t.Fatalf("ActiveVisibleRAM = %d, want detected total %d", got, lowMemWindowBytes)
+	if got := bus.ActiveVisibleRAM(); got != want {
+		t.Fatalf("ActiveVisibleRAM = %d, want profile-capped detected total %d", got, want)
 	}
-	if got := sysinfoTotalRAM(bus); got != lowMemWindowBytes {
-		t.Fatalf("SYSINFO_TOTAL_RAM = %d, want detected total %d", got, lowMemWindowBytes)
+	if got := sysinfoTotalRAM(bus); got != want {
+		t.Fatalf("SYSINFO_TOTAL_RAM = %d, want profile-capped detected total %d", got, want)
 	}
 }
 
@@ -299,15 +306,16 @@ func TestDiscovery_BareM68K_AllPathsAgreeClampedToBusMemCap(t *testing.T) {
 	}
 }
 
-// TestBootMode_IE64_Above4GiBTotal_SmallLowWindow_BackingForFullTotal pins
-// the slice 10 reviewer P1 fix: bus.memory stays at the small low-mem
-// compatibility window (lowMemWindowBytes) regardless of total advertised
-// RAM; the backing covers the full host-scale total. With sparse
-// allocation we exercise the plumbing without committing real RSS.
-func TestBootMode_IE64_Above4GiBTotal_SmallLowWindow_BackingForFullTotal(t *testing.T) {
+// TestBootMode_IE64_Above4GiBTotal_FullWindow_BackingForFullTotal pins
+// the IE64-family window policy: bus.memory takes the full 32-bit
+// window (busMemMaxBytes) so REPL-launched flat 32-bit images get the
+// same address space as a direct boot, while the backing still covers
+// the full host-scale total above it. With sparse allocation we
+// exercise the plumbing without committing real RSS.
+func TestBootMode_IE64_Above4GiBTotal_FullWindow_BackingForFullTotal(t *testing.T) {
 	bus := bootSimulate(t, modeIE64, eightGiB, sparseAllocator)
-	if got := uint64(len(bus.GetMemory())); got != lowMemWindowBytes {
-		t.Fatalf("len(bus.memory) = %d, want %d (small low window, not full guest RAM)", got, lowMemWindowBytes)
+	if got := uint64(len(bus.GetMemory())); got != busMemMaxBytes {
+		t.Fatalf("len(bus.memory) = %d, want %d (full 32-bit window)", got, busMemMaxBytes)
 	}
 	if bus.Backing() == nil {
 		t.Fatal("IE64 mode with 8 GiB total expected a high-range backing")

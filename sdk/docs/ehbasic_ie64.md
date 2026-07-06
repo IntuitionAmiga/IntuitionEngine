@@ -2809,6 +2809,7 @@ register 15.
 | Address Range | Size | Description |
 |---------------|------|-------------|
 | `&H00000`-`&H05FFFF` | 384 KB | Interpreter image, state page, and transitional resident scratch |
+| `&H1000000`-`top of dense RAM window` | dynamic | Programme text, variables and string heap; grows to fill the 32-bit window up to just below the resident stack. The boot banner and `FRE(0)` report the active span |
 | `&H600000`-`&H6EFFFF` | 960 KB | Exported string low32 window |
 | `&H700000`-`&H7FFFFF` | 1 MB | MEMALLOC ranges plus AOT-owned low32 scratch gap |
 | top of the low32 BASIC resident window | dynamic | IE64 BASIC hardware stack, guard page, and control-flow stack |

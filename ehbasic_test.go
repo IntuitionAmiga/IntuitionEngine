@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -9970,6 +9971,184 @@ func TestREPL_BootBanner(t *testing.T) {
 	}
 	if !strings.Contains(bootOutput, "Ready") {
 		t.Fatalf("expected Ready prompt, got: %q", bootOutput)
+	}
+}
+
+// The boot banner reports system RAM and BASIC's free memory on one
+// line, scaled to the largest whole binary unit so multi-GiB machines
+// read naturally (16 GiB, not 17179869184 bytes). System RAM comes
+// from CR_RAM_SIZE_BYTES; free memory is the interpreter's heap span
+// (the same span FRE() reports). Free must not exceed system RAM.
+func TestREPL_BootBanner_ReportsRAM(t *testing.T) {
+	_, bootOutput := startREPL(t)
+
+	re := regexp.MustCompile(`(\d+) (GiB|MiB|KiB|bytes) SYSTEM RAM, (\d+) (GiB|MiB|KiB|bytes) BASIC FREE`)
+	m := re.FindStringSubmatch(bootOutput)
+	if m == nil {
+		t.Fatalf("banner missing one-line scaled RAM report, got: %q", bootOutput)
+	}
+	unit := map[string]uint64{"bytes": 1, "KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30}
+	ram, err1 := strconv.ParseUint(m[1], 10, 64)
+	free, err2 := strconv.ParseUint(m[3], 10, 64)
+	if err1 != nil || err2 != nil {
+		t.Fatalf("unparseable RAM numbers: %q %q", m[1], m[3])
+	}
+	ramB := ram * unit[m[2]]
+	freeB := free * unit[m[4]]
+	if ramB == 0 || freeB == 0 {
+		t.Fatalf("zero RAM report: %q", m[0])
+	}
+	// Scaled values are floored, so allow one unit of slack.
+	if freeB > ramB+unit[m[2]] {
+		t.Fatalf("free (%d) exceeds system RAM (%d)", freeB, ramB)
+	}
+	// A scaled value must sit below 1024 of its unit (else the next
+	// unit up should have been chosen).
+	if ram >= 1024 || free >= 1024 {
+		t.Fatalf("value not scaled to largest unit: %q", m[0])
+	}
+}
+
+// BASIC sizes its resident stack/control area from
+// min(CR_RAM_SIZE_BYTES, SYSINFO low window): the stack must stay
+// inside the dense low RAM slice (the IE64 JIT's fused leaf stack path
+// indexes it directly), and the window register is the guest's only
+// view of that slice. A published 16 MiB window must pull the stack
+// top down to it even when CR_RAM_SIZE_BYTES reports more.
+func TestREPL_LayoutHonoursSysInfoLowWindow(t *testing.T) {
+	const fakeWindow = uint64(16 * 1024 * 1024)
+	h := newEhbasicAOTHarness(t)
+	h.bus.MapIO(SYSINFO_REGION_BASE, SYSINFO_REGION_END,
+		func(addr uint32) uint32 {
+			switch addr {
+			case SYSINFO_LOW_WINDOW_LO:
+				return uint32(fakeWindow)
+			case SYSINFO_LOW_WINDOW_HI:
+				return uint32(fakeWindow >> 32)
+			}
+			return 0
+		},
+		func(addr, value uint32) {})
+	startREPLOnHarness(t, h)
+
+	const stateBase = 0x042000 // BASIC_STATE
+	stackHigh := h.bus.Read64(stateBase + 0x0A8)
+	want := fakeWindow - 0x1000 // BASIC_STACK_GUARD_BYTES below the window
+	if stackHigh != want {
+		t.Fatalf("ST_STACK_HIGH = %#x, want %#x (window-clamped)", stackHigh, want)
+	}
+}
+
+// On machines with RAM well above the 32-bit window, BASIC's classic
+// interpreter heap (programme text, variables, strings) moves into the
+// backing-served space above 4 GiB: bottom at BASIC_HIGH_HEAP_BASE,
+// top at RAM minus the retained AOT arena reserve. The resident stack
+// and the file/DMA staging bridge stay in the low window (JIT fused
+// stack path and 32-bit device DATA_PTR registers respectively).
+// Small hosts keep the legacy low-window heap.
+func TestREPL_HeapFillsWindowOnBigHosts(t *testing.T) {
+	bus := bootSimulate(t, modeBasic, eightGiB, sparseAllocator)
+	h := newEhbasicHarnessOnBus(t, bus)
+	_, bootOutput := startREPLOnHarness(t, h)
+
+	const stateBase = 0x042000 // BASIC_STATE
+	heapBottom := h.bus.Read64(stateBase + 0x038)
+	heapTop := h.bus.Read64(stateBase + 0x030)
+	window := uint64(len(h.bus.GetMemory()))
+	// The interpreter arena stays inside the 32-bit dense window: the
+	// base is the low post-scratch arena and the top rises to just below
+	// the SYSINFO-clamped resident stack. Both must be below the window.
+	if heapBottom == 0 || heapBottom >= window {
+		t.Fatalf("ST_HEAP_BOTTOM = %#x, want a low 32-bit base below window %#x", heapBottom, window)
+	}
+	if heapTop <= heapBottom || heapTop > window {
+		t.Fatalf("ST_HEAP_TOP = %#x, want heap_bottom < top <= window %#x", heapTop, window)
+	}
+	// The window-sized heap must dwarf the old 256 MiB resident cap.
+	if heapTop-heapBottom < uint64(1)<<30 {
+		t.Fatalf("heap span %#x too small; want the full-window heap", heapTop-heapBottom)
+	}
+	if !strings.Contains(bootOutput, "BASIC FREE") {
+		t.Fatalf("banner missing free report: %q", bootOutput)
+	}
+}
+
+// A native LET fast path must never truncate a floating-point variable
+// read by a syntactically integer RHS. A=1.5:B=A stores 1.5 in B under
+// the interpreter; RUN AOT must agree, falling back to the tagged
+// evaluator because A is not a proven integer.
+func TestREPL_RunAOT_FPVarNotTruncatedByIntLet(t *testing.T) {
+	prog := []string{"10 A=1.5", "20 B=A", "30 PRINT B", "40 END"}
+
+	runOne := func(cmd string) string {
+		h, _ := startREPL(t)
+		for _, line := range prog {
+			h.runCommand(line)
+		}
+		return h.runCommand(cmd)
+	}
+	interp := runOne("RUN")
+	aot := runOne("RUN AOT")
+	if !strings.Contains(interp, "1.5") {
+		t.Fatalf("interpreted RUN did not print 1.5: %q", interp)
+	}
+	if !strings.Contains(aot, "1.5") {
+		t.Fatalf("RUN AOT truncated FP variable: printed %q, want 1.5 (matching interpreter %q)", aot, interp)
+	}
+}
+
+// Forward reference: the FP-valued source (A) is assigned after the read
+// (B=A), so a single type-scan pass would wrongly keep B known-I64. The
+// fixpoint pass must still fall the read back to the tagged evaluator.
+func TestREPL_RunAOT_FPVarForwardRefNotTruncated(t *testing.T) {
+	prog := []string{"10 B=A", "20 A=1.5", "30 PRINT B+A", "40 END"}
+	runOne := func(cmd string) string {
+		h, _ := startREPL(t)
+		for _, line := range prog {
+			h.runCommand(line)
+		}
+		return h.runCommand(cmd)
+	}
+	interp := runOne("RUN")
+	aot := runOne("RUN AOT")
+	// B reads A before A is set, so B=0; PRINT B+A = 0+1.5 = 1.5.
+	if !strings.Contains(interp, "1.5") {
+		t.Fatalf("interpreted RUN did not print 1.5: %q", interp)
+	}
+	if !strings.Contains(aot, "1.5") {
+		t.Fatalf("RUN AOT forward-ref truncated FP: printed %q, want 1.5 (interpreter %q)", aot, interp)
+	}
+}
+
+// LOAD must store the programme on the high-heap layout. line_store's
+// capacity ceiling used the low32 file-data bridge cursor (where LOAD
+// parks its read buffer) as the limit, so a programme arena at 4 GiB
+// tripped OOM on every line and LOAD produced an empty programme. This
+// pins LOAD then LIST on an 8 GiB (high-heap) bus.
+func TestREPL_LoadStoresProgramOnHighHeap(t *testing.T) {
+	asmBin := buildAssembler(t)
+	bus := bootSimulate(t, modeBasic, eightGiB, sparseAllocator)
+	base := newEhbasicHarnessOnBus(t, bus)
+	h := newEhbasicREPLHarnessWithFileIOOnHarness(t, asmBin, repoRootDir(t), base)
+	if out := h.runCommand(`LOAD "sdk/examples/basic/resonance.bas"`); strings.Contains(out, "ERROR") {
+		t.Fatalf("LOAD error: %q", out)
+	}
+	list := h.runCommand("LIST")
+	if !strings.Contains(list, "10 ") && !strings.Contains(list, "REM") {
+		t.Fatalf("LIST empty after LOAD on high-heap bus - programme not stored: %q", list)
+	}
+}
+
+// RUN AOT and COMPILE on an empty programme must report a clear error
+// rather than silently producing nothing (which read as "it compiled
+// but did nothing").
+func TestREPL_RunAOT_EmptyProgramErrors(t *testing.T) {
+	for _, cmd := range []string{"RUN AOT", `COMPILE "empty"`} {
+		h, _ := startREPL(t)
+		out := h.runCommand(cmd)
+		if !strings.Contains(out, "NO CODE") {
+			t.Fatalf("%s on empty programme: want NO CODE error, got %q", cmd, out)
+		}
 	}
 }
 

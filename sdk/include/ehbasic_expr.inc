@@ -1457,14 +1457,19 @@ expr_primary:
     rts
 .fn_fre:
     ; Approximate free internal arena bytes: effective top - ST_HEAP_BOTTOM.
+    ; The file-bridge cursor bounds the heap only while it sits above the
+    ; heap base (the two share the low arena); if it drops below - LOAD
+    ; parks its read buffer low - fall back to the heap top.
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    load.q  r8, (r1)
     add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
     load.q  r2, (r1)
-    bnez    r2, .fre_have_top
+    beqz    r2, .fre_top_from_heap
+    bgt     r2, r8, .fre_have_top
+.fre_top_from_heap:
     add.q   r1, r16, #ST_HEAP_TOP
     load.q  r2, (r1)
 .fre_have_top:
-    add.q   r1, r16, #ST_HEAP_BOTTOM
-    load.q  r8, (r1)
     sub.q   r8, r2, r8
     jsr     fp_float
     rts

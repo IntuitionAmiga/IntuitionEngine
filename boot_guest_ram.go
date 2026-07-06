@@ -45,13 +45,20 @@ const (
 // 32 MiB boot profile with the same minimum enforced by profile_bounds.go.
 const EmuTOSProfileTopBytes uint64 = uint64(EmuTOS_PROFILE_TOP)
 
-// lowMemWindowBytes is the upper bound on len(bus.memory) for IE64-family
-// modes. PLAN_MAX_RAM slice 10 reviewer P1: bus.memory is the legacy
-// direct-slice low compatibility window only; it is NOT the guest RAM
-// size authority. Advertised guest RAM above this window is served via
-// the high-range Backing through Bus64Phys. Sized at 256 MiB so AROS-
-// style profiles, VRAM, MMIO, and reasonable program/heap staging all
-// fit, while keeping mmap-backed boot RSS small.
+// lowMemWindowBytes is the historical upper bound on len(bus.memory)
+// for IE64-family modes. PLAN_MAX_RAM slice 10 reviewer P1: bus.memory
+// is the legacy direct-slice low compatibility window only; it is NOT
+// the guest RAM size authority. Advertised guest RAM above this window
+// is served via the high-range Backing through Bus64Phys.
+//
+// IE64-family boots now size the window at busMemMaxBytes like the
+// bare 32-bit modes: the REPL launches flat 32-bit programs (which see
+// only bus.memory), and a 256 MiB window rejected any image reaching
+// past 0x10000000. The window/backing boundary derives from
+// len(bus.memory) (backingCovers), so growing it just shifts the split
+// - mmap-backed hosts stay lazy (RSS grows only with touched pages)
+// and busMemBootClamp still caps non-mmap hosts. This constant remains
+// for the non-mmap fallback and tests.
 const lowMemWindowBytes uint64 = 256 * 1024 * 1024
 
 // arosProfileTopBytes is set by profile_bounds.go's AROS_PROFILE_TOP at
@@ -73,7 +80,9 @@ func clampProfileCapToDetected(profileCap, autodetectedTotal uint64) uint64 {
 func resolveModeCaps(mode runtimeMode, autodetectedTotal uint64) (busMemCap, backingMaxSize uint64) {
 	switch mode {
 	case modeIE64, modeIntuitionOS, modeBasic:
-		return lowMemWindowBytes, autodetectedTotal
+		// Full 32-bit window so the REPL can launch any flat 32-bit
+		// image; 64-bit RAM above the window stays backing-served.
+		return busMemMaxBytes, autodetectedTotal
 	case modeIE32, modeX86, modeM68KBare:
 		// 32-bit modes do not route through Bus64Phys, so bus.memory is
 		// the only path to advertised RAM. Cap is the full 32-bit
@@ -89,9 +98,9 @@ func resolveModeCaps(mode runtimeMode, autodetectedTotal uint64) (busMemCap, bac
 	case mode6502, modeZ80:
 		return banked8BitVisibleRAMBytes, banked8BitVisibleRAMBytes
 	default:
-		// Defensive default: behave as if IE64 family (small low window
-		// + full backing).
-		return lowMemWindowBytes, autodetectedTotal
+		// Defensive default: behave as if IE64 family (full 32-bit
+		// window + full backing).
+		return busMemMaxBytes, autodetectedTotal
 	}
 }
 

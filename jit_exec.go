@@ -681,24 +681,7 @@ func (cpu *CPU64) ExecuteJIT() {
 
 		// Self-modifying code: invalidate cache
 		if cpu.jitCtx.NeedInval != 0 {
-			recordBlockDeopt(&cpu.deoptStats, block, DeoptSMC)
-			if jitSMCRangeDisabled || cpu.jitCtx.InvalSize == 0 {
-				cpu.jitCache.Invalidate()
-				execMem.Reset()
-				clear(cpu.jitCodePageBitmap)
-				clear(cpu.jitPhysCodePageBitmap)
-				ie64ClearHighCodePageSpan(cpu.jitCtx)
-				ie64ClearRTSCache(cpu.jitCtx)
-			} else {
-				removed := ie64InvalidateSMCRangeWithPhysical(cpu.jitCache, cpu.jitCodePageBitmap, cpu.jitPhysCodePageBitmap, cpu.jitCtx, cpu.bus)
-				if removed != 0 {
-					resetExecMemWhenCacheEmpty(cpu.jitCache, execMem)
-				}
-			}
-			cpu.jitCtx.NeedInval = 0
-			cpu.jitCtx.InvalAddr = 0
-			cpu.jitCtx.InvalSize = 0
-			globalIE64JITStats.invalidations.Add(1)
+			cpu.handleJITSMCInvalidation(block, execMem)
 		}
 
 		// I/O fallback: re-execute the bailing instruction via interpreter

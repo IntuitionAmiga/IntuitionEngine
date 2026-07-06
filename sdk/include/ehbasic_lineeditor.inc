@@ -42,10 +42,13 @@ line_init:
     la      r1, EHBASIC_PRIV_LOAD_DIR_BUF
     store.b r0, (r1)
 
-    ; Write the post-scratch programme base to ST_PROG_START. Older focused
-    ; unit harnesses may call line_init without basic_layout_init, so seed a
-    ; reduced dynamic low32 arena only when ST_SCRATCH_END is still zero.
-    add.q   r2, r16, #ST_SCRATCH_END
+    ; Take the programme base from the arena cursor basic_layout_init
+    ; published in ST_HEAP_BOTTOM: the scratch end in the legacy low
+    ; layout, or the high heap base on machines whose interpreter arena
+    ; sits above the 32-bit window. Older focused unit harnesses may
+    ; call line_init without basic_layout_init, so seed a reduced
+    ; dynamic low32 arena only when the cursor is still zero.
+    add.q   r2, r16, #ST_HEAP_BOTTOM
     load.q  r1, (r2)
     bnez    r1, .li_have_prog_start
     move.q  r1, #BASIC_LOW32_INTERNAL_BASE
@@ -87,7 +90,7 @@ line_init:
 ; line_new - Clear all program text (NEW command)
 ; ============================================================================
 ; Input:  R16 = state block base
-; Clobbers: R1, R2
+; Clobbers: R1-R4, R8
 
 line_new:
     add.q   r1, r16, #ST_SCRATCH_END
@@ -106,8 +109,11 @@ line_new:
     add.q   r3, r16, #ST_FILE_BRIDGE_NEXT
     store.q r4, (r3)
 .ln_have_arena_base:
+    ; Reset the arena cursor to the programme base (the high heap base
+    ; on split layouts, the post-scratch low arena otherwise).
+    jsr     basic_prog_arena_base
     add.q   r1, r16, #ST_HEAP_BOTTOM
-    store.q r2, (r1)
+    store.q r8, (r1)
 
     ; Same as line_init after restoring the arena cursor.
     bra     line_init

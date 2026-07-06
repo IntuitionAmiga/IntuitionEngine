@@ -226,3 +226,19 @@ func TestSysInfo_NoOverlapWithDocumentedMMIO(t *testing.T) {
 			SYSINFO_REGION_BASE, SYSINFO_REGION_END, IO_REGION_BASE, IO_REGION_END)
 	}
 }
+
+// The low-window pair reports len(bus.memory): the dense low RAM slice
+// a 32-bit guest CPU (and BASIC's resident stack area) can address
+// directly. Guests size low-window-resident regions from
+// min(CR_RAM_SIZE_BYTES, this value).
+func TestSysInfoMMIO_ReportsLowWindow(t *testing.T) {
+	bus := NewMachineBus()
+	RegisterSysInfoMMIOFromBus(bus)
+
+	lo := uint64(bus.Read32(SYSINFO_LOW_WINDOW_LO))
+	hi := uint64(bus.Read32(SYSINFO_LOW_WINDOW_HI))
+	got := lo | hi<<32
+	if want := uint64(len(bus.GetMemory())); got != want {
+		t.Fatalf("SYSINFO low window = %d, want %d", got, want)
+	}
+}

@@ -154,6 +154,30 @@ cold_start:
     jsr     print_string
     jsr     print_crlf
 
+    ; Report memory on one line, in the spirit of the 8-bit machines
+    ; but scaled to the largest whole binary unit so multi-GiB hosts
+    ; read naturally. System RAM comes from CR_RAM_SIZE_BYTES (the
+    ; source basic_layout_init sizes the interpreter from, with the
+    ; same legacy-harness fallback); BASIC free memory is the heap
+    ; span, the same span FRE() reports.
+    mfcr    r8, cr15                ; CR_RAM_SIZE_BYTES
+    bnez    r8, .banner_have_ram
+    move.q  r8, #0x02000000         ; legacy harness fallback: 32 MiB
+.banner_have_ram:
+    jsr     banner_print_size
+    la      r8, repl_str_sysram
+    jsr     print_string
+
+    add.q   r1, r16, #ST_HEAP_TOP
+    load.q  r8, (r1)
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    load.q  r2, (r1)
+    sub.q   r8, r8, r2
+    jsr     banner_print_size
+    la      r8, repl_str_basicfree
+    jsr     print_string
+    jsr     print_crlf
+
 ; ============================================================================
 ; WARM START - Reset execution state, enter REPL
 ; ============================================================================
@@ -1752,6 +1776,9 @@ aot_compile_check:
     push    r18                     ; current line number
 
     load.q  r14, (r16)              ; first line record
+    beqz    r14, .acc_no_code       ; no programme stored
+    load.q  r1, (r14)
+    beqz    r1, .acc_no_code        ; only the terminator: nothing to compile
 
 .acc_line:
     beqz    r14, .acc_ok
@@ -1820,6 +1847,13 @@ aot_compile_check:
     jsr     aot_reject              ; R8 = reason ptr, R18 = line; prints error
     bra     .acc_epilogue           ; R8 = 1
 
+.acc_no_code:
+    la      r8, aot_msg_no_code
+    jsr     print_string
+    jsr     print_crlf
+    move.q  r8, #1
+    bra     .acc_epilogue
+
 .acc_ok:
     move.q  r8, r0
 
@@ -1831,6 +1865,10 @@ aot_compile_check:
     rts
 
 ; aot_reject - print "?COMPILE ERROR IN <line>: <reason>" (R8=reason, R18=line)
+aot_msg_no_code:
+    dc.b    "?NO CODE TO COMPILE", 0
+    align 4
+
 aot_reject:
     move.q  r20, r8                 ; save reason pointer
     la      r8, aot_err_prefix
@@ -2764,6 +2802,56 @@ repl_skip_spaces:
     rts
 
 ; ============================================================================
+; banner_print_size - print a byte count scaled to its largest whole
+; binary unit (GiB/MiB/KiB/bytes), floored. Input: R8 = bytes.
+; Clobbers: R1-R7, R14 (via io_print_int64).
+; ============================================================================
+banner_print_size:
+    push    r15
+    move.q  r15, r8
+    lsr.q   r1, r15, #30
+    bnez    r1, .bps_gib
+    lsr.q   r1, r15, #20
+    bnez    r1, .bps_mib
+    lsr.q   r1, r15, #10
+    bnez    r1, .bps_kib
+    move.q  r8, r15
+    jsr     io_print_int64
+    la      r8, bps_str_bytes
+    bra     .bps_unit
+.bps_gib:
+    lsr.q   r8, r15, #30
+    jsr     io_print_int64
+    la      r8, bps_str_gib
+    bra     .bps_unit
+.bps_mib:
+    lsr.q   r8, r15, #20
+    jsr     io_print_int64
+    la      r8, bps_str_mib
+    bra     .bps_unit
+.bps_kib:
+    lsr.q   r8, r15, #10
+    jsr     io_print_int64
+    la      r8, bps_str_kib
+.bps_unit:
+    jsr     print_string
+    pop     r15
+    rts
+
+bps_str_gib:
+    dc.b    " GiB", 0
+    align 4
+bps_str_mib:
+    dc.b    " MiB", 0
+    align 4
+bps_str_kib:
+    dc.b    " KiB", 0
+    align 4
+bps_str_bytes:
+    dc.b    " bytes", 0
+    align 4
+
+; ============================================================================
 ; STRING DATA
 ; ============================================================================
 
@@ -2775,6 +2863,14 @@ repl_str_banner:
 
 repl_str_ready:
     dc.b    "Ready", 0
+    align 4
+
+repl_str_sysram:
+    dc.b    " SYSTEM RAM, ", 0
+    align 4
+
+repl_str_basicfree:
+    dc.b    " BASIC FREE", 0
     align 4
 
 repl_msg_file_error:

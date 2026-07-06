@@ -32,22 +32,44 @@
 ; Clobbers: R1-R5, R8
 aot_alloc_reset:
     mfcr    r8, cr15                ; R8 = CR_RAM_SIZE_BYTES (total guest RAM)
-    and.q   r2, r8, #0xFFF
-    sub.q   r1, r8, r2             ; R1 = RAM size & ~0xFFF
-    ; Keep retained allocations below BASIC stacks when the stacks are in the
-    ; same high arena window. Resident high-RAM BASIC caps its stacks into the
-    ; low32 window, so those low32 stack cursors must not pull the retained RUN
-    ; AOT arena down from a high/sparse RAM frontier.
+    ; Bound the arena frontier to the dense 32-bit window: the retained
+    ; text/code allocations hold compiled native code the JIT executes,
+    ; which must stay where the fused low paths can reach it. cr15 can
+    ; exceed the window when the host backs RAM above 4 GiB.
+    la      r1, SYSINFO_LOW_WINDOW_LO
+    load.l  r1, (r1)
+    la      r2, SYSINFO_LOW_WINDOW_HI
+    load.l  r3, (r2)
+    lsl.q   r3, r3, #32
+    or.q    r1, r1, r3
+    beqz    r1, .aar_frontier_cr15  ; SYSINFO absent: trust cr15
+    blt     r1, r8, .aar_frontier_ready
+.aar_frontier_cr15:
+    move.q  r1, r8
+.aar_frontier_ready:
+    and.q   r2, r1, #0xFFF
+    sub.q   r1, r1, r2             ; R1 = frontier & ~0xFFF
+    ; Keep retained allocations below the BASIC stacks only when the
+    ; stacks actually sit inside the arena region. Split layout (stacks
+    ; strictly below the heap top, heap above the 32-bit window): the
+    ; arena keeps the top-of-RAM frontier. Legacy layouts publish
+    ; heap top == ctrl low, so the stacks bound the arena exactly when
+    ; the resident window tops out at RAM top; a zero heap top (reset
+    ; without layout init) treats any live ctrl low as the bound.
     add.q   r3, r16, #ST_CTRL_LOW
     load.q  r4, (r3)
     beqz    r4, .aar_have_arena_top
     bge     r4, r1, .aar_have_arena_top
-    move.q  r5, #BASIC_RESIDENT_LOW32_CAP
-    blt     r1, r5, .aar_use_ctrl_low
-    bgt     r4, r5, .aar_use_ctrl_low
-    bra     .aar_have_arena_top
-.aar_use_ctrl_low:
-    move.q  r1, r4                  ; retained arena shares stack window
+    add.q   r3, r16, #ST_HEAP_TOP
+    load.q  r5, (r3)
+    beqz    r5, .aar_clamp_ctrl_low
+    blt     r4, r5, .aar_have_arena_top
+    add.q   r3, r16, #ST_STACK_HIGH
+    load.q  r5, (r3)
+    add.q   r5, r5, #BASIC_STACK_GUARD_BYTES
+    blt     r5, r1, .aar_have_arena_top
+.aar_clamp_ctrl_low:
+    move.q  r1, r4                  ; stacks inside the arena region: sit below them
 .aar_have_arena_top:
     la      r3, AOT_ARENA_HIGH_NEXT
     store.q r1, (r3)
@@ -2258,6 +2280,8 @@ aot_transpile:
     store.q r0, (r1)               ; reset runtime-blob-needed flag
     la      r1, AOT_USE_PROG
     store.q r0, (r1)               ; reset programme-bundling flag
+    la      r1, AOT_NATIVE_TYPES_OFF
+    store.q r0, (r1)               ; scalar typing on until the type scan says otherwise
     jsr     aot_native_vars_alloc
     beqz    r9, .tr_oflow
     la      r1, AOT_NATIVE_MEM_NEXT
@@ -2268,6 +2292,18 @@ aot_transpile:
     move.q  r20, r18
     jsr     aot_native_vars_prescan
     beqz    r9, .tr_oflow
+    ; A keep decision reads other scalars' flags, so a later FP write can
+    ; invalidate a keep an earlier statement made from a then-clean
+    ; operand. Iterate the whole-programme scan to a fixpoint. Flags only
+    ; move from known-I64 to cleared, so the change latch converges.
+.tr_typescan_loop:
+    la      r1, AOT_NATIVE_TYPES_CHANGED
+    store.q r0, (r1)
+    move.q  r20, r18
+    jsr     aot_native_vars_type_scan
+    la      r1, AOT_NATIVE_TYPES_CHANGED
+    load.q  r1, (r1)
+    bnez    r1, .tr_typescan_loop
     ; Standalone only: pre-scan the whole programme. Any expression/control-flow token
     ; sets AOT_USE_RT (needs the runtime blob); READ/DATA/RESTORE additionally set
     ; AOT_USE_PROG (the tokenised programme must be bundled for the blob's DATA reader).
@@ -2683,6 +2719,24 @@ aot_transpile:
     jsr     aot_try_emit_memalloc_rhs
     move.q  r1, #1
     beq     r23, r1, .tr_let_rhs_ready
+    ; Native integer RHS: stores an I64 payload and tag, which is what
+    ; keeps the target scalar known-I64. Division stays on the tagged
+    ; evaluator so quotients keep BASIC's fractional semantics.
+    move.q  r20, r28
+    push    r8                     ; the support scan parses literals via R8
+    jsr     aot_int_expr_supported_nodiv
+    pop     r8
+    beqz    r9, .tr_let_eval_rhs
+    move.q  r20, r28
+    push    r8
+    jsr     aot_rhs_scalars_all_known_i64
+    pop     r8
+    beqz    r9, .tr_let_eval_rhs   ; RHS reads an FP scalar: keep tagged semantics
+    move.q  r20, r28
+    jsr     aot_try_emit_int_expr
+    move.q  r1, #1
+    beq     r23, r1, .tr_let_rhs_ready
+.tr_let_eval_rhs:
     move.q  r20, r28
     jsr     aot_emit_expr           ; runtime R8 = RHS payload, R9 = RHS tag
 .tr_let_rhs_ready:
@@ -4373,6 +4427,12 @@ aot_str_movel_r8:
 aot_str_moveq_r8_imm:
     dc.b    "move.q r8, #", 0
     align 4
+aot_str_lslq_r8_32:
+    dc.b    "lsl.q r8, r8, #32", 0x0A, 0
+    align 4
+aot_str_orq_r8_r8_r1:
+    dc.b    "or.q r8, r8, r1", 0x0A, 0
+    align 4
 aot_str_fp_seq:
     dc.b    "jsr fp_float", 0x0A, "jsr fp_print", 0x0A, 0
     align 4
@@ -5222,9 +5282,9 @@ aot_emit_uint:
     beqz    r3, .eu_emit
     move.q  r4, r3
     move.q  r5, #10
-    divu.l  r4, r4, r5             ; r4 = r3 / 10
-    mulu.l  r6, r4, r5             ; r6 = (r3/10) * 10
-    sub.l   r7, r3, r6            ; r7 = r3 % 10
+    divu.q  r4, r4, r5             ; r4 = r3 / 10 (full 64-bit value)
+    mulu.q  r6, r4, r5             ; r6 = (r3/10) * 10
+    sub.q   r7, r3, r6            ; r7 = r3 % 10
     add.q   r7, r7, #0x30          ; -> ASCII digit
     push    r7
     add.q   r2, r2, #1
@@ -5683,7 +5743,9 @@ aot_emit_truthy_call:
 ; native code loads/stores payload slots directly.
 
 aot_native_vars_alloc:
-    move.q  r8, #0x4000            ; AOT_NATIVE_VAR_MAX * sizeof(uint32 tag)
+    ; Name-tag table (AOT_NATIVE_VAR_MAX * uint32) plus one known-I64
+    ; flag byte per scalar at offset 0x4000.
+    move.q  r8, #0x5000
     jsr     aot_alloc64
     bnez    r9, .anva_fail
     beqz    r8, .anva_fail
@@ -5815,7 +5877,9 @@ aot_parse_compiler_var_name:
     rts
 
 ; Intern the simple scalar variable at R20.
-; Output R8 = native payload address, R9 = 1 ok, R22 = pointer past name.
+; Output R8 = native payload address, R9 = 1 ok, R11 = table index,
+;        R22 = pointer past name. A newly added scalar starts known-I64;
+;        the type scan clears the flag for non-native writes.
 aot_native_var_intern:
     jsr     aot_parse_compiler_var_name
     beqz    r15, .anvi_fail
@@ -5843,11 +5907,16 @@ aot_native_var_intern:
     lsl.q   r6, r4, #2
     add.q   r6, r3, r6
     store.l r14, (r6)
+    add.q   r6, r3, #0x4000
+    add.q   r6, r6, r4
+    move.q  r7, #1
+    store.b r7, (r6)               ; known-I64 until a non-native write clears it
     move.q  r5, r4
     add.q   r4, r4, #1
     la      r1, AOT_NATIVE_VAR_COUNT
     store.q r4, (r1)
 .anvi_found:
+    move.q  r11, r5
     move.q  r8, r5
     mulu.q  r8, r8, #24
     add.q   r8, r8, #(AOT_NATIVE_VAR_SEG + 32)
@@ -5856,6 +5925,392 @@ aot_native_var_intern:
 .anvi_fail:
     move.q  r8, r0
     move.q  r9, r0
+    rts
+
+; --- compile-time scalar typing ----------------------------------------------
+; A native scalar is "known-I64" when every write the programme can make to it
+; provably stores an I64-tagged value: a division-free native integer LET, or a
+; native FOR/NEXT pair. Interning seeds the flag, the type scan below clears it
+; at each non-native write, and aot_emit_var_read_atom skips the runtime tag
+; guard exactly for flagged scalars. CLEAR/NEW/LOAD rebuild variables at run
+; time, so their presence anywhere disables the typing pass wholesale.
+
+; aot_int_expr_supported_nodiv - aot_int_expr_supported minus division.
+; Integer division truncates, so a quotient RHS stays on the tagged evaluator
+; to keep BASIC's fractional semantics; every other supported form stores I64.
+; Input R20. Output R9 = 1 supported. Preserves R20. Clobbers R1-R7.
+aot_int_expr_supported_nodiv:
+    jsr     aot_int_expr_supported
+    beqz    r9, .iesn_ret
+    move.q  r3, r20
+    move.q  r4, r0                 ; parenthesis depth
+.iesn_loop:
+    load.b  r1, (r3)
+    beqz    r1, .iesn_ok
+    move.q  r2, #0x3A              ; ':'
+    beq     r1, r2, .iesn_ok
+    move.q  r2, #0x2C              ; ','
+    beq     r1, r2, .iesn_ok
+    move.q  r2, #0xAC              ; THEN
+    beq     r1, r2, .iesn_ok
+    move.q  r2, #0xAB              ; ELSE
+    beq     r1, r2, .iesn_ok
+    move.q  r2, #0xB4              ; division
+    beq     r1, r2, .iesn_fail
+    move.q  r2, #0xBF              ; INT(...)
+    beq     r1, r2, .iesn_skip_int
+    move.q  r2, #0x28
+    bne     r1, r2, .iesn_not_lparen
+    add.q   r4, r4, #1
+    bra     .iesn_next
+.iesn_not_lparen:
+    move.q  r2, #0x29
+    bne     r1, r2, .iesn_next
+    beqz    r4, .iesn_ok
+    sub.q   r4, r4, #1
+.iesn_next:
+    add.q   r3, r3, #1
+    bra     .iesn_loop
+.iesn_skip_int:
+    add.q   r3, r3, #1
+.iesn_int_sp:
+    load.b  r1, (r3)
+    move.q  r2, #0x20
+    bne     r1, r2, .iesn_int_lparen
+    add.q   r3, r3, #1
+    bra     .iesn_int_sp
+.iesn_int_lparen:
+    move.q  r2, #0x28              ; '('
+    bne     r1, r2, .iesn_fail
+    move.q  r5, #1
+    add.q   r3, r3, #1
+.iesn_int_loop:
+    load.b  r1, (r3)
+    beqz    r1, .iesn_fail
+    move.q  r2, #0x28
+    bne     r1, r2, .iesn_int_not_lparen
+    add.q   r5, r5, #1
+    bra     .iesn_int_next
+.iesn_int_not_lparen:
+    move.q  r2, #0x29
+    bne     r1, r2, .iesn_int_next
+    sub.q   r5, r5, #1
+    add.q   r3, r3, #1
+    beqz    r5, .iesn_loop
+    bra     .iesn_int_loop
+.iesn_int_next:
+    add.q   r3, r3, #1
+    bra     .iesn_int_loop
+.iesn_ok:
+    move.q  r9, #1
+    rts
+.iesn_fail:
+    move.q  r9, r0
+.iesn_ret:
+    rts
+
+; aot_native_var_flag_clear_r20 - clear the known-I64 flag of the scalar at
+; R20 (leading spaces skipped). String and array names are left alone; R22
+; always ends past the parsed name so list walkers can advance.
+; Clobbers R1-R11, R14, R15, R20, R22.
+aot_native_var_flag_clear_r20:
+    jsr     aot_skip_spaces
+    jsr     aot_native_var_intern
+    beqz    r9, .nvfc_ret
+    la      r1, AOT_NATIVE_VAR_TAB
+    load.q  r1, (r1)
+    add.q   r1, r1, #0x4000
+    add.q   r1, r1, r11
+    load.b  r2, (r1)
+    beqz    r2, .nvfc_ret          ; already clear: no change to latch
+    store.b r0, (r1)
+    la      r2, AOT_NATIVE_TYPES_CHANGED
+    move.q  r3, #1
+    store.q r3, (r2)
+.nvfc_ret:
+    rts
+
+; aot_rhs_scalars_all_known_i64 - R9=1 iff every scalar operand in the RHS
+; expression at R20 is currently known-I64. A syntactically integer RHS that
+; reads an FP scalar would truncate it, so LET (and the type scan's keep
+; decision) must fall back to the tagged evaluator in that case. The RHS has
+; already passed aot_int_expr_supported_nodiv, so it holds only scalars,
+; unsigned literals, +, -, *, comparisons, and parentheses. Stops at a
+; statement separator. Preserves R20. Clobbers R1-R11, R14, R15, R22-R24.
+aot_rhs_scalars_all_known_i64:
+	push    r20
+	la      r1, AOT_NATIVE_TYPES_OFF
+	load.q  r1, (r1)
+	bnez    r1, .rsak_no           ; typing disabled: no scalar is proven I64
+.rsak_loop:
+    load.b  r1, (r20)
+    beqz    r1, .rsak_yes          ; end of statement text
+    move.q  r2, #0x3A              ; ':'
+    beq     r1, r2, .rsak_yes
+    move.q  r2, #0x2C              ; ','
+    beq     r1, r2, .rsak_yes
+    move.q  r2, #0xAC              ; THEN
+    beq     r1, r2, .rsak_yes
+    move.q  r2, #0xAB              ; ELSE
+    beq     r1, r2, .rsak_yes
+    or.q    r2, r1, #0x20
+    move.q  r3, #0x61              ; 'a'
+    blt     r2, r3, .rsak_adv
+    move.q  r3, #0x7A              ; 'z'
+    bgt     r2, r3, .rsak_adv
+    ; A scalar name begins here. Intern it and read its known-I64 flag.
+    move.q  r24, r20               ; remember, aot_native_var_intern preserves R20
+    jsr     aot_native_var_intern
+    beqz    r9, .rsak_no           ; unexpected non-scalar: be conservative
+    la      r1, AOT_NATIVE_VAR_TAB
+    load.q  r1, (r1)
+    add.q   r1, r1, #0x4000
+    add.q   r1, r1, r11
+    load.b  r1, (r1)
+    beqz    r1, .rsak_no           ; this operand is not proven I64
+    move.q  r20, r24
+    jsr     aot_skip_var_name
+    bra     .rsak_loop
+.rsak_adv:
+    add.q   r20, r20, #1
+    bra     .rsak_loop
+.rsak_yes:
+    pop     r20
+    move.q  r9, #1
+    rts
+.rsak_no:
+    pop     r20
+    move.q  r9, r0
+    rts
+
+; aot_expr_contains_int - R9=1 iff the expression at R20 contains TK_INT before
+; its top-level boundary. Preserves R20.
+aot_expr_contains_int:
+    push    r20
+.aeci_loop:
+    load.b  r1, (r20)
+    beqz    r1, .aeci_no
+    move.q  r2, #0x3A              ; ':'
+    beq     r1, r2, .aeci_no
+    move.q  r2, #0x2C              ; ','
+    beq     r1, r2, .aeci_no
+    move.q  r2, #0xAC              ; THEN
+    beq     r1, r2, .aeci_no
+    move.q  r2, #0xAB              ; ELSE
+    beq     r1, r2, .aeci_no
+    move.q  r2, #0xBF              ; INT
+    beq     r1, r2, .aeci_yes
+    add.q   r20, r20, #1
+    bra     .aeci_loop
+.aeci_yes:
+    pop     r20
+    move.q  r9, #1
+    rts
+.aeci_no:
+    pop     r20
+    move.q  r9, r0
+    rts
+
+; aot_native_vars_type_scan - conservative whole-programme write analysis.
+; Walks every statement (quote-aware, THEN/ELSE and ':' are statement
+; separators) and clears the known-I64 flag of any scalar a statement can
+; write through a path that does not provably store an I64 tag. Reads never
+; clear. The rules mirror the emitters exactly: an assignment keeps its target
+; iff the RHS passes the same division-free integer check the LET lowering
+; claims with, and a FOR keeps its loop scalar iff aot_try_native_for accepts
+; the same header the FOR lowering will accept.
+; Input: R20 = first line record. Output: R9 = 1. Preserves R16-R21 aside
+; from R20. Clobbers R1-R15, R20, R22-R24 (parser helpers).
+aot_native_vars_type_scan:
+    move.q  r13, r20               ; token cursor
+.tvs_line:
+    beqz    r13, .tvs_done
+    load.q  r12, (r13)             ; next line record
+    beqz    r12, .tvs_done         ; terminator
+    add.q   r13, r13, #16          ; first statement token
+.tvs_stmt:
+    load.b  r1, (r13)
+    beqz    r1, .tvs_line_next
+    move.q  r2, #0x20
+    beq     r1, r2, .tvs_adv
+    move.q  r2, #0x3A              ; ':'
+    beq     r1, r2, .tvs_adv
+    move.q  r2, #0xAC              ; THEN opens a nested statement
+    beq     r1, r2, .tvs_adv
+    move.q  r2, #0xAB              ; ELSE opens a nested statement
+    beq     r1, r2, .tvs_adv
+    move.q  r2, #0x8F              ; REM: comment to end of line
+    beq     r1, r2, .tvs_line_next
+    move.q  r2, #0x83              ; DATA: literal text to end of line
+    beq     r1, r2, .tvs_line_next
+    move.q  r2, #0x81              ; FOR
+    beq     r1, r2, .tvs_for
+    move.q  r2, #0x86              ; READ writes its targets via the evaluator
+    beq     r1, r2, .tvs_clear_list
+    move.q  r2, #0x84              ; INPUT likewise
+    beq     r1, r2, .tvs_clear_list
+    move.q  r2, #0xA4              ; GET likewise
+    beq     r1, r2, .tvs_clear_list
+    move.q  r2, #0xA5              ; SWAP moves payloads between records
+    beq     r1, r2, .tvs_clear_list
+    move.q  r2, #0xA1              ; CLEAR rebuilds variables at run time
+    beq     r1, r2, .tvs_types_off
+    move.q  r2, #0xA2              ; NEW likewise
+    beq     r1, r2, .tvs_types_off
+    move.q  r2, #0x95              ; LOAD likewise
+    beq     r1, r2, .tvs_types_off
+    move.q  r2, #0x87              ; LET keyword: assignment follows
+    bne     r1, r2, .tvs_check_letter
+    add.q   r13, r13, #1
+.tvs_let_spaces:
+    load.b  r1, (r13)
+    move.q  r2, #0x20
+    bne     r1, r2, .tvs_check_letter
+    add.q   r13, r13, #1
+    bra     .tvs_let_spaces
+.tvs_check_letter:
+    or.q    r2, r1, #0x20
+    move.q  r3, #0x61
+    blt     r2, r3, .tvs_skip_stmt
+    move.q  r3, #0x7A
+    bgt     r2, r3, .tvs_skip_stmt
+    ; NAME = RHS candidate (an IF condition starting with a comparison
+    ; never reaches the '=' check, and a spurious keep is harmless for a
+    ; statement that writes nothing)
+    move.q  r20, r13
+    push    r12
+    push    r13
+    jsr     aot_parse_compiler_var_name
+    pop     r13
+    pop     r12
+    beqz    r15, .tvs_skip_stmt
+    load.b  r1, (r22)
+    move.q  r2, #0x24              ; string variables have their own records
+    beq     r1, r2, .tvs_skip_stmt
+    move.q  r2, #0x28              ; array elements are not native scalars
+    beq     r1, r2, .tvs_skip_stmt
+.tvs_eq_spaces:
+    load.b  r1, (r22)
+    move.q  r2, #0x20
+    bne     r1, r2, .tvs_eq_check
+    add.q   r22, r22, #1
+    bra     .tvs_eq_spaces
+.tvs_eq_check:
+    move.q  r2, #0x3D              ; '='
+    beq     r1, r2, .tvs_have_assign
+    move.q  r2, #0xBC              ; TK_EQUAL
+    bne     r1, r2, .tvs_skip_stmt
+.tvs_have_assign:
+    add.q   r22, r22, #1
+    move.q  r20, r22
+    move.q  r23, r22               ; remember RHS start for the second check
+    push    r12
+    push    r13
+    jsr     aot_int_expr_supported_nodiv
+    pop     r13
+    pop     r12
+    beqz    r9, .tvs_clear_target
+    move.q  r20, r23
+    push    r12
+    push    r13
+    jsr     aot_rhs_scalars_all_known_i64
+    pop     r13
+    pop     r12
+    bnez    r9, .tvs_skip_stmt     ; native I64 store from proven-I64 operands
+.tvs_clear_target:
+    move.q  r20, r13
+    push    r12
+    push    r13
+    jsr     aot_native_var_flag_clear_r20
+    pop     r13
+    pop     r12
+    bra     .tvs_skip_stmt
+.tvs_for:
+    add.q   r13, r13, #1
+    move.q  r20, r13
+    push    r12
+    push    r13
+    jsr     aot_try_native_for     ; parse only; R23 = 1 for the native form
+    pop     r13
+    pop     r12
+    move.q  r1, #1
+    beq     r23, r1, .tvs_skip_stmt ; native FOR/NEXT keeps the loop scalar I64
+    move.q  r20, r13
+    push    r12
+    push    r13
+    jsr     aot_native_var_flag_clear_r20
+    pop     r13
+    pop     r12
+    bra     .tvs_skip_stmt
+.tvs_clear_list:
+    add.q   r13, r13, #1
+.tvs_cl_loop:
+    load.b  r1, (r13)
+    beqz    r1, .tvs_line_next
+    move.q  r2, #0x3A              ; ':' ends the target list
+    beq     r1, r2, .tvs_stmt
+    move.q  r2, #0x22              ; skip string literals (INPUT prompts)
+    beq     r1, r2, .tvs_cl_str
+    or.q    r2, r1, #0x20
+    move.q  r3, #0x61
+    blt     r2, r3, .tvs_cl_adv
+    move.q  r3, #0x7A
+    bgt     r2, r3, .tvs_cl_adv
+    move.q  r20, r13
+    push    r12
+    push    r13
+    jsr     aot_native_var_flag_clear_r20
+    pop     r13
+    pop     r12
+    move.q  r13, r22               ; past the name (subscript contents are
+    bra     .tvs_cl_loop           ; then walked as reads-become-clears, safe)
+.tvs_cl_str:
+    add.q   r13, r13, #1
+.tvs_cl_str_loop:
+    load.b  r1, (r13)
+    beqz    r1, .tvs_line_next
+    move.q  r2, #0x22
+    beq     r1, r2, .tvs_cl_adv
+    add.q   r13, r13, #1
+    bra     .tvs_cl_str_loop
+.tvs_cl_adv:
+    add.q   r13, r13, #1
+    bra     .tvs_cl_loop
+.tvs_types_off:
+    la      r1, AOT_NATIVE_TYPES_OFF
+    move.q  r2, #1
+    store.q r2, (r1)
+    bra     .tvs_done              ; typing is off for the whole compile
+.tvs_skip_stmt:
+    load.b  r1, (r13)
+    beqz    r1, .tvs_line_next
+    move.q  r2, #0x3A
+    beq     r1, r2, .tvs_stmt
+    move.q  r2, #0xAC              ; THEN: classify the nested statement
+    beq     r1, r2, .tvs_stmt
+    move.q  r2, #0xAB              ; ELSE: classify the nested statement
+    beq     r1, r2, .tvs_stmt
+    move.q  r2, #0x22
+    bne     r1, r2, .tvs_ss_adv
+    add.q   r13, r13, #1
+.tvs_ss_str:
+    load.b  r1, (r13)
+    beqz    r1, .tvs_line_next
+    move.q  r2, #0x22
+    beq     r1, r2, .tvs_ss_adv
+    add.q   r13, r13, #1
+    bra     .tvs_ss_str
+.tvs_ss_adv:
+    add.q   r13, r13, #1
+    bra     .tvs_skip_stmt
+.tvs_adv:
+    add.q   r13, r13, #1
+    bra     .tvs_stmt
+.tvs_line_next:
+    move.q  r13, r12
+    bra     .tvs_line
+.tvs_done:
+    move.q  r9, #1
     rts
 
 aot_emit_native_var_addr_r1:
@@ -5883,6 +6338,14 @@ aot_emit_native_var_addr_r8:
     rts
 
 aot_emit_native_vars_init:
+    ; No native scalars: keep the interpreter's own variable list, so
+    ; fully delegated programmes behave exactly like interpreted RUN.
+    la      r1, AOT_NATIVE_VAR_COUNT
+    load.q  r1, (r1)
+    bnez    r1, .aenvi_emit
+    move.q  r9, #1
+    rts
+.aenvi_emit:
     move.q  r17, r8
     jsr     aot_text_room
     beqz    r8, .aenvi_fail
@@ -6351,8 +6814,15 @@ aot_try_emit_int_condition:
     beqz    r9, .tic_no_restore_pop
     move.q  r24, r22               ; RHS end boundary
     move.q  r20, r29
-    jsr     aot_int_expr_supported_to
-    beqz    r9, .tic_no_restore_pop
+	jsr     aot_int_expr_supported_to
+	beqz    r9, .tic_no_restore_pop
+	move.q  r20, r26
+	jsr     aot_expr_contains_int
+	beqz    r9, .tic_emit
+	move.q  r20, r26
+	jsr     aot_rhs_scalars_all_known_i64
+	beqz    r9, .tic_no_restore_pop
+.tic_emit:
     pop     r28                    ; comparison kind, kept away from var-read R25
     move.q  r20, r26
     move.q  r8, r27
@@ -6542,7 +7012,7 @@ aot_int_expr_supported_to:
     move.q  r2, #0xB6
     beq     r1, r2, .iest_supported_one
     move.q  r2, #0xBF
-    beq     r1, r2, .iest_fail     ; INT can contain FP work; let expr_eval preserve it
+    beq     r1, r2, .iest_supported_one
     move.q  r2, #0xCC
     beq     r1, r2, .iest_supported_one
     move.q  r2, #0x92
@@ -6714,8 +7184,15 @@ aot_try_emit_int_expr:
     move.q  r23, r0
     move.q  r26, r20
     move.q  r27, r8
-    jsr     aot_int_expr_supported
-    beqz    r9, .tie_no
+	jsr     aot_int_expr_supported
+	beqz    r9, .tie_no
+	move.q  r20, r26
+	jsr     aot_expr_contains_int
+	beqz    r9, .tie_emit
+	move.q  r20, r26
+	jsr     aot_rhs_scalars_all_known_i64
+	beqz    r9, .tie_no
+.tie_emit:
     move.q  r20, r26
     move.q  r8, r27
     jsr     aot_emit_int_expr
@@ -6788,7 +7265,7 @@ aot_int_expr_supported:
     move.q  r2, #0xB6
     beq     r1, r2, .ies_supported_one
     move.q  r2, #0xBF
-    beq     r1, r2, .ies_fail      ; INT can contain FP work; let expr_eval preserve it
+    beq     r1, r2, .ies_supported_one
     move.q  r2, #0xCC
     beq     r1, r2, .ies_supported_one
     move.q  r2, #0x92
@@ -7035,8 +7512,21 @@ aot_emit_int_factor:
     move.q  r1, r22
     lsr.q   r1, r1, #32
     beqz    r1, .aif_uint_32
-    la      r9, aot_str_moveq_r8_imm
+    ; 64-bit literal: both assemblers encode at most a 32-bit immediate
+    ; per instruction, so compose the value from two 32-bit halves.
+    push    r22
+    move.q  r10, r1                ; high 32 bits
+    la      r9, aot_str_movel_r8
     jsr     aot_emit_movel
+    la      r9, aot_str_lslq_r8_32
+    jsr     aot_emit_str
+    pop     r22
+    lsl.q   r10, r22, #32
+    lsr.q   r10, r10, #32          ; low 32 bits
+    la      r9, aot_str_movel_r1
+    jsr     aot_emit_movel
+    la      r9, aot_str_orq_r8_r8_r1
+    jsr     aot_emit_str
     move.q  r17, r8
     move.q  r9, #1
     rts
@@ -7093,13 +7583,26 @@ aot_emit_int_factor:
 aot_emit_var_read_atom:
     move.q  r25, r20
     move.q  r8, r17
-    jsr     aot_emit_native_var_addr_r8
+    jsr     aot_emit_native_var_addr_r8    ; R11 = scalar table index
     beqz    r9, .avra_fail
     move.q  r17, r8
     la      r9, aot_str_load_var_value_r8_tag_r9
     jsr     aot_emit_str
+    ; Known-I64 scalar (every write in the programme is a native integer
+    ; store): the runtime tag guard is dead code, so skip emitting it.
+    la      r1, AOT_NATIVE_TYPES_OFF
+    load.q  r1, (r1)
+    bnez    r1, .avra_guard
+    la      r1, AOT_NATIVE_VAR_TAB
+    load.q  r1, (r1)
+    add.q   r1, r1, #0x4000
+    add.q   r1, r1, r11
+    load.b  r1, (r1)
+    bnez    r1, .avra_typed
+.avra_guard:
     jsr     aot_emit_expr_to_i64_if_needed
     beqz    r9, .avra_fail
+.avra_typed:
     move.q  r17, r8
     move.q  r20, r25
     jsr     aot_skip_var_name
@@ -7757,7 +8260,19 @@ AOT_DYNAMIC_RESERVE_BYTES equ 0x400000
 aot_dynamic_text_code_sizes:
     la      r1, AOT_ARENA_HIGH_NEXT
     load.q  r2, (r1)
-    move.q  r3, #AOT_ALLOC_FLOOR
+    ; Size within the retained top-of-RAM AOT reserve (2 GiB, shift-built
+    ; because 32-bit immediates sign-extend), not the whole span down to
+    ; the allocation floor: sizing from the full span parks the code
+    ; buffer just above the floor, far below the frontier, and on split
+    ; layouts inside the interpreter heap. Hosts whose frontier is below
+    ; the reserve keep the legacy floor and see identical sizes.
+    move.q  r3, #1
+    lsl.q   r3, r3, #31            ; retained AOT reserve
+    sub.q   r3, r2, r3             ; frontier - reserve = sizing floor
+    move.q  r4, #AOT_ALLOC_FLOOR
+    bge     r3, r4, .dtcs_have_floor
+    move.q  r3, r4
+.dtcs_have_floor:
     sub.q   r2, r2, r3             ; retained arena bytes remaining
     move.q  r3, #(AOT_SYMTAB_BYTES + AOT_DYNAMIC_RESERVE_BYTES)
     ble     r2, r3, .dtcs_fail
@@ -7773,7 +8288,14 @@ aot_dynamic_text_code_sizes:
 aot_dynamic_text_scratch_sizes:
     la      r1, AOT_ARENA_HIGH_NEXT
     load.q  r2, (r1)
-    move.q  r3, #AOT_ALLOC_FLOOR
+    ; Same reserve-bounded window as aot_dynamic_text_code_sizes.
+    move.q  r3, #1
+    lsl.q   r3, r3, #31            ; retained AOT reserve
+    sub.q   r3, r2, r3             ; frontier - reserve = sizing floor
+    move.q  r4, #AOT_ALLOC_FLOOR
+    bge     r3, r4, .dtss_have_floor
+    move.q  r3, r4
+.dtss_have_floor:
     sub.q   r2, r2, r3             ; retained arena bytes remaining
     move.q  r3, #(0x18000 + AOT_DYNAMIC_RESERVE_BYTES)
     ble     r2, r3, .dtss_fail
@@ -8425,6 +8947,16 @@ aot_do_run_aot_inner:
     jsr     exec_reset_control_stack
     add.q   r1, r16, #ST_DATA_PTR
     store.q r0, (r1)
+    ; The arena prologue republishes ST_VAR_START at the fresh native
+    ; variable segment; drop cached variable-record pointers so resident
+    ; lookups cannot keep serving records from the previous segment.
+    la      r1, var_cache
+    move.q  r2, #8
+.ra_var_cache_clear:
+    store.q r0, (r1)
+    add.q   r1, r1, #8
+    sub.q   r2, r2, #1
+    bnez    r2, .ra_var_cache_clear
     la      r1, if_else_boundary
     store.q r0, (r1)
     load.q  r14, (r16)             ; R14 = first line record

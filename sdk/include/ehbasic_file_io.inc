@@ -552,13 +552,15 @@ exec_do_load:
     load.l  r3, (r1)                ; R3 = bytes read
     lsl.q   r3, r3, #32
     lsr.q   r3, r3, #32
-    add.q   r1, r16, #ST_HEAP_BOTTOM
-    move.q  r2, #BASIC_LOW32_INTERNAL_BASE
-    store.q r2, (r1)
-
     ; NEW (clear current program first; line_init also clears EHBASIC_PRIV_LOAD_DIR_BUF)
     push    r23
     push    r3
+    ; Reset the arena cursor to the programme base before line_init
+    ; republishes ST_PROG_START from it; a raw low32 constant would put
+    ; the loaded programme on top of the line buffer.
+    jsr     basic_prog_arena_base
+    add.q   r1, r16, #ST_HEAP_BOTTOM
+    store.q r8, (r1)
     jsr     line_init
     jsr     var_init
     pop     r3

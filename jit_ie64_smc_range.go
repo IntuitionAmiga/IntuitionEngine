@@ -165,8 +165,19 @@ func (cpu *CPU64) markJITSMCWrite(addr uint64, size uint32) {
 	if cpu.mmuEnabled && cpu.markJITMMUSMCWrite(addr, size) {
 		return
 	}
-	if !ie64PageMarked(cpu.jitCodePageBitmap, cpu.jitCtx, addr, size) {
+	pageMarked := ie64PageMarked(cpu.jitCodePageBitmap, cpu.jitCtx, addr, size)
+	if !pageMarked {
 		return
+	}
+	if cpu.jitCache != nil {
+		lo, hi := jitSMCRangeBounds(addr, size)
+		if cpu.mmuEnabled {
+			if !cpu.jitCache.OverlapsRangeScoped(cpu.ptbr, lo, hi) {
+				return
+			}
+		} else if !cpu.jitCache.OverlapsRange(lo, hi) {
+			return
+		}
 	}
 	cpu.jitCtx.NeedInval = 1
 	cpu.jitCtx.InvalAddr = addr
@@ -267,4 +278,78 @@ func ie64InvalidateSMCRangeWithPhysical(cache *CodeCache, bitmap, physBitmap []b
 		ie64ClearRTSCache(ctx)
 	}
 	return removed
+}
+
+func ie64InvalidateSMCRangeScopedWithPhysical(cache *CodeCache, bitmap, physBitmap []byte, ctx *JITContext, bus *MachineBus, ptbr uint64) int {
+	if cache == nil || ctx == nil || ctx.InvalSize == 0 {
+		if cache != nil {
+			cache.Invalidate()
+		}
+		clear(bitmap)
+		clear(physBitmap)
+		ie64ClearRTSCache(ctx)
+		return 0
+	}
+	lo, hi := jitSMCRangeBounds(ctx.InvalAddr, ctx.InvalSize)
+	removed := cache.InvalidateRangeScoped(ptbr, lo, hi)
+	ie64RebuildCodePageTrackingFromCacheWithPhysical(bitmap, physBitmap, ctx, bus, cache)
+	if removed != 0 {
+		ie64ClearRTSCache(ctx)
+	}
+	return removed
+}
+
+func jitSMCRangeBounds(lo uint64, size uint32) (uint64, uint64) {
+	hi := lo + uint64(size)
+	if hi < lo {
+		hi = ^uint64(0)
+	}
+	return lo, hi
+}
+
+func (cpu *CPU64) jitSMCWriteOverlapsCachedCode(addr uint64, size uint32) bool {
+	if cpu == nil || cpu.jitCache == nil || size == 0 {
+		return true
+	}
+	lo, hi := jitSMCRangeBounds(addr, size)
+	if cpu.mmuEnabled {
+		return cpu.jitCache.OverlapsRangeScoped(cpu.ptbr, lo, hi)
+	}
+	return cpu.jitCache.OverlapsRange(lo, hi)
+}
+
+func (cpu *CPU64) handleJITSMCInvalidation(block *JITBlock, execMem *ExecMem) bool {
+	if cpu == nil || cpu.jitCtx == nil || cpu.jitCtx.NeedInval == 0 {
+		return false
+	}
+	if cpu.jitCtx.InvalSize != 0 && !cpu.jitSMCWriteOverlapsCachedCode(cpu.jitCtx.InvalAddr, cpu.jitCtx.InvalSize) {
+		cpu.jitCtx.NeedInval = 0
+		cpu.jitCtx.InvalAddr = 0
+		cpu.jitCtx.InvalSize = 0
+		return false
+	}
+	recordBlockDeopt(&cpu.deoptStats, block, DeoptSMC)
+	if jitSMCRangeDisabled || cpu.jitCtx.InvalSize == 0 {
+		cpu.jitCache.Invalidate()
+		resetExecMemWhenCacheEmpty(cpu.jitCache, execMem)
+		clear(cpu.jitCodePageBitmap)
+		clear(cpu.jitPhysCodePageBitmap)
+		ie64ClearHighCodePageSpan(cpu.jitCtx)
+		ie64ClearRTSCache(cpu.jitCtx)
+	} else if cpu.mmuEnabled {
+		removed := ie64InvalidateSMCRangeScopedWithPhysical(cpu.jitCache, cpu.jitCodePageBitmap, cpu.jitPhysCodePageBitmap, cpu.jitCtx, cpu.bus, cpu.ptbr)
+		if removed != 0 {
+			resetExecMemWhenCacheEmpty(cpu.jitCache, execMem)
+		}
+	} else {
+		removed := ie64InvalidateSMCRangeWithPhysical(cpu.jitCache, cpu.jitCodePageBitmap, cpu.jitPhysCodePageBitmap, cpu.jitCtx, cpu.bus)
+		if removed != 0 {
+			resetExecMemWhenCacheEmpty(cpu.jitCache, execMem)
+		}
+	}
+	cpu.jitCtx.NeedInval = 0
+	cpu.jitCtx.InvalAddr = 0
+	cpu.jitCtx.InvalSize = 0
+	globalIE64JITStats.invalidations.Add(1)
+	return true
 }
