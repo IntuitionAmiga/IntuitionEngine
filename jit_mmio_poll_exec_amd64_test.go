@@ -40,6 +40,155 @@ func TestIE64JITFastMMIOPollLoop_AND_BNE(t *testing.T) {
 	}
 }
 
+func TestIE64JITFastMMIOPollLoop_VSyncCountdownShape(t *testing.T) {
+	bus := NewMachineBus()
+	reads := 0
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+		reads++
+		if reads < 4 {
+			return 0
+		}
+		return 2
+	}, nil)
+	cpu := NewCPU64(bus)
+	cpu.PC = PROG_START
+	cpu.regs[1] = 0xF0008
+	cpu.regs[3] = 5
+	cpu.running.Store(true)
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0))
+	copy(cpu.memory[PROG_START+8:], ie64Instr(OP_AND64, 2, IE64_SIZE_L, 1, 2, 0, 2))
+	copy(cpu.memory[PROG_START+16:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 2, 0, 24))
+	copy(cpu.memory[PROG_START+24:], ie64Instr(OP_SUB, 3, IE64_SIZE_Q, 1, 3, 0, 1))
+	copy(cpu.memory[PROG_START+32:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 3, 0, 0xFFFFFFE0))
+
+	matched, retired := cpu.tryFastIE64MMIOPollLoop()
+	if !matched {
+		t.Fatal("expected IE64 VSYNC countdown poll loop to match")
+	}
+	if cpu.PC != PROG_START+40 {
+		t.Fatalf("PC = 0x%08X, want 0x%08X", cpu.PC, uint64(PROG_START+40))
+	}
+	if reads != 4 {
+		t.Fatalf("reads = %d, want 4", reads)
+	}
+	if retired != 18 {
+		t.Fatalf("retired = %d, want 18", retired)
+	}
+}
+
+func TestIE64JITFastMMIOPollLoop_AOTWaitXorCountdownShape(t *testing.T) {
+	bus := NewMachineBus()
+	reads := 0
+	bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+		reads++
+		if reads < 3 {
+			return 2
+		}
+		return 0
+	}, nil)
+	cpu := NewCPU64(bus)
+	cpu.PC = PROG_START
+	cpu.regs[1] = 0xF0008
+	cpu.regs[3] = 2
+	cpu.regs[4] = 2
+	cpu.regs[5] = 5
+	cpu.running.Store(true)
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0))
+	copy(cpu.memory[PROG_START+8:], ie64Instr(OP_EOR, 2, IE64_SIZE_L, 0, 2, 4, 0))
+	copy(cpu.memory[PROG_START+16:], ie64Instr(OP_AND64, 2, IE64_SIZE_L, 0, 2, 3, 0))
+	copy(cpu.memory[PROG_START+24:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 2, 0, 24))
+	copy(cpu.memory[PROG_START+32:], ie64Instr(OP_SUB, 5, IE64_SIZE_Q, 1, 5, 0, 1))
+	copy(cpu.memory[PROG_START+40:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 5, 0, 0xFFFFFFD8))
+
+	matched, retired := cpu.tryFastIE64MMIOPollLoop()
+	if !matched {
+		t.Fatal("expected IE64 AOT WAIT xor countdown poll loop to match")
+	}
+	if cpu.PC != PROG_START+48 {
+		t.Fatalf("PC = 0x%08X, want 0x%08X", cpu.PC, uint64(PROG_START+48))
+	}
+	if reads != 3 {
+		t.Fatalf("reads = %d, want 3", reads)
+	}
+	if retired != 16 {
+		t.Fatalf("retired = %d, want 16", retired)
+	}
+}
+
+func TestIE64JITFastMMIOPollLoop_MediaStatusEqualityCountdownShape(t *testing.T) {
+	bus := NewMachineBus()
+	reads := 0
+	bus.MapIO(MEDIA_STATUS, MEDIA_STATUS, func(addr uint32) uint32 {
+		reads++
+		if reads < 4 {
+			return MEDIA_STATUS_LOADING
+		}
+		return MEDIA_STATUS_PLAYING
+	}, nil)
+	cpu := NewCPU64(bus)
+	cpu.PC = PROG_START + IE64_INSTR_SIZE
+	cpu.regs[1] = MEDIA_STATUS
+	cpu.regs[25] = 8
+	cpu.running.Store(true)
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, MEDIA_STATUS))
+	copy(cpu.memory[PROG_START+8:], ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0))
+	copy(cpu.memory[PROG_START+16:], ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 1, 0, 0, MEDIA_STATUS_LOADING))
+	copy(cpu.memory[PROG_START+24:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 2, 3, 24))
+	copy(cpu.memory[PROG_START+32:], ie64Instr(OP_SUB, 25, IE64_SIZE_Q, 1, 25, 0, 1))
+	copy(cpu.memory[PROG_START+40:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 25, 0, 0xFFFFFFD8))
+
+	matched, retired := cpu.tryFastIE64MMIOPollLoop()
+	if !matched {
+		t.Fatal("expected IE64 MEDIA_STATUS equality countdown poll loop to match")
+	}
+	if cpu.PC != PROG_START+48 {
+		t.Fatalf("PC = 0x%08X, want 0x%08X", cpu.PC, uint64(PROG_START+48))
+	}
+	if reads != 4 {
+		t.Fatalf("reads = %d, want 4", reads)
+	}
+	if retired != 18 {
+		t.Fatalf("retired = %d, want 18", retired)
+	}
+}
+
+func TestIE64JITFastMMIOPollLoop_EqualityUsesFullImmediate(t *testing.T) {
+	bus := NewMachineBus()
+	reads := 0
+	bus.MapIO(0xF0704, 0xF0704, func(addr uint32) uint32 {
+		reads++
+		return 0
+	}, nil)
+	cpu := NewCPU64(bus)
+	cpu.PC = PROG_START + IE64_INSTR_SIZE
+	cpu.regs[1] = 0xF0704
+	cpu.regs[25] = 8
+	cpu.running.Store(true)
+	copy(cpu.memory[PROG_START:], ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0xF0704))
+	copy(cpu.memory[PROG_START+8:], ie64Instr(OP_LOAD, 2, IE64_SIZE_B, 0, 1, 0, 0))
+	copy(cpu.memory[PROG_START+16:], ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 1, 0, 0, 0x100))
+	copy(cpu.memory[PROG_START+24:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 2, 3, 24))
+	copy(cpu.memory[PROG_START+32:], ie64Instr(OP_SUB, 25, IE64_SIZE_Q, 1, 25, 0, 1))
+	copy(cpu.memory[PROG_START+40:], ie64Instr(OP_BNE, 0, IE64_SIZE_Q, 0, 25, 0, 0xFFFFFFD8))
+
+	matched, retired := cpu.tryFastIE64MMIOPollLoop()
+	if !matched {
+		t.Fatal("expected IE64 equality countdown poll loop to match")
+	}
+	if cpu.PC != PROG_START+48 {
+		t.Fatalf("PC = 0x%08X, want branch exit 0x%08X", cpu.PC, uint64(PROG_START+48))
+	}
+	if reads != 1 {
+		t.Fatalf("reads = %d, want 1", reads)
+	}
+	if cpu.regs[25] != 8 {
+		t.Fatalf("counter = %d, want unchanged 8", cpu.regs[25])
+	}
+	if retired != 3 {
+		t.Fatalf("retired = %d, want 3", retired)
+	}
+}
+
 // TestIE64JITFastMMIOPollLoop_ExitsOnPendingIRQ: a guest spinning on an MMIO
 // status flag must yield to the dispatcher when an external interrupt is
 // recorded. External IRQs now set pendingIRQMask only (they no longer flip

@@ -7,6 +7,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"math"
 )
 
 // ===========================================================================
@@ -1733,8 +1734,25 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitDSTORE_AMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DSIN, OP_DCOS, OP_DTAN, OP_DATAN, OP_DLOG, OP_DEXP, OP_DPOW:
 		emitDTransHelperExitAMD64(cb, ji, instrPC, br, writtenSoFar)
-	case OP_DMOV, OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD,
-		OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_DCMP, OP_DCVTIF, OP_DCVTFI, OP_FCVTSD, OP_FCVTDS:
+	case OP_DMOV:
+		emitDMOV_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DADD:
+		emitDPBinarySSE(cb, ji, instrPC, br, writtenSoFar, amd64ADDSD_rr)
+	case OP_DSUB:
+		emitDPBinarySSE(cb, ji, instrPC, br, writtenSoFar, amd64SUBSD_rr)
+	case OP_DMUL:
+		emitDPBinarySSE(cb, ji, instrPC, br, writtenSoFar, amd64MULSD_rr)
+	case OP_DDIV:
+		emitDPBinarySSE(cb, ji, instrPC, br, writtenSoFar, amd64DIVSD_rr)
+	case OP_DINT:
+		emitDINT_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DCMP:
+		emitDCMP_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DCVTIF:
+		emitDCVTIF_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DCVTFI:
+		emitDCVTFI_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DMOD, OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
 	// MMU/privilege opcodes: always bail to interpreter
@@ -4116,6 +4134,18 @@ func amd64CVTTSS2SI_reg_xmm(cb *CodeBuffer, dst, xmm byte) {
 	cb.EmitBytes(0x0F, 0x2C, modRM(3, dst, xmm))
 }
 
+func amd64CVTSI2SD_reg64(cb *CodeBuffer, xmm, gpr byte) {
+	cb.EmitBytes(0xF2)
+	emitREX(cb, true, xmm, gpr)
+	cb.EmitBytes(0x0F, 0x2A, modRM(3, xmm, gpr))
+}
+
+func amd64CVTTSD2SI_reg64(cb *CodeBuffer, gpr, xmm byte) {
+	cb.EmitBytes(0xF2)
+	emitREX(cb, true, gpr, xmm)
+	cb.EmitBytes(0x0F, 0x2C, modRM(3, gpr, xmm))
+}
+
 func emitFPBinarySSE(cb *CodeBuffer, ji *JITInstr, sseOpcode byte) {
 	emitLoadFPRegAMD64(cb, amd64RAX, ji.rs)
 	emitLoadFPRegAMD64(cb, amd64RCX, ji.rt)
@@ -4269,9 +4299,13 @@ func emitFCVTIF_AMD64(cb *CodeBuffer, ji *JITInstr) {
 }
 
 func emitSetFPUInvalidAMD64(cb *CodeBuffer) {
+	emitSetFPUExceptionAMD64(cb, IE64_FPU_EX_IO)
+}
+
+func emitSetFPUExceptionAMD64(cb *CodeBuffer, flag uint32) {
 	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
 	amd64MOV_reg_mem32(cb, amd64RCX, amd64R11, 68)
-	amd64ALU_reg_imm32_32bit(cb, 1, amd64RCX, int32(IE64_FPU_EX_IO))
+	amd64ALU_reg_imm32_32bit(cb, 1, amd64RCX, int32(flag))
 	amd64MOV_mem_reg32(cb, amd64R11, 68, amd64RCX)
 }
 
@@ -4332,6 +4366,316 @@ func emitFCVTFI_AMD64(cb *CodeBuffer, ji *JITInstr) {
 			emitStoreSpilledRegAMD64(cb, amd64RAX, ji.rd)
 		}
 	}
+}
+
+func emitDPairToXMMAMD64(cb *CodeBuffer, xmm, fpIdx, scratch byte) {
+	emitLoadDPairBitsAMD64(cb, scratch, fpIdx)
+	amd64MOVQ_xmm_reg(cb, xmm, scratch)
+}
+
+func emitXMMToDPairAMD64(cb *CodeBuffer, xmm, fpIdx byte) {
+	amd64MOVQ_reg_xmm(cb, amd64RAX, xmm)
+	emitStoreDPairBitsAMD64(cb, amd64RAX, fpIdx)
+	emitSetFPCondCodes64AMD64(cb)
+}
+
+func emitDMOV_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rd) || !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	emitLoadDPairBitsAMD64(cb, amd64RAX, ji.rs)
+	emitStoreDPairBitsAMD64(cb, amd64RAX, ji.rd)
+}
+
+func emitDPairZeroTestAMD64(cb *CodeBuffer, fpIdx, scratch byte) []int {
+	emitLoadDPairBitsAMD64(cb, scratch, fpIdx)
+	amd64SHL_imm(cb, scratch, 1)
+	amd64TEST_reg_reg(cb, scratch, scratch)
+	return []int{amd64Jcc_rel32(cb, amd64CondE)}
+}
+
+func emitDPairNonZeroFallthroughAMD64(cb *CodeBuffer, fpIdx, scratch byte) []int {
+	emitLoadDPairBitsAMD64(cb, scratch, fpIdx)
+	amd64SHL_imm(cb, scratch, 1)
+	amd64TEST_reg_reg(cb, scratch, scratch)
+	return []int{amd64Jcc_rel32(cb, amd64CondE)}
+}
+
+func emitSetDPResultInfOrNaNFlagsAMD64(cb *CodeBuffer, xmm byte, overflowAllowed bool) {
+	amd64MOVQ_reg_xmm(cb, amd64RAX, xmm)
+	amd64MOV_reg_reg(cb, amd64R10, amd64RAX)
+	amd64SHR_imm(cb, amd64R10, 52)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, 0x7FF)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64R10, 0x7FF)
+	notSpecialOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	emitLoadImm64AMD64(cb, amd64RDX, 0x000FFFFFFFFFFFFF)
+	amd64MOV_reg_reg(cb, amd64R10, amd64RAX)
+	amd64ALU_reg_reg(cb, 0x21, amd64R10, amd64RDX)
+	amd64TEST_reg_reg(cb, amd64R10, amd64R10)
+	nanOff := amd64Jcc_rel32(cb, amd64CondNE)
+	if overflowAllowed {
+		emitSetFPUExceptionAMD64(cb, IE64_FPU_EX_OE)
+	}
+	doneOff := amd64JMP_rel32(cb)
+
+	nanPC := cb.Len()
+	patchRel32(cb, nanOff, nanPC)
+	emitSetFPUExceptionAMD64(cb, IE64_FPU_EX_IO)
+
+	donePC := cb.Len()
+	patchRel32(cb, notSpecialOff, donePC)
+	patchRel32(cb, doneOff, donePC)
+}
+
+func emitSetDPResultUnderflowIfZeroAMD64(cb *CodeBuffer, xmm byte, ji *JITInstr) {
+	amd64MOVQ_reg_xmm(cb, amd64RAX, xmm)
+	amd64SHL_imm(cb, amd64RAX, 1)
+	amd64TEST_reg_reg(cb, amd64RAX, amd64RAX)
+	notZeroOff := amd64Jcc_rel32(cb, amd64CondNE)
+
+	skipOffs := emitDPairNonZeroFallthroughAMD64(cb, ji.rs, amd64R10)
+	skipOffs = append(skipOffs, emitDPairNonZeroFallthroughAMD64(cb, ji.rt, amd64R10)...)
+	emitSetFPUExceptionAMD64(cb, IE64_FPU_EX_UE)
+
+	donePC := cb.Len()
+	patchRel32(cb, notZeroOff, donePC)
+	for _, off := range skipOffs {
+		patchRel32(cb, off, donePC)
+	}
+}
+
+func emitSetDPDivideByZeroIfNeededAMD64(cb *CodeBuffer, ji *JITInstr) {
+	skipOffs := emitDPairZeroTestAMD64(cb, ji.rt, amd64R10)
+	notZeroOff := amd64JMP_rel32(cb)
+
+	zeroPC := cb.Len()
+	for _, off := range skipOffs {
+		patchRel32(cb, off, zeroPC)
+	}
+	numeratorZeroOffs := emitDPairZeroTestAMD64(cb, ji.rs, amd64R10)
+	emitSetFPUExceptionAMD64(cb, IE64_FPU_EX_DZ)
+
+	notZeroPC := cb.Len()
+	patchRel32(cb, notZeroOff, notZeroPC)
+	for _, off := range numeratorZeroOffs {
+		patchRel32(cb, off, notZeroPC)
+	}
+}
+
+func emitDPBinarySSE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32, op func(*CodeBuffer, byte, byte)) {
+	if !isValidDPairReg(ji.rd) || !isValidDPairReg(ji.rs) || !isValidDPairReg(ji.rt) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	bailOffs := emitDPairNonFiniteBailAMD64(cb, ji, instrPC, br, writtenSoFar, ji.rs, ji.rt)
+
+	emitDPairToXMMAMD64(cb, 0, ji.rs, amd64RAX)
+	emitDPairToXMMAMD64(cb, 1, ji.rt, amd64RDX)
+	if ji.opcode == OP_DDIV {
+		emitSetDPDivideByZeroIfNeededAMD64(cb, ji)
+	}
+	op(cb, 0, 1)
+	if ji.opcode == OP_DDIV {
+		emitLoadDPairBitsAMD64(cb, amd64R10, ji.rt)
+		amd64SHL_imm(cb, amd64R10, 1)
+		amd64TEST_reg_reg(cb, amd64R10, amd64R10)
+		notDivZeroOff := amd64Jcc_rel32(cb, amd64CondNE)
+		emitSetDPResultInfOrNaNFlagsAMD64(cb, 0, false)
+		divZeroDoneOff := amd64JMP_rel32(cb)
+		notDivZeroPC := cb.Len()
+		patchRel32(cb, notDivZeroOff, notDivZeroPC)
+		emitSetDPResultInfOrNaNFlagsAMD64(cb, 0, true)
+		donePC := cb.Len()
+		patchRel32(cb, divZeroDoneOff, donePC)
+	} else {
+		emitSetDPResultInfOrNaNFlagsAMD64(cb, 0, true)
+	}
+	if ji.opcode == OP_DMUL || ji.opcode == OP_DDIV {
+		emitSetDPResultUnderflowIfZeroAMD64(cb, 0, ji)
+	}
+	emitXMMToDPairAMD64(cb, 0, ji.rd)
+	patchFP64BailToInterpreterAMD64(cb, bailOffs, ji, instrPC, br, writtenSoFar)
+}
+
+func emitDINT_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rd) || !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	emitDPairToXMMAMD64(cb, 0, ji.rs, amd64RAX)
+
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64R11, 64)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 0x03)
+
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RCX, int32(IE64_FPU_RND_NEAREST))
+	nearestOff := amd64Jcc_rel32(cb, amd64CondE)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RCX, int32(IE64_FPU_RND_ZERO))
+	truncOff := amd64Jcc_rel32(cb, amd64CondE)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RCX, int32(IE64_FPU_RND_FLOOR))
+	floorOff := amd64Jcc_rel32(cb, amd64CondE)
+
+	amd64ROUNDSD_rr(cb, 1, 0, amd64RoundCeil)
+	doneOff1 := amd64JMP_rel32(cb)
+
+	floorPC := cb.Len()
+	patchRel32(cb, floorOff, floorPC)
+	amd64ROUNDSD_rr(cb, 1, 0, amd64RoundFloor)
+	doneOff2 := amd64JMP_rel32(cb)
+
+	truncPC := cb.Len()
+	patchRel32(cb, truncOff, truncPC)
+	amd64ROUNDSD_rr(cb, 1, 0, amd64RoundTruncate)
+	doneOff3 := amd64JMP_rel32(cb)
+
+	nearestPC := cb.Len()
+	patchRel32(cb, nearestOff, nearestPC)
+	amd64ROUNDSD_rr(cb, 1, 0, amd64RoundNearest)
+
+	donePC := cb.Len()
+	patchRel32(cb, doneOff1, donePC)
+	patchRel32(cb, doneOff2, donePC)
+	patchRel32(cb, doneOff3, donePC)
+
+	emitXMMToDPairAMD64(cb, 1, ji.rd)
+}
+
+func emitDPairNonFiniteBailAMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32, regs ...byte) []int {
+	var bailOffs []int
+	for _, fpIdx := range regs {
+		emitLoadDPairBitsAMD64(cb, amd64R10, fpIdx)
+		amd64MOV_reg_reg(cb, amd64RAX, amd64R10)
+		amd64SHR_imm(cb, amd64RAX, 52)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, 0x7FF)
+		amd64ALU_reg_imm32_32bit(cb, 7, amd64RAX, 0x7FF)
+		bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondE))
+	}
+	return bailOffs
+}
+
+func patchFP64BailToInterpreterAMD64(cb *CodeBuffer, bailOffs []int, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if len(bailOffs) == 0 {
+		return
+	}
+	doneOff := amd64JMP_rel32(cb)
+	bailPC := cb.Len()
+	for _, off := range bailOffs {
+		patchRel32(cb, off, bailPC)
+	}
+	emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+	donePC := cb.Len()
+	patchRel32(cb, doneOff, donePC)
+}
+
+func emitDCMP_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rs) || !isValidDPairReg(ji.rt) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	bailOffs := emitDPairNonFiniteBailAMD64(cb, ji, instrPC, br, writtenSoFar, ji.rs, ji.rt)
+
+	emitDPairToXMMAMD64(cb, 0, ji.rs, amd64RAX)
+	emitDPairToXMMAMD64(cb, 1, ji.rt, amd64RDX)
+	amd64UCOMISD_rr(cb, 0, 1)
+
+	ltOff := amd64Jcc_rel32(cb, amd64CondB)
+	eqOff := amd64Jcc_rel32(cb, amd64CondE)
+
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
+	amd64MOV_reg_mem32(cb, amd64RDX, amd64R11, 68)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 0x0F)
+	emitLoadImm32AMD64(cb, amd64RCX, 1)
+	done1Off := amd64JMP_rel32(cb)
+
+	ltPC := cb.Len()
+	patchRel32(cb, ltOff, ltPC)
+	amd64MOV_reg_imm32(cb, amd64RCX, 0xFFFFFFFF)
+	amd64MOVSXD(cb, amd64RCX, amd64RCX)
+	emitLoadImm32AMD64(cb, amd64RAX, IE64_FPU_CC_N)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64RAX)
+	done2Off := amd64JMP_rel32(cb)
+
+	eqPC := cb.Len()
+	patchRel32(cb, eqOff, eqPC)
+	amd64XOR_reg_reg32(cb, amd64RCX, amd64RCX)
+	emitLoadImm32AMD64(cb, amd64RAX, IE64_FPU_CC_Z)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64RAX)
+
+	donePC := cb.Len()
+	patchRel32(cb, done1Off, donePC)
+	patchRel32(cb, done2Off, donePC)
+
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
+	amd64MOV_mem_reg32(cb, amd64R11, 68, amd64RDX)
+	if ji.rd != 0 {
+		dstReg, mapped := ie64ToAMD64Reg(ji.rd)
+		if mapped {
+			amd64MOV_reg_reg(cb, dstReg, amd64RCX)
+		} else {
+			emitStoreSpilledRegAMD64(cb, amd64RCX, ji.rd)
+		}
+	}
+
+	patchFP64BailToInterpreterAMD64(cb, bailOffs, ji, instrPC, br, writtenSoFar)
+}
+
+func emitDCVTIF_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rd) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
+	if rsReg != amd64RAX {
+		amd64MOV_reg_reg(cb, amd64RAX, rsReg)
+	}
+	amd64CVTSI2SD_reg64(cb, 0, amd64RAX)
+	emitXMMToDPairAMD64(cb, 0, ji.rd)
+}
+
+func emitDCVTFI_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	bailOffs := emitDPairNonFiniteBailAMD64(cb, ji, instrPC, br, writtenSoFar, ji.rs)
+	emitDPairToXMMAMD64(cb, 0, ji.rs, amd64RAX)
+	emitLoadImm64AMD64(cb, amd64RDX, math.Float64bits(fp64MaxInt64))
+	amd64MOVQ_xmm_reg(cb, 1, amd64RDX)
+	amd64UCOMISD_rr(cb, 0, 1)
+	highOff := amd64Jcc_rel32(cb, amd64CondA)
+	emitLoadImm64AMD64(cb, amd64RDX, math.Float64bits(fp64MinInt64))
+	amd64MOVQ_xmm_reg(cb, 1, amd64RDX)
+	amd64UCOMISD_rr(cb, 0, 1)
+	lowOff := amd64Jcc_rel32(cb, amd64CondB)
+
+	amd64CVTTSD2SI_reg64(cb, amd64RAX, 0)
+	storeOff := amd64JMP_rel32(cb)
+
+	highPC := cb.Len()
+	patchRel32(cb, highOff, highPC)
+	emitLoadImm64AMD64(cb, amd64RAX, uint64(math.MaxInt64))
+	emitSetFPUInvalidAMD64(cb)
+	highDoneOff := amd64JMP_rel32(cb)
+
+	lowPC := cb.Len()
+	patchRel32(cb, lowOff, lowPC)
+	emitLoadImm64AMD64(cb, amd64RAX, uint64(1)<<63)
+	emitSetFPUInvalidAMD64(cb)
+
+	storePC := cb.Len()
+	patchRel32(cb, storeOff, storePC)
+	patchRel32(cb, highDoneOff, storePC)
+	if ji.rd != 0 {
+		dstReg, mapped := ie64ToAMD64Reg(ji.rd)
+		if mapped {
+			amd64MOV_reg_reg(cb, dstReg, amd64RAX)
+		} else {
+			emitStoreSpilledRegAMD64(cb, amd64RAX, ji.rd)
+		}
+	}
+	patchFP64BailToInterpreterAMD64(cb, bailOffs, ji, instrPC, br, writtenSoFar)
 }
 
 // ===========================================================================

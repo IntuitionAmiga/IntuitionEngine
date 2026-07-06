@@ -22,6 +22,13 @@ func (cpu *CPU64) tryFastIE64MMIOPollLoop() (bool, uint32) {
 	if !ok || op0 != OP_LOAD || rd0 == 0 {
 		return false, 0
 	}
+	addr := uint64(int64(cpu.regs[rs0]) + int64(int32(imm0)))
+	if matched, retired := cpu.tryFastIE64CountdownMMIOPollLoop(pc, addr, rd0, size0); matched {
+		return true, retired
+	}
+	if matched, retired := cpu.tryFastIE64EqualityCountdownMMIOPollLoop(pc, addr, rd0, size0); matched {
+		return true, retired
+	}
 	op1, rd1, size1, xbit1, rs1, _, imm1, ok := ie64InstrFields(cpu.memory, pc+IE64_INSTR_SIZE)
 	if !ok || op1 != OP_AND64 || rd1 != rd0 || rs1 != rd0 || size1 != size0 || xbit1 != 1 {
 		return false, 0
@@ -33,7 +40,6 @@ func (cpu *CPU64) tryFastIE64MMIOPollLoop() (bool, uint32) {
 	if uint64(int64(pc+2*IE64_INSTR_SIZE)+int64(int32(imm2))) != pc {
 		return false, 0
 	}
-	addr := uint64(int64(cpu.regs[rs0]) + int64(int32(imm0)))
 	if addr > 0xFFFFFFFF || !cpu.bus.IsIOAddress(uint32(addr)) {
 		return false, 0
 	}
@@ -84,6 +90,188 @@ func (cpu *CPU64) tryFastIE64MMIOPollLoop() (bool, uint32) {
 		}
 	}
 	return true, uint32(iterations * 3)
+}
+
+func (cpu *CPU64) tryFastIE64CountdownMMIOPollLoop(pc, addr uint64, valueReg, loadSize byte) (bool, uint32) {
+	nextPC := pc + IE64_INSTR_SIZE
+	op, rd, size, xbit, rs, rt, imm, ok := ie64InstrFields(cpu.memory, nextPC)
+	hasXor := false
+	xorReg := byte(0)
+	if ok && op == OP_EOR && rd == valueReg && rs == valueReg && size == loadSize && xbit == 0 {
+		hasXor = true
+		xorReg = rt
+		nextPC += IE64_INSTR_SIZE
+		op, rd, size, xbit, rs, rt, imm, ok = ie64InstrFields(cpu.memory, nextPC)
+	}
+	if !ok || op != OP_AND64 || rd != valueReg || rs != valueReg || size != loadSize {
+		return false, 0
+	}
+	maskImmediate := xbit == 1
+	maskReg := rt
+	maskImm := uint64(imm)
+	nextPC += IE64_INSTR_SIZE
+
+	branchPC := nextPC
+	opBranch, _, _, _, rsBranch, rtBranch, immBranch, ok := ie64InstrFields(cpu.memory, branchPC)
+	if !ok || opBranch != OP_BNE || rsBranch != valueReg || rtBranch != 0 {
+		return false, 0
+	}
+	donePC := uint64(int64(branchPC) + int64(int32(immBranch)))
+	if donePC <= branchPC {
+		return false, 0
+	}
+	nextPC += IE64_INSTR_SIZE
+
+	opSub, rdSub, sizeSub, xbitSub, rsSub, _, immSub, ok := ie64InstrFields(cpu.memory, nextPC)
+	if !ok || opSub != OP_SUB || rdSub == 0 || rdSub != rsSub || sizeSub != IE64_SIZE_Q || xbitSub != 1 || immSub != 1 {
+		return false, 0
+	}
+	counterReg := rdSub
+	nextPC += IE64_INSTR_SIZE
+
+	backBranchPC := nextPC
+	opBack, _, _, _, rsBack, rtBack, immBack, ok := ie64InstrFields(cpu.memory, backBranchPC)
+	if !ok || opBack != OP_BNE || rsBack != counterReg || rtBack != 0 {
+		return false, 0
+	}
+	if uint64(int64(backBranchPC)+int64(int32(immBack))) != pc {
+		return false, 0
+	}
+	timeoutPC := backBranchPC + IE64_INSTR_SIZE
+	if addr > 0xFFFFFFFF || !cpu.bus.IsIOAddress(uint32(addr)) {
+		return false, 0
+	}
+
+	pattern := IE64PollPattern
+	iterCap := pattern.IterationCap
+	if iterCap <= 0 {
+		iterCap = DefaultPollIterationCap
+	}
+
+	iterations := 0
+	retired := uint32(0)
+	for cpu.running.Load() && !cpu.inInterrupt.Load() && cpu.pendingIRQMask.Load() == 0 {
+		value := maskToSize(cpu.loadMem(addr, loadSize), loadSize)
+		if cpu.trapped {
+			cpu.trapped = false
+			return true, retired
+		}
+		retired++
+		if hasXor {
+			value = maskToSize(value^cpu.regs[xorReg], loadSize)
+			retired++
+		}
+		var mask uint64
+		if maskImmediate {
+			mask = maskImm
+		} else {
+			mask = cpu.regs[maskReg]
+		}
+		value = maskToSize(value&mask, loadSize)
+		cpu.regs[valueReg] = value
+		retired++
+		retired++
+		iterations++
+		if value != 0 {
+			cpu.PC = donePC
+			return true, retired
+		}
+
+		cpu.regs[counterReg]--
+		retired++
+		retired++
+		if cpu.regs[counterReg] == 0 {
+			cpu.PC = timeoutPC
+			return true, retired
+		}
+		if iterations >= iterCap {
+			cpu.PC = pc
+			return true, retired
+		}
+	}
+	cpu.PC = pc
+	return true, retired
+}
+
+func (cpu *CPU64) tryFastIE64EqualityCountdownMMIOPollLoop(pc, addr uint64, valueReg, loadSize byte) (bool, uint32) {
+	nextPC := pc + IE64_INSTR_SIZE
+	opMove, cmpReg, sizeMove, xbitMove, _, _, immMove, ok := ie64InstrFields(cpu.memory, nextPC)
+	if !ok || opMove != OP_MOVE || cmpReg == 0 || sizeMove != IE64_SIZE_Q || xbitMove != 1 {
+		return false, 0
+	}
+	compareValue := uint64(immMove)
+	nextPC += IE64_INSTR_SIZE
+
+	branchPC := nextPC
+	opBranch, _, _, _, rsBranch, rtBranch, immBranch, ok := ie64InstrFields(cpu.memory, branchPC)
+	if !ok || opBranch != OP_BNE || rsBranch != valueReg || rtBranch != cmpReg {
+		return false, 0
+	}
+	donePC := uint64(int64(branchPC) + int64(int32(immBranch)))
+	if donePC <= branchPC {
+		return false, 0
+	}
+	nextPC += IE64_INSTR_SIZE
+
+	opSub, rdSub, sizeSub, xbitSub, rsSub, _, immSub, ok := ie64InstrFields(cpu.memory, nextPC)
+	if !ok || opSub != OP_SUB || rdSub == 0 || rdSub != rsSub || sizeSub != IE64_SIZE_Q || xbitSub != 1 || immSub != 1 {
+		return false, 0
+	}
+	counterReg := rdSub
+	nextPC += IE64_INSTR_SIZE
+
+	backBranchPC := nextPC
+	opBack, _, _, _, rsBack, rtBack, immBack, ok := ie64InstrFields(cpu.memory, backBranchPC)
+	if !ok || opBack != OP_BNE || rsBack != counterReg || rtBack != 0 {
+		return false, 0
+	}
+	backPC := uint64(int64(backBranchPC) + int64(int32(immBack)))
+	if backPC != pc {
+		if pc < IE64_INSTR_SIZE || backPC != pc-IE64_INSTR_SIZE {
+			return false, 0
+		}
+	}
+	timeoutPC := backBranchPC + IE64_INSTR_SIZE
+	if addr > 0xFFFFFFFF || !cpu.bus.IsIOAddress(uint32(addr)) {
+		return false, 0
+	}
+
+	pattern := IE64PollPattern
+	iterCap := pattern.IterationCap
+	if iterCap <= 0 {
+		iterCap = DefaultPollIterationCap
+	}
+
+	iterations := 0
+	retired := uint32(0)
+	for cpu.running.Load() && !cpu.inInterrupt.Load() && cpu.pendingIRQMask.Load() == 0 {
+		value := maskToSize(cpu.loadMem(addr, loadSize), loadSize)
+		if cpu.trapped {
+			cpu.trapped = false
+			return true, retired
+		}
+		cpu.regs[valueReg] = value
+		cpu.regs[cmpReg] = compareValue
+		retired += 3
+		iterations++
+		if value != compareValue {
+			cpu.PC = donePC
+			return true, retired
+		}
+
+		cpu.regs[counterReg]--
+		retired += 2
+		if cpu.regs[counterReg] == 0 {
+			cpu.PC = timeoutPC
+			return true, retired
+		}
+		if iterations >= iterCap {
+			cpu.PC = backPC
+			return true, retired
+		}
+	}
+	cpu.PC = backPC
+	return true, retired
 }
 
 func (cpu *M68KCPU) tryFastM68KMMIOPollLoop() (bool, uint32) {
