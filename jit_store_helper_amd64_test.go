@@ -107,6 +107,44 @@ func TestJIT_AMD64_STORE_LowAddr_NoHelper(t *testing.T) {
 	}
 }
 
+func TestJIT_AMD64_STORE_BLTShadowRegister_NoHelper(t *testing.T) {
+	r := newJITTestRig(t)
+	r.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, func(addr uint32) uint32 { return 0 }, func(addr uint32, value uint32) {})
+	r.ctx = newJITContext(r.cpu)
+
+	const payload uint64 = 0x1234ABCD
+	r.cpu.regs[1] = payload
+	r.cpu.regs[2] = uint64(BLT_DST)
+	r.ctx.NeedHelper = 0xDEADBEEF
+
+	r.compileAndRun(t, ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 0))
+
+	if got := binary.LittleEndian.Uint32(r.cpu.memory[BLT_DST:]); got != uint32(payload) {
+		t.Fatalf("memory[BLT_DST] = 0x%08X, want 0x%08X", got, uint32(payload))
+	}
+	if r.ctx.NeedHelper != 0xDEADBEEF {
+		t.Fatalf("NeedHelper = %d, want untouched poison", r.ctx.NeedHelper)
+	}
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+}
+
+func TestJIT_AMD64_STORE_BLTControlStillUsesHelper(t *testing.T) {
+	r := newJITTestRig(t)
+	r.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, func(addr uint32) uint32 { return 0 }, func(addr uint32, value uint32) {})
+	r.ctx = newJITContext(r.cpu)
+
+	const payload uint64 = bltCtrlStart
+	r.cpu.regs[1] = payload
+	r.cpu.regs[2] = uint64(BLT_CTRL)
+	r.ctx.NeedHelper = HELPER_NONE
+
+	r.compileAndRun(t, ie64Instr(OP_STORE, 1, IE64_SIZE_L, 0, 2, 0, 0))
+
+	assertSTOREHelperFields(t, r.ctx, uint64(BLT_CTRL), payload, uint32(IE64_SIZE_L), PROG_START, r.cpu.regs[31])
+}
+
 func TestJIT_AMD64_STORE_HighAddr_HelperEndToEnd(t *testing.T) {
 	const payload uint64 = 0xFEDCBA0987654321
 	const highAddr uint64 = 0x0000_0001_0000_8000

@@ -106,6 +106,31 @@ func TestBlitterFill(t *testing.T) {
 	}
 }
 
+func TestBlitterStartHydratesStagedRegistersFromBusShadow(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	mode := VideoModes[video.currentMode]
+	color := uint32(0x66778899)
+	dst := vramAddr(mode, 3, 4)
+
+	binary.LittleEndian.PutUint32(bus.memory[BLT_OP:], bltOpFill)
+	binary.LittleEndian.PutUint32(bus.memory[BLT_DST:], dst)
+	binary.LittleEndian.PutUint32(bus.memory[BLT_WIDTH:], 2)
+	binary.LittleEndian.PutUint32(bus.memory[BLT_HEIGHT:], 2)
+	binary.LittleEndian.PutUint32(bus.memory[BLT_DST_STRIDE:], uint32(mode.bytesPerRow))
+	binary.LittleEndian.PutUint32(bus.memory[BLT_COLOR:], color)
+
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	for y := 4; y < 6; y++ {
+		for x := 3; x < 5; x++ {
+			addr := vramAddr(mode, x, y)
+			if got := video.HandleRead(addr); got != color {
+				t.Fatalf("pixel %d,%d = 0x%08X, want 0x%08X", x, y, got, color)
+			}
+		}
+	}
+}
+
 func TestBlitterCopy(t *testing.T) {
 	video, bus := newBlitterTestRig(t)
 	mode := VideoModes[video.currentMode]

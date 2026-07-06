@@ -70,6 +70,37 @@ func TestIE64SMC_RangePreservesUnrelatedPages(t *testing.T) {
 	}
 }
 
+func TestIE64SMC_OverlapIndexDropsReplacedAndRemovedBlocks(t *testing.T) {
+	cache := NewCodeCache()
+	first := &JITBlock{startPC: 0x100, endPC: 0x110}
+	replacement := &JITBlock{startPC: 0x100, endPC: 0x130, coveredRanges: [][2]uint64{{0x120, 0x130}}}
+	other := &JITBlock{startPC: 0x300, endPC: 0x310}
+
+	cache.Put(first)
+	if !cache.OverlapsRange(0x108, 0x10C) {
+		t.Fatal("initial block did not overlap indexed range")
+	}
+
+	cache.Put(replacement)
+	if cache.OverlapsRange(0x108, 0x10C) {
+		t.Fatal("replaced block left stale overlap for old covered range")
+	}
+	if !cache.OverlapsRange(0x120, 0x124) {
+		t.Fatal("replacement block did not overlap new covered range")
+	}
+
+	cache.Put(other)
+	if !cache.RemoveBlock(replacement) {
+		t.Fatal("RemoveBlock returned false for cached replacement")
+	}
+	if cache.OverlapsRange(0x120, 0x124) {
+		t.Fatal("removed block left stale overlap in page index")
+	}
+	if !cache.OverlapsRange(0x308, 0x30C) {
+		t.Fatal("unrelated cached block disappeared from page index")
+	}
+}
+
 func TestIE64SMC_MarkWriteSetsExactRange(t *testing.T) {
 	cpu := &CPU64{
 		jitCtx:            &JITContext{},

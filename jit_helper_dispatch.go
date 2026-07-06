@@ -119,6 +119,9 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 	size := byte(cpu.jitCtx.HelperSize)
 	rd := byte(cpu.jitCtx.HelperRd)
 	val := cpu.jitCtx.HelperVal
+	if cpu.jitHelperTrace != nil {
+		cpu.jitHelperTrace(op, addr)
+	}
 
 	// Stack helpers go through the memBase/memSize variant of
 	// mmuStackWrite/mmuStackRead so a translated phys still inside

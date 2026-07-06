@@ -2766,10 +2766,18 @@ func resolveDefaultBasicImagePath() string {
 		"bin/ehbasic_ie64.ie64",
 		"ehbasic_ie64.ie64",
 	}
+	var newestPath string
+	var newestTime time.Time
 	for _, p := range candidates {
 		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p
+			if newestPath == "" || st.ModTime().After(newestTime) {
+				newestPath = p
+				newestTime = st.ModTime()
+			}
 		}
+	}
+	if newestPath != "" {
+		return newestPath
 	}
 
 	if exe, err := os.Executable(); err == nil {

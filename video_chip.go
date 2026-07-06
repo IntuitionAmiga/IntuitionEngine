@@ -3658,6 +3658,7 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 		if chip.bltBusy {
 			return true
 		}
+		chip.hydrateBlitterStagedFromShadowLocked()
 		chip.bltBusy = true
 		chip.bltStartCount++
 		chip.bltErr = false
@@ -3963,6 +3964,85 @@ func (chip *VideoChip) handleBlitterWriteLocked(addr uint32, value uint32) bool 
 	}
 }
 
+func (chip *VideoChip) readBlitterShadowU32Locked(addr uint32) (uint32, bool) {
+	if chip.busMemory == nil || addr+4 > uint32(len(chip.busMemory)) {
+		return 0, false
+	}
+	if chip.bigEndianMode {
+		return binary.BigEndian.Uint32(chip.busMemory[addr : addr+4]), true
+	}
+	return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4]), true
+}
+
+func (chip *VideoChip) hydrateBlitterStagedFromShadowLocked() {
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_OP); ok {
+		chip.bltOpStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_SRC); ok {
+		chip.bltSrcStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_DST); ok {
+		chip.bltDstStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_WIDTH); ok {
+		chip.bltWidthStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_HEIGHT); ok {
+		chip.bltHeightStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_SRC_STRIDE); ok {
+		chip.bltSrcStride = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_DST_STRIDE); ok {
+		chip.bltDstStride = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_COLOR); ok {
+		chip.bltColorStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MASK); ok {
+		chip.bltMaskStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MODE7_U0); ok {
+		chip.bltMode7U0Staged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MODE7_V0); ok {
+		chip.bltMode7V0Staged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MODE7_DU_COL); ok {
+		chip.bltMode7DuColStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MODE7_DV_COL); ok {
+		chip.bltMode7DvColStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MODE7_DU_ROW); ok {
+		chip.bltMode7DuRowStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MODE7_DV_ROW); ok {
+		chip.bltMode7DvRowStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MODE7_TEX_W); ok {
+		chip.bltMode7TexWStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MODE7_TEX_H); ok {
+		chip.bltMode7TexHStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_FLAGS); ok {
+		chip.bltFlagsStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_FG); ok {
+		chip.bltFGStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_BG); ok {
+		chip.bltBGStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MASK_MOD); ok {
+		chip.bltMaskModStaged = value
+	}
+	if value, ok := chip.readBlitterShadowU32Locked(BLT_MASK_SRCX); ok {
+		chip.bltMaskSrcXStaged = value
+	}
+}
+
 func (chip *VideoChip) drawRasterBandLocked() {
 	mode := VideoModes[chip.currentMode]
 	startY := int(chip.rasterY)
@@ -4130,7 +4210,31 @@ func (chip *VideoChip) TakeDirtyRects() []FrameDirtyRect {
 }
 
 func (chip *VideoChip) IsOpaqueFrame() bool {
-	return chip.clutMode.Load()
+	return true
+}
+
+func (chip *VideoChip) CopyFrameForCompositor(dst []byte) ([]byte, bool) {
+	chip.setVBlank(false)
+	if !chip.enabled.Load() {
+		return nil, false
+	}
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+
+	frame := chip.currentFrameLocked()
+	if frame == nil {
+		return nil, false
+	}
+	mode := VideoModes[chip.currentMode]
+	frameLen := mode.totalSize
+	if chip.clutMode.Load() {
+		frameLen = mode.width * mode.height * BYTES_PER_PIXEL
+	}
+	if frameLen <= 0 || len(frame) < frameLen || len(dst) < frameLen {
+		return nil, false
+	}
+	copy(dst[:frameLen], frame[:frameLen])
+	return dst[:frameLen], true
 }
 
 // GetOutput returns the video output interface for sharing with other video devices.
@@ -4152,6 +4256,14 @@ func (chip *VideoChip) GetFrame() []byte {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
+	frame := chip.currentFrameLocked()
+	if frame == nil {
+		return nil
+	}
+	return chip.snapshotFrameLocked(frame)
+}
+
+func (chip *VideoChip) currentFrameLocked() []byte {
 	var frame []byte
 	mode := VideoModes[chip.currentMode]
 	if !chip.clutMode.Load() && chip.rgbaFrameSourceUnsupportedLocked(mode) {
@@ -4170,7 +4282,7 @@ func (chip *VideoChip) GetFrame() []byte {
 	if frame == nil {
 		return nil
 	}
-	return chip.snapshotFrameLocked(frame)
+	return frame
 }
 
 // IsEnabled implements VideoSource - returns whether VideoChip is enabled
@@ -4295,10 +4407,13 @@ func (chip *VideoChip) FinishFrame() []byte {
 	if frame == nil {
 		return nil
 	}
-	return chip.snapshotFrameLocked(frame)
+	return frame
 }
 
 func (chip *VideoChip) snapshotFrameLocked(frame []byte) []byte {
+	if videoChipSnapshotFrameHook != nil {
+		videoChipSnapshotFrameHook(len(frame))
+	}
 	if cap(chip.frameSnapshot) < len(frame) {
 		chip.frameSnapshot = make([]byte, len(frame))
 	} else {
@@ -4307,6 +4422,8 @@ func (chip *VideoChip) snapshotFrameLocked(frame []byte) []byte {
 	copy(chip.frameSnapshot, frame)
 	return chip.frameSnapshot
 }
+
+var videoChipSnapshotFrameHook func(size int)
 
 func GetSplashImageData() ([]byte, error) {
 	/*

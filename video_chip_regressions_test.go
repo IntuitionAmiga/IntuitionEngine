@@ -548,3 +548,11 @@ func TestGetFrame_ReturnsImmutableSnapshot(t *testing.T) {
 		t.Fatalf("GetFrame returned mutable backing slice, frame[0]=%d", frame[0])
 	}
 }
+
+func TestVideoChip_RGBAFrameIsOpaqueForCompositor(t *testing.T) {
+	video, _ := newBlitterTestRig(t)
+	video.HandleWrite(VIDEO_COLOR_MODE, 0)
+	if !video.IsOpaqueFrame() {
+		t.Fatal("RGBA VideoChip frame reported non-opaque; compositor should use copy path")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestCLIModeFromExtension_AcceptsTypedBinariesAndScripts(t *testing.T) {
@@ -115,6 +116,36 @@ func TestResolveRuntimeFileRoot_DefaultsToFallback(t *testing.T) {
 	}
 	if got != "." {
 		t.Fatalf("root = %q, want fallback", got)
+	}
+}
+
+func TestResolveDefaultBasicImagePathPrefersNewestLocalImage(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	if err := os.MkdirAll(filepath.Join("sdk", "examples", "prebuilt"), 0o755); err != nil {
+		t.Fatalf("MkdirAll prebuilt: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join("sdk", "examples", "asm"), 0o755); err != nil {
+		t.Fatalf("MkdirAll asm: %v", err)
+	}
+	prebuilt := filepath.Join("sdk", "examples", "prebuilt", "ehbasic_ie64.ie64")
+	assembled := filepath.Join("sdk", "examples", "asm", "ehbasic_ie64.ie64")
+	if err := os.WriteFile(prebuilt, []byte("old"), 0o644); err != nil {
+		t.Fatalf("WriteFile prebuilt: %v", err)
+	}
+	if err := os.WriteFile(assembled, []byte("new"), 0o644); err != nil {
+		t.Fatalf("WriteFile asm: %v", err)
+	}
+	oldTime := time.Unix(1000, 0)
+	newTime := time.Unix(2000, 0)
+	if err := os.Chtimes(prebuilt, oldTime, oldTime); err != nil {
+		t.Fatalf("Chtimes prebuilt: %v", err)
+	}
+	if err := os.Chtimes(assembled, newTime, newTime); err != nil {
+		t.Fatalf("Chtimes asm: %v", err)
+	}
+	if got := resolveDefaultBasicImagePath(); got != assembled {
+		t.Fatalf("default BASIC image = %q, want newest local image %q", got, assembled)
 	}
 }
 

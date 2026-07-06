@@ -110,6 +110,14 @@ type OpaqueFrameSource interface {
 	IsOpaqueFrame() bool
 }
 
+// CompositorFrameCopySource lets the compositor request a stable frame copy
+// directly into caller-provided storage. This avoids sources first copying into
+// an internal snapshot only for the compositor to copy that snapshot again into
+// a presentation lease.
+type CompositorFrameCopySource interface {
+	CopyFrameForCompositor(dst []byte) ([]byte, bool)
+}
+
 // FrameGenerationSource reports a counter that advances exactly when the
 // source publishes new frame content. The compositor skips the
 // collect/copy/blend/upload work for a tick when every enabled source

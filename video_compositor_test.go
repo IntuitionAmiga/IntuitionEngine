@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -300,6 +301,118 @@ func TestCompositeDirtyRectsPropagatedToOutput(t *testing.T) {
 	}
 	if src.takes != 1 {
 		t.Fatalf("TakeDirtyRects calls = %d, want 1 after reset", src.takes)
+	}
+}
+
+func TestCompositorCopiesVideoChipFrameIntoLeaseWithoutSnapshot(t *testing.T) {
+	t.Setenv("IE_VIDEO_FRAME_LEASES", "1")
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(bus)
+	video.HandleWrite(VIDEO_CTRL, 1)
+	video.HandleWrite(VIDEO_MODE, MODE_640x480)
+	const fb = uint32(0x00820000)
+	video.HandleWrite(VIDEO_FB_BASE, fb)
+	binary.LittleEndian.PutUint32(bus.memory[fb:fb+4], 0x00332211)
+
+	var snapshots atomic.Int32
+	oldHook := videoChipSnapshotFrameHook
+	videoChipSnapshotFrameHook = func(size int) { snapshots.Add(1) }
+	defer func() { videoChipSnapshotFrameHook = oldHook }()
+
+	comp := NewVideoCompositor(newMockHardwareVideoOutput())
+	comp.SetDimensions(640, 480)
+	comp.RegisterSource(video)
+	layers, hasContent := comp.collectCompositeLayers(true)
+	defer releaseFrameLayerLeases(layers)
+
+	if !hasContent || len(layers) != 1 {
+		t.Fatalf("collectCompositeLayers returned hasContent=%v layers=%d, want one VideoChip layer", hasContent, len(layers))
+	}
+	if snapshots.Load() != 0 {
+		t.Fatalf("VideoChip GetFrame snapshot copies = %d, want 0 for compositor copy path", snapshots.Load())
+	}
+	if layers[0].Lease == nil {
+		t.Fatal("VideoChip compositor copy did not use a frame lease")
+	}
+	if got := binary.LittleEndian.Uint32(layers[0].Buffer[:4]); got != 0xFF332211 {
+		t.Fatalf("leased compositor pixel = 0x%08X, want alpha-normalised 0xFF332211", got)
+	}
+}
+
+func TestCompositorCopiesVisibleDirectVRAMPrefixIntoLease(t *testing.T) {
+	t.Setenv("IE_VIDEO_FRAME_LEASES", "1")
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(bus)
+	video.SetDirectVRAM(bus.memory[VRAM_START : VRAM_START+VRAM_SIZE])
+	video.HandleWrite(VIDEO_CTRL, 1)
+	video.HandleWrite(VIDEO_MODE, MODE_640x480)
+	binary.LittleEndian.PutUint32(bus.memory[VRAM_START:VRAM_START+4], 0x00776655)
+
+	comp := NewVideoCompositor(newMockHardwareVideoOutput())
+	comp.SetDimensions(640, 480)
+	comp.RegisterSource(video)
+	layers, hasContent := comp.collectCompositeLayers(true)
+	defer releaseFrameLayerLeases(layers)
+
+	if !hasContent || len(layers) != 1 {
+		t.Fatalf("collectCompositeLayers returned hasContent=%v layers=%d, want one direct-VRAM layer", hasContent, len(layers))
+	}
+	if layers[0].Lease == nil {
+		t.Fatal("direct-VRAM compositor copy did not use a frame lease")
+	}
+	if got, want := len(layers[0].Buffer), 640*480*BYTES_PER_PIXEL; got != want {
+		t.Fatalf("direct-VRAM layer bytes = %d, want visible frame prefix %d", got, want)
+	}
+	if got := binary.LittleEndian.Uint32(layers[0].Buffer[:4]); got != 0xFF776655 {
+		t.Fatalf("direct-VRAM leased pixel = 0x%08X, want alpha-normalised 0xFF776655", got)
+	}
+}
+
+func TestCompositorScanlineVideoChipCopiesIntoLeaseWithoutSnapshot(t *testing.T) {
+	t.Setenv("IE_VIDEO_FRAME_LEASES", "1")
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(bus)
+	video.HandleWrite(VIDEO_CTRL, 1)
+	video.HandleWrite(VIDEO_MODE, MODE_640x480)
+	video.copperEnabled = true
+	const fb = uint32(0x00820000)
+	video.HandleWrite(VIDEO_FB_BASE, fb)
+	binary.LittleEndian.PutUint32(bus.memory[fb:fb+4], 0x00445566)
+
+	var snapshots atomic.Int32
+	oldHook := videoChipSnapshotFrameHook
+	videoChipSnapshotFrameHook = func(size int) { snapshots.Add(1) }
+	defer func() { videoChipSnapshotFrameHook = oldHook }()
+
+	comp := NewVideoCompositor(newMockHardwareVideoOutput())
+	comp.SetDimensions(640, 480)
+	comp.RegisterSource(video)
+	layers, hasContent, usedScanline := comp.collectScanlineAwareLayers(true)
+	defer releaseFrameLayerLeases(layers)
+
+	if !usedScanline || !hasContent || len(layers) != 1 {
+		t.Fatalf("collectScanlineAwareLayers returned used=%v has=%v layers=%d, want one scanline VideoChip layer", usedScanline, hasContent, len(layers))
+	}
+	if snapshots.Load() != 0 {
+		t.Fatalf("VideoChip FinishFrame snapshot copies = %d, want 0 for scanline compositor copy path", snapshots.Load())
+	}
+	if layers[0].Lease == nil {
+		t.Fatal("scanline VideoChip compositor copy did not use a frame lease")
+	}
+	if got := binary.LittleEndian.Uint32(layers[0].Buffer[:4]); got != 0xFF445566 {
+		t.Fatalf("leased scanline compositor pixel = 0x%08X, want alpha-normalised 0xFF445566", got)
 	}
 }
 

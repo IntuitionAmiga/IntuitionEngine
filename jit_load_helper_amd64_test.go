@@ -100,6 +100,28 @@ func TestJIT_AMD64_LOAD_LowAddr_NoHelper(t *testing.T) {
 	}
 }
 
+func TestJIT_AMD64_LOAD_HighDenseRAM_NoHelper(t *testing.T) {
+	r := newJITTestRig(t)
+	const want uint64 = 0x123456789ABCDEF0
+	const addr uint32 = 0x820000
+	binary.LittleEndian.PutUint64(r.cpu.memory[addr:], want)
+	r.cpu.regs[2] = uint64(addr)
+	r.ctx.NeedHelper = 0xDEADBEEF
+	r.ctx.NeedIOFallback = 0
+
+	r.compileAndRun(t, ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 2, 0, 0))
+
+	if r.cpu.regs[1] != want {
+		t.Fatalf("R1 = 0x%016X, want 0x%016X", r.cpu.regs[1], want)
+	}
+	if r.ctx.NeedHelper != 0xDEADBEEF {
+		t.Fatalf("NeedHelper = %d, want untouched poison (dense high RAM should not helper-exit)", r.ctx.NeedHelper)
+	}
+	if r.ctx.NeedIOFallback != 0 {
+		t.Fatalf("NeedIOFallback = %d, want 0", r.ctx.NeedIOFallback)
+	}
+}
+
 // TestJIT_AMD64_LOAD_HighAddr_HelperEndToEnd — dispatcher services
 // HELPER_LOAD against SparseBacking via cpu.loadMem and advances PC.
 // Verifies the emitter + dispatcher round trip.

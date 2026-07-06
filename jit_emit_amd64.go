@@ -2705,6 +2705,43 @@ func emitMemStore(cb *CodeBuffer, srcReg byte, size byte) {
 	}
 }
 
+var ie64NativeBLTShadowStoreAddrs = [...]uint32{
+	BLT_OP,
+	BLT_SRC,
+	BLT_DST,
+	BLT_WIDTH,
+	BLT_HEIGHT,
+	BLT_SRC_STRIDE,
+	BLT_DST_STRIDE,
+	BLT_COLOR,
+	BLT_MASK,
+	BLT_MODE7_U0,
+	BLT_MODE7_V0,
+	BLT_MODE7_DU_COL,
+	BLT_MODE7_DV_COL,
+	BLT_MODE7_DU_ROW,
+	BLT_MODE7_DV_ROW,
+	BLT_MODE7_TEX_W,
+	BLT_MODE7_TEX_H,
+	BLT_FLAGS,
+	BLT_FG,
+	BLT_BG,
+	BLT_MASK_MOD,
+	BLT_MASK_SRCX,
+}
+
+func emitIE64BLTShadowStoreChecksAMD64(cb *CodeBuffer, ji *JITInstr) []int {
+	if ji.size != IE64_SIZE_L {
+		return nil
+	}
+	offs := make([]int, 0, len(ie64NativeBLTShadowStoreAddrs))
+	for _, addr := range ie64NativeBLTShadowStoreAddrs {
+		amd64ALU_reg_imm32(cb, 7, amd64RAX, int32(addr))
+		offs = append(offs, amd64Jcc_rel32(cb, amd64CondE))
+	}
+	return offs
+}
+
 // emitIE64SMCStoreCheckAMD64 probes IE64 SMC tracking after a direct RAM
 // store has committed. RAX must hold the guest address unless
 // translatedPhysInRAX is true, in which case RAX holds the translated physical
@@ -3041,6 +3078,7 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 
 	inRangePC := cb.Len()
 	patchRel32(cb, inRangeOff, inRangePC)
+	bltShadowStoreOffs := emitIE64BLTShadowStoreChecksAMD64(cb, ji)
 
 	nonIOOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
 	if !ok {
@@ -3055,6 +3093,16 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	emitMemStore(cb, srcReg, ji.size)
 	emitIE64SMCStoreCheckAMD64(cb, ji.size, true)
 	doneOff2 := amd64JMP_rel32(cb)
+
+	var doneOff3 int
+	if len(bltShadowStoreOffs) != 0 {
+		bltShadowStorePC := cb.Len()
+		for _, off := range bltShadowStoreOffs {
+			patchRel32(cb, off, bltShadowStorePC)
+		}
+		emitMemStore(cb, srcReg, ji.size)
+		doneOff3 = amd64JMP_rel32(cb)
+	}
 
 	// Helper exit. All three bail paths converge here.
 	resumeLabel := ie64ResumeLabel(cb, instrPC)
@@ -3074,6 +3122,9 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	donePC := cb.Len()
 	patchRel32(cb, doneOff1, donePC)
 	patchRel32(cb, doneOff2, donePC)
+	if len(bltShadowStoreOffs) != 0 {
+		patchRel32(cb, doneOff3, donePC)
+	}
 }
 
 // emitSTOREHelperExit writes the JITContext HELPER_STORE protocol

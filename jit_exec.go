@@ -674,6 +674,9 @@ func (cpu *CPU64) ExecuteJIT() {
 		if ioBail {
 			diagIOBails++
 			globalIE64JITStats.ioBails.Add(1)
+			if cpu.PC < uint64(len(cpu.memory)) {
+				globalIE64JITStats.ioBailOpcodes[cpu.memory[cpu.PC]].Add(1)
+			}
 			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
 		}
 		diagBlocksExec++

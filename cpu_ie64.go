@@ -349,6 +349,9 @@ type CPU64 struct {
 	// inject a device interrupt pulse inside the native execution window so
 	// the RetPC-clobber path can be exercised deterministically.
 	preBlockHook func()
+	// jitHelperTrace, when set, is called by handleJITHelper after staging the
+	// helper fields. Test-only seam for diagnosing helper-exit hot spots.
+	jitHelperTrace func(op uint32, addr uint64)
 
 	// MMU state
 	mmuEnabled     bool         // MMU translation active

@@ -766,6 +766,66 @@ func (c *VideoCompositor) collectCompositeLayers(copyBuffers bool) ([]Compositor
 	return c.collectFullFrameLayers(copyBuffers)
 }
 
+func (c *VideoCompositor) appendCopiedCompositeLayer(layers []CompositorFrameLayer, registered registeredSource, copier CompositorFrameCopySource) ([]CompositorFrameLayer, bool) {
+	source := registered.source
+	srcW, srcH := source.GetDimensions()
+	if srcW <= 0 || srcH <= 0 {
+		return layers, false
+	}
+	rect := c.scaleRect(srcW, srcH, c.frameWidth, c.frameHeight)
+	if rect.w <= 0 || rect.h <= 0 {
+		return layers, false
+	}
+	bufLen := srcW * srcH * BYTES_PER_PIXEL
+	var buf []byte
+	var lease *VideoFrameLease
+	if videoFrameLeasesEnabled() {
+		if acquired, ok := c.acquireFrameLeaseLocked(registered.id, bufLen); ok {
+			copied, ok := copier.CopyFrameForCompositor(acquired.Pixels()[:bufLen])
+			if !ok || len(copied) < bufLen {
+				acquired.Release()
+				return layers, false
+			}
+			acquired.NormaliseAlpha()
+			lease = acquired
+			buf = acquired.Pixels()[:bufLen]
+		}
+	}
+	if buf == nil {
+		buf = make([]byte, bufLen)
+		copied, ok := copier.CopyFrameForCompositor(buf)
+		if !ok || len(copied) < bufLen {
+			return layers, false
+		}
+		normaliseFrameLeaseAlphaRGBA(buf)
+	}
+	opaque := false
+	if sourceOpaque, ok := source.(OpaqueFrameSource); ok {
+		opaque = sourceOpaque.IsOpaqueFrame()
+	}
+	var dirtyRects []FrameDirtyRect
+	if dirtySource, ok := source.(DirtyFrameSource); ok {
+		dirtyRects = dirtySource.TakeDirtyRects()
+		if len(dirtyRects) > 0 {
+			dirtyRects = append([]FrameDirtyRect(nil), dirtyRects...)
+		}
+	}
+	layers = append(layers, CompositorFrameLayer{
+		SourceID:     registered.id,
+		SourceWidth:  srcW,
+		SourceHeight: srcH,
+		DestX:        rect.x,
+		DestY:        rect.y,
+		DestWidth:    rect.w,
+		DestHeight:   rect.h,
+		Buffer:       buf,
+		Lease:        lease,
+		Opaque:       opaque,
+		DirtyRects:   dirtyRects,
+	})
+	return layers, true
+}
+
 func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, registered registeredSource, frame []byte, copyBuffer bool) ([]CompositorFrameLayer, bool) {
 	source := registered.source
 	srcW, srcH := source.GetDimensions()
@@ -961,6 +1021,7 @@ func (c *VideoCompositor) collectScanlineAwareLayers(copyBuffers bool) ([]Compos
 			continue
 		}
 		frame, isScanline := scanlineFrames[registered.id]
+		layerCopyBuffers := copyBuffers || isScanline
 		if !isScanline {
 			frame, _ = safeCallR("GetFrame", source.GetFrame)
 		}
@@ -968,7 +1029,7 @@ func (c *VideoCompositor) collectScanlineAwareLayers(copyBuffers bool) ([]Compos
 
 		if frame != nil {
 			var added bool
-			layers, added = c.appendCompositeLayer(layers, registered, frame, copyBuffers || isScanline)
+			layers, added = c.appendCompositeLayer(layers, registered, frame, layerCopyBuffers)
 			hasContent = hasContent || added
 		}
 	}
@@ -992,6 +1053,15 @@ func (c *VideoCompositor) collectFullFrameLayers(copyBuffers bool) ([]Compositor
 		source := registered.source
 		if !source.IsEnabled() {
 			continue
+		}
+		if copyBuffers {
+			if copier, ok := source.(CompositorFrameCopySource); ok {
+				var added bool
+				layers, added = c.appendCopiedCompositeLayer(layers, registered, copier)
+				hasContent = hasContent || added
+				safeCall("SignalVSync", source.SignalVSync)
+				continue
+			}
 		}
 		frame, _ := safeCallR("GetFrame", source.GetFrame)
 		safeCall("SignalVSync", source.SignalVSync)

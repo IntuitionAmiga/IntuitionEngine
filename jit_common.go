@@ -1061,15 +1061,24 @@ type ie64CacheKey struct {
 type CodeCache struct {
 	blocks            map[uint64]*JITBlock       // non-MMU: keyed by guest PC
 	mmuBlocks         map[ie64CacheKey]*JITBlock // MMU mode: exact (ptbr, vPC) composite
+	pageBlocks        map[uint64]map[*JITBlock]struct{}
+	mmuPageBlocks     map[ie64PageCacheKey]map[*JITBlock]struct{}
 	inboundChainSlots map[uint64][]chainPatchRef // chain slots keyed by target PC
 	dispatch          *JITDispatchCache          // direct-mapped dispatch lookup cache
 	generation        uint64                     // bumped on invalidation so dispatch entries expire in O(1)
+}
+
+type ie64PageCacheKey struct {
+	ptbr uint64
+	page uint64
 }
 
 func NewCodeCache() *CodeCache {
 	cc := &CodeCache{
 		blocks:            make(map[uint64]*JITBlock),
 		mmuBlocks:         make(map[ie64CacheKey]*JITBlock),
+		pageBlocks:        make(map[uint64]map[*JITBlock]struct{}),
+		mmuPageBlocks:     make(map[ie64PageCacheKey]map[*JITBlock]struct{}),
 		inboundChainSlots: make(map[uint64][]chainPatchRef),
 	}
 	if !jitDispatchCacheDisabled {
@@ -1097,6 +1106,118 @@ func jitRangesOverlap(lo, hi uint64, r [2]uint64) bool {
 	return r[1] > r[0] && r[1] > lo && r[0] < hi
 }
 
+func codeCachePagesForRange(lo, hi uint64, visit func(page uint64) bool) {
+	if hi <= lo {
+		return
+	}
+	startPage := lo >> 8
+	endPage := (hi - 1) >> 8
+	for p := startPage; p <= endPage; p++ {
+		if !visit(p) || p == ^uint64(0) {
+			return
+		}
+	}
+}
+
+func codeCachePagesForBlock(block *JITBlock, visit func(page uint64)) {
+	for _, r := range JITBlockCoveredRanges(block) {
+		if r[1] <= r[0] {
+			continue
+		}
+		codeCachePagesForRange(r[0], r[1], func(page uint64) bool {
+			visit(page)
+			return true
+		})
+	}
+}
+
+func addCodeCachePageBlock(index map[uint64]map[*JITBlock]struct{}, page uint64, block *JITBlock) {
+	set := index[page]
+	if set == nil {
+		set = make(map[*JITBlock]struct{}, 1)
+		index[page] = set
+	}
+	set[block] = struct{}{}
+}
+
+func removeCodeCachePageBlock(index map[uint64]map[*JITBlock]struct{}, page uint64, block *JITBlock) {
+	set := index[page]
+	if set == nil {
+		return
+	}
+	delete(set, block)
+	if len(set) == 0 {
+		delete(index, page)
+	}
+}
+
+func addCodeCacheMMUPageBlock(index map[ie64PageCacheKey]map[*JITBlock]struct{}, ptbr, page uint64, block *JITBlock) {
+	key := ie64PageCacheKey{ptbr: ptbr, page: page}
+	set := index[key]
+	if set == nil {
+		set = make(map[*JITBlock]struct{}, 1)
+		index[key] = set
+	}
+	set[block] = struct{}{}
+}
+
+func removeCodeCacheMMUPageBlock(index map[ie64PageCacheKey]map[*JITBlock]struct{}, ptbr, page uint64, block *JITBlock) {
+	key := ie64PageCacheKey{ptbr: ptbr, page: page}
+	set := index[key]
+	if set == nil {
+		return
+	}
+	delete(set, block)
+	if len(set) == 0 {
+		delete(index, key)
+	}
+}
+
+func (cc *CodeCache) indexBlock(block *JITBlock) {
+	if cc == nil || block == nil {
+		return
+	}
+	codeCachePagesForBlock(block, func(page uint64) {
+		addCodeCachePageBlock(cc.pageBlocks, page, block)
+	})
+}
+
+func (cc *CodeCache) unindexBlock(block *JITBlock) {
+	if cc == nil || block == nil {
+		return
+	}
+	codeCachePagesForBlock(block, func(page uint64) {
+		removeCodeCachePageBlock(cc.pageBlocks, page, block)
+	})
+}
+
+func (cc *CodeCache) indexMMUBlock(ptbr uint64, block *JITBlock) {
+	if cc == nil || block == nil {
+		return
+	}
+	codeCachePagesForBlock(block, func(page uint64) {
+		addCodeCacheMMUPageBlock(cc.mmuPageBlocks, ptbr, page, block)
+	})
+}
+
+func (cc *CodeCache) unindexMMUBlock(ptbr uint64, block *JITBlock) {
+	if cc == nil || block == nil {
+		return
+	}
+	codeCachePagesForBlock(block, func(page uint64) {
+		removeCodeCacheMMUPageBlock(cc.mmuPageBlocks, ptbr, page, block)
+	})
+}
+
+func codeCacheBlockOverlapsRange(block *JITBlock, lo, hi uint64) bool {
+	for _, r := range JITBlockCoveredRanges(block) {
+		if jitRangesOverlap(lo, hi, r) {
+			return true
+		}
+	}
+	return false
+}
+
 // GetMMU looks up an MMU-scoped block with an exact composite key.
 func (cc *CodeCache) GetMMU(ptbr, pc uint64) *JITBlock {
 	if block := cc.dispatch.get(pc, ptbr, cc.generation); block != nil {
@@ -1111,36 +1232,70 @@ func (cc *CodeCache) OverlapsRange(lo, hi uint64) bool {
 	if cc == nil || hi <= lo {
 		return false
 	}
-	for _, block := range cc.blocks {
-		for _, r := range JITBlockCoveredRanges(block) {
-			if jitRangesOverlap(lo, hi, r) {
+	startPage := lo >> 8
+	endPage := (hi - 1) >> 8
+	if startPage == endPage {
+		for block := range cc.pageBlocks[startPage] {
+			if codeCacheBlockOverlapsRange(block, lo, hi) {
 				return true
 			}
 		}
+		return false
 	}
-	return false
+	seen := make(map[*JITBlock]struct{})
+	found := false
+	codeCachePagesForRange(lo, hi, func(page uint64) bool {
+		for block := range cc.pageBlocks[page] {
+			if _, ok := seen[block]; ok {
+				continue
+			}
+			seen[block] = struct{}{}
+			if codeCacheBlockOverlapsRange(block, lo, hi) {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }
 
 func (cc *CodeCache) OverlapsRangeScoped(ptbr, lo, hi uint64) bool {
 	if cc == nil || hi <= lo {
 		return false
 	}
-	for key, block := range cc.mmuBlocks {
-		if key.ptbr != ptbr && block.ptbr != ptbr {
-			continue
-		}
-		for _, r := range JITBlockCoveredRanges(block) {
-			if jitRangesOverlap(lo, hi, r) {
+	startPage := lo >> 8
+	endPage := (hi - 1) >> 8
+	if startPage == endPage {
+		for block := range cc.mmuPageBlocks[ie64PageCacheKey{ptbr: ptbr, page: startPage}] {
+			if codeCacheBlockOverlapsRange(block, lo, hi) {
 				return true
 			}
 		}
+		return false
 	}
-	return false
+	seen := make(map[*JITBlock]struct{})
+	found := false
+	codeCachePagesForRange(lo, hi, func(page uint64) bool {
+		for block := range cc.mmuPageBlocks[ie64PageCacheKey{ptbr: ptbr, page: page}] {
+			if _, ok := seen[block]; ok {
+				continue
+			}
+			seen[block] = struct{}{}
+			if codeCacheBlockOverlapsRange(block, lo, hi) {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }
 
 // PutMMU stores an MMU-scoped block under its exact composite key.
 func (cc *CodeCache) PutMMU(ptbr, pc uint64, block *JITBlock) {
 	if old := cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}]; old != nil {
+		cc.unindexMMUBlock(ptbr, old)
 		cc.unregisterChainSlots(old)
 		if old != block {
 			releaseJITBlockExecMem(old)
@@ -1148,6 +1303,7 @@ func (cc *CodeCache) PutMMU(ptbr, pc uint64, block *JITBlock) {
 	}
 	block.ptbr = ptbr
 	cc.mmuBlocks[ie64CacheKey{ptbr: ptbr, pc: pc}] = block
+	cc.indexMMUBlock(ptbr, block)
 	cc.registerChainSlots(block)
 	cc.dispatch.put(pc, ptbr, cc.generation, block)
 }
@@ -1163,12 +1319,14 @@ func (cc *CodeCache) Get(pc uint64) *JITBlock {
 
 func (cc *CodeCache) Put(block *JITBlock) {
 	if old := cc.blocks[block.startPC]; old != nil {
+		cc.unindexBlock(old)
 		cc.unregisterChainSlots(old)
 		if old != block {
 			releaseJITBlockExecMem(old)
 		}
 	}
 	cc.blocks[block.startPC] = block
+	cc.indexBlock(block)
 	cc.registerChainSlots(block)
 	cc.dispatch.put(block.startPC, 0, cc.generation, block)
 }
@@ -1184,12 +1342,14 @@ func (cc *CodeCache) GetKey(key uint64) *JITBlock {
 
 func (cc *CodeCache) PutKey(key uint64, block *JITBlock) {
 	if old := cc.blocks[key]; old != nil {
+		cc.unindexBlock(old)
 		cc.unregisterChainSlots(old)
 		if old != block {
 			releaseJITBlockExecMem(old)
 		}
 	}
 	cc.blocks[key] = block
+	cc.indexBlock(block)
 	cc.registerChainSlots(block)
 	cc.dispatch.put(key, 0, cc.generation, block)
 }
@@ -1199,6 +1359,8 @@ func (cc *CodeCache) Invalidate() {
 	cc.releaseAllExecMem()
 	clear(cc.blocks)
 	clear(cc.mmuBlocks)
+	clear(cc.pageBlocks)
+	clear(cc.mmuPageBlocks)
 	clear(cc.inboundChainSlots)
 	cc.generation++
 	cc.dispatch.reset()
@@ -1215,6 +1377,7 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint64) int {
 		for _, r := range JITBlockCoveredRanges(block) {
 			if jitRangesOverlap(lo, hi, r) {
 				cc.unpatchChainsToBlock(block)
+				cc.unindexBlock(block)
 				cc.unregisterChainSlots(block)
 				delete(cc.blocks, key)
 				releaseJITBlockExecMem(block)
@@ -1227,6 +1390,7 @@ func (cc *CodeCache) InvalidateRange(lo, hi uint64) int {
 		for _, r := range JITBlockCoveredRanges(block) {
 			if jitRangesOverlap(lo, hi, r) {
 				cc.unpatchChainsToBlock(block)
+				cc.unindexMMUBlock(key.ptbr, block)
 				cc.unregisterChainSlots(block)
 				delete(cc.mmuBlocks, key)
 				releaseJITBlockExecMem(block)
@@ -1251,6 +1415,7 @@ func (cc *CodeCache) InvalidateRangeScoped(ptbr, lo, hi uint64) int {
 		for _, r := range JITBlockCoveredRanges(block) {
 			if jitRangesOverlap(lo, hi, r) {
 				cc.unpatchChainsToBlock(block)
+				cc.unindexMMUBlock(key.ptbr, block)
 				cc.unregisterChainSlots(block)
 				delete(cc.mmuBlocks, key)
 				releaseJITBlockExecMem(block)
@@ -1274,6 +1439,7 @@ func (cc *CodeCache) RemoveBlock(target *JITBlock) bool {
 	for key, block := range cc.blocks {
 		if block == target {
 			cc.unpatchChainsToBlock(block)
+			cc.unindexBlock(block)
 			cc.unregisterChainSlots(block)
 			delete(cc.blocks, key)
 			releaseJITBlockExecMem(block)
@@ -1283,6 +1449,7 @@ func (cc *CodeCache) RemoveBlock(target *JITBlock) bool {
 	for key, block := range cc.mmuBlocks {
 		if block == target {
 			cc.unpatchChainsToBlock(block)
+			cc.unindexMMUBlock(key.ptbr, block)
 			cc.unregisterChainSlots(block)
 			delete(cc.mmuBlocks, key)
 			releaseJITBlockExecMem(block)

@@ -52,6 +52,7 @@ type ie64JITStats struct {
 	directRAMProofs     atomic.Uint64
 	inlinedCalls        atomic.Uint64
 	ioBails             atomic.Uint64
+	ioBailOpcodes       [256]atomic.Uint64
 	invalidations       atomic.Uint64
 	helperExits         [HELPER_DTRANS + 1]atomic.Uint64
 	helperResumes       atomic.Uint64
@@ -70,6 +71,7 @@ type ie64JITStatsSnapshot struct {
 	directRAMProofs     uint64
 	inlinedCalls        uint64
 	ioBails             uint64
+	ioBailOpcodes       [256]uint64
 	invalidations       uint64
 	helperExits         [HELPER_DTRANS + 1]uint64
 	helperResumes       uint64
@@ -94,6 +96,9 @@ func ie64JITStatsLoad() ie64JITStatsSnapshot {
 	for i := range snap.helperExits {
 		snap.helperExits[i] = globalIE64JITStats.helperExits[i].Load()
 	}
+	for i := range snap.ioBailOpcodes {
+		snap.ioBailOpcodes[i] = globalIE64JITStats.ioBailOpcodes[i].Load()
+	}
 	return snap
 }
 
@@ -114,6 +119,9 @@ func (s ie64JITStatsSnapshot) Sub(base ie64JITStatsSnapshot) ie64JITStatsSnapsho
 	}
 	for i := range out.helperExits {
 		out.helperExits[i] = s.helperExits[i] - base.helperExits[i]
+	}
+	for i := range out.ioBailOpcodes {
+		out.ioBailOpcodes[i] = s.ioBailOpcodes[i] - base.ioBailOpcodes[i]
 	}
 	return out
 }
