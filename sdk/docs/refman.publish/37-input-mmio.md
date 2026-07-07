@@ -16,8 +16,8 @@ mouse movement uses signed `32`-bit values.
 
 | Address | Name | R/W | Meaning |
 |---------|------|-----|---------|
-| `$F0728` | `TERM_KEY_IN` | R | Read one cooked key byte and advance the key queue. |
-| `$F072C` | `TERM_KEY_STATUS` | R | Bit `0` set when a cooked key byte is queued. |
+| `$F0728` | `TERM_KEY_IN` | R | Read one raw key byte and advance the key queue. |
+| `$F072C` | `TERM_KEY_STATUS` | R | Bit `0` set when a raw key byte is queued. |
 | `$F0740` | `SCAN_CODE` | R | Read one physical-key scancode and advance the scancode queue. |
 | `$F0744` | `SCAN_STATUS` | R | Bit `0` set when a scancode is queued. |
 | `$F0748` | `SCAN_MODIFIERS` | R | Bit `0` shift, bit `1` ctrl, bit `2` alt, bit `3` capslock. |
@@ -32,15 +32,16 @@ mouse movement uses signed `32`-bit values.
 | `$F075C` | `RTC_MONO_USEC_LO` | R | Low `32` bits of monotonic microseconds since engine start. |
 | `$F0760` | `RTC_MONO_USEC_HI` | R | High `32` bits of monotonic microseconds since engine start. |
 
-## 37.2 Cooked Key Queue
+## 37.2 Raw Key Queue
 
-The cooked key queue contains one byte per key after keyboard layout
-and shift handling. It is not line-buffered and it is not echoed.
+The raw key queue contains one byte per terminal key after the
+graphical input path has delivered it to the MMIO block. It is not
+line-buffered and it is not echoed.
 Use it when a program wants immediate key presses but still wants the
 usual character values.
 
 ```basic
-10 REM WAIT FOR ONE COOKED KEY BYTE
+10 REM WAIT FOR ONE RAW KEY BYTE
 20 PRINT "PRESS A KEY"
 30 IF PEEK32(&H000F072C)=0 THEN GOTO 30
 40 K=PEEK32(&H000F0728)
