@@ -50,6 +50,7 @@ Additional message strings produced by specific verbs:
 | `LOAD`       | `?FILE NOT FOUND`. |
 | `SAVE`       | `?FILE ERROR` (printed as a soft error; `SAVE` does not raise into the runtime). |
 | `RUN AOT`    | `Compiling to native code...` before compilation begins. |
+| `RUN AOT` / `COMPILE` / `TRANSPILE` | `?NO CODE TO COMPILE` when the stored programme is empty. |
 | `RUN AOT` / `COMPILE` / `TRANSPILE` | `?COMPILE ERROR IN <line>: <reason>` when a stored line cannot become native IE64 code. |
 | `RUN AOT` / `COMPILE` / `TRANSPILE` / `ASSEMBLE` | `?OUT OF MEMORY ERROR IN <line-or-0>: <reason>` when the native-code arena, generated source, or output image is too large. |
 | `COMPILE` / `TRANSPILE` / `ASSEMBLE` | `?FC ERROR IN 0` for a bad output name. |
@@ -187,6 +188,20 @@ format.
 `COWAIT` blocks until the ticket reaches a terminal state or the
 timeout expires; call `COSTATUS(ticket)` afterwards to read the
 final code.
+
+Raw coprocessor commands report their last command result through
+`COPROC_CMD_STATUS` and `COPROC_CMD_ERROR`:
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| `0`  | `COPROC_ERR_NONE` | No command error. |
+| `1`  | `COPROC_ERR_INVALID_CPU` | The selected CPU type is not valid for this command. |
+| `2`  | `COPROC_ERR_NOT_FOUND` | The named worker was not found, or `COPROC_CMD_START_MEM` was given an empty or out-of-range guest-RAM image. |
+| `3`  | `COPROC_ERR_PATH_INVALID` | The worker name is not an accepted path. |
+| `4`  | `COPROC_ERR_LOAD_FAILED` | The worker image could not be loaded or started. |
+| `5`  | `COPROC_ERR_QUEUE_FULL` | The request queue cannot accept another entry. |
+| `6`  | `COPROC_ERR_NO_WORKER` | The selected worker is not running. |
+| `7`  | `COPROC_ERR_STALE_TICKET` | The ticket no longer names a live request. |
 
 ## I.8 Raised by the CPU itself
 

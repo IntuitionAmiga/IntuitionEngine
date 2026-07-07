@@ -126,6 +126,60 @@ The current editorial pass is driven by the final review:
 
 Current controlled polish pass:
 
+- Integrate the reader-facing machine-contract changes after committed
+  PRG refresh `5feeb8e5`. Check every commit from `09c4821e` through
+  `15489ba0` before editing. This is a narrow public-contract pass:
+  document new MMIO command values, status/error text, memory-discovery
+  registers, and visible BASIC prompt behaviour. Do not document JIT
+  range invalidation, JIT region policy, compositor copy leases,
+  graphics backend details, host launch defaults, guest operating
+  systems, or test-only rationale in the PRG.
+
+  Canonical sources to check before writing:
+
+  - `sdk/examples/asm/ehbasic_ie64.asm`, `sdk/include/ehbasic_aot.inc`,
+    `sdk/include/ehbasic_file_io.inc`, and AOT/File I/O tests for the
+    startup memory banner, empty-programme compile rejection, and
+    generated-image command behaviour.
+  - `registers.go`, `sysinfo_mmio.go`, `sdk/include/ie64.inc`, and
+    SysInfo tests for `SYSINFO_LOW_WINDOW_LO` and
+    `SYSINFO_LOW_WINDOW_HI`.
+  - `coprocessor_constants.go`, `coprocessor_manager.go`, and
+    `coprocessor_startmem_test.go` for `COPROC_CMD_START_MEM = 6`.
+  - `voodoo_constants.go`, `video_voodoo.go`, and
+    `video_voodoo_command_stream_test.go` for `VOODOO_CMD_PTR`,
+    `VOODOO_CMD_COUNT`, `VOODOO_CMD_SUBMIT`, big-endian guest-RAM
+    address/value pairs, replay value `1`, and the `65536` write
+    limit.
+  - `cpu_m68k.go` for the M68K flat-image raw deposit rule: loading
+    skips MMIO apertures and the stack guard hole instead of causing
+    device side effects.
+  - `video_chip.go` and blitter tests for the existing blitter-start
+    contract. Record that this remains a correctness clarification, not
+    a new reader feature.
+
+  Execute this pass in book order:
+
+  1. Chapter 1: explain the startup memory banner without hard-coding
+     one machine's RAM values.
+  2. Chapter 2 and Chapter 35: add `?NO CODE TO COMPILE` for
+     `RUN AOT`, `COMPILE`, and `TRANSPILE` on an empty stored
+     programme.
+  3. Chapter 9 and Appendix D/L: document the Voodoo command-stream
+     MMIO registers at programmer level only.
+  4. Chapter 24 and Appendices D/H/L: add the SysInfo low-window
+     register pair and explain how it differs from total and active RAM.
+  5. Chapter 29 or Appendix H: add a short M68K flat-image loader note
+     saying load deposits do not fire MMIO side effects and skip the
+     stack guard hole.
+  6. Chapter 32 and Appendices D/I/L: add `COPROC_CMD_START_MEM = 6`
+     and its `COPROC_REQ_PTR` / `COPROC_REQ_LEN` inputs.
+  7. Claim ledger: record the checked canonical sources and mark
+     blitter-shadow hydration as preserving the existing documented
+     blitter start contract.
+  8. Run scans for forbidden non-PRG topics, dash punctuation, stale
+     command/register wording, and changed public constants. Publish and
+     print PDFs only after the source files pass.
 - Add RawlandMini MIDI lookup material without turning the PRG into an
   internal synth-source dump. Check `midi_constants.go`,
   `midi_engine.go`, `midi_parser.go`, `midi_live.go`, and focused MIDI

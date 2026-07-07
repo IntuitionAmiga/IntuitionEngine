@@ -107,6 +107,7 @@ chapter give the full story; this appendix is the cheat sheet.
 | TRAP #n            | vectors 32-47. |
 | Auto-vector IRQs   | vectors 25-31. |
 | Call ABI           | Arguments on stack; D0 / A0 caller-saved; D2-D7 / A2-A6 callee-saved. |
+| Flat image loading | Raw image bytes are deposited at the M68K entry point. The loader leaves MMIO apertures and the stack guard hole untouched; normal programme stores still reach MMIO after execution starts. |
 
 ## H.6 x86 (8086 + 386 extensions, real-mode only)
 
@@ -149,4 +150,6 @@ mechanism described in Chapters 27 and 28.
 | `$F2320`  | RUN loader block. |
 | `$F2340`  | Coprocessor. |
 | `$F2400`  | SysInfo. |
+| `$F2414`/`$F2418` | `SYSINFO_LOW_WINDOW_LO` / `SYSINFO_LOW_WINDOW_HI`, dense low-RAM window size. |
 | `$F8000`  | Voodoo 3D. |
+| `$F833C`/`$F8340`/`$F8344` | `VOODOO_CMD_PTR` / `VOODOO_CMD_COUNT` / `VOODOO_CMD_SUBMIT`, Voodoo command-stream replay. |

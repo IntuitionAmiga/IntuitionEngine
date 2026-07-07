@@ -171,10 +171,10 @@ listing buffer below `$FFFF0000` and inside active RAM.
 LOAD "name"
 ```
 
-`LOAD` reads a BASIC program from disk, tokenises it, makes it
-the current program, and clears variables. If the entry is not
+`LOAD` reads a BASIC programme from disk, tokenises it, makes it
+the current programme, and clears variables. If the entry is not
 found, BASIC prints `?FILE NOT FOUND` and keeps the previous
-program.
+programme.
 
 ### 35.6.2 SAVE
 
@@ -182,7 +182,7 @@ program.
 SAVE "name"
 ```
 
-`SAVE` writes the current BASIC program as detokenised numbered
+`SAVE` writes the current BASIC programme as detokenised numbered
 text. The saved text round-trips through `LOAD`.
 
 ### 35.6.3 BLOAD
@@ -202,20 +202,20 @@ otherwise BASIC reports `?FC ERROR`.
 COMPILE "name"
 ```
 
-`COMPILE` is a direct-mode command. It takes the stored BASIC program,
+`COMPILE` is a direct-mode command. It takes the stored BASIC programme,
 makes a native IE64 image from it inside the machine, and writes the
 result as a flat `.ie64` file. `COMPILE "DEMO"` writes `DEMO.ie64`;
 `COMPILE "DEMO.IE64"` keeps the suffix already supplied.
 
 The output name is a simple filename, not a path. If the current
-program was loaded from a subdirectory, the compiled image is written
-beside that loaded program. If no program has been loaded, it is
+programme was loaded from a subdirectory, the compiled image is written
+beside that loaded programme. If no programme has been loaded, it is
 written at the root of the disk volume.
 
 `COMPILE` also writes a same-name text listing of the generated IE64
-instructions. That assembly text is self-contained: when the program
+instructions. That assembly text is self-contained: when the programme
 needs runtime support, the support bytes and any bundled tokenised
-program data are written as labelled `dc.b` data. The listing is for
+programme data are written as labelled `dc.b` data. The listing is for
 inspection or later assembly. `RUN` uses the `.ie64` image.
 
 Not every stored line can become a standalone image. Direct-mode
@@ -225,6 +225,9 @@ For `POKE`, `POKE8`, `POKE16`, `POKE32`, and `POKE64` inside a
 standalone image, integer-literal operands can be lowered directly;
 other expressions use the resident runtime path.
 
+If the stored programme is empty, `COMPILE` prints `?NO CODE TO COMPILE`
+and writes no image.
+
 ### 35.6.5 TRANSPILE
 
 ```text
@@ -232,18 +235,21 @@ TRANSPILE "name"
 ```
 
 `TRANSPILE` is a direct-mode command. It runs the first half of
-`COMPILE`: BASIC converts the stored program to IE64 assembly text and
+`COMPILE`: BASIC converts the stored programme to IE64 assembly text and
 writes the matching assembly source file. It does not assemble that
 source and it does not write `name.ie64`.
 
 The output name follows the same rule as `COMPILE`. If the current
-program was loaded from a subdirectory, the assembly source is written
-beside that loaded program. If no program has been loaded, it is
+programme was loaded from a subdirectory, the assembly source is written
+beside that loaded programme. If no programme has been loaded, it is
 written at the root of the disk volume.
 
 Use `TRANSPILE` when you want to inspect the native IE64 source that
 BASIC would compile, or when you want to assemble it later with
 `ASSEMBLE`.
+
+If the stored programme is empty, `TRANSPILE` prints
+`?NO CODE TO COMPILE` and writes no source file.
 
 ### 35.6.6 ASSEMBLE
 
@@ -253,7 +259,7 @@ ASSEMBLE "name"
 
 `ASSEMBLE` is a direct-mode command. It reads the matching assembly
 source file, assembles it inside the machine at `PROG_START`, and
-writes `name.ie64`. The stored BASIC program is not used and is not
+writes `name.ie64`. The stored BASIC programme is not used and is not
 changed.
 
 The source may contain IE64 instructions, including `MOVT`, labels,
@@ -326,14 +332,14 @@ prints `?FILE TOO LARGE` before any byte is staged. If the name is not
 found, BASIC prints `?FILE NOT FOUND`; other file errors print
 `?FILE ERROR`.
 
-This is a prompt session, not a stored program:
+This is a prompt session, not a stored programme:
 
 ```text
 SAVE "NOTE.BAS"
 TYPE "NOTE.BAS"
 ```
 
-The first command writes the current program as text. The second
+The first command writes the current programme as text. The second
 command prints that saved text file back to the screen.
 
 ## 35.7 Typed MMIO Example

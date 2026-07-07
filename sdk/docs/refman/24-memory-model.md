@@ -79,6 +79,9 @@ Intuition Engine was started with and on the active CPU profile. The two
 words at `$F2400`/`$F2404` (`SYSINFO_TOTAL_RAM_LO`/`HI`) report the
 byte size of total guest RAM as a `64`-bit value; `$F2408`/`$F240C`
 report the size visible to the currently executing CPU profile.
+`$F2414`/`$F2418` report the dense low RAM window: the contiguous
+low-memory span that `32`-bit clients, flat images, and low-window
+device buffers can address directly.
 
 IE64 BASIC keeps its own programme text, variables, stacks, file
 bridges, line/input scratch, and compiler scratch areas in dynamic
@@ -294,7 +297,7 @@ detail. Chapter 38 covers the serial interface that overlays
 
 ## 24.5 The system-information block
 
-`$F2400`-`$F24FF`. Four read-only words let a program discover
+`$F2400`-`$F24FF`. Six read-only words let a program discover
 how much memory it has to play with:
 
 | Address    | Name                  | Description                       |
@@ -303,10 +306,16 @@ how much memory it has to play with:
 | `$F2404`  | `SYSINFO_TOTAL_RAM_HI`| High `32` bits of total RAM       |
 | `$F2408`  | `SYSINFO_ACTIVE_RAM_LO`| Low `32` bits of RAM visible to the active CPU |
 | `$F240C`  | `SYSINFO_ACTIVE_RAM_HI`| High `32` bits of CPU-visible RAM |
+| `$F2414`  | `SYSINFO_LOW_WINDOW_LO`| Low `32` bits of the dense low RAM window |
+| `$F2418`  | `SYSINFO_LOW_WINDOW_HI`| High `32` bits of the dense low RAM window |
 
 The total and active values can differ when a `16`-bit profile
 (6502 or Z80) is the active CPU: total reports the physical RAM,
 active reports the window the small CPU can currently see.
+The low-window value is different again. It tells software how much
+contiguous low RAM is backed by the ordinary low address path. Use it
+when a buffer must be reachable by a `32`-bit image, a compatibility
+CPU, or a device register that stores a low-window pointer.
 
 Type this to print both low words. On machines with more than 4 GB, the
 high words at lines 30 and 50 are non-zero.

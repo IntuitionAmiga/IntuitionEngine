@@ -21,6 +21,11 @@ Ready
 .
 ```
 
+On a normal start, BASIC may first print a short memory line such as
+`64 GiB SYSTEM RAM, 4 GiB BASIC FREE`. The exact numbers depend on the
+machine and active memory profile. The transcripts in this guide begin
+at `Ready` unless the memory line itself is being discussed.
+
 This is **direct mode**. Anything you type is treated as a BASIC
 statement and runs as soon as you press RETURN. If you begin a line
 with a number, the rest of the line is stored in memory as part of a

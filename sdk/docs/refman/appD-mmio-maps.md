@@ -407,6 +407,17 @@ command block:
 | `+$44` | `COPROC_DISPATCH_OVERHEAD`. |
 | `+$48` | `COPROC_COMPLETED_TICKET`. |
 
+Command values written to `COPROC_CMD`:
+
+| Value | Command |
+|-------|---------|
+| `1` | `COPROC_CMD_START`, start worker from a named file. |
+| `2` | `COPROC_CMD_STOP`, stop the selected worker. |
+| `3` | `COPROC_CMD_ENQUEUE`, submit a request and return a ticket. |
+| `4` | `COPROC_CMD_POLL`, poll the ticket in `COPROC_TICKET`. |
+| `5` | `COPROC_CMD_WAIT`, wait for the ticket in `COPROC_TICKET`. |
+| `6` | `COPROC_CMD_START_MEM`, start worker from the guest-RAM image at `COPROC_REQ_PTR` for `COPROC_REQ_LEN` bytes. |
+
 Extended monitor block (`$F23B0`-`$F23BF`):
 
 | Offset | Register |
@@ -438,6 +449,8 @@ Extended monitor block (`$F23B0`-`$F23BF`):
 | `+$08` | `SYSINFO_ACTIVE_RAM_LO`. |
 | `+$0C` | `SYSINFO_ACTIVE_RAM_HI`. |
 | `+$10` | `SYSINFO_FEATURES`: bit `0` CPU Wait, bit `1` Voodoo command stream, bit `2` MMIO stats enabled. |
+| `+$14` | `SYSINFO_LOW_WINDOW_LO`. |
+| `+$18` | `SYSINFO_LOW_WINDOW_HI`. |
 
 ## D.21 HOST appliance block (`$F1400`-`$F140F`)
 
@@ -480,3 +493,17 @@ active; a later swap waits only when that pipeline is full. `FBI_BUSY`
 and `SST_BUSY` report render or publish work in progress; `SWAPBUF`
 reports a pending publish swap. `MEMFIFO` is a coarse current-batch
 ready field, and `PCIFIFO` is the high-level command-space field.
+
+Command-stream registers:
+
+| Address | Register |
+|---------|----------|
+| `$F833C` | `VOODOO_CMD_PTR`, guest-RAM stream pointer. |
+| `$F8340` | `VOODOO_CMD_COUNT`, number of address/value pairs. |
+| `$F8344` | `VOODOO_CMD_SUBMIT`, write `1` to replay the stream. |
+
+The stream contains big-endian 32-bit Voodoo register addresses and
+big-endian 32-bit values. Replay uses the same register path as
+ordinary Voodoo writes. Misaligned addresses, out-of-range addresses,
+and writes back to the command-stream control registers are skipped.
+The maximum count is `65536` pairs.

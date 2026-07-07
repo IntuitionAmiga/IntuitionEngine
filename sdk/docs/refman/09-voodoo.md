@@ -256,6 +256,22 @@ only when that pipeline is full. During render or publish work the
 status register reports `FBI_BUSY` and `SST_BUSY`; during a pending
 publish it also reports `SWAPBUF`.
 
+Long setup sequences may also be replayed from guest RAM. The command
+stream is a sequence of big-endian address/value longword pairs. Each
+address is an absolute Voodoo register address, and each value is the
+`32`-bit word to write there:
+
+| Address    | Name                 | Purpose |
+|------------|----------------------|---------|
+| `$F833C`  | `VOODOO_CMD_PTR`     | Pointer to the command stream in guest RAM. |
+| `$F8340`  | `VOODOO_CMD_COUNT`   | Number of address/value pairs to replay. |
+| `$F8344`  | `VOODOO_CMD_SUBMIT`  | Write `1` to replay the stream. |
+
+Replay uses the same register path as individual `POKE32` or CPU MMIO
+writes. Misaligned addresses, addresses outside the Voodoo block, and
+recursive writes to the command-stream control registers are skipped.
+The maximum count is `65536` address/value pairs.
+
 ### 9.5.4 Mode and state
 
 | Address    | Name                  | Purpose |
@@ -624,6 +640,7 @@ Voodoo has these programming boundaries:
 | `SWAP_BUFFER_CMD` bit `1` | Clears the drawing buffer after the swap using current `COLOR0`. |
 | `POKE8` to registers | Updates the shadow byte immediately, but command side effects run only when byte `3` of the word is written. |
 | Texture upload | Copies `w * h * 4` bytes from `$D0000` if the size fits in `64` KB. |
+| Command stream | Replays up to `65536` big-endian address/value pairs from guest RAM through the normal Voodoo register path. |
 | Texture sampling | Uses point sampling, with wrap by default and clamp when `CLAMP_S` or `CLAMP_T` is set. |
 | Chroma key | Discards a final pixel colour that matches the key or keyed range. |
 | Fog | Blends by the clamped Z value. |

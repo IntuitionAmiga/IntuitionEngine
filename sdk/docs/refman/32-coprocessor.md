@@ -52,7 +52,7 @@ Worker state is reported through `COPROC_WORKER_STATE`:
 
 Failures are always visible through `COPROC_CMD_STATUS` and
 `COPROC_CMD_ERROR`. `COCALL` also returns ticket `0` when enqueue
-fails, so a BASIC program can reject the request immediately.
+fails, so a BASIC programme can reject the request immediately.
 
 ## 32.2 CPU Type Codes
 
@@ -243,9 +243,17 @@ Write input registers first, then write one of these values to
 | `3`  | `COPROC_CMD_ENQUEUE`  | Submit a request and return a ticket    |
 | `4`  | `COPROC_CMD_POLL`     | Poll a ticket's status                  |
 | `5`  | `COPROC_CMD_WAIT`     | Wait for ticket completion or timeout   |
+| `6`  | `COPROC_CMD_START_MEM` | Start a worker from a guest-RAM image  |
 
 After the command write, read `COPROC_CMD_STATUS`. If it is `1`,
 read `COPROC_CMD_ERROR`.
+
+`COPROC_CMD_START_MEM` uses the selected `COPROC_CPU_TYPE` and reads
+the service image from guest RAM at `COPROC_REQ_PTR` for
+`COPROC_REQ_LEN` bytes. It is the raw MMIO form used by
+self-contained programmes that already carry their worker image in
+memory. Ordinary BASIC programmes normally use `COSTART` for named
+worker files.
 
 ## 32.7 Error Codes
 
@@ -294,7 +302,7 @@ Response descriptor words:
 | `$08`  | Service result code |
 | `$0C`  | Response length |
 
-Most BASIC programs never touch these descriptors directly.
+Most BASIC programmes never touch these descriptors directly.
 They are included so machine-code services can be written and
 checked by hand in IE Mon.
 

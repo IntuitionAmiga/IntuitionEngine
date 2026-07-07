@@ -77,6 +77,7 @@ symbols, and Appendix J gives the full memory map.
 | Copper | Chapter 4 |
 | Coprocessor | Chapter 32, Chapter 39, Appendix I |
 | COPROC_CMD_ERROR | Chapter 32, Appendix D |
+| COPROC_CMD_START_MEM | Chapter 32, Appendix D, Appendix I |
 | COCALL | Chapter 32 |
 | CPU-local snapshots | Chapter 33, Chapter 34 |
 | CR_RAM_SIZE_BYTES | Chapter 25, Appendix I |
@@ -168,6 +169,7 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | M68K | Chapter 29, Chapter 31, Appendix G, Appendix H |
+| M68K flat images | Chapter 29, Appendix H |
 | Machine-code byte entry | Chapters 25-30, Chapter 33 |
 | Monitor assemble command | Chapter 25, Chapter 33, Appendix G |
 | Media loader | Chapter 11, Appendix D |
@@ -243,6 +245,8 @@ symbols, and Appendix J gives the full memory map.
 | SoundChip flex channels | Chapter 11, Appendix D, Appendix J |
 | SWAP_BUFFER_CMD | Chapter 9, Appendix D |
 | SYSINFO_ACTIVE_RAM_LO | Chapter 24, Appendix D, Appendix J |
+| SYSINFO_LOW_WINDOW_HI | Chapter 24, Appendix D, Appendix H |
+| SYSINFO_LOW_WINDOW_LO | Chapter 24, Appendix D, Appendix H |
 | SYSINFO_TOTAL_RAM_LO | Chapter 24, Appendix D, Appendix J |
 | sys.perf_report | Chapter 34 |
 | sys.perf_reset | Chapter 34 |
@@ -284,9 +288,13 @@ symbols, and Appendix J gives the full memory map.
 | VIDEO_STATUS | Chapter 4, Appendix D |
 | Voodoo | Chapter 9, Chapter 29, Appendix D, Appendix H |
 | Voodoo batch limit | Chapter 9, Appendix D |
+| Voodoo command stream | Chapter 9, Appendix D, Appendix H |
 | Voodoo state binding | Chapter 9, Appendix D |
 | Voodoo status bits | Chapter 9, Appendix D |
 | Voodoo swap pipeline | Chapter 9, Appendix D |
+| VOODOO_CMD_COUNT | Chapter 9, Appendix D, Appendix H |
+| VOODOO_CMD_PTR | Chapter 9, Appendix D, Appendix H |
+| VOODOO_CMD_SUBMIT | Chapter 9, Appendix D, Appendix H |
 | VRAM | Chapter 3, Chapter 4, Chapter 24, Appendix J |
 
 ## W

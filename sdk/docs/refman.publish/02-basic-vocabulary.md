@@ -38,17 +38,17 @@ rest of the book:
 ## 2.2 Direct-mode commands
 
 These commands work only in direct mode. They are not part of the
-stored program language and may not appear inside a stored program
+stored programme language and may not appear inside a stored programme
 line.
 
 - **DIR** - list the names of files that BASIC can `LOAD`. See
   Chapter 35.
 - **TYPE** - print a text file from the disk volume. See Chapter 35.
-- **RUN AOT** - compile the stored program to native IE64 code and run
+- **RUN AOT** - compile the stored programme to native IE64 code and run
   it immediately.
-- **COMPILE** - write the stored program as a standalone `.ie64`
+- **COMPILE** - write the stored programme as a standalone `.ie64`
   image. See Chapter 35.
-- **TRANSPILE** - write the stored program as IE64 assembly text. See
+- **TRANSPILE** - write the stored programme as IE64 assembly text. See
   Chapter 35.
 - **ASSEMBLE** - assemble IE64 source text into a standalone `.ie64`
   image. See Chapter 35.
@@ -110,7 +110,7 @@ PRINT ASC("A")
 
 Direct-mode command. Read the assembly source matching *filename* from
 the disk volume, assemble it inside the machine as IE64 source at
-`PROG_START`, and write *filename*`.ie64`. The stored BASIC program is
+`PROG_START`, and write *filename*`.ie64`. The stored BASIC programme is
 not changed.
 
 `ASSEMBLE` accepts the IE64 instruction set, including `MOVT`, labels,
@@ -240,13 +240,13 @@ Clear the screen. See Chapter 5.
 
 `COMPILE "`*filename*`"`
 
-Direct-mode command. Compile the stored BASIC program into a
+Direct-mode command. Compile the stored BASIC programme into a
 standalone IE64 image. If *filename* has no `.ie64` suffix, BASIC
-adds it. If the current program was loaded from a subdirectory, the
-compiled image is written beside that loaded program; otherwise it is
+adds it. If the current programme was loaded from a subdirectory, the
+compiled image is written beside that loaded programme; otherwise it is
 written at the root of the disk volume.
 
-`COMPILE` is a prompt command, not a stored-program statement. It
+`COMPILE` is a prompt command, not a stored-programme statement. It
 rejects direct-mode-only commands and other raw prompt forms. When a
 statement cannot be compiled, BASIC prints `?COMPILE ERROR IN ` followed
 by the line number and the reason. See Chapter 35 for the File I/O
@@ -545,7 +545,7 @@ Draw a line. See Chapter 5.
 
 `LIST`
 
-Print the whole stored program. Any arguments after `LIST` are
+Print the whole stored programme. Any arguments after `LIST` are
 ignored; BASIC always lists every line.
 
 ### LOAD
@@ -592,7 +592,7 @@ Returns the larger of the two arguments.
 `MEMALLOC(`*size*`[, `*align*`])`
 
 Allocates a public low-memory buffer and returns its address. Use it
-when a BASIC program needs a buffer that hardware, the copper, a
+when a BASIC programme needs a buffer that hardware, the copper, a
 coprocessor request, or a DMA-style register block can read.
 
 *size* is the number of bytes to reserve. *align* is optional; it
@@ -634,7 +634,7 @@ volume, and controller `11` changes expression.
 `MIDI SEND `*byte*`[, `*byte*`]...`
 
 Write raw MIDI bytes to the live MIDI stream parser. This form is for
-running-status byte streams; ordinary BASIC programs usually use
+running-status byte streams; ordinary BASIC programmes usually use
 `MIDI NOTE`, `MIDI PROG`, and `MIDI CTRL` instead.
 
 `MIDI RESET`
@@ -850,7 +850,7 @@ argument seeds the generator; otherwise the argument is ignored.
 
 `RUN`
 
-Run the stored program from the lowest-numbered line. Numeric line
+Run the stored programme from the lowest-numbered line. Numeric line
 arguments are not parsed, so `RUN 100` behaves like `RUN` and
 always restarts from the first stored line. `RUN` preserves
 variables and arrays; only the `DATA` pointer and the control
@@ -858,7 +858,7 @@ stack are reset.
 
 `RUN AOT`
 
-Direct-mode form. Compile the stored program to native IE64 code
+Direct-mode form. Compile the stored programme to native IE64 code
 inside the machine and run the compiled code immediately. The visible
 program result should match `RUN`, but BASIC first prints:
 
@@ -866,8 +866,10 @@ program result should match `RUN`, but BASIC first prints:
 Compiling to native code...
 ```
 
-`RUN AOT` restarts from the first stored line, resets the same program
+`RUN AOT` restarts from the first stored line, resets the same programme
 state as `RUN`, and discards any older compiled `STOP` continuation.
+If there is no stored programme to compile, BASIC prints
+`?NO CODE TO COMPILE` and returns to direct mode.
 
 `RUN "`*filename*`"` is a direct-mode form for running a saved
 program image. See Chapter 35.
@@ -1027,7 +1029,7 @@ number is printed before its statements run.
 
 `TRANSPILE "`*filename*`"`
 
-Direct-mode command. Convert the stored BASIC program to IE64 assembly
+Direct-mode command. Convert the stored BASIC programme to IE64 assembly
 text and write the matching assembly source file. It does not assemble
 the text and it does not write a `.ie64` image.
 
@@ -1048,7 +1050,7 @@ screen. The name must be quoted. The file must be text; if it contains
 binary control bytes, BASIC prints `?NOT A TEXT FILE` and leaves the
 screen untouched by the file contents.
 
-`TYPE` is not a stored-program statement and cannot be compiled. It is
+`TYPE` is not a stored-programme statement and cannot be compiled. It is
 useful at the prompt for reading saved listings, notes, and generated
 source text. See Chapter 35.
 

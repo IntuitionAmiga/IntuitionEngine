@@ -7,7 +7,7 @@ The picture side has several chips feeding one compositor. The audio
 side has several engines feeding one stereo mixer. Each engine owns
 its own register block on the shared bus. Several classic chip engines
 translate their direct tone registers through the SoundChip flexible
-voice backend, so their register blocks are independent even when the
+voice path, so their register blocks are independent even when the
 generated voices share mixer channels.
 
 The mixer runs at `44100` samples per second. It sums active engines,
@@ -43,7 +43,7 @@ sample playback.
 
 | Engine | Characteristic features | Use it when |
 |--------|-------------------------|-------------|
-| SoundChip | Ten flexible channels; sine, triangle, saw, square, pulse, noise, ring modulation, hard sync, PWM, ADSR envelopes, sweeps, DAC writes, per-channel filter, global overdrive, filter, and reverb | You want IE-native synthesis, layered effects, or a shared backend for richer sounds |
+| SoundChip | Ten flexible channels; sine, triangle, saw, square, pulse, noise, ring modulation, hard sync, PWM, ADSR envelopes, sweeps, DAC writes, per-channel filter, global overdrive, filter, and reverb | You want IE-native synthesis, layered effects, or a shared flexible voice path for richer sounds |
 | SFX | Thirty-two raw sample trigger channels with pointer, length, loop, rate, volume, and sample-format control | You have short PCM effects and want trigger-and-forget playback |
 | PSG | Three square-tone channels, one noise source, and AY-style envelopes | You want crisp AY/YM arcade or microcomputer tones |
 | SN76489 | Three tone channels and one noise channel through a latch/data port | You want simple console-style square waves and noise |
@@ -99,7 +99,7 @@ output:
 Expected result: the SoundChip, PSG, and POKEY register blocks contain
 the shown values, and the filter and reverb affect the active mixed
 output. PSG and POKEY direct tones use the shared flexible voice
-backend, so they can replace earlier flexible voice state rather than
+path, so they can replace earlier flexible voice state rather than
 adding an unlimited separate set of voices. For that reason, this first
 tour writes PSG and POKEY before the final SoundChip chord.
 
