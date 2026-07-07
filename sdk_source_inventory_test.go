@@ -525,6 +525,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"IE64 self-modifying-code tracking uses 256-byte guest code pages and physical code-page tracking for MMU-compiled blocks.", "`jit_ie64_smc_range.go` guest/physical page marking and `jit_ie64_smc_range_test.go`"},
 		{"x86 self-modifying-code tracking uses 256-byte code pages and range invalidation.", "`jit_x86_smc_range.go` code-page marking and range invalidation, `jit_x86_smc_range_test.go`"},
 		{"ReadSamples uses safe block ticking only when every active sample ticker implements ReadSamplesBlockTicker, SFX allows block ticking, and no sample mixers are registered.", "`audio_chip.go` `ReadSamples`/`canUseReadSamplesBlockGraph`, `audio_chip_block_test.go` block-ticker fallback coverage"},
+		{"SIMD acceleration kernels are enabled by default on amd64 builds and can be disabled with IE_SIMD=0.", "`simd_gate.go` `simdRequested`/`simdKernelsActive`, `simd_gate_amd64.go` `simdHostSupported` AVX2 gate, and `simd_gate_stub.go` non-amd64 scalar fallback"},
 	} {
 		facts = append(facts, sdkSourceFact{
 			Surface:  "Architecture",

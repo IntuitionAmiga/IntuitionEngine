@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- SIMD span acceleration on amd64 via Go 1.26 `simd/archsimd` (`goexperiment.simd`), default-on for `make` builds and the live image, with bit-exact scalar leaves as the canonical reference and the `IE_SIMD=0` runtime kill switch. Every SIMD kernel has a scalar-vs-SIMD differential test (including NaN/Inf/denormal inputs) and a benchstat sub-benchmark comparison; `make test-simd` gates correctness under `-race` and the kill switch. Landed kernels and measured wins:
+  - Compositor blend ~12-13x, opaque copy ~3-6x, frame-lease normalise ~10-11x (bit-exact).
+  - Blitter row fill ~6-8x; blitter colour-expand gained a scalar fast path (byte-identical, EmuTOS desktop golden hash unchanged) but no SIMD variant (no gather in archsimd 1.26).
+  - Software Voodoo spans bit-exact against the scalar conformance reference across a 2000-triangle differential (framebuffer and depth), race-clean and golden-clean. Alpha test, stipple, dither, chroma key and texture are all covered (quantising stages and texture run as scalar hybrids inside the lane loop); only alpha blending stays scalar-routed. A chunk-level early-out yields ~4.8x on large untextured triangles and ~4.6x textured.
+  - Compositor scaled blend and scaled opaque copy: source-column offset table hoisted out of the row loop, opaque copy row-copies repeated source rows, and scaled blend gathers each source row once then blends through the SIMD span. Bit-exact; scaled blend ~8.5x, scaled opaque copy ~3.7x at 320x240 to 1280x720.
+  - CLUT8 expansion kept a 4x-unrolled scalar leaf (~13%, portable); the archsimd variant regressed and was dropped.
+  - Audio master-gain and clamp span kernels are implemented and bit-exact but not yet wired into the live path (profile-gated).
+- SparseBacking span reads and writes chunk at page boundaries with one lock and `copy()` per page instead of a per-byte loop (byte-identical; read/write ~800-1200x on 4K spans). Not SIMD.
 - ANTIC/GTIA hardening: IE-native display-list rendering, text/bitmap modes 2-15, HSCROL/VSCROL, CHACTL effects, GTIA pseudo-modes, player/missile rendering including missiles, PRIOR priority, collision latches with HITCLR, PAL/NTSC timing, and Z80/M68K/x86 interrupt delivery through `InterruptSink`.
 - Pure-Go release packaging for Windows (`amd64`, `arm64`) and macOS (`arm64`) with embedded EhBASIC, EmuTOS, and AROS ROMs plus bundled `sdk/` and `AROS/` trees
 - Windows `amd64` JIT parity with Linux `amd64` for IE64, 6502, M68K, Z80, and x86 guests

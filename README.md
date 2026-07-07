@@ -42,6 +42,13 @@ Go 1.26 or later is required.
 
 The default build shown in the quick start produces the emulator at `bin/IntuitionEngine` and core SDK tools under `sdk/bin/`.
 
+On amd64, `make` builds enable SIMD acceleration by default (they export
+`GOEXPERIMENT=simd`, and the live image inherits it). The accelerated span kernels
+have bit-exact scalar fallbacks, so other architectures and hosts without the AVX2
+baseline build and run scalar only with identical output. Set `IE_SIMD=0` to force
+the scalar kernels at runtime. For `go run .` outside `make`, enable the experiment
+once with `go env -w GOEXPERIMENT=simd`.
+
 ## Run
 
 Typed Intuition Engine binaries and IEScript files can be launched directly by extension:
@@ -171,6 +178,10 @@ Maintained profiles:
 | Windows | ARM64 | `novulkan` |
 | macOS | x86_64 | `novulkan` |
 | macOS | ARM64 | `novulkan` |
+
+SIMD span acceleration (`simd/archsimd`) is amd64 only and default-on for `make`
+builds; every other architecture falls back to the bit-exact scalar kernels
+automatically.
 
 JIT availability depends on host OS, host architecture, and guest CPU.
 
