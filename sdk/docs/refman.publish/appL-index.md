@@ -13,8 +13,9 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | AHX | Chapter 18, Appendix D |
 | Alpha blending | Chapter 4, Chapter 9 |
-| ANTIC | Chapter 7, Chapter 28, Appendix D, Appendix H |
+| ANTIC | Chapter 7, Chapter 28, Chapter 40, Appendix D, Appendix H |
 | arosdos monitor view | Chapter 33 |
+| Asset pack layout | Chapter 58, Chapter 62 |
 | ASCII | Appendix C |
 | ASSEMBLE command | Chapter 2, Chapter 25, Chapter 35, Appendix A, Appendix I |
 | Assemble mode | Chapter 25, Chapter 33, Appendix G |
@@ -27,13 +28,13 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | BASIC direct mode | Chapter 1 |
 | BASIC line/input scratch | Chapter 24, Appendix J |
-| BASIC native compilation | Chapter 1, Chapter 2, Chapter 35 |
+| BASIC native compilation | Chapter 1, Chapter 2, Chapter 35, Chapter 41 |
 | BASIC vocabulary | Chapter 2 |
 | Backed RAM | Chapter 24, Chapter 35 |
 | BLOAD | Chapter 2, Chapter 35 |
 | BLIT M | Chapter 2, Chapter 4 |
 | BLIT MEMCOPY | Chapter 2, Chapter 4, Appendix D |
-| Blitter | Chapter 4, Appendix D |
+| Blitter | Chapter 4, Chapter 40, Chapter 45, Chapter 46, Chapter 53, Appendix D |
 | BLT alpha template | Chapter 4, Appendix D |
 | BLT_FLAGS | Chapter 4 |
 | BLT mask MSB-first | Chapter 4, Appendix D |
@@ -60,10 +61,10 @@ symbols, and Appendix J gives the full memory map.
 | Clipboard bridge monitor view | Chapter 33 |
 | COMPILE | Chapter 2, Chapter 35, Appendix I |
 | Compositor | Chapter 3, Appendix K |
-| Copper | Chapter 4 |
-| Coprocessor | Chapter 32, Chapter 39, Appendix I |
+| Copper | Chapter 4, Chapter 53 |
+| Coprocessor | Chapter 32, Chapter 39, Chapter 42, Chapter 56, Chapter 60, Appendix I |
 | COPROC_CMD_ERROR | Chapter 32, Appendix D |
-| COPROC_CMD_START_MEM | Chapter 32, Appendix D, Appendix I |
+| COPROC_CMD_START_MEM | Chapter 32, Chapter 42, Appendix D, Appendix I |
 | COCALL | Chapter 32 |
 | CPU-local snapshots | Chapter 33, Chapter 34 |
 | CR_RAM_SIZE_BYTES | Chapter 25, Appendix I |
@@ -79,6 +80,8 @@ symbols, and Appendix J gives the full memory map.
 | dbg.save_state | Chapter 34 |
 | dbg.tracering_show | Chapter 34 |
 | Disk I/O | Chapter 35 |
+| Demo programming | Chapters 45-55 |
+| Debugging cookbook | Chapter 43 |
 | DMA | Chapter 22, Chapter 24, Appendix D |
 | Double-precision FPU | Chapter 25, Appendix G |
 | DPOW | Chapter 25, Appendix G |
@@ -96,6 +99,7 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | File I/O | Chapter 35, Chapter 39, Appendix D |
+| Fast3D | Chapter 59 |
 | FILE_DATA_PTR | Chapter 35, Appendix D |
 | FILE_DATA_PTR64 | Chapter 35, Appendix D, Appendix H |
 | FILE_ERR_RANGE | Chapter 35, Appendix D, Appendix I |
@@ -103,6 +107,7 @@ symbols, and Appendix J gives the full memory map.
 | FILE TOO LARGE | Chapter 35, Appendix I |
 | FBZ_MODE | Chapter 9 |
 | Fixed-point maths | Chapter 4, Chapter 9, Appendix F |
+| Frame loop | Chapter 45 |
 | Frequency tables | Appendix E |
 | FRESTORE | Chapter 29, Appendix G, Appendix H |
 | FSAVE | Chapter 29, Appendix G, Appendix H |
@@ -115,6 +120,8 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | General MIDI-style programmes | Chapter 21, Appendix E |
 | General MIDI-style drum notes | Chapter 21, Appendix E |
+| Game port case study | Chapters 56-65 |
+| Replay save data | Chapter 64 |
 | GTIA | Chapter 7, Chapter 28, Appendix D, Appendix H |
 | Graphics overview | Chapter 3 |
 
@@ -129,7 +136,7 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | IE Mon | Chapter 33 |
-| IE Script | Chapter 34 |
+| IE Script | Chapter 34, Chapter 43, Chapter 47 |
 | IE32 | Chapter 26, Chapter 31, Appendix G, Appendix H |
 | IE64 | Chapter 25, Chapter 31, Appendix G, Appendix H |
 | IE64 flat images | Chapter 25, Chapter 35, Appendix H |
@@ -140,7 +147,7 @@ symbols, and Appendix J gives the full memory map.
 | IE_MIDI_LIVE_STATUS | Chapter 21, Appendix D |
 | I/O register viewer | Chapter 33, Chapter 34 |
 | Index | Appendix L |
-| Input MMIO | Chapter 37, Appendix D |
+| Input MMIO | Chapter 37, Chapter 44, Chapter 64, Appendix D |
 | io command | Chapter 33 |
 
 ## L
@@ -154,7 +161,7 @@ symbols, and Appendix J gives the full memory map.
 
 | Term | See |
 |------|-----|
-| M68K | Chapter 29, Chapter 31, Appendix G, Appendix H |
+| M68K | Chapter 29, Chapter 31, Chapter 56, Appendix G, Appendix H |
 | M68K flat images | Chapter 29, Appendix H |
 | Machine-code byte entry | Chapters 25-30, Chapter 33 |
 | Monitor assemble command | Chapter 25, Chapter 33, Appendix G |
@@ -176,7 +183,7 @@ symbols, and Appendix J gives the full memory map.
 | MIDI_TEMPO_BPM | Chapter 21, Appendix D |
 | MIDI_VOLUME | Chapter 21, Appendix D |
 | midilive monitor view | Chapter 33, Chapter 34 |
-| Mode 7 | Chapter 4, Chapter 25 |
+| Mode 7 | Chapter 4, Chapter 25, Chapter 46, Chapter 50, Chapter 51 |
 | MOD | Chapter 19, Appendix D |
 | MUS | Chapter 21, Chapter 23 |
 
@@ -195,14 +202,17 @@ symbols, and Appendix J gives the full memory map.
 | Paula DMA monitor view | Chapter 33 |
 | PEEK and POKE | Chapter 1, Chapter 24, Appendix F |
 | PEEK64 | Chapter 2, Chapter 24, Appendix F |
+| Performance counters | Chapter 43, Chapter 63 |
+| Polling | Chapter 40 |
 | POKEY | Chapter 17, Chapter 27, Appendix D |
+| Profiling | Chapter 43, Chapter 63 |
 | PSG | Chapter 13, Chapter 28, Appendix D |
 
 ## R
 
 | Term | See |
 |------|-----|
-| Raster bands | Chapter 4 |
+| Raster bands | Chapter 4, Chapter 40, Chapter 53 |
 | RawlandMini | Chapter 21, Appendix E |
 | RawlandMini drum table | Chapter 21, Appendix E |
 | RawlandMini programme table | Chapter 21, Appendix E |
@@ -212,6 +222,7 @@ symbols, and Appendix J gives the full memory map.
 | RTC_MONO_USEC_LO | Chapter 37, Appendix D, Appendix H |
 | RUN AOT | Chapter 1, Chapter 2, Chapter 35, Appendix I |
 | RUN loader | Chapter 35, Appendix I |
+| Rotozoomer | Chapters 46-50 |
 
 ## S
 
@@ -219,6 +230,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | Screen codes | Appendix B |
 | Serial devices | Chapter 38 |
+| Save data | Chapter 35, Chapter 44, Chapter 64 |
 | SFX | Chapter 11, Chapter 12, Appendix D |
 | SFX extended window | Chapter 11, Chapter 12, Chapter 24, Appendix D, Appendix J |
 | SFX Trigger monitor view | Chapter 33 |
@@ -227,7 +239,7 @@ symbols, and Appendix J gives the full memory map.
 | SID3 | Chapter 15, Appendix D, Appendix J |
 | SMF | Chapter 21 |
 | SN76489 | Chapter 14, Chapter 26, Appendix D |
-| SoundChip | Chapter 11, Chapter 12, Chapter 39, Appendix D |
+| SoundChip | Chapter 11, Chapter 12, Chapter 39, Chapter 44, Appendix D |
 | SoundChip flex channels | Chapter 11, Appendix D, Appendix J |
 | SWAP_BUFFER_CMD | Chapter 9, Appendix D |
 | SYSINFO_ACTIVE_RAM_LO | Chapter 24, Appendix D, Appendix J |
@@ -248,6 +260,7 @@ symbols, and Appendix J gives the full memory map.
 | TED video | Chapter 6, Chapter 30, Appendix D |
 | TERM_IO_BANK | Chapter 24, Chapter 27, Chapter 28, Appendix H |
 | TERM_SENTINEL | Chapter 38, Appendix D |
+| Texture upload | Chapter 9, Chapter 59 |
 | Tile and sprite layers | Chapter 10 |
 | Timing | Chapter 31 |
 | TIMER_COUNT | Chapter 25, Chapter 31 |
@@ -255,6 +268,7 @@ symbols, and Appendix J gives the full memory map.
 | TLBINVAL | Chapter 25 |
 | trace mmio | Chapter 33 |
 | TRIANGLE_CMD | Chapter 9, Appendix D |
+| TnL coprocessor worker | Chapter 60 |
 | TRANSPILE | Chapter 2, Chapter 25, Chapter 35, Appendix A, Appendix I |
 | Traps | Chapter 31, Appendix I |
 | TYPE command | Chapter 1, Chapter 2, Chapter 35, Appendix A, Appendix I |
@@ -270,9 +284,10 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | VGA | Chapter 5, Chapter 26, Appendix D, Appendix H |
-| VideoChip | Chapter 4, Chapter 25, Chapter 39, Appendix D |
+| VBlank | Chapter 31, Chapter 40, Chapter 45 |
+| VideoChip | Chapter 4, Chapter 25, Chapter 39, Chapter 40, Chapters 44-46, Chapter 51, Chapter 53, Appendix D |
 | VIDEO_STATUS | Chapter 4, Appendix D |
-| Voodoo | Chapter 9, Chapter 29, Appendix D, Appendix H |
+| Voodoo | Chapter 9, Chapter 29, Chapter 59, Chapter 60, Chapter 63, Appendix D, Appendix H |
 | Voodoo batch limit | Chapter 9, Appendix D |
 | Voodoo command stream | Chapter 9, Appendix D, Appendix H |
 | Voodoo state binding | Chapter 9, Appendix D |
@@ -289,7 +304,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | WAIT | Chapter 26, Chapter 31, Appendix G, Appendix H |
 | WAV | Chapter 20, Appendix D |
-| Whole-machine capstone | Chapter 39 |
+| Whole-machine capstone | Chapter 39, Chapter 44 |
 
 ## X
 

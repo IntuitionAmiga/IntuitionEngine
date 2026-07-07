@@ -258,8 +258,8 @@ text terminal, mouse, keyboard scancodes, and a real-time clock.
 | `$F070C`  | `TERM_LINE_STATUS` | b0 complete line available        |
 | `$F0710`  | `TERM_ECHO`     | b0 local echo enable (default `1`)   |
 | `$F0724`  | `TERM_CTRL`     | b0 line input mode                   |
-| `$F0728`  | `TERM_KEY_IN`   | Read next cooked key byte            |
-| `$F072C`  | `TERM_KEY_STATUS`| b0 cooked key available             |
+| `$F0728`  | `TERM_KEY_IN`   | Read next raw key byte               |
+| `$F072C`  | `TERM_KEY_STATUS`| b0 raw key available                |
 | `$F0730`  | `MOUSE_X`       | Absolute X position                  |
 | `$F0734`  | `MOUSE_Y`       | Absolute Y position                  |
 | `$F0738`  | `MOUSE_BUTTONS` | b0 left, b1 right, b2 middle         |

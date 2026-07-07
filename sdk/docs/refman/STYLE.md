@@ -126,6 +126,196 @@ The current editorial pass is driven by the final review:
 
 Current controlled polish pass:
 
+- Add the full game port case-study course as Part VIII, chapters `56`
+  through `65`, and update `00-Preface.md` contents so the case study is
+  visible to readers. Do not edit `sdk/docs/refman.publish/`, print PDFs,
+  or commit during this draft pass unless explicitly instructed.
+
+  The fixed opening boundary for Part VIII is:
+
+  > This part studies an open-source decompilation-derived porting tree
+  > and original Intuition Engine integration work as an IE systems case
+  > study. It does not reproduce ROM assets, require the reader to build
+  > the port, or teach commercial-game asset extraction.
+
+  The Part VIII chapters are:
+
+  1. Chapter 56, Why This Port Is Different.
+  2. Chapter 57, Separating Game Code From Platform Code.
+  3. Chapter 58, The IE Runtime Layer.
+  4. Chapter 59, Fast3D To Voodoo.
+  5. Chapter 60, Hardware TnL With The Coprocessor System.
+  6. Chapter 61, Native IE Audio Instead Of RSP-Style Mixing.
+  7. Chapter 62, Assets, ROM Data, And Build Hygiene.
+  8. Chapter 63, Performance Work On A Real Port.
+  9. Chapter 64, Input, Save Data, And Player-Facing Polish.
+  10. Chapter 65, Lessons For Your Own IE Ports.
+
+  Canonical sources to check before and while writing:
+
+  - The checked `../mk64-ie` tree, especially `README.md`,
+    `src/platform/platform.h`, `src/gfx/gfx_pc.c`,
+    `src/gfx/gfx_fast3d.c`, `src/audio/audio_api.h`,
+    `ie/ie_runtime.c`, `ie/game.ld`, `ie/loader_main.c`,
+    `ie/ie_memory_layout.h`, `ie/ie_pack.h`, `ie/ie_mmio.h`,
+    `ie/ie_platform_asset.c`, `ie/ie_platform_audio.c`,
+    `ie/ie_platform_input.c`, `ie/ie_platform_log.c`,
+    `ie/ie_platform_save.c`, `ie/ie_platform_time.c`,
+    `ie/ie_gfx_voodoo.c`, `ie/coproc/ie_coproc.c`,
+    `ie/coproc/ie_coproc.h`, `ie/coproc/tnl_proto.h`,
+    `ie/coproc/tnl_service_ie64.asm`, and the matching tests.
+  - Intuition Engine's PRG chapters for Voodoo, coprocessor calls,
+    File I/O, input, audio, IE Mon, IE Script, performance counters,
+    and memory mapping whenever the case study names a machine feature.
+
+  Drafting rules:
+
+  - Part VIII is an advanced IE systems case study, not a porting recipe
+    for a commercial game and not an asset-extraction manual.
+  - Do not reproduce ROM assets, copyrighted game data, long
+    decompilation-derived listings, extraction steps, ROM file names,
+    checksums, or host build commands.
+  - The checked source tree is author evidence. Reader-facing text may
+    name the design contracts and machine devices, but must not send the
+    reader to host source paths, host SDK tools, or external toolchains
+    as the normal path.
+  - Treat code on disk as canonical. If a proposal says one CPU is used
+    but the checked port starts a different coprocessor type, document
+    the checked implementation and do not preserve the proposal's
+    wording.
+  - The chapter voice remains the PRG voice: idea first, exact machine
+    contract second, then a compact diagram, table, or typed inspection
+    pattern where useful.
+  - Every Part VIII chapter ends with a section titled
+    `The General IE Lesson`, which turns the case study back into advice
+    for the reader's own IE software.
+  - Add claim-ledger entries for each new chapter.
+
+- Add the guided demo-programming course as Part VII, chapters `45`
+  through `55`, and update `00-Preface.md` contents so the new course is
+  visible to readers. This pass may also list chapters `40` through `44`
+  in the contents because they are the workflow bridge into Part VII.
+  Do not edit `sdk/docs/refman.publish/`, print PDFs, or commit during
+  this draft pass unless explicitly instructed.
+
+  The Part VII chapters are:
+
+  1. Chapter 45, Your First Frame Loop.
+  2. Chapter 46, The Rotozoomer In BASIC.
+  3. Chapter 47, Driving The Hardware From IE Script.
+  4. Chapter 48, From Floating Point To Tables.
+  5. Chapter 49, The Rotozoomer In IE64 And IE32.
+  6. Chapter 50, One Effect, Six CPUs.
+  7. Chapter 51, Wobble, Texture Building, And Logo Motion.
+  8. Chapter 52, Music-Synchronised Effects.
+  9. Chapter 53, Copper, Raster Bands, And Layered Presentation.
+  10. Chapter 54, Building A Complete Intro.
+  11. Chapter 55, When BASIC Is Not Enough.
+
+  Canonical sources to check before and while writing:
+
+  - `sdk/examples/basic/rotozoomer_basic.bas`,
+    `sdk/scripts/rotozoomer_ies.ies`,
+    `sdk/examples/basic/wobble_zoom.bas`,
+    `sdk/examples/basic/resonance.bas`,
+    `sdk/examples/asm/rotozoomer_ie64.asm`,
+    `sdk/examples/asm/rotozoomer.asm`,
+    `sdk/examples/asm/rotozoomer_65.asm`,
+    `sdk/examples/asm/rotozoomer_z80.asm`,
+    `sdk/examples/asm/rotozoomer_68k.asm`,
+    `sdk/examples/asm/rotozoomer_x86.asm`,
+    `sdk/examples/asm/rotating_cube_copper_68k.asm`, and the matching
+    demo tests for behaviour and file presence.
+  - `video_chip.go`, `sdk/include/ehbasic_hw_video.inc`,
+    `sdk/include/ehbasic_hw_system.inc`, `registers.go`, Chapter 4, and
+    Appendix D for VideoChip, blitter, Mode 7, MEMCOPY, copper, VBlank,
+    and status claims.
+  - `midi_player.go`, `midi_engine.go`, `sdk/include/ehbasic_hw_audio.inc`,
+    Chapter 21, and Chapter 23 for MIDI position, media playback, and
+    music-timing claims.
+  - `script_engine.go`, Chapter 34, and `script_rotozoomer_ies_test.go`
+    for IE Script memory, file, CPU freeze, frame wait, and automation
+    claims.
+  - The per-CPU chapters and include files for CPU idioms used in the
+    six-CPU comparison.
+
+  Drafting rules:
+
+  - Part VII is a guided demoscene course, not another register dump.
+    Each chapter must teach a workflow step: frame loop, BASIC
+    rotozoomer, IE Script lab bench, table conversion, native CPU ports,
+    cross-CPU comparison, wobble texture work, music timelines, copper
+    presentation, intro structure, and upgrade path.
+  - Use curated excerpts from the shipped demos. Do not print full
+    listings. Explain each excerpt before and after the code.
+  - The shipped demo source files and their tests are author evidence.
+    Reader-facing text must not present host build commands, host source
+    paths, repository paths, or external assemblers as the programming
+    path.
+  - It is acceptable to name supplied demo files as disk-volume examples,
+    but the normal teaching path remains BASIC, IE Mon, IE Script,
+    in-machine assembly, MMIO, and shared bus reasoning.
+  - If OS-hosted demo variants are mentioned, keep them as advanced
+    companion material after the bare-machine path. Do not document guest
+    operating-system internals, HostFS details, or host launch policy in
+    the PRG.
+  - Add claim-ledger entries for each new chapter.
+
+- Draft the first-edition workflow-depth extension chapters as append-only
+  source chapters `40` through `44`. Do not renumber existing chapters,
+  update `00-Preface.md`, edit `sdk/docs/refman.publish/`, print PDFs, or
+  commit during the draft pass unless explicitly instructed.
+
+  The five draft chapters are:
+
+  1. Chapter 40, Interrupts, Raster Timing, and Polling.
+  2. Chapter 41, Building, Loading, and Laying Out Programmes.
+  3. Chapter 42, Coprocessor Positive Cookbook.
+  4. Chapter 43, Debugging and Profiling Cookbook.
+  5. Chapter 44, A Larger Whole-Machine Example.
+
+  Canonical sources to check before and while writing:
+
+  - `bus_interrupt_sink.go`, `cpu_ie64_extirq_test.go`,
+    `antic_constants.go`, `antic_dlist.go`, `video_chip.go`,
+    `video_ula.go`, `video_ted.go`, `cpu_wait_mmio.go`, and the owning
+    video tests for interrupt, VBlank, raster, blitter, and polling
+    behaviour.
+  - `program_executor.go`, `cpu_ie64.go`, `cpu_ie32.go`,
+    `cpu_6502_runner.go`, `cpu_z80_runner.go`, `cpu_m68k.go`,
+    `cpu_x86.go`, `sdk/include/*.inc`, and Chapters 24 through 35 for
+    IE-native build, load, file type, symbol, and layout claims.
+  - `coprocessor_constants.go`, `coprocessor_manager.go`,
+    `coproc_worker_6502.go`, `sdk/include/ehbasic_hw_coproc.inc`,
+    and coprocessor tests for the positive 6502 worker cookbook.
+  - `debug_commands.go`, `debug_access.go`, `debug_ioview.go`,
+    `script_engine.go`, `perf_accounting*.go`, Chapter 33, and
+    Chapter 34 for debugging, watchpoint, access-log, I/O view,
+    reverse-step, symbol, frame-hash, and `sys.perf_report()` claims.
+  - The existing feature chapters for the larger whole-machine example:
+    input Chapter 37, VBlank and timing Chapter 31, VideoChip Chapter 4,
+    SoundChip Chapter 12, File I/O Chapter 35, and coprocessor Chapter 32.
+
+  Drafting rules:
+
+  - Keep the chapters practical and task-first. They are connective
+    guide chapters, not new chip reference dumps.
+  - Every example must be IE-native and typed from BASIC, IE Mon, or
+    IE Script. Do not send the reader to host SDK assemblers, source
+    paths, build commands, test commands, or external toolchains.
+  - Where a long positive example depends on a compact service image,
+    enter the service as bytes in BASIC or IE Mon and explain what the
+    bytes do. Do not pretend there is a hidden prebuilt worker unless
+    the reader has just created it inside IE.
+  - Show when polling is the correct path. Do not imply that every
+    device is interrupt-driven.
+  - Use the same house voice as the existing chapters: idea first,
+    then exact register truth, then typed example, expected result,
+    line notes, side effects, limits, and what comes next.
+  - Add claim-ledger entries for each new chapter. Record the exact
+    canonical files checked and whether the chapter is a draft that has
+    not yet been inserted into the published contents.
+
 - Integrate the reader-facing machine-contract changes after committed
   PRG refresh `5feeb8e5`. Check every commit from `09c4821e` through
   `15489ba0` before editing. This is a narrow public-contract pass:
@@ -1150,6 +1340,47 @@ Current controlled polish pass:
   5. Run forbidden-term, dash, and targeted consistency scans, publish
      the stripped tree, and print PDFs only after the source tree is
      consistent.
+
+- Execute the source-backed PRG consistency pass from the July 2026
+  full-manual review. This pass is limited to reader-facing corrections
+  found by adversarial comparison with code on disk. Do not add
+  unrelated branch notes, guest-system details, backend details, host
+  build paths, repository paths, or non-PRG material.
+
+  Canonical sources to check before writing:
+
+  - `video_antic.go`, `antic_constants.go`, and Chapter 7 for
+    `ANTIC_NMIST` latch acknowledgement semantics.
+  - `registers.go`, `terminal_io.go`, and Chapters 37 and 44 for the
+    terminal raw-key register block.
+  - `../mk64-ie/ie/coproc/ie_coproc.c`,
+    `../mk64-ie/ie/coproc/ie_coproc.h`,
+    `../mk64-ie/ie/coproc/tnl_proto.h`,
+    `../mk64-ie/ie/coproc/tnl_service_ie64.asm`, and Chapter 60 for
+    the checked transform-and-lighting coprocessor boundary.
+  - Chapters 40 through 65 and Appendix L for index coverage after the
+    workflow, demoscene, and case-study chapters are added.
+
+  Execute this pass in book order:
+
+  1. Chapter 37: describe `TERM_KEY_IN` and `TERM_KEY_STATUS` as the
+     raw key queue used by the terminal MMIO path.
+  2. Chapter 40: state that writing any value to `ANTIC_NMIST` clears
+     the pending DLI/VBI latches. Do not describe the write value as a
+     selective bit mask.
+  3. Chapter 60: keep the coprocessor lesson tied to the checked IE64
+     worker. If the chapter uses the phrase "hardware TnL", clarify
+     that this means another IE bus CPU doing the work, not a
+     fixed-function Voodoo TnL unit.
+  4. Appendix L: add practical lookup entries for Chapters 40 through
+     65, including interrupts, frame loops, rotozoomers, IE Script
+     lab work, Fast3D, TnL, pack layout, save data, profiling, Voodoo
+     case-study work, and the game-port case study.
+  5. Claim ledger: record the exact source files checked and remove
+     stale draft-only wording once the chapters are listed and
+     published.
+  6. Run forbidden-topic scans, dash scans, source/publish consistency
+     checks, then publish and print PDFs.
 
 ## Reader Contract
 

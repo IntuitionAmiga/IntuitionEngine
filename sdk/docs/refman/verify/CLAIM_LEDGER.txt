@@ -531,10 +531,10 @@ Entry format:
   Result: Ch 36 now removes the reader-facing assembly fragment and parser-internal wording, uses $ notation, documents the service register block through typed BASIC examples, and passed the current ascending chapter scan.
 
 - Area: Ch 37, keyboard, scancode, mouse, relative mouse, and time-of-day MMIO.
-  Claim: the terminal input block exposes cooked key queue, scancode queue, modifier byte, absolute mouse state, one-shot mouse changed status, relative mouse control and deltas, and RTC_EPOCH at the documented $F07xx addresses; MOUSE_DX and MOUSE_DY clear independently when read.
+  Claim: the terminal input block exposes raw key queue, scancode queue, modifier byte, absolute mouse state, one-shot mouse changed status, relative mouse control and deltas, and RTC_EPOCH at the documented $F07xx addresses; MOUSE_DX and MOUSE_DY clear independently when read.
   Canonical sources checked: registers.go, terminal_io.go, terminal_io_test.go, relative_mouse_capture.go, ehbasic_test.go.
   Reader workflow: type BASIC PEEK and POKE polling loops against the terminal/input register block.
-  Runnable example: Ch 37 cooked key, scancode, mouse, relative delta, and seconds listings.
+  Runnable example: Ch 37 raw key, scancode, mouse, relative delta, and seconds listings.
   Expected result: queued key A prints key 65, scancode 30, modifier 1, mouse position 123/45 with buttons 3, delta 5/6, and a SECONDS line.
   Author verification workflow: compared terminal constants and handlers, focused terminal input tests, relative mouse tests, and the Chapter 37 refman BASIC test with queued input.
   Result: Ch 37 now removes assembly-only loops, gives typed BASIC examples for every input feature group, and passed the current ascending chapter scan.
@@ -781,3 +781,246 @@ Entry format:
   Expected result: the guide no longer promises a fixed prompt-first startup transcript, empty native-generation requests show the exact error string, SysInfo low-window size can be read as a low/high pair, `COPROC_CMD_START_MEM` reports `COPROC_ERR_NOT_FOUND` for empty or out-of-range image spans, Voodoo command streams replay ordinary Voodoo writes from guest RAM, and M68K image loading does not perform accidental device writes while loading.
   Author verification workflow: updated STYLE.md first with the controlled pass; checked the named code and tests as canonical source; updated Chapters 1, 2, 9, 24, 29, 32, and 35 plus Appendices D, H, I, and L; then ran focused scans, publish, and PDF rendering.
   Result: the PRG now reflects the reader-facing effects of the later code commits without documenting JIT internals, backend details, host-launch policy, guest operating systems, validation demos, or any other material outside the book's scope.
+
+- Area: Ch 40, Interrupts, Raster Timing, and Polling.
+  Claim: IE exposes shared interrupt masks for VBI, DLI, and VideoChip blitter completion while still relying on per-device polling and latch registers for many reader-facing timing jobs. `WAIT_VBLANK` is a write-triggered wait register at `$F2580`; `WAIT addr,mask[,xor]` polls until the masked expression is non-zero; ANTIC DLI sets `ANTIC_NMIST` bit `7` when enabled by `ANTIC_NMIEN` bit `7`; any write to `ANTIC_NMIST` clears the pending ANTIC NMI latches; M68K video events use auto-vector level `5` and audio events use level `4`.
+  Canonical sources checked: bus_interrupt_sink.go, cpu_ie64_extirq_test.go, registers.go, antic_constants.go, antic_dlist.go, video_antic.go, video_chip.go, video_ted.go, video_ula.go, cpu_wait_mmio.go, cpu_ie64.go, cpu_m68k.go, sdk/docs/refman/31-timing-traps.md.
+  Reader workflow: use BASIC `POKE32`, `WAIT`, and `PEEK32` for setup and polling; use machine code for real interrupt handlers; choose polling when the programme is already waiting on the device.
+  Runnable example: Ch 40 VBlank and blitter polling listing, plus ANTIC DLI latch listing.
+  Expected result: the blitter example waits for bit `1` in `BLT_STATUS`; the ANTIC example prints `DLI 128` and clears `ANTIC_NMIST` by writing the latch register. The value written is conventional, not a selective bit-clear mask.
+  Author verification workflow: checked source constants, latch read/write handlers, DLI pulse path, CPU interrupt notes, and existing timing chapter before drafting. This chapter is listed in `00-Preface.md` and published through the standard PRG pipeline.
+  Result: chapter records the mixed interrupt, latch, and polling timing model without implying every device is interrupt-driven.
+
+- Area: Ch 41, Building, Loading, and Laying Out Programmes.
+  Claim: IE-native programme construction includes BASIC `COMPILE`, `TRANSPILE`, and `ASSEMBLE` for IE64 files on the disk volume, IE Mon byte entry and IE64 one-instruction assemble mode, normal image suffixes for the six CPUs, CPU-specific load addresses and stack rules, and public low-memory `MEMALLOC` buffers for device and coprocessor sharing.
+  Canonical sources checked: program_executor.go, cpu_ie64.go, cpu_ie32.go, cpu_6502_runner.go, cpu_z80_runner.go, cpu_m68k.go, cpu_x86.go, debug_asm.go, debug_commands.go, sdk/include/ie64.inc, sdk/include/ie32.inc, sdk/include/ie65.inc, sdk/include/ie80.inc, sdk/include/ie68.inc, sdk/include/ie86.inc, sdk/include/ehbasic_expr.inc, sdk/include/ehbasic_hw_coproc.inc.
+  Reader workflow: use BASIC commands and IE Mon inside the machine; use `MEMALLOC` for shared buffers; use include names as lookup aids, not as a host-toolchain requirement.
+  Runnable example: Ch 41 BASIC `COMPILE "MADE"` listing, IE Mon byte/assemble transcript, and `MEMALLOC` layout probe.
+  Expected result: `COMPILE` writes an IE64 image from the stored BASIC programme, IE Mon disassembles the entered IE64 instruction, and the layout probe prints three distinct public buffer addresses and their markers.
+  Author verification workflow: checked loader constants, monitor assembler command support, public allocator and coprocessor span checks, then drafted as an append-only source chapter. This chapter is listed in `00-Preface.md` and published through the standard PRG pipeline.
+  Result: chapter gives a practical IE-native bridge from prompt work to larger laid-out programmes without host SDK tools.
+
+- Area: Ch 42, Coprocessor Positive Cookbook.
+  Claim: raw coprocessor command `6` starts a worker from a guest-RAM image described by `COPROC_REQ_PTR` and `COPROC_REQ_LEN`; CPU type `3` is the 6502 worker; the 6502 worker maps its mailbox window at CPU `$2000`; the CPU type `3` ring is at bus `$790300`; request slot `0` is at `$790308`; response slot `0` is at `$790508`; response status `2` is `COPROC_TICKET_OK`; response result code lives at response slot offset `8`.
+  Canonical sources checked: coprocessor_constants.go, coprocessor_manager.go, coproc_worker_6502.go, sdk/include/ehbasic_hw_coproc.inc, coprocessor_startmem_test.go, coprocessor_asm_test.go, coprocessor_ie64_test.go.
+  Reader workflow: enter the 6502 worker bytes from BASIC into a `MEMALLOC` buffer, start it with coprocessor MMIO, use `COCALL` and `COWAIT`, inspect the shared mailbox with `PEEK32`, then stop the worker.
+  Runnable example: Ch 42 64-byte 6502 service image and BASIC positive-path listing.
+  Expected result: start status and command error are `0`, the ticket is non-zero, `COSTATUS(ticket)` is `2`, and `$790510` contains result `8` after operation `7`.
+  Author verification workflow: checked command values, mailbox offsets, 6502 mailbox mapping, BASIC span validation, and worker lifecycle source before drafting. This chapter is listed in `00-Preface.md` and published through the standard PRG pipeline.
+  Result: chapter supplies a positive cross-CPU example for the shared-bus premise without relying on a hidden worker file.
+
+- Area: Ch 43, Debugging and Profiling Cookbook.
+  Claim: IE Mon supports breakpoint, watchpoint, access log, `who`, I/O view, symbol, CPU-local back-step, whole-machine reverse horizon, and script commands; IE Script exposes terminal driving, frame waits, video hashes, capture helpers, screenshots, and performance-report calls when the corresponding instrumentation is active.
+  Canonical sources checked: debug_commands.go, debug_access.go, debug_ioview.go, debug_ioview_read.go, debug_asm.go, script_engine.go, perf_accounting.go, perf_accounting_subsys.go, sdk/docs/refman/33-iemon.md, sdk/docs/refman/34-ie-script.md.
+  Reader workflow: debug from IE Mon first, then turn a proven manual sequence into IE Script; use I/O views and watchpoints before broad access logging; use performance reports only as an instrumented observation.
+  Runnable example: Ch 43 IE Mon breakpoint, watchpoint, access-log, I/O view, symbol, and back-step snippets; IE Script frame-hash, capture, screenshot, and performance snippets.
+  Expected result: the snippets demonstrate task-first debugger habits using the commands documented by the monitor and script engine.
+  Author verification workflow: checked current command names and usage tables, corrected reverse-history wording to match `bs`, `rs`, and `history horizon`, and drafted as an append-only source chapter. This chapter is listed in `00-Preface.md` and published through the standard PRG pipeline.
+  Result: chapter glues the existing tool chapters into a cookbook without duplicating their full references.
+
+- Area: Ch 44, Larger Whole-Machine Example.
+  Claim: one BASIC programme can combine VideoChip framebuffer and blitter setup, SoundChip tone/envelope/gate control, raw keyboard status polling at `TERM_KEY_STATUS`, frame waiting through `WAIT_VBLANK`, File I/O write registers, and coprocessor worker-state inspection at `$F2374`.
+  Canonical sources checked: sdk/include/ehbasic_hw_video.inc, sdk/include/ehbasic_hw_audio.inc, sdk/include/ehbasic_hw_coproc.inc, sdk/include/ehbasic_file_io.inc, registers.go, terminal_io.go, video_chip.go, audio_chip.go, file_io.go, coprocessor_constants.go, coprocessor_manager.go, sdk/docs/refman/39-whole-machine-capstone.md.
+  Reader workflow: type one BASIC programme, use `POKE32` and BASIC verbs to drive devices, poll completion bits, write a small file through File I/O MMIO, and inspect shared-bus state.
+  Runnable example: Ch 44 moving block, tone, input, File I/O write, and worker-state listing.
+  Expected result: a block moves on the VideoChip layer, a tone plays, key status can reverse direction, the programme writes `BLOCK.DAT` with `FILE 0`, and `WORKERS` prints the current coprocessor worker-state mask.
+  Author verification workflow: checked existing capstone File I/O usage, terminal key status, VideoChip blitter registers, audio commands, and coprocessor worker-state register before drafting. This chapter is listed in `00-Preface.md` and published through the standard PRG pipeline.
+  Result: chapter provides a larger whole-machine programme shape without adding host tools or non-PRG material.
+
+- Area: Ch 45, Your First Frame Loop.
+  Claim: a BASIC demo frame loop can use VideoChip mode setup, `WAIT_VBLANK` at `$F2580`, `BLIT FILL`, a frame counter, and sine-derived state to draw and animate once per frame.
+  Canonical sources checked: sdk/include/ehbasic_hw_video.inc, sdk/include/ehbasic_hw_audio.inc, sdk/include/ehbasic_file_io.inc, video_chip.go, registers.go, sdk/docs/refman/40-interrupts-raster-polling.md.
+  Reader workflow: type the BASIC frame-loop listings, use `POKE32`, `BLIT FILL`, `VSYNC` or `WAIT_VBLANK`, and inspect the visible result.
+  Runnable example: Ch 45 first frame loop and sine motion listings.
+  Expected result: the block moves once per frame, bounces or follows sine motion, and the frame counter reaches the shown limit.
+  Author verification workflow: checked VideoChip mode and wait register wording against source and existing timing chapter before drafting.
+  Result: chapter establishes the frame-loop habit used by the rest of Part VII.
+
+- Area: Ch 46, The Rotozoomer In BASIC.
+  Claim: the BASIC rotozoomer uses `MEMALLOC` buffers, optional SID playback, texture staging, `SIN`/`COS`, `16.16` fixed-point conversion, `BLIT MODE7`, `BLIT MEMCOPY`, and `VSYNC` to draw a full-screen rotating and zooming texture.
+  Canonical sources checked: sdk/examples/basic/rotozoomer_basic.bas, sdk/include/ehbasic_hw_video.inc, sdk/include/ehbasic_file_io.inc, sdk/include/ehbasic_hw_audio.inc, video_chip.go, sid_player.go, ehbasic_test.go.
+  Reader workflow: type the curated BASIC Mode 7 listing, then compare it with the supplied disk-volume demo.
+  Runnable example: Ch 46 small BASIC rotozoomer listing.
+  Expected result: a checker texture rotates and zooms through the VideoChip Mode 7 blitter, then the back buffer is copied to the displayed framebuffer.
+  Author verification workflow: checked the supplied BASIC demo and Mode 7 syntax before drafting, using curated excerpts rather than printing the full demo.
+  Result: chapter explains the first full-screen demo effect without requiring host tools.
+
+- Area: Ch 47, Driving The Hardware From IE Script.
+  Claim: IE Script can name MMIO addresses, read disk-volume assets, freeze and resume CPUs while staging memory, write VideoChip and MIDI registers, poll the blitter busy bit, wait for frames, and report frame hashes.
+  Canonical sources checked: sdk/scripts/rotozoomer_ies.ies, script_engine.go, debug_ioview.go, video_chip.go, midi_player.go, script_rotozoomer_ies_test.go, sdk/docs/refman/34-ie-script.md.
+  Reader workflow: use IE Script as an in-machine lab bench for repeatable staging, MMIO writes, frame waits, and observations.
+  Runnable example: Ch 47 IE Script staging, MIDI, Mode 7, wait, and frame-hash snippets.
+  Expected result: the same VideoChip and MIDI player contract can be driven from script for repeatable experiments.
+  Author verification workflow: checked the supplied script, script API documentation, and script test before drafting.
+  Result: chapter connects the BASIC rotozoomer to repeatable IE Script experiments without presenting the script as a host-side replacement.
+
+- Area: Ch 48, From Floating Point To Tables.
+  Claim: the native rotozoomers replace BASIC `A=A+0.03`, `Z=Z+0.01`, `SIN`, `COS`, and division by scale with `16`-bit `8.8` phase accumulators, `256`-entry sine and reciprocal tables, high-byte table indices, and integer fixed-point output for the same six Mode 7 parameters.
+  Canonical sources checked: sdk/examples/basic/rotozoomer_basic.bas, sdk/examples/asm/rotozoomer_ie64.asm, sdk/examples/asm/rotozoomer.asm, sdk/examples/asm/rotozoomer_68k.asm, sdk/examples/asm/rotozoomer_x86.asm, rotozoomer_tables_test.go.
+  Reader workflow: understand the BASIC expression first, then read table-driven native excerpts as the same calculation in integer form.
+  Runnable example: Ch 48 BASIC table-index probe.
+  Expected result: the probe shows a `16`-bit accumulator whose high byte advances through table indices while the low byte carries fractional motion.
+  Author verification workflow: checked table and accumulator comments in the shipped native examples and table tests before drafting.
+  Result: chapter bridges the readable BASIC maths and the native listings.
+
+- Area: Ch 49, The Rotozoomer In IE64 And IE32.
+  Claim: IE64 and IE32 rotozoomers keep the same VideoChip Mode 7 contract as BASIC while using native integer setup, table lookup, fixed-point parameter calculation, blitter register writes, VBlank/present, and accumulator advance.
+  Canonical sources checked: sdk/examples/asm/rotozoomer_ie64.asm, sdk/examples/asm/rotozoomer.asm, sdk/include/ie64.inc, sdk/include/ie32.inc, assembler_examples_test.go, cmd/ie32to64/testdata/rotozoomer_ie64_expected.asm.
+  Reader workflow: read curated excerpts by following MMIO names and frame-loop structure rather than full native listings.
+  Runnable example: Ch 49 is a reading chapter with curated excerpts; the runnable source remains the supplied IE64 and IE32 rotozoomer demos.
+  Expected result: readers can identify setup, table lookup, affine calculation, blitter programming, wait/present, and loop advance in both native versions.
+  Author verification workflow: checked the shipped IE64 and IE32 sources and include names before drafting.
+  Result: chapter compares the two native versions without dumping source or adding host build commands.
+
+- Area: Ch 50, One Effect, Six CPUs.
+  Claim: the six CPU rotozoomers vary instruction idiom and audio choice while preserving the same VideoChip Mode 7 register contract, buffer layout, frame loop, and presentation rhythm.
+  Canonical sources checked: sdk/examples/asm/rotozoomer_ie64.asm, sdk/examples/asm/rotozoomer.asm, sdk/examples/asm/rotozoomer_65.asm, sdk/examples/asm/rotozoomer_z80.asm, sdk/examples/asm/rotozoomer_68k.asm, sdk/examples/asm/rotozoomer_x86.asm, rotozoomer_8bit_runtime_test.go, cpu_m68k_mmio_test.go, jit_x86_shadow_parity_test.go.
+  Reader workflow: compare CPU versions by finding constants, setup, table lookup, six Mode 7 parameters, presentation, and accumulator advance.
+  Runnable example: Ch 50 is a comparison chapter; the runnable examples are the supplied six CPU rotozoomer demos.
+  Expected result: readers see that the bus and VideoChip stay fixed while CPU idioms change.
+  Author verification workflow: checked all six shipped rotozoomer sources and related runtime tests before drafting.
+  Result: chapter reinforces the one-machine backplane premise through one effect on six CPUs.
+
+- Area: Ch 51, Wobble, Texture Building, And Logo Motion.
+  Claim: `wobble_zoom.bas` builds a large work texture each frame using blitter fills and row copies, applies sine-based per-row horizontal offsets, then feeds that work texture into `BLIT MODE7` with `1023` and `511` masks for a `1024` by `512` texture.
+  Canonical sources checked: sdk/examples/basic/wobble_zoom.bas, ehbasic_splash_wobble_test.go, ehbasic_aot_test.go, video_chip.go, sdk/include/ehbasic_hw_video.inc.
+  Reader workflow: use BASIC to rebuild a texture first, then run the normal Mode 7 path.
+  Runnable example: Ch 51 curated row-wobble and Mode 7 excerpts.
+  Expected result: the source logo wobbles row by row inside the texture before the texture is rotozoomed.
+  Author verification workflow: checked the shipped BASIC demo and wobble tests before drafting.
+  Result: chapter teaches texture-before-transform as the next step after a static rotozoomer.
+
+- Area: Ch 52, Music-Synchronised Effects.
+  Claim: `resonance.bas` reads MIDI playback position at `$F0BB0`, falls back to the machine timer at `$F075C`, derives timeline time, intensity, pulse, phrase brightness, and phrase direction variables, and uses them to drive visual density and section changes.
+  Canonical sources checked: sdk/examples/basic/resonance.bas, resonance_test.go, sid_resonance_test.go, midi_player.go, registers.go, sdk/docs/refman/21-midi-mus.md.
+  Reader workflow: drive visual sections from a single music-time variable and named envelope variables rather than scattering player-position reads through drawing routines.
+  Runnable example: Ch 52 curated time, section, pulse, and frame-loop excerpts.
+  Expected result: visual density follows music time when the player advances and continues from the timer fallback while waiting for audio position.
+  Author verification workflow: checked the shipped BASIC demo and MIDI/player timing registers before drafting.
+  Result: chapter explains demos as timelines rather than plain endless loops.
+
+- Area: Ch 53, Copper, Raster Bands, And Layered Presentation.
+  Claim: BASIC `COPPER LIST`, `COPPER WAIT`, `COPPER MOVE`, `COPPER END`, and `COPPER ON` build a scanline-synchronised VideoChip copper list; `resonance.bas` uses copper bands and blitter overlays; the M68K rotating-cube copper demo enables VideoChip for copper and uses copper presentation beside CPU-drawn foreground work.
+  Canonical sources checked: sdk/examples/basic/resonance.bas, sdk/examples/asm/rotating_cube_copper_68k.asm, sdk/include/ehbasic_hw_system.inc, video_chip.go, ehbasic_test.go, psg_hardening_test.go, sdk/docs/refman/04-videochip.md.
+  Reader workflow: use copper for scanline presentation changes and blitter work for foreground and overlay drawing.
+  Runnable example: Ch 53 curated BASIC copper-band and overlay excerpts.
+  Expected result: copper bands provide a stage behind the effect while blitter fills and copies build rails, meters, and scroll strips.
+  Author verification workflow: checked copper BASIC encoding rules, VideoChip copper chapter, and shipped demo usage before drafting.
+  Result: chapter teaches presentation polish without turning into a second copper reference.
+
+- Area: Ch 54, Building A Complete Intro.
+  Claim: a complete IE intro structure preloads buffers and assets, starts music, configures video, initialises timeline variables, runs frame sections from a single clock, transitions deliberately, then stops audio, disables helpers, clears the frame, and exits.
+  Canonical sources checked: sdk/examples/basic/resonance.bas, sdk/examples/basic/wobble_zoom.bas, sdk/scripts/rotozoomer_ies.ies, video_chip.go, midi_player.go, file_io.go.
+  Reader workflow: organise the typed demo as a production: preload, start music, initialise video, run timed sections, transition, and clean up.
+  Runnable example: Ch 54 skeleton and clean-exit snippets.
+  Expected result: readers can structure a small intro from the earlier effect chapters without adding another chip-specific reference chapter.
+  Author verification workflow: checked the structure of the supplied BASIC and IE Script demos before drafting.
+  Result: chapter turns the Part VII pieces into a complete intro plan.
+
+- Area: Ch 55, When BASIC Is Not Enough.
+  Claim: the practical upgrade path is BASIC orchestration, IE Mon for small patches, IE Script for repeatable staging and observation, native code for hot loops, and advanced OS-facing variants only after the bare-machine path is understood.
+  Canonical sources checked: sdk/examples/basic/rotozoomer_basic.bas, sdk/scripts/rotozoomer_ies.ies, sdk/examples/asm/rotozoomer_ie64.asm, sdk/examples/asm/rotozoomer.asm, sdk/examples/asm/rotozoomer_gem.asm, sdk/examples/asm/rotozoomer_aros_api.asm, sdk/examples/asm/rotozoomer_aros_hw.asm, debug_asm.go, sdk/docs/refman/33-iemon.md, sdk/docs/refman/34-ie-script.md.
+  Reader workflow: keep BASIC for orchestration, use IE Mon and IE Script when they solve specific workflow problems, and move stable hot loops to native code without changing the shared hardware contract.
+  Runnable example: Ch 55 IE Mon assemble-mode and IE Script staging snippets.
+  Expected result: readers see a staged upgrade path rather than a sudden jump from BASIC to full native sources.
+  Author verification workflow: checked the supplied demo families and tool chapters, then kept OS-facing variants as brief companion material without documenting guest-system internals or host launch policy.
+  Result: chapter closes Part VII by explaining when and why to move beyond BASIC.
+
+- Area: Ch 56, Why This Port Is Different.
+  Claim: the case study is an IE-native port design rather than whole-console emulation: M68K runs the game core, the checked TnL service is an IE64 coprocessor worker, Voodoo draws triangles, and native IE audio voices handle final playback.
+  Canonical sources checked: ../mk64-ie/README.md, ../mk64-ie/src/platform/platform.h, ../mk64-ie/ie/ie_runtime.c, ../mk64-ie/ie/game.ld, ../mk64-ie/ie/coproc/ie_coproc.c, ../mk64-ie/ie/coproc/ie_coproc.h, ../mk64-ie/ie/coproc/tnl_service_ie64.asm, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_platform_audio.c.
+  Reader workflow: read the case study as architecture and design guidance only; no ROM assets, extraction path, host build path, or commercial-game asset instructions are part of the reader path.
+  Runnable example: none. This is an advanced case-study orientation chapter.
+  Expected result: readers understand the port as a native IE systems design.
+  Author verification workflow: checked the current coprocessor type and worker image against code on disk, correcting the proposal's x86 wording to the checked IE64 implementation.
+  Result: chapter establishes the Part VIII boundary and source-backed machine split.
+
+- Area: Ch 57, Separating Game Code From Platform Code.
+  Claim: the port uses small platform contracts for time, assets, saves, input, graphics, and audio so shared game code does not know IE MMIO details.
+  Canonical sources checked: ../mk64-ie/README.md, ../mk64-ie/src/platform/platform.h, ../mk64-ie/src/gfx/gfx_rendering_api.h, ../mk64-ie/src/gfx/gfx_window_manager_api.h, ../mk64-ie/src/audio/audio_api.h, ../mk64-ie/ie/ie_platform_asset.c, ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/ie/ie_platform_input.c, ../mk64-ie/ie/ie_platform_save.c, ../mk64-ie/ie/ie_platform_time.c.
+  Reader workflow: use the chapter as a design pattern for separating programme behaviour from IE machine services.
+  Runnable example: none. This is a design case-study chapter.
+  Expected result: readers see how to keep hardware access in one IE service layer.
+  Author verification workflow: checked current platform contract names and IE service implementations.
+  Result: chapter documents the contract boundary without exposing host build steps.
+
+- Area: Ch 58, The IE Runtime Layer.
+  Claim: the runtime starts at the M68K entry image, loads or copies the high-linked game image, clears runtime state, publishes status, and keeps loader, pack data, texture store, and game image regions separate.
+  Canonical sources checked: ../mk64-ie/ie/ie_runtime.c, ../mk64-ie/ie/game.ld, ../mk64-ie/ie/loader_main.c, ../mk64-ie/ie/ie_memory_layout.h, ../mk64-ie/ie/ie_pack.h, ../mk64-ie/ie/ie_mmio.h, ../mk64-ie/ie/ie_platform_asset.c, ../mk64-ie/ie/ie_platform_log.c, ../mk64-ie/ie/ie_platform_time.c.
+  Reader workflow: use the memory layout and runtime duties as a pattern, not as a command recipe.
+  Runnable example: none. This is a runtime layout case-study chapter.
+  Expected result: readers understand why a large IE programme needs a named memory and service layout.
+  Author verification workflow: checked linker script, loader, pack header, memory constants, and platform service sources.
+  Result: chapter records the high-memory runtime shape without instructing a host build.
+
+- Area: Ch 59, Fast3D To Voodoo.
+  Claim: display-list style drawing work is translated to a Voodoo drawing contract, including vertices, textures, command streams, and bulk texture upload.
+  Canonical sources checked: ../mk64-ie/src/gfx/gfx_pc.c, ../mk64-ie/src/gfx/gfx_fast3d.c, ../mk64-ie/src/gfx/gfx_rendering_api.h, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_mmio.h, ../mk64-ie/tests/test_gfx_voodoo.c.
+  Reader workflow: understand graphics porting as translation to an IE display card.
+  Runnable example: none. This is a graphics pipeline case-study chapter.
+  Expected result: readers see how the old graphics intent becomes Voodoo register and command-stream work.
+  Author verification workflow: checked Voodoo register constants, command stream support, texture upload support, and Voodoo tests.
+  Result: chapter explains the rendering path without reproducing source listings or asset data.
+
+- Area: Ch 60, Hardware TnL With The Coprocessor System.
+  Claim: M68K submits coarse transform and lighting batches through shared RAM to the checked IE64 TnL worker; the request header is 152 bytes and contains matrix, texture scale, vertex pointers, geometry mode, light state, and output pointer fields. In this chapter, "hardware TnL" means work moved onto another IE bus CPU through the coprocessor system, not a fixed-function TnL unit inside Voodoo.
+  Canonical sources checked: ../mk64-ie/ie/coproc/ie_coproc.c, ../mk64-ie/ie/coproc/ie_coproc.h, ../mk64-ie/ie/coproc/tnl_proto.h, ../mk64-ie/ie/coproc/tnl_service_ie64.asm, ../mk64-ie/src/gfx/gfx_fast3d.c, coprocessor_constants.go, coprocessor_manager.go.
+  Reader workflow: use coprocessors for coarse shared-memory jobs, not per-operation calls.
+  Runnable example: none. This is a coprocessor case-study chapter.
+  Expected result: readers understand what crosses the CPU boundary and what stays local.
+  Author verification workflow: checked `COPROC_TYPE 2`, ring 5, service name `tnl.ie64`, request offsets, and worker comments. The proposal's x86 wording is not used because it does not match the checked implementation.
+  Result: chapter keeps the coprocessor lesson while matching current source truth.
+
+- Area: Ch 61, Native IE Audio Instead Of RSP-Style Mixing.
+  Claim: the case-study audio path keeps sequence, note, pitch, and envelope decisions in game code while mapping live notes onto native IE SFX voices and the IE mixer.
+  Canonical sources checked: ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/src/audio/audio_api.h, ../mk64-ie/ie/ie_mmio.h, ../mk64-ie/PERF-NOTES.md.
+  Reader workflow: preserve musical behaviour at the right level and use native IE audio for playback.
+  Runnable example: none. This is an audio architecture case-study chapter.
+  Expected result: readers understand why native audio is not the same as emulating the old audio processor.
+  Author verification workflow: checked SFX voice constants, voice update path, audio pump hook, and performance notes.
+  Result: chapter documents native audio design without adding asset or sample data.
+
+- Area: Ch 62, Assets, ROM Data, And Build Hygiene.
+  Claim: the guide must not teach ROM extraction; the useful IE lesson is named assets, pack table discipline, byte-order rules, region separation, and explicit size or range failure.
+  Canonical sources checked: ../mk64-ie/README.md, ../mk64-ie/ie/ie_pack.h, ../mk64-ie/ie/ie_memory_layout.h, ../mk64-ie/ie/ie_platform_asset.c, ../mk64-ie/tests/test_pack_ie68.py.
+  Reader workflow: study asset discipline without a ROM-dependent reader path.
+  Runnable example: none. This is a hygiene and boundary chapter.
+  Expected result: readers learn deterministic asset layout without commercial asset instructions.
+  Author verification workflow: checked pack header fields, memory limits, asset lookup, READ_MAX semantics, and pack overlap tests.
+  Result: chapter keeps the legal and operational boundary explicit.
+
+- Area: Ch 63, Performance Work On A Real Port.
+  Claim: the port measures frame work through counters for triangles, draw calls, MMIO writes, command-stream pairs, texture stream bytes, audio voice writes, clipped triangles, and related work.
+  Canonical sources checked: ../mk64-ie/PERF-NOTES.md, ../mk64-ie/ie/ie_perf_counters.h, ../mk64-ie/ie/ie_perf_counters.c, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/tests/test_perf_counters.c, ../mk64-ie/tests/test_gfx_voodoo.c.
+  Reader workflow: profile by counters and frame windows before rewriting subsystems.
+  Runnable example: none. This is a profiling discipline case-study chapter.
+  Expected result: readers learn to measure bus and device traffic rather than guess.
+  Author verification workflow: checked counter names, Voodoo command-stream accounting, texture accounting, audio voice accounting, and counter tests.
+  Result: chapter records the performance method without host profiling commands.
+
+- Area: Ch 64, Input, Save Data, And Player-Facing Polish.
+  Claim: the port maps keyboard FIFO events to one controller contract, uses whole-file File I/O with RAM shadows for `512` byte save records and `32768` byte ghost records, and publishes observable fatal markers.
+  Canonical sources checked: ../mk64-ie/ie/ie_platform_input.c, ../mk64-ie/ie/ie_platform_save.c, ../mk64-ie/ie/ie_platform_time.c, ../mk64-ie/ie/ie_platform_log.c, ../mk64-ie/src/platform/platform.h, ../mk64-ie/src/staff_ghosts.c.
+  Reader workflow: treat input, saves, pacing, logging, and smoke checks as part of making a programme usable.
+  Runnable example: none. This is a player-facing polish case-study chapter.
+  Expected result: readers see the difference between rendering a frame and finishing a usable port.
+  Author verification workflow: checked scancode FIFO handling, save and ghost sizes, whole-file persistence, fatal marker behaviour, and controller contract.
+  Result: chapter documents the last-mile services as IE system design.
+
+- Area: Ch 65, Lessons For Your Own IE Ports.
+  Claim: large IE ports should choose a main CPU deliberately, keep platform contracts small, use IE hardware at the right abstraction level, measure before rewriting, and keep legal asset boundaries clean.
+  Canonical sources checked: ../mk64-ie/README.md, ../mk64-ie/src/platform/platform.h, ../mk64-ie/ie/ie_memory_layout.h, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/ie/coproc/ie_coproc.c, ../mk64-ie/ie/coproc/tnl_proto.h, ../mk64-ie/PERF-NOTES.md.
+  Reader workflow: generalise the case study into practical rules for native IE ports.
+  Runnable example: none. This is the closing lesson chapter for Part VIII.
+  Expected result: readers can apply the case-study architecture to their own IE programmes.
+  Author verification workflow: checked the preceding Part VIII evidence set and kept the chapter at the general pattern level.
+  Result: chapter closes the case study by returning to portable IE design rules.
+
+- Area: Source-backed full-manual correction pass, July 2026.
+  Claim: Chapter 37 uses the source-owned raw terminal key terminology for `TERM_KEY_IN` and `TERM_KEY_STATUS`; Chapter 40 states that any write to `ANTIC_NMIST` clears the pending ANTIC NMI latches; Chapter 60 clarifies that the case-study TnL worker is an IE64 coprocessor service rather than a fixed-function Voodoo TnL unit; Appendix L includes practical lookup routes for Chapters 40 through 65.
+  Canonical sources checked: registers.go, terminal_io.go, antic_constants.go, video_antic.go, sdk/docs/refman/07-antic-gtia.md, ../mk64-ie/ie/coproc/ie_coproc.c, ../mk64-ie/ie/coproc/ie_coproc.h, ../mk64-ie/ie/coproc/tnl_proto.h, ../mk64-ie/ie/coproc/tnl_service_ie64.asm, sdk/docs/refman/40-interrupts-raster-polling.md, sdk/docs/refman/60-hardware-tnl-coprocessor.md, sdk/docs/refman/appL-index.md.
+  Reader workflow: use the corrected register descriptions while typing BASIC polling examples, terminal MMIO examples, and the Part VIII case-study guidance; use Appendix L to find the new workflow, demo, and case-study chapters.
+  Runnable example: Chapter 37 raw-key polling listing and Chapter 40 ANTIC DLI latch listing.
+  Expected result: `TERM_KEY_STATUS` reports the raw key queue, `TERM_KEY_IN` consumes one raw key byte, `ANTIC_NMIST` clears after any write, and the TnL case study points to an IE64 coprocessor worker without implying a Voodoo TnL unit.
+  Author verification workflow: updated STYLE.md before reader-facing edits, checked the code paths named above, corrected source chapters and Appendix L, then regenerated the publish tree and PDFs after scans.
+  Result: the correction pass keeps the PRG aligned with code on disk and expands the index for the newly added chapters without adding non-PRG material.
