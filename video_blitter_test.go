@@ -131,6 +131,31 @@ func TestBlitterStartHydratesStagedRegistersFromBusShadow(t *testing.T) {
 	}
 }
 
+func TestBlitterStartHydratesShadowUsingBusEndianInBigEndianMode(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	video.SetBigEndianMode(true)
+	mode := VideoModes[video.currentMode]
+	color := uint32(0x55667788)
+	dst := vramAddr(mode, 6, 7)
+
+	bus.Write32(BLT_OP, bltOpFill)
+	bus.Write32(BLT_DST, dst)
+	bus.Write32(BLT_WIDTH, 2)
+	bus.Write32(BLT_HEIGHT, 2)
+	bus.Write32(BLT_DST_STRIDE, uint32(mode.bytesPerRow))
+	bus.Write32(BLT_COLOR, color)
+	bus.Write32(BLT_CTRL, bltCtrlStart)
+
+	for y := 7; y < 9; y++ {
+		for x := 6; x < 8; x++ {
+			addr := vramAddr(mode, x, y)
+			if got := video.HandleRead(addr); got != color {
+				t.Fatalf("pixel %d,%d = 0x%08X, want 0x%08X", x, y, got, color)
+			}
+		}
+	}
+}
+
 func TestBlitterCopy(t *testing.T) {
 	video, bus := newBlitterTestRig(t)
 	mode := VideoModes[video.currentMode]

@@ -3968,9 +3968,6 @@ func (chip *VideoChip) readBlitterShadowU32Locked(addr uint32) (uint32, bool) {
 	if chip.busMemory == nil || addr+4 > uint32(len(chip.busMemory)) {
 		return 0, false
 	}
-	if chip.bigEndianMode {
-		return binary.BigEndian.Uint32(chip.busMemory[addr : addr+4]), true
-	}
 	return binary.LittleEndian.Uint32(chip.busMemory[addr : addr+4]), true
 }
 
