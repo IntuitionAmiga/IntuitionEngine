@@ -1,0 +1,1580 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Intuition Engine - One Machine, Six CPU Views</title>
+  <meta name="description" content="Intuition Engine architecture: MachineBus, MMIO devices, guest driver paths, coprocessor workers, audio/video fabric, IE Mon, IEScript, SDK tooling, and demos.">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://intuitionengine.com/">
+  <style>
+    :root {
+      --paper: #1E1E3F;
+      --panel: #2D2B55;
+      --panel-strong: #242349;
+      --ink: #F8F7FF;
+      --muted: #C9C3F5;
+      --line: rgba(165, 153, 233, 0.26);
+      --code: #171735;
+      --green: #A5FF90;
+      --blue: #9EFFFF;
+      --amber: #FAD000;
+      --orange: #FF7200;
+      --red: #EC3A37;
+      --violet: #B362FF;
+      --pink: #FF628C;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.34);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background:
+        linear-gradient(180deg, #1E1E3F 0%, #26234F 52%, #1E1E3F 100%);
+      color: var(--ink);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration-thickness: 0.08em;
+      text-underline-offset: 0.16em;
+    }
+
+    code,
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    :not(pre) > code {
+      padding: 0.08rem 0.24rem;
+      border-radius: 0.22rem;
+      background: rgba(77, 33, 252, 0.24);
+      border: 1px solid rgba(165, 153, 233, 0.22);
+      color: var(--amber);
+      font-size: 0.92em;
+      white-space: nowrap;
+    }
+
+    .skip-link {
+      position: absolute;
+      left: 1rem;
+      top: -4rem;
+      z-index: 100;
+      background: var(--amber);
+      color: #1E1E3F;
+      padding: 0.6rem 0.8rem;
+      border-radius: 0.25rem;
+    }
+
+    .skip-link:focus {
+      top: 1rem;
+    }
+
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      background: rgba(30, 30, 63, 0.94);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(14px);
+    }
+
+    .nav {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.75rem 1.25rem;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.7rem;
+      color: var(--ink);
+      font-weight: 760;
+      text-decoration: none;
+    }
+
+    .brand-mark {
+      display: grid;
+      place-items: center;
+      width: 2.1rem;
+      height: 2.1rem;
+      border-radius: 0.3rem;
+      background: #4D21FC;
+      color: #fff;
+      font-size: 0.82rem;
+      letter-spacing: 0;
+    }
+
+    .nav-links {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 0.85rem;
+      font-size: 0.92rem;
+    }
+
+    .nav-links a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    .nav-links a:hover {
+      color: var(--amber);
+    }
+
+	    main {
+	      overflow: hidden;
+	    }
+
+	    .hero,
+	    .band {
+	      scroll-margin-top: 5.5rem;
+	    }
+
+	    .band {
+	      border-bottom: 1px solid var(--line);
+	    }
+
+    .wrap {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 4.5rem 1.25rem;
+    }
+
+    .hero {
+      display: grid;
+      background:
+        linear-gradient(115deg, rgba(45, 43, 85, 0.97), rgba(30, 30, 63, 0.9)),
+        repeating-linear-gradient(90deg, rgba(158, 255, 255, 0.08) 0 1px, transparent 1px 88px),
+        repeating-linear-gradient(0deg, rgba(250, 208, 0, 0.07) 0 1px, transparent 1px 76px);
+      border-bottom: 1px solid var(--line);
+    }
+
+    .hero .wrap {
+      width: 100%;
+      padding-top: clamp(4.5rem, 10vh, 8rem);
+      padding-bottom: clamp(3.5rem, 8vh, 6rem);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0 0 1rem;
+      color: var(--green);
+      font-size: 0.78rem;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 0.7rem;
+      height: 0.7rem;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      line-height: 1.04;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      max-width: 980px;
+      font-size: clamp(3rem, 8vw, 7.6rem);
+    }
+
+    h2 {
+      font-size: clamp(2rem, 4.4vw, 4.3rem);
+    }
+
+    h3 {
+      font-size: 1.15rem;
+    }
+
+    .lead {
+      max-width: 820px;
+      margin: 1.2rem 0 0;
+      color: #E3DFFD;
+      font-size: clamp(1.1rem, 2vw, 1.45rem);
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.15fr) minmax(290px, 0.85fr);
+      gap: 2rem;
+      align-items: end;
+      margin-top: 3.2rem;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-top: 2rem;
+    }
+
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 2.85rem;
+      padding: 0.72rem 1rem;
+      border: 1px solid var(--amber);
+      border-radius: 0.3rem;
+      background: var(--amber);
+      color: #1E1E3F;
+      font-weight: 720;
+      text-decoration: none;
+    }
+
+    .button.secondary {
+      background: rgba(45, 43, 85, 0.72);
+      color: var(--ink);
+      border-color: rgba(165, 153, 233, 0.5);
+    }
+
+    .proof-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.9rem;
+    }
+
+    .proof {
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-left: 0.35rem solid var(--green);
+      background: rgba(45, 43, 85, 0.84);
+      box-shadow: var(--shadow);
+    }
+
+    .proof:nth-child(2) {
+      border-left-color: var(--orange);
+    }
+
+    .proof:nth-child(3) {
+      border-left-color: var(--blue);
+    }
+
+    .proof strong {
+      display: block;
+      margin-bottom: 0.35rem;
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: minmax(0, 0.82fr) minmax(280px, 0.68fr);
+      gap: 2rem;
+      align-items: end;
+      margin-bottom: 2rem;
+    }
+
+    .section-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 1.05rem;
+    }
+
+    .grid {
+      display: grid;
+      gap: 1rem;
+    }
+
+    .grid.two {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .grid.three {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 0.45rem;
+      padding: 1.1rem;
+      box-shadow: var(--shadow);
+    }
+
+    .card p,
+    .card ul,
+    .card ol {
+      margin: 0.75rem 0 0;
+      color: var(--muted);
+    }
+
+    .card ul,
+    .card ol {
+      padding-left: 1.15rem;
+    }
+
+    .kicker {
+      display: inline-block;
+      margin-bottom: 0.65rem;
+      color: var(--amber);
+      font-size: 0.76rem;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .code-panel {
+      overflow: auto;
+      margin-top: 1rem;
+      border-radius: 0.35rem;
+      background: var(--code);
+      color: #F8F7FF;
+      padding: 1rem;
+      font-size: 0.88rem;
+      line-height: 1.55;
+    }
+
+    .code-panel code {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.6rem;
+      align-items: stretch;
+      margin-top: 1rem;
+    }
+
+    .flow span {
+      display: grid;
+      place-items: center;
+      min-height: 4.6rem;
+      padding: 0.6rem;
+      border: 1px solid var(--line);
+      border-radius: 0.35rem;
+      background: var(--panel-strong);
+      color: var(--ink);
+      text-align: center;
+      font-size: 0.9rem;
+      font-weight: 700;
+    }
+
+    .flow span:nth-child(odd) {
+      border-top: 0.25rem solid var(--green);
+    }
+
+    .flow span:nth-child(even) {
+      border-top: 0.25rem solid var(--blue);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 0.45rem;
+      background: var(--panel);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 680px;
+      font-size: 0.92rem;
+    }
+
+    th,
+    td {
+      padding: 0.75rem 0.8rem;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: rgba(77, 33, 252, 0.28);
+      color: var(--blue);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      margin-top: 0.8rem;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 1.85rem;
+      padding: 0.2rem 0.55rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(30, 30, 63, 0.72);
+      color: var(--blue);
+      font-size: 0.82rem;
+      font-weight: 650;
+    }
+
+    .demo-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1rem;
+    }
+
+    .demo-card {
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      min-height: 21rem;
+      padding: 1rem;
+      border: 1px solid var(--line);
+      border-radius: 0.45rem;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .demo-card .runtime {
+      margin-top: 0.4rem;
+      color: var(--green);
+      font-size: 0.78rem;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .demo-card p {
+      margin: 0.75rem 0;
+      color: var(--muted);
+    }
+
+    .shot-placeholder {
+      display: grid;
+      place-items: center;
+      min-height: 8.4rem;
+      margin-top: 0.8rem;
+      border: 2px dashed var(--red);
+      border-radius: 0.35rem;
+      background: repeating-linear-gradient(135deg, rgba(236, 58, 55, 0.14), rgba(236, 58, 55, 0.14) 12px, rgba(45, 43, 85, 0.88) 12px, rgba(45, 43, 85, 0.88) 24px);
+      color: #FFB8C6;
+      font-weight: 760;
+      text-align: center;
+      padding: 0.8rem;
+    }
+
+    .placeholder-link {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 2.35rem;
+      margin-top: 0.8rem;
+      padding: 0.48rem 0.65rem;
+      border: 1px dashed var(--red);
+      border-radius: 0.3rem;
+      color: var(--red);
+      font-weight: 720;
+      text-decoration: none;
+    }
+
+    .doc-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem;
+    }
+
+    .toc-columns {
+      columns: 2;
+      column-gap: 2rem;
+      margin: 0.8rem 0 0;
+      padding-left: 1.1rem;
+      color: var(--muted);
+    }
+
+    .toc-columns li {
+      break-inside: avoid;
+      margin: 0 0 0.35rem;
+    }
+
+    .site-footer {
+      background: #171735;
+      color: #e9edf2;
+    }
+
+    .site-footer .wrap {
+      padding-top: 2.2rem;
+      padding-bottom: 2.2rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .site-footer a {
+      color: #fff;
+    }
+
+    @media (max-width: 980px) {
+      .hero-grid,
+      .section-head,
+      .grid.two,
+      .grid.three,
+      .proof-strip,
+      .demo-grid,
+      .doc-list {
+        grid-template-columns: 1fr;
+      }
+
+      .flow {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 720px) {
+      .nav {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .nav-links {
+        justify-content: flex-start;
+      }
+
+      .wrap {
+        padding-top: 3.2rem;
+        padding-bottom: 3.2rem;
+      }
+
+      .toc-columns {
+        columns: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav" aria-label="Primary">
+      <a class="brand" href="#top" aria-label="Intuition Engine home">
+        <span class="brand-mark">IE</span>
+        <span>Intuition Engine</span>
+      </a>
+      <div class="nav-links">
+        <a href="#architecture">Architecture</a>
+        <a href="#services">MMIO</a>
+        <a href="#guests">Guests</a>
+        <a href="#coprocessors">Coprocessors</a>
+        <a href="#fabric">Devices</a>
+        <a href="#runtime">Runtime</a>
+        <a href="#iemon">IE Mon</a>
+        <a href="#iescript">IEScript</a>
+        <a href="#demos">Demos</a>
+        <a href="#docs">Docs</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="content">
+    <section id="top" class="hero">
+      <div class="wrap">
+        <p class="eyebrow">Shared bus machine</p>
+        <h1 data-claim="CL-001">One machine, six CPU views.</h1>
+        <p class="lead" data-claim="CL-002">Intuition Engine puts IE64, IE32, 6502, Z80, M68K, and x86 on one shared MachineBus. The unusual part is not the CPU count; it is that the CPUs see the same RAM contract, the same MMIO devices, the same audio and video hardware, and the same coprocessor worker path.</p>
+        <div class="actions" data-claim="CL-003">
+          <a class="button" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
+          <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Preview live image for x86-64-v3-compatible computers</a>
+          <a class="button secondary" href="https://youtube.com/@IntuitionAmiga">YouTube</a>
+        </div>
+
+        <div class="hero-grid">
+          <div class="proof-strip" aria-label="Architecture facts">
+            <div class="proof" data-claim="CL-004">
+              <strong>Six CPU idioms, one bus</strong>
+              <span>IE64, IE32, 6502, Z80, M68K, and x86 programmes enter through different loaders, then meet the same MachineBus and device map.</span>
+            </div>
+            <div class="proof" data-claim="CL-005">
+              <strong>Hardware is the API</strong>
+              <span>Audio chips, video systems, files, input, wait, Program Executor, and guest bridges are fixed MMIO blocks with bus-visible addresses.</span>
+            </div>
+            <div class="proof" data-claim="CL-006">
+              <strong>CPUs can call CPUs</strong>
+              <span>BASIC, assembly, and C can start worker CPUs through the coprocessor service and exchange requests through mailbox rings.</span>
+            </div>
+          </div>
+          <pre class="code-panel" data-claim="CL-007"><code>caller CPU
+  -> MMIO register or BASIC command
+  -> shared MachineBus
+  -> device, worker, or runtime service
+  -> response through RAM, ticket, IRQ, or status</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-008">One shared bus, six CPU idioms.</h2>
+          <p data-claim="CL-009">A CPU profile selects the instruction set, loader, and visible RAM ceiling. After that first choice, the machine is still MachineBus, SYSINFO, MMIO devices, video sources, audio engines, files, debug state, and coprocessor services.</p>
+        </div>
+        <div class="grid three">
+          <article class="card" data-claim="CL-010">
+            <span class="kicker">MachineBus</span>
+            <h3>RAM discovery is visible to guests.</h3>
+            <p>The bus tracks backing size, total guest RAM, active visible RAM, low-window bounds, and profile ceilings. Guests read those facts through SYSINFO, while IE64 also reads <code>CR_RAM_SIZE_BYTES</code>.</p>
+            <p><a href="docs/architecture.pdf">Architecture PDF</a></p>
+          </article>
+          <article class="card" data-claim="CL-011">
+            <span class="kicker">CPU views</span>
+            <h3>Six instruction idioms share one contract.</h3>
+            <p>IE64 uses wide registers; IE32 uses compact fixed-width RISC code; 6502 and Z80 use banked and mapped views; M68K uses 68020-class addressing; x86 uses a flat 32-bit guest model.</p>
+            <p><a href="docs/IE64_ISA.pdf">IE64 ISA</a> and <a href="docs/IE32_ISA.pdf">IE32 ISA</a></p>
+          </article>
+          <article class="card" data-claim="CL-012">
+            <span class="kicker">Guest-visible services</span>
+            <h3>Runtime services are hardware blocks.</h3>
+            <p>File I/O, media load, Program Executor, terminal, serial, keyboard, mouse, RTC, clipboard, CPU wait, Voodoo apertures, Bootstrap HostFS, and SYSINFO are exposed as MMIO services.</p>
+            <p><a href="#services">Service map</a></p>
+          </article>
+        </div>
+
+        <div class="table-wrap" style="margin-top: 1rem" data-claim="CL-013">
+          <table>
+            <thead>
+              <tr>
+                <th>CPU view</th>
+                <th>Programme form</th>
+                <th>Hardware contract</th>
+                <th>Preview amd64 execution</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>IE64</td>
+                <td><code>.ie64</code>, BASIC AOT, IntuitionOS images</td>
+                <td>64-bit PC, data, stack, control registers, and optional paged MMU.</td>
+                <td>JIT-backed, with FPU native/helper paths.</td>
+              </tr>
+              <tr>
+                <td>IE32</td>
+                <td><code>.iex</code>, <code>.ie32</code></td>
+                <td>Fixed 8-byte 32-bit RISC-like instruction stream.</td>
+                <td>Interpreter-only.</td>
+              </tr>
+              <tr>
+                <td>6502</td>
+                <td><code>.ie65</code></td>
+                <td>Byte-oriented code reaches the shared devices through mapped helpers.</td>
+                <td>JIT-backed.</td>
+              </tr>
+              <tr>
+                <td>Z80</td>
+                <td><code>.ie80</code></td>
+                <td>Register-pair and port idioms drive the same memory and MMIO contract.</td>
+                <td>JIT-backed.</td>
+              </tr>
+              <tr>
+                <td>M68K</td>
+                <td><code>.ie68</code>, EmuTOS, AROS</td>
+                <td>68020-class integer code uses absolute bus addresses and profile bridges.</td>
+                <td>JIT-backed, including 68881-style FPU native/helper paths.</td>
+              </tr>
+              <tr>
+                <td>x86</td>
+                <td><code>.ie86</code></td>
+                <td>32-bit flat guest binaries can use the same file, video, audio, and coprocessor devices.</td>
+                <td>JIT-backed, including x87 FPU paths.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="services" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-014">MMIO is the public hardware surface.</h2>
+          <p data-claim="CL-015">The register map is the contract. Services are addressed through fixed bus ranges and can be reached by lower-level code without a host API.</p>
+        </div>
+        <div class="grid two">
+          <article class="card" data-claim="CL-016">
+            <h3>Universal service blocks</h3>
+            <p>SYSINFO publishes RAM and feature bits. File I/O includes the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal, serial, keyboard, mouse, RTC, clipboard, CPU wait, Voodoo register, texture, fog, and command apertures, Bootstrap HostFS, and a gated host-command helper are mapped as bus services.</p>
+            <div class="tag-row">
+              <span class="tag">SYSINFO</span>
+              <span class="tag">FILE_DATA_PTR64</span>
+              <span class="tag">MEDIA</span>
+              <span class="tag">EXEC</span>
+              <span class="tag">WAIT</span>
+              <span class="tag">VOODOO</span>
+              <span class="tag">BOOT_HOSTFS</span>
+            </div>
+          </article>
+          <article class="card" data-claim="CL-017">
+            <h3>Profile-specific bridges</h3>
+            <p>AROS adds DOS packet handling, a Paula-style DMA shim into the shared SoundChip, a host socket bridge, clipboard integration, and IRQ diagnostics. EmuTOS uses an Atari MIDI ACIA bridge into the same live-MIDI engine.</p>
+            <div class="tag-row">
+              <span class="tag">AROS_DOS</span>
+              <span class="tag">AROS_AUDIO_DMA</span>
+              <span class="tag">AROS_HOST_SOCKET</span>
+              <span class="tag">IRQ_DIAG</span>
+              <span class="tag">AtariMIDIACIA</span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="guests" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-060">Guest drivers terminate at the shared bus.</h2>
+          <p data-claim="CL-061">EmuTOS, AROS, and IntuitionOS do not get separate machines. Their loader and driver stacks differ, but graphics, input, file, MIDI, and audio work still ends in MMIO registers, mapped bus memory, interrupts, and shared device state.</p>
+        </div>
+
+        <div class="table-wrap" data-claim="CL-062">
+          <table>
+            <thead>
+              <tr>
+                <th>Guest</th>
+                <th>CPU view</th>
+                <th>Graphics path</th>
+                <th>Other device paths</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>EmuTOS</td>
+                <td>M68K</td>
+                <td>IE target helpers set VideoChip mode, enable scanout, and write RGBA pixels into direct VRAM.</td>
+                <td>Keyboard, mouse, terminal, timer IRQs, PSG writes, GEMDOS mapping, Atari MIDI ACIA bridge.</td>
+              </tr>
+              <tr>
+                <td>AROS</td>
+                <td>M68K</td>
+                <td>Profile runtime maps direct VideoChip VRAM; the AROS system-tree build path validates <code>Devs/Drivers/iegfx.hidd</code>, <code>Libs/cybergraphics.library</code>, ScreenMode prefs, and API/direct-hardware rotozoomer executables.</td>
+                <td>AmigaDOS packet bridge, Paula-style audio DMA, <code>kernel-ie-m68k-ahidrv</code>, <code>Devs/ahi.device</code>, host socket bridge, clipboard bridge, IRQ diagnostics.</td>
+              </tr>
+              <tr>
+                <td>IntuitionOS</td>
+                <td>IE64</td>
+                <td><code>graphics.library</code> requests CHIP and VRAM grants, maps them with <code>SYS_MAP_IO</code>, and opens VideoChip mode 7.</td>
+                <td><code>hardware.resource</code> brokers access to shared CHIP registers and monopoly VRAM grants.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid three" style="margin-top: 1rem">
+          <article class="card" data-claim="CL-063">
+            <span class="kicker">EmuTOS</span>
+            <h3>Atari-facing code writes IE registers.</h3>
+            <p>The IE target gives EmuTOS a direct VideoChip scanout path and PSG register writes through the shared bus. Its helper code writes pixels, clears and fills rectangles, reads keyboard and mouse MMIO, and drives timer IRQ levels 4 and 5.</p>
+            <pre class="code-panel"><code>IE_VIDEO_CTRL  0x000F0000
+IE_VIDEO_MODE  0x000F0004
+IE_VRAM_BASE   0x00100000
+Scanout        640 x 480 RGBA, stride 2560
+IE_PSG_BASE    0x000F0C00</code></pre>
+          </article>
+          <article class="card" data-claim="CL-064">
+            <span class="kicker">AROS graphics and filesystem</span>
+            <h3>AROS sees IE graphics as a driver target.</h3>
+            <p>The AROS profile gives the guest a 64 MiB direct VideoChip VRAM slice and big-endian VideoChip reads. The system-tree build tracks <code>arch/m68k-ie/hidd/iegfx/*</code>, stages <code>Devs/Drivers/iegfx.hidd</code>, includes <code>Libs/cybergraphics.library</code>, and installs ScreenMode and palette preferences. Filesystem packets cross the same bus through the AROS DOS handler block.</p>
+            <pre class="code-panel"><code>AROS direct VRAM: 0x1E00000 + 0x4000000
+AROS gfx driver:  Devs/Drivers/iegfx.hidd
+AROS_DOS:         0xF2220-0xF225F</code></pre>
+          </article>
+          <article class="card" data-claim="CL-065">
+            <span class="kicker">AROS audio, AHI, socket, clipboard</span>
+            <h3><code>audio.device</code> reaches the native SoundChip.</h3>
+            <p>The AROS Paula-style DMA shim is the bridge: four guest DMA channels are fetched at 44.1 kHz, converted into SoundChip FLEX DAC writes, and completed with M68K level-3 IRQ signalling. The AROS build path also runs <code>kernel-ie-m68k-ahidrv</code>, validates <code>Devs/ahi.device</code>, and keeps host socket and clipboard access as MMIO bridges rather than special application calls.</p>
+            <pre class="code-panel"><code>CHn: PTR LEN PER VOL
+DMACON  0xF22A0
+STATUS  0xF22A4
+INTENA  0xF22A8</code></pre>
+          </article>
+          <article class="card" data-claim="CL-066">
+            <span class="kicker">IntuitionOS</span>
+            <h3>Native IE64 graphics goes through resource grants.</h3>
+            <p><code>hardware.resource</code> owns the CHIP page and VRAM grant policy. CHIP is shared across clients; VRAM is single-owner. <code>graphics.library</code> waits for that broker, requests both grants, maps the chip register page and framebuffer pages with <code>SYS_MAP_IO</code>, reports one RGBA32 adapter mode, opens 960 x 540 scanout with VideoChip mode 7, and presents registered surfaces.</p>
+            <pre class="code-panel"><code>CHIP PPN: 0xF0
+VRAM PPN: 0x100
+Mode: 960 x 540 RGBA32, stride 3840</code></pre>
+          </article>
+          <article class="card" data-claim="CL-067">
+            <span class="kicker">MIDI path split</span>
+            <h3>Live MIDI is shared, but guest access differs.</h3>
+            <p>The generic live-MIDI port exposes raw byte stream registers at <code>0xF0BF4-0xF0BF6</code>. EmuTOS writes an output-only MC6850 ACIA shim at <code>$FFFC04</code> and <code>$FFFC06</code>, which feeds the same parser. AROS has an ie-m68k CAMD path. No current IntuitionOS MIDI driver path is present in the source tree.</p>
+          </article>
+          <article class="card" data-claim="CL-068">
+            <span class="kicker">Driver-level demos</span>
+            <h3>The staged guest programmes cover both API and direct hardware paths.</h3>
+            <p>The preview image demo set includes the EmuTOS <code>rotozoomer_gem.prg</code> programme and AROS <code>RotoAPI</code>, <code>RotoHW</code>, <code>RotoAPIc</code>, and <code>RotoHWc</code> executables. The AROS pairs distinguish API-path drawing from direct-hardware access in both assembly and C examples.</p>
+            <p><a href="#demos">Demo gallery</a></p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="coprocessors" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-018">A CPU can be a device for another CPU.</h2>
+          <p data-claim="CL-019">The coprocessor service turns IE32, IE64, 6502, M68K, Z80, and x86 cores into bus workers. A caller starts a worker, queues a request, and polls or waits on a ticket. BASIC has named entry points; assembly and C can drive the same MMIO block and mailbox rings directly.</p>
+        </div>
+        <div class="card" data-claim="CL-020">
+          <h3>Request path</h3>
+          <div class="flow" aria-label="Coprocessor request flow">
+            <span>Caller CPU</span>
+            <span><code>COSTART</code> / <code>COCALL</code> or MMIO</span>
+            <span>Per-worker mailbox ring</span>
+            <span>Worker CPU</span>
+            <span>Response or ticket</span>
+          </div>
+          <pre class="code-panel"><code>COSTART cpuType, "serviceFile"
+ticket = COCALL(cpuType, op, reqPtr, reqLen, respPtr, respCap)
+COWAIT ticket, timeoutMs
+status = COSTATUS(ticket)
+COSTOP cpuType</code></pre>
+        </div>
+        <div class="table-wrap" style="margin-top: 1rem" data-claim="CL-021">
+          <table>
+            <thead>
+              <tr>
+                <th>Worker CPU</th>
+                <th>Service suffix</th>
+                <th>Ring role</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>IE32</td><td><code>.iex</code>, <code>.ie32</code></td><td>Ring-indexed service worker.</td></tr>
+              <tr><td>6502</td><td><code>.ie65</code></td><td>Ring-indexed service worker.</td></tr>
+              <tr><td>M68K</td><td><code>.ie68</code></td><td>Ring-indexed service worker.</td></tr>
+              <tr><td>Z80</td><td><code>.ie80</code></td><td>Ring-indexed service worker.</td></tr>
+              <tr><td>x86</td><td><code>.ie86</code></td><td>Ring-indexed service worker.</td></tr>
+              <tr><td>IE64</td><td><code>.ie64</code></td><td>Ring-indexed service worker.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <article class="card" style="margin-top: 1rem" data-claim="CL-022">
+          <span class="kicker">Case study</span>
+          <h3>Mario Kart 64 IE sends transform and lighting work to IE64.</h3>
+          <p>The mk64-ie tree builds <code>build/ie/tnl.ie64</code>, packs it as <code>svc/tnl.ie64</code> inside <code>mariokart64.ie68</code>, starts that service from M68K game code, and sends T&L batches through the IE64 worker mailbox. The same worker mechanism is exposed to BASIC through <code>COSTART</code> and <code>COCALL</code>.</p>
+          <p><a href="#mariokart">Mario Kart 64 case study</a></p>
+        </article>
+      </div>
+    </section>
+
+    <section id="fabric" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-023">Audio and video stay on the shared bus.</h2>
+          <p data-claim="CL-024">The sound and display systems are not hidden runtime services. SID, POKEY, PSG/AY, SN76489, TED, Paula-style DMA, SoundChip, SFX, MOD, AHX, WAV, MIDI/MUS, and the video engines are bus-visible device contracts. Guest code, BASIC, IE Mon, and IEScript can all touch the same registers.</p>
+        </div>
+
+        <div class="grid two" style="margin-bottom: 1rem">
+          <article class="card" data-claim="CL-069">
+            <span class="kicker">IE-native audio</span>
+            <h3>SoundChip is the native subtractive synth.</h3>
+            <p>The native path is ten FLEX voices plus 32 SFX channels. FLEX is the unified register surface: each voice has frequency, volume, gate/control, duty, sweep, ADSR, waveform select, PWM, noise mode, phase reset, ring modulation, hard sync, and signed 8-bit DAC input. The five oscillator types are square/pulse, triangle, sine, noise, and sawtooth; the noise generator covers white, periodic, metallic, PSG-style, TED 8-bit, and SN76489 15/16-bit white or periodic modes.</p>
+            <pre class="code-panel"><code>FLEX ch0-3   0xF0A80-0xF0B7F
+SID2 ch4-6   0xF0C40-0xF0CFF
+SID3 ch7-9   0xF0D40-0xF0DFF
+SFX ch0-31   0xF2600-0xF29FF</code></pre>
+          </article>
+          <article class="card" data-claim="CL-070">
+            <span class="kicker">Clocking and sample paths</span>
+            <h3>Different chips keep their own clocks.</h3>
+            <p>The final mixer renders at <code>44100</code> samples per second with global filter, overdrive, reverb, and limiting, but chip timing is not flattened into one generic synth. PSG defaults to <code>2000000</code> Hz, SN76489 has <code>3579545</code> Hz NTSC and <code>3546893</code> Hz PAL clocks, SID uses PAL-style <code>985248</code> Hz and NTSC-style <code>1022727</code> Hz, TED audio runs at <code>110840</code>/<code>111860</code> Hz, POKEY uses Atari PAL/NTSC clocks, and Paula/MOD period math uses <code>3546895</code> Hz.</p>
+            <pre class="code-panel"><code>SoundChip/SFX mixer   44100 Hz
+AHX song ticks         50/100/150/200 Hz
+MOD and Paula periods  3546895 Hz source clock
+WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
+          </article>
+        </div>
+
+        <div class="table-wrap" data-claim="CL-025">
+          <table>
+            <thead>
+              <tr>
+                <th>Audio block</th>
+                <th>MMIO surface</th>
+                <th>Guest-visible behaviour</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>SoundChip and SFX</td>
+                <td><code>0xF0A80</code> FLEX, SID2/SID3 FLEX windows, SFX ext <code>0xF2600-0xF29FF</code></td>
+                <td>Ten FLEX synth channels, 32 SFX sample-trigger channels, square/pulse, triangle, sine, noise, sawtooth, nine noise algorithms, ADSR, sweep, PWM, hard sync, ring modulation, signed 8-bit DAC input, global filter, overdrive, reverb, limiter, and block-rendered mixer output.</td>
+              </tr>
+              <tr>
+                <td>PSG/AY and SN76489</td>
+                <td>PSG <code>0xF0C00-0xF0C0F</code>, PSG player <code>0xF0C10-0xF0C1C</code>, SN76489 <code>0xF0C30-0xF0C3F</code></td>
+                <td>AY-style tone/noise/envelope registers, PSG-family file playback, SN76489 latch/data writes, ready/status reads, and selectable LFSR mode.</td>
+              </tr>
+              <tr>
+                <td>SID, TED, POKEY</td>
+                <td>SID <code>0xF0E00-0xF0E1C</code>, TED audio <code>0xF0F00-0xF0F05</code>, POKEY <code>0xF0D00-0xF0D0A</code></td>
+                <td>SID voice, pulse, ADSR, sync/ring, filter, and model state; TED two-voice sound and DAC mode; POKEY four channels, AUDCTL pairing, distortion modes, and readable polynomial tap.</td>
+              </tr>
+              <tr>
+                <td>Music and media players</td>
+                <td>AHX <code>0xF0B80</code>, MIDI <code>0xF0BA0</code>, MOD <code>0xF0BC0</code>, WAV <code>0xF0BD8</code>, SAP <code>0xF0D10</code>, TED player <code>0xF0F10</code>, media loader <code>0xF2300</code></td>
+                <td>Pointer, length, control, status, position, subsong, tempo, volume, and loader registers for AHX, MOD, WAV, MIDI/MUS, SID, PSG-family, SAP, and TED data.</td>
+              </tr>
+              <tr>
+                <td>Paula DMA and live MIDI</td>
+                <td>Paula <code>0xF2260-0xF22AF</code>, live MIDI <code>0xF0BF4-0xF0BF6</code></td>
+                <td>Four DMA sample channels into SoundChip DACs, completion status, interrupt enable, raw MIDI byte input, active status, and all-notes-off reset.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid two" style="margin-top: 1rem">
+          <article class="card" data-claim="CL-026">
+            <h3>Live MIDI</h3>
+            <p>The live-MIDI block is a guest-visible byte-stream port on MachineBus. EmuTOS reaches it through an output-only Atari ACIA bridge. AROS has an ie-m68k CAMD driver path. No current IntuitionOS MIDI driver path is present in the source tree.</p>
+          </article>
+          <article class="card" data-claim="CL-028">
+            <h3>Compositor fabric</h3>
+            <p>The compositor runs a 60 Hz schedule, sorts sources by layer, supports scanline-aware rendering, dirty rectangles, frame-generation skipping, retained frame leases, and triple-buffer publication paths in the video engines. Hardware layers carry source dimensions, stride, alpha, visibility, and optional retained leases.</p>
+          </article>
+        </div>
+
+        <div class="table-wrap" style="margin-top: 1rem" data-claim="CL-027">
+          <table>
+            <thead>
+              <tr>
+                <th>Video source</th>
+                <th>Register and memory surface</th>
+                <th>Guest-visible behaviour</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>VideoChip</td>
+                <td>Registers <code>0xF0000+</code>, VRAM aperture, direct-VRAM modes</td>
+                <td>RGBA32 and CLUT8 modes, copper control, raster bands, blitter copy/fill/line/masked copy/alpha copy/colour expand/scale/memcopy, Mode 7 support, and direct framebuffer scanout.</td>
+              </tr>
+              <tr>
+                <td>VGA</td>
+                <td>Registers <code>0xF1000-0xF13FF</code>, VRAM <code>0xA0000</code>, text <code>0xB8000</code></td>
+                <td>Text mode, Mode 12h, Mode 13h, Mode X, sequencer, CRTC, graphics controller, attribute controller, DAC, palette RAM, planar and chain-4 memory behaviour.</td>
+              </tr>
+              <tr>
+                <td>TED video</td>
+                <td>Registers <code>0xF0F20-0xF0F6B</code></td>
+                <td>40 x 25 text, 320 x 200 bitmap, multicolour text, hardware cursor, border colour, raster line registers, VBlank status, 121-colour TED palette model.</td>
+              </tr>
+              <tr>
+                <td>ANTIC/GTIA</td>
+                <td>Registers <code>0xF2100+</code></td>
+                <td>Display-list DMA, scanline-aware render path, GTIA colour and priority registers, player/missile buffers, VBI and DLI status.</td>
+              </tr>
+              <tr>
+                <td>ULA</td>
+                <td>Registers <code>0xF2000-0xF2017</code>, VRAM aperture <code>0xFA000+</code></td>
+                <td>ZX Spectrum bitmap and attribute layout, border register, flash/bright attributes, auto-increment data port, VBlank status, and optional VBlank IRQ enable.</td>
+              </tr>
+              <tr>
+                <td>Voodoo</td>
+                <td>Registers <code>0xF8000-0xF87FF</code>, texture memory, command stream, fog/table/upload apertures</td>
+                <td>Triangle rasterisation, Gouraud colour, Z-buffering, alpha test/blend, texture enable and upload, fog colour/mode, chroma key, clipping, swap buffers, status bits, and 640 x 480 default output.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="runtime" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-029">The whole machine is debugger state.</h2>
+          <p data-claim="CL-030">Every live part of the machine can be treated as state to inspect, account for, quiesce, snapshot, and restore. The proof spans CPUs, bus memory, sparse backing pages, MMIO devices, video state, audio state, service registrations, and tool hooks.</p>
+        </div>
+        <div class="grid three">
+          <article class="card" data-claim="CL-031">
+            <h3>Reverse debugging and snapshots</h3>
+            <p>IE Mon supports CPU-local state snapshots and whole-machine reverse snapshots. Whole-machine snapshots cover registered CPUs, shared bus RAM, sparse backing pages, and versioned device state blobs, with restore failures surfaced instead of silently ignored.</p>
+            <p><a href="docs/iemon.pdf">IE Mon PDF</a></p>
+          </article>
+          <article class="card" data-claim="CL-032">
+            <h3>Observability</h3>
+            <p><code>IE_PERF_ACCT=1</code> enables CPU JIT and interpreter timing, retired instruction counts, subsystem buckets, and JIT deopt reason accounting. The disabled path stays behind a gate before atomic work.</p>
+          </article>
+          <article class="card" data-claim="CL-033">
+            <h3>IE64 high-memory correctness</h3>
+            <p>IE64 keeps a 64-bit PC, data, and stack model. JIT helper exits handle high physical addresses and MMU translations by routing the operation through interpreter-equivalent helpers, then resuming only when the architectural state still matches.</p>
+            <p><a href="docs/IE64_ISA.pdf">IE64 ISA PDF</a></p>
+          </article>
+          <article class="card" data-claim="CL-034">
+            <h3>Lifecycle</h3>
+            <p>Reset and load paths quiesce scripts, compositor, render loops, monitor, media, CPUs, EmuTOS, and AROS, then recreate CPU/profile state, rewire the monitor and Program Executor, and restage configured coprocessor services.</p>
+          </article>
+          <article class="card" data-claim="CL-035">
+            <h3>Timing</h3>
+            <p>The machine separates CPU execution, a 60 Hz compositor cadence, and a 44.1 kHz audio path. Hot paths use published bus maps, retained video leases, and triple-buffer handoff to reduce unnecessary copies.</p>
+          </article>
+          <article class="card" data-claim="CL-036">
+            <h3>Tool hooks share runtime state</h3>
+            <p>IE Mon and IEScript use the same monitor, bus, CPU registry, compositor, and snapshot contracts as the running machine.</p>
+            <p><a href="#iemon">IE Mon</a> and <a href="#iescript">IEScript</a></p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="iemon" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-048">IE Mon is the hardware monitor.</h2>
+          <p data-claim="CL-049">It halts the running machine at hardware level, then exposes CPU focus, disassembly, registers, memory, symbols, breakpoints, watchpoints, bus access history, I/O register views, and reverse history across the six CPU families and coprocessor workers.</p>
+        </div>
+        <div class="grid two">
+          <article class="card" data-claim="CL-050">
+            <span class="kicker">Execution control</span>
+            <h3>CPU state is readable and writable.</h3>
+            <p>IE Mon can switch focus between registered CPUs, show and change registers, disassemble around expressions such as <code>pc+$20</code>, interleave source locations when available, single-step, continue, run until an address, and assemble one IE64 instruction at an address.</p>
+            <pre class="code-panel"><code>cpu
+r
+d /s pc 8
+b main+0x10 if R1==$10 &amp;&amp; hitcount>2
+s
+g</code></pre>
+          </article>
+          <article class="card" data-claim="CL-051">
+            <span class="kicker">Bus diagnosis</span>
+            <h3>Watchpoints operate on memory and MMIO behaviour.</h3>
+            <p>SoftICE-style <code>bpm*</code> watchpoints cover byte, word, long, and quad accesses by read, write, or read/write mode. Page guards, access logs, <code>who</code>, <code>bfirst</code>, and <code>trace mmio</code> identify bus activity from recorded access data.</p>
+            <pre class="code-panel"><code>bpmqw $f0000
+pg add $f0000 $f0fff rw cpu=current
+accesslog on 1024
+who wrote $f0004
+trace mmio voodoo 16</code></pre>
+          </article>
+          <article class="card" data-claim="CL-052">
+            <span class="kicker">Reverse history</span>
+            <h3>Backtracking covers CPU and device state.</h3>
+            <p><code>rs</code> restores the focussed CPU from local step history. <code>rg</code>, <code>rt</code>, <code>tl</code>, and <code>history horizon</code> work with retained whole-machine reverse snapshots covering registered CPUs, bus RAM, sparse IE64 backing pages, and registered versioned device blobs.</p>
+            <pre class="code-panel"><code>history horizon
+tl 12
+rg
+rt PC==$2000
+ss checkpoint.ie64state
+sl checkpoint.ie64state</code></pre>
+          </article>
+          <article class="card" data-claim="CL-053">
+            <span class="kicker">Device views</span>
+            <h3>The monitor reads hardware as named register groups.</h3>
+            <p><code>io</code> exposes named I/O register views with native-width reads, including audio, video, SYSINFO, wait, Voodoo, MIDI, and other MMIO devices. Trusted <code>.iemonrc</code> files, aliases, macros, scripts, and the IEScript <code>dbg.*</code> API reuse the same monitor command surface.</p>
+            <pre class="code-panel"><code>io all
+io sfx
+io voodoo
+rc list
+rc trust .iemonrc
+macro frame d pc 8; r</code></pre>
+          </article>
+        </div>
+        <div class="actions">
+          <a class="button secondary" href="docs/iemon.pdf">IE Mon PDF</a>
+          <a class="button secondary" href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Reference guide bundle</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="iescript" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-054">IEScript is the repeatable control plane.</h2>
+          <p data-claim="CL-055">Where IE Mon is interactive, IEScript turns the same machine surfaces into Lua automation: programme launch, terminal input, CPU freeze/resume, MMIO and RAM access, video waits, screenshots, recordings, media control, coprocessors, symbols, and debugger sessions.</p>
+        </div>
+        <div class="grid two">
+          <article class="card" data-claim="CL-056">
+            <span class="kicker">Launch paths</span>
+            <h3>A script can be the programme or the harness.</h3>
+            <p><code>.ies</code> files can run from the command line, through Program Executor dispatch, from BASIC with <code>RUN "demo.ies"</code>, or from IE Mon with <code>script demo.ies</code>. The runtime executes scripts asynchronously and uses frame and timer waits as synchronisation points.</p>
+            <pre class="code-panel"><code>./bin/IntuitionEngine -script demo.ies
+./bin/IntuitionEngine demo.ies
+RUN "demo.ies"
+script demo.ies</code></pre>
+          </article>
+          <article class="card" data-claim="CL-057">
+            <span class="kicker">Visual checks</span>
+            <h3>Frame hashes, screenshots, and recordings are scriptable.</h3>
+            <p>Scripts can wait on compositor frames, pixels, settled frame hashes, or custom visual predicates. The recording module can capture screenshots and video, so a demo or regression can produce both a quick hash and a human-readable frame.</p>
+            <pre class="code-panel"><code>sys.wait_frames(2)
+video.wait_stable(3, 120)
+hash = video.frame_hash()
+rec.screenshot("frame.png")
+rec.start_screen("run.mp4")
+rec.stop()</code></pre>
+          </article>
+          <article class="card" data-claim="CL-058">
+            <span class="kicker">Hardware automation</span>
+            <h3>Lua can drive the same MMIO devices as guest code.</h3>
+            <p>IEScript exposes memory and MMIO operations plus high-level modules for audio, video, media, coprocessors, symbols, and regions. The shipped rotozoomer script stages data with <code>mem.write_block</code>, writes VideoChip and blitter registers, and starts MIDI through MMIO.</p>
+            <pre class="code-panel"><code>cpu.freeze()
+mem.write_block(texturePtr, texture)
+cpu.resume()
+video.write_reg(983040, 1)
+video.blit_fill(1048576, 320, 200, 255, 1280)
+video.blit_wait()</code></pre>
+          </article>
+          <article class="card" data-claim="CL-059">
+            <span class="kicker">Debugger API</span>
+            <h3>Scripts can inspect and steer IE Mon without parsing text.</h3>
+            <p>The <code>dbg</code> module opens the monitor, steps, continues, sets breakpoints and watchpoints, reads registers and memory, disassembles, inspects I/O views, queries reverse-history settings, controls trace rings, and snapshots registered devices. Raw RAM access requires an explicit freeze; MMIO access is allowed without freezing.</p>
+            <pre class="code-panel"><code>dbg.open()
+dbg.set_bp(0x2000)
+dbg.step()
+regs = dbg.get_regs()
+io = dbg.io("midilive")
+snap = dbg.device_snapshot("video")
+dbg.close()</code></pre>
+          </article>
+        </div>
+        <div class="actions">
+          <a class="button secondary" href="docs/iescript.pdf">IEScript PDF</a>
+          <a class="button secondary" href="#demos">IEScript demo card</a>
+        </div>
+      </div>
+    </section>
+
+    <section id="tooling" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-037">IE64 BASIC is an in-machine development environment.</h2>
+          <p data-claim="CL-038">IE64 BASIC runs on the IE64 CPU, stores and loads programmes through the machine File I/O block, and can move the same stored lines through interpreter, AOT, standalone image, assembly text, and in-machine assembler paths. It is also a hardware console: typed BASIC can write MMIO, wait for video, drive blitter modes, start music, and call coprocessor workers.</p>
+        </div>
+
+        <div class="table-wrap" data-claim="CL-071">
+          <table>
+            <thead>
+              <tr>
+                <th>Path</th>
+                <th>What BASIC does</th>
+                <th>Hardware or file surface</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Stored programme</td>
+                <td><code>LOAD</code>, <code>SAVE</code>, <code>BLOAD</code>, <code>DIR</code>, and <code>TYPE</code> use the machine disk volume; <code>BLOAD</code> puts raw assets into guest memory.</td>
+                <td>File I/O MMIO, including IE64 <code>FILE_DATA_PTR64</code>.</td>
+              </tr>
+              <tr>
+                <td>Native execution</td>
+                <td><code>RUN AOT</code> compiles the stored programme to native IE64 code inside the machine and runs it immediately.</td>
+                <td>IE64 AOT path, same visible result contract as <code>RUN</code>.</td>
+              </tr>
+              <tr>
+                <td>Standalone image</td>
+                <td><code>COMPILE "DEMO"</code> writes <code>DEMO.ie64</code> and a same-name IE64 assembly listing.</td>
+                <td>Flat IE64 image plus self-contained assembly text.</td>
+              </tr>
+              <tr>
+                <td>Assembly round-trip</td>
+                <td><code>TRANSPILE</code> writes IE64 source only; <code>ASSEMBLE</code> reads IE64 source and writes a standalone <code>.ie64</code>.</td>
+                <td>In-machine assembler at <code>PROG_START</code>.</td>
+              </tr>
+              <tr>
+                <td>Device control</td>
+                <td><code>PEEK8/16/32/64</code>, <code>POKE8/16/32/64</code>, <code>WAIT</code>, <code>VSYNC</code>, <code>BLIT MODE7</code>, <code>SOUND</code>, <code>ENVELOPE</code>, <code>GATE</code>, and <code>SOUND PLAY</code>.</td>
+                <td>MMIO registers for video, blitter, audio, media loader, and timing.</td>
+              </tr>
+              <tr>
+                <td>Worker CPUs</td>
+                <td><code>COSTART</code>, <code>COCALL</code>, <code>COSTATUS</code>, <code>COWAIT</code>, and <code>COSTOP</code> reach the coprocessor service block.</td>
+                <td>Shared coprocessor MMIO and mailbox rings.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="grid two" style="margin-top: 1rem">
+          <article class="card" data-claim="CL-039">
+            <h3>Native build path</h3>
+            <pre class="code-panel"><code>RUN AOT
+COMPILE "name"
+TRANSPILE "name"
+ASSEMBLE "name"</code></pre>
+            <p><code>COMPILE</code> rejects direct-mode-only commands and stored forms that cannot become a standalone image. <code>TRANSPILE</code> is the inspection path. <code>ASSEMBLE</code> is not tied to the stored BASIC programme; it reads IE64 source from the disk volume and emits a flat image.</p>
+          </article>
+          <article class="card" data-claim="CL-072">
+            <h3>Hardware from BASIC</h3>
+            <pre class="code-panel"><code>10 POKE32 &H000F0800,1
+20 SOUND 0,440,200,0,128
+30 ENVELOPE 0,50,100,200,100
+40 GATE 0,ON
+50 VSYNC</code></pre>
+            <p>The same vocabulary can initialise the mixer, configure a FLEX channel, open the envelope gate, wait for video cadence, and then continue into blitter, sprite, tile, Voodoo, file, or media-loader work.</p>
+          </article>
+          <article class="card" data-claim="CL-073">
+            <h3>BASIC can drive the full audio fabric.</h3>
+            <p>The direct BASIC audio layer includes <code>SOUND</code>, <code>ENVELOPE</code>, <code>GATE</code>, <code>SOUND FILTER</code>, <code>SOUND REVERB</code>, <code>SOUND OVERDRIVE</code>, <code>SOUND NOISE</code>, <code>SOUND WAVE</code>, <code>SOUND SWEEP</code>, <code>SOUND SYNC</code>, <code>SOUND RINGMOD</code>, <code>PSG</code>, <code>SID</code>, <code>POKEY</code>, <code>TED</code>, <code>SOUND PLAY</code>, and raw SFX <code>POKE32</code> writes.</p>
+            <pre class="code-panel"><code>SOUND PLAY "TITLE.MOD"
+SOUND PLAY "INTRO.SID",0
+SOUND PLAY "TUNE.AHX",1
+SOUND PLAY "SONG.MID"</code></pre>
+          </article>
+          <article class="card" data-claim="CL-040">
+            <h3>SDK and debug tools</h3>
+            <p>The build produces <code>ie32asm</code>, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie32to64</code>, and <code>m68kto64</code> alongside the VM, and the preview image stages the SDK tool bundle with a checksum manifest. IE Mon adds disassembly, memory editing, breakpoints, watchpoints, source locations, reverse history, trace views, and scripted debugger entry points.</p>
+            <pre class="code-panel"><code>make
+make headless-novulkan
+go test -tags headless ./...</code></pre>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="demos" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-041">The demos exercise the same bus from different languages.</h2>
+          <p data-claim="CL-042">The preview live image stages CPU-folder demos. This gallery is deliberately narrow: staged <code>*.ie*</code> programmes, the staged EmuTOS <code>.prg</code>, AROS rotozoomer executables, and the named BASIC and IES demos from the reference-guide flow.</p>
+        </div>
+
+        <div class="demo-grid">
+          <article class="demo-card" data-claim="CL-D001">
+            <h3><code>rotozoomer_basic.bas</code></h3>
+            <div class="runtime">IE64 BASIC</div>
+            <p>BASIC drives the Mode 7 rotozoomer path directly through hardware-facing commands.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D001-SHOT">Screengrab placeholder: rotozoomer_basic.bas</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D001-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D002">
+            <h3><code>wobble_zoom.bas</code></h3>
+            <div class="runtime">IE64 BASIC</div>
+            <p>BASIC builds the texture data and runs the wobble zoom flow from the demo-programming chapters.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D002-SHOT">Screengrab placeholder: wobble_zoom.bas</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D002-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D003">
+            <h3><code>resonance.bas</code></h3>
+            <div class="runtime">IE64 BASIC</div>
+            <p>Music-synchronised BASIC demo that uses MIDI position, Mode 7 texture, raster bands, rails, stars, and scroll assets.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D003-SHOT">Screengrab placeholder: resonance.bas</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D003-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D004">
+            <h3><code>rotozoomer_ies.ies</code></h3>
+            <div class="runtime">IEScript</div>
+            <p>IEScript stages data, writes device registers, and runs the rotozoomer as an automation harness.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D004-SHOT">Screengrab placeholder: rotozoomer_ies.ies</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D004-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+
+          <article class="demo-card" data-claim="CL-D005">
+            <h3><code>rotozoomer.iex</code></h3>
+            <div class="runtime">IE32</div>
+            <p>IE32 assembly version of the rotozoomer effect, built for the staged demo set.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D005-SHOT">Screengrab placeholder: rotozoomer.iex</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D005-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D006">
+            <h3><code>voodoo_mega_demo.iex</code></h3>
+            <div class="runtime">IE32</div>
+            <p>IE32 programme for the Voodoo path, staged beside the other CPU-folder binaries.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D006-SHOT">Screengrab placeholder: voodoo_mega_demo.iex</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D006-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D007">
+            <h3><code>vga_mode13h_fire.iex</code></h3>
+            <div class="runtime">IE32</div>
+            <p>IE32 code writes the VGA Mode 13h path for a fire effect.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D007-SHOT">Screengrab placeholder: vga_mode13h_fire.iex</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D007-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D008">
+            <h3><code>vga_modex_circles.iex</code></h3>
+            <div class="runtime">IE32</div>
+            <p>IE32 code uses the VGA Mode X path for the circles demo.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D008-SHOT">Screengrab placeholder: vga_modex_circles.iex</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D008-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D009">
+            <h3><code>vga_mode12h_bars.iex</code></h3>
+            <div class="runtime">IE32</div>
+            <p>IE32 code targets VGA Mode 12h for the bars demo.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D009-SHOT">Screengrab placeholder: vga_mode12h_bars.iex</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D009-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D010">
+            <h3><code>vga_text_hello.iex</code></h3>
+            <div class="runtime">IE32</div>
+            <p>IE32 text-mode VGA programme for the staged SDK demo set.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D010-SHOT">Screengrab placeholder: vga_text_hello.iex</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D010-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D011">
+            <h3><code>robocop_intro.iex</code></h3>
+            <div class="runtime">IE32</div>
+            <p>IE32 Robocop intro artefact from the staged showreel build.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D011-SHOT">Screengrab placeholder: robocop_intro.iex</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D011-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+
+          <article class="demo-card" data-claim="CL-D012">
+            <h3><code>rotozoomer_ie64.ie64</code></h3>
+            <div class="runtime">IE64</div>
+            <p>IE64 assembly version of the rotozoomer, assembled with <code>ie64asm</code>.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D012-SHOT">Screengrab placeholder: rotozoomer_ie64.ie64</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D012-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D013">
+            <h3><code>mandelbrot_ie64.ie64</code></h3>
+            <div class="runtime">IE64</div>
+            <p>IE64 Mandelbrot programme assembled with <code>ie64asm</code>.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D013-SHOT">Screengrab placeholder: mandelbrot_ie64.ie64</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D013-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+
+          <article class="demo-card" data-claim="CL-D014">
+            <h3><code>rotozoomer_68k.ie68</code></h3>
+            <div class="runtime">M68K</div>
+            <p>M68K version of the shared rotozoomer effect.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D014-SHOT">Screengrab placeholder: rotozoomer_68k.ie68</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D014-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D015">
+            <h3><code>ted_121_colors_68k.ie68</code></h3>
+            <div class="runtime">M68K</div>
+            <p>M68K programme for the TED 121-colour video path.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D015-SHOT">Screengrab placeholder: ted_121_colors_68k.ie68</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D015-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D016">
+            <h3><code>rotating_cube_copper_68k.ie68</code></h3>
+            <div class="runtime">M68K</div>
+            <p>M68K rotating cube using the copper presentation path.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D016-SHOT">Screengrab placeholder: rotating_cube_copper_68k.ie68</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D016-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D017">
+            <h3><code>voodoo_cube_68k.ie68</code></h3>
+            <div class="runtime">M68K</div>
+            <p>M68K cube programme for the Voodoo graphics path.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D017-SHOT">Screengrab placeholder: voodoo_cube_68k.ie68</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D017-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D018">
+            <h3><code>voodoo_3dfx_logo_68k.ie68</code></h3>
+            <div class="runtime">M68K</div>
+            <p>M68K Voodoo logo programme for the staged demo set.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D018-SHOT">Screengrab placeholder: voodoo_3dfx_logo_68k.ie68</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D018-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D019">
+            <h3><code>voodoo_triangle_68k.ie68</code></h3>
+            <div class="runtime">M68K</div>
+            <p>M68K triangle programme for the Voodoo raster path.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D019-SHOT">Screengrab placeholder: voodoo_triangle_68k.ie68</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D019-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D020">
+            <h3><code>robocop_intro_68k.ie68</code></h3>
+            <div class="runtime">M68K</div>
+            <p>M68K Robocop intro artefact from the staged showreel build.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D020-SHOT">Screengrab placeholder: robocop_intro_68k.ie68</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D020-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D029">
+            <h3><code>rotozoomer_gem.prg</code></h3>
+            <div class="runtime">EmuTOS GEM programme</div>
+            <p>EmuTOS GEM rotozoomer built from the SDK assembly source and staged as a <code>.prg</code>.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D029-SHOT">Screengrab placeholder: rotozoomer_gem.prg</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D029-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+
+          <article class="demo-card" data-claim="CL-D021">
+            <h3><code>rotozoomer_z80.ie80</code></h3>
+            <div class="runtime">Z80</div>
+            <p>Z80 version of the shared rotozoomer effect.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D021-SHOT">Screengrab placeholder: rotozoomer_z80.ie80</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D021-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D022">
+            <h3><code>robocop_intro_z80.ie80</code></h3>
+            <div class="runtime">Z80</div>
+            <p>Z80 Robocop intro artefact from the staged showreel build.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D022-SHOT">Screengrab placeholder: robocop_intro_z80.ie80</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D022-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+
+          <article class="demo-card" data-claim="CL-D023">
+            <h3><code>rotozoomer_65.ie65</code></h3>
+            <div class="runtime">6502</div>
+            <p>6502 version of the shared rotozoomer effect.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D023-SHOT">Screengrab placeholder: rotozoomer_65.ie65</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D023-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D024">
+            <h3><code>ula_rotating_cube_65.ie65</code></h3>
+            <div class="runtime">6502</div>
+            <p>6502 rotating cube for the ULA video path.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D024-SHOT">Screengrab placeholder: ula_rotating_cube_65.ie65</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D024-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D025">
+            <h3><code>robocop_intro_65.ie65</code></h3>
+            <div class="runtime">6502</div>
+            <p>6502 Robocop intro artefact from the staged showreel build.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D025-SHOT">Screengrab placeholder: robocop_intro_65.ie65</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D025-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+
+          <article class="demo-card" data-claim="CL-D026">
+            <h3><code>rotozoomer_x86.ie86</code></h3>
+            <div class="runtime">x86</div>
+            <p>x86 version of the shared rotozoomer effect, built with NASM.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D026-SHOT">Screengrab placeholder: rotozoomer_x86.ie86</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D026-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D027">
+            <h3><code>antic_plasma_x86.ie86</code></h3>
+            <div class="runtime">x86</div>
+            <p>x86 programme for the ANTIC plasma path, built with NASM.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D027-SHOT">Screengrab placeholder: antic_plasma_x86.ie86</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D027-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D030">
+            <h3><code>RotoAPI</code></h3>
+            <div class="runtime">AROS executable</div>
+            <p>AROS assembly rotozoomer through the API drawing path.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D030-SHOT">Screengrab placeholder: RotoAPI</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D030-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D031">
+            <h3><code>RotoHW</code></h3>
+            <div class="runtime">AROS executable</div>
+            <p>AROS assembly rotozoomer through direct hardware access.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D031-SHOT">Screengrab placeholder: RotoHW</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D031-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D032">
+            <h3><code>RotoAPIc</code></h3>
+            <div class="runtime">AROS executable</div>
+            <p>AROS C rotozoomer through the API drawing path.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D032-SHOT">Screengrab placeholder: RotoAPIc</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D032-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+          <article class="demo-card" data-claim="CL-D033">
+            <h3><code>RotoHWc</code></h3>
+            <div class="runtime">AROS executable</div>
+            <p>AROS C rotozoomer through direct hardware access.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D033-SHOT">Screengrab placeholder: RotoHWc</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D033-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+
+          <article id="mariokart" class="demo-card" data-claim="CL-D028">
+            <h3><code>mariokart64.ie68</code></h3>
+            <div class="runtime">M68K game port with IE64 worker</div>
+            <p>The mk64-ie Makefile packs an M68K loader, game payload, and <code>svc/tnl.ie64</code> into <code>build/ie/mariokart64.ie68</code>. The port uses an IE64 T&L coprocessor service for vertex transform work.</p>
+            <div class="shot-placeholder" data-placeholder="publish-blocking" data-asset="AL-D028-SHOT">Screengrab placeholder: mariokart64.ie68</div>
+            <a class="placeholder-link" data-placeholder="publish-blocking" data-asset="AL-D028-YT" href="https://youtube.com/@IntuitionAmiga">YouTube slot pending</a>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="docs" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 data-claim="CL-043">The manuals carry the full register-level detail.</h2>
+          <p data-claim="CL-044">The page shows the machine structure; the PDFs and reference-guide bundle hold ISA tables, monitor commands, IEScript APIs, MMIO maps, examples, and the full Mario Kart 64 port case study.</p>
+        </div>
+        <div class="doc-list" data-claim="CL-045">
+          <article class="card">
+            <h3><a href="docs/architecture.pdf">architecture.pdf</a></h3>
+            <p>System architecture, bus, CPU, MMIO, runtime, audio, video, and tooling overview.</p>
+          </article>
+          <article class="card">
+            <h3><a href="docs/IE64_ISA.pdf">IE64_ISA.pdf</a></h3>
+            <p>IE64 64-bit RISC instruction set, addressing, FPU, control registers, timer, privilege, and MMU reference.</p>
+          </article>
+          <article class="card">
+            <h3><a href="docs/IE32_ISA.pdf">IE32_ISA.pdf</a></h3>
+            <p>IE32 32-bit RISC-like CPU manual with fixed 8-byte instruction format and addressing behaviour.</p>
+          </article>
+          <article class="card">
+            <h3><a href="docs/iemon.pdf">iemon.pdf</a></h3>
+            <p>Machine monitor manual covering debugger commands, breakpoints, watchpoints, reverse history, and scripted access.</p>
+          </article>
+          <article class="card">
+            <h3><a href="docs/iescript.pdf">iescript.pdf</a></h3>
+            <p>Lua automation API for programme control, MMIO, screenshots, recording, frame hashes, waits, and debugger integration.</p>
+          </article>
+          <article class="card">
+            <h3><a href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Intuition Engine Programmers Reference Guide.zip</a></h3>
+            <p>The full Programmer's Reference Guide bundle. Part VIII is the full game-port case study for the Mario Kart 64 IE port.</p>
+          </article>
+        </div>
+
+        <article class="card" style="margin-top: 1rem" data-claim="CL-046">
+          <h3>Programmer's Reference Guide contents</h3>
+          <ol class="toc-columns">
+            <li>Part I - Intuition Engine BASIC</li>
+            <li>Part II - Programming Graphics</li>
+            <li>Part III - Programming Sound and Music</li>
+            <li>Part IV - BASIC to Machine Language</li>
+            <li>Part V - Input / Output Guide</li>
+            <li>Part VI - Whole-Machine Project</li>
+            <li>Part VII - Demo Programming</li>
+            <li>Part VIII - A Full Game Port Case Study</li>
+            <li>Appendices A to L - abbreviations, character codes, MMIO maps, tables, opcode references, symbol index, errors, memory map, block diagrams, and index.</li>
+          </ol>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap" data-claim="CL-047">
+      <div>
+        <strong>Intuition Engine</strong><br>
+        One shared MachineBus. Six CPU views. Tools that can inspect the whole machine.
+      </div>
+      <div class="actions">
+        <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
+        <a class="button secondary" href="https://youtube.com/@IntuitionAmiga">YouTube</a>
+      </div>
+    </div>
+  </footer>
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareSourceCode",
+    "name": "Intuition Engine",
+    "description": "Shared-bus multi-CPU fantasy computer with six CPU views, MMIO devices, coprocessor workers, audio and video fabric, tooling, and demos.",
+    "codeRepository": "https://github.com/IntuitionAmiga/IntuitionEngine",
+    "programmingLanguage": "Go",
+    "url": "https://intuitionengine.com/"
+  }
+  </script>
+</body>
+</html>
