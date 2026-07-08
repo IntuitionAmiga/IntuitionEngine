@@ -951,7 +951,7 @@
               <tr>
                 <td>EmuTOS</td>
                 <td>M68K</td>
-                <td>Hardware-accelerated IE VideoChip driver; EmuTOS runs 640 x 480 RGBA direct VRAM and blitter drawing.</td>
+                <td>Hardware-accelerated IE VideoChip driver; EmuTOS runs a 960 x 540 RGBA native mode (scaled to 1920 x 1080) with direct VRAM and blitter drawing.</td>
                 <td>Keyboard, mouse, terminal, timer IRQs, PSG writes, GEMDOS mapping, Atari MIDI ACIA bridge.</td>
               </tr>
               <tr>
@@ -974,11 +974,11 @@
           <article class="card">
             <span class="kicker">EmuTOS</span>
             <h3>EmuTOS VideoChip driver</h3>
-            <p>EmuTOS gets a hardware-accelerated IE VideoChip driver through the IE target. The implementation runs 640 x 480 RGBA direct VRAM, uses the VideoChip blitter for accelerated drawing, reads keyboard and mouse MMIO, and drives timer IRQ level 5 and VBlank IRQ level 4.</p>
+            <p>EmuTOS gets a hardware-accelerated IE VideoChip driver through the IE target. The implementation runs a 960 x 540 RGBA native mode over direct VRAM (scaled to 1920 x 1080 for the desktop), uses the VideoChip blitter for accelerated drawing, reads keyboard and mouse MMIO, and drives timer IRQ level 5 and VBlank IRQ level 4.</p>
             <pre class="code-panel"><code>IE_VIDEO_CTRL  0x000F0000
 IE_VIDEO_MODE  0x000F0004
 IE_VRAM_BASE   0x00100000
-EmuTOS mode    640 x 480 RGBA, stride 2560
+EmuTOS mode    960 x 540 RGBA, stride 3840
 IE_PSG_BASE    0x000F0C00</code></pre>
           </article>
           <article class="card">
