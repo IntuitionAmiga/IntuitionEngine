@@ -307,15 +307,77 @@ func (b *SparseBacking) Write8(addr uint64, v byte) {
 	b.write8(addr, v)
 }
 
+// spanInRangeLen returns how many bytes of a length-n span starting at addr lie
+// within the advertised size, overflow-safe. Bytes at or past the advertised
+// size are out of range (read as zero, dropped on write), matching the per-byte
+// read8/write8 semantics this chunked path replaces.
+func (b *SparseBacking) spanInRangeLen(addr, n uint64) uint64 {
+	if addr >= b.advertisedSize {
+		return 0
+	}
+	avail := b.advertisedSize - addr
+	if n <= avail {
+		return n
+	}
+	return avail
+}
+
+// readSpan copies [addr, addr+len(dst)) into dst, resolving each page once and
+// using copy() instead of a per-byte read8 loop. Absent pages and out-of-range
+// bytes yield zero. Byte-identical to the previous per-byte loop, including the
+// empty-span no-op that does not assert open.
 func (b *SparseBacking) readSpan(addr uint64, dst []byte) {
-	for i := range dst {
-		dst[i] = b.read8(addr + uint64(i))
+	if len(dst) == 0 {
+		return
+	}
+	b.assertOpen()
+	clear(dst) // out-of-range and absent-page bytes stay zero
+	remaining := b.spanInRangeLen(addr, uint64(len(dst)))
+	pos := addr
+	dstOff := uint64(0)
+	for remaining > 0 {
+		off := pos % b.pageSize
+		chunk := b.pageSize - off
+		if chunk > remaining {
+			chunk = remaining
+		}
+		if p := b.page(pos/b.pageSize, false); p != nil {
+			p.mu.RLock()
+			copy(dst[dstOff:dstOff+chunk], p.data[off:off+chunk])
+			p.mu.RUnlock()
+		}
+		pos += chunk
+		dstOff += chunk
+		remaining -= chunk
 	}
 }
 
+// writeSpan copies src into [addr, addr+len(src)), allocating each straddled
+// page once and using copy() instead of a per-byte write8 loop. Out-of-range
+// bytes are dropped. Byte-identical to the previous per-byte loop, including the
+// empty-span no-op that does not assert open and the allocate-on-write of any
+// in-range page regardless of content.
 func (b *SparseBacking) writeSpan(addr uint64, src []byte) {
-	for i := range src {
-		b.write8(addr+uint64(i), src[i])
+	if len(src) == 0 {
+		return
+	}
+	b.assertOpen()
+	remaining := b.spanInRangeLen(addr, uint64(len(src)))
+	pos := addr
+	srcOff := uint64(0)
+	for remaining > 0 {
+		off := pos % b.pageSize
+		chunk := b.pageSize - off
+		if chunk > remaining {
+			chunk = remaining
+		}
+		p := b.page(pos/b.pageSize, true)
+		p.mu.Lock()
+		copy(p.data[off:off+chunk], src[srcOff:srcOff+chunk])
+		p.mu.Unlock()
+		pos += chunk
+		srcOff += chunk
+		remaining -= chunk
 	}
 }
 

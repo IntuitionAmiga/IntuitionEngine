@@ -4236,6 +4236,29 @@ func clampF32(value, min, max float32) float32 {
 	return value
 }
 
+// scaleF32SpanScalar multiplies each sample in s by gain in place. Plain scalar
+// multiply with no FMA, so the SIMD variant (VMULPS) is bit-identical.
+func scaleF32SpanScalar(s []float32, gain float32) {
+	for i := range s {
+		s[i] *= gain
+	}
+}
+
+// clampF32SpanScalar clamps each sample of s to [min, max] in place, using the
+// same ordered compares as clampF32: value < min wins first, then value > max,
+// and NaN passes through unchanged. The SIMD variant must clamp via compare and
+// blend (not VMINPS/VMAXPS) to preserve this NaN behaviour bit-exactly.
+func clampF32SpanScalar(s []float32, min, max float32) {
+	for i := range s {
+		v := s[i]
+		if v < min {
+			s[i] = min
+		} else if v > max {
+			s[i] = max
+		}
+	}
+}
+
 // polyBLEP applies polynomial band-limited step correction to reduce aliasing
 // at waveform discontinuities. This produces cleaner high-frequency output
 // for square and sawtooth waves.

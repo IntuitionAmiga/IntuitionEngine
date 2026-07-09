@@ -172,6 +172,17 @@ VM_NOVULKAN_TAGS := novulkan $(VM_EMBED_TAGS)
 override GOAMD64 := v3
 export GOAMD64
 
+# SIMD acceleration kernels (simd/archsimd) are default-on for make builds. The
+# kernels live behind the goexperiment.simd build tag and an amd64 guard; on any
+# other target the stubs (simd_gate_stub.go) compile scalar-only, so exporting
+# the experiment globally is safe for the arm64 cross builds and the CGO_ENABLED=0
+# purego recipe (all probed to build with it set). Runtime kill switch: IE_SIMD=0
+# reverts a SIMD-built binary to scalar kernels. Dev machines using `go run .`
+# need a one-time `go env -w GOEXPERIMENT=simd` (GOEXPERIMENT cannot live in
+# go.mod); without it they still build and run correctly, scalar-only.
+override GOEXPERIMENT := simd
+export GOEXPERIMENT
+
 # Shared VM binary build recipes used by both direct binary checks and releases.
 # $(1) = GOARCH, $(2) = CC, $(3) = CXX, $(4) = extra env, $(5) = output path
 define build-linux-vm-binary
@@ -198,6 +209,10 @@ BENCH_TAGS ?= headless
 BENCH_TIME ?= 1s
 BENCH_COUNT ?= 10
 BENCH_PKG ?= ./...
+# GOEXPERIMENT used for benchmark runs. Defaults to simd so scalar-vs-simd
+# sub-benchmarks compile; override with BENCH_GOEXPERIMENT=none to measure the
+# scalar world in isolation.
+BENCH_GOEXPERIMENT ?= simd
 BENCH_DIR ?= benchmarks/$(BENCH_ITEM)
 
 # Installation paths
@@ -320,7 +335,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race check-docs bench-baseline bench-after bench-compare
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -337,6 +352,22 @@ test-race:
 test:
 	$(GO) test -tags headless ./...
 
+# SIMD_TEST_REGEX pins the narrow set of tests that gate SIMD work: the SIMD
+# differential/characterisation tests, plus the golden/regression tests the
+# kernels must not disturb. No full headless sweep (standing rule).
+SIMD_TEST_REGEX ?= TestSIMD|TestSparseBacking|Characterisation|TestBlitColorExpand|TestVoodoo.*Golden|TestVoodooRasterizeRows|TestVoodooSIMDPathQualification|TestEmuTOS_DesktopGoldenFramebuffer|TestCLUT8Expand|TestScaleF32Span|TestClampF32Span
+
+# test-simd runs the gating set three ways: SIMD build with -race, the IE_SIMD=0
+# kill-switch (scalar kernels in a SIMD binary), and a GOEXPERIMENT=none build
+# check proving the scalar world still compiles. GOEXPERIMENT=none is required
+# (not env -u): `go env -w GOEXPERIMENT=simd` persists in the Go env file and the
+# tool falls back to it, so only `none` overrides both.
+test-simd:
+	GOEXPERIMENT=simd GOAMD64=$(GOAMD64) $(GO) test -tags headless -race -run '$(SIMD_TEST_REGEX)' ./...
+	IE_SIMD=0 GOEXPERIMENT=simd GOAMD64=$(GOAMD64) $(GO) test -tags headless -run '$(SIMD_TEST_REGEX)' ./...
+	GOEXPERIMENT=simd GOAMD64=$(GOAMD64) $(GO) test -tags headless -run 'TestSIMDRasterizeRowsMatchesScalarBitExact' -count=1 .
+	GOEXPERIMENT=none $(GO) build ./...
+
 vet:
 	$(GO) vet -tags headless -unsafeptr=false ./...
 
@@ -352,13 +383,14 @@ bench-baseline:
 		echo "# cpu: $$(awk -F: '/model name/ {sub(/^[ \t]+/, "", $$2); print $$2; exit}' /proc/cpuinfo 2>/dev/null || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"; \
 		echo "# governor: $$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"; \
 		echo "# GOAMD64: $(GOAMD64)"; \
+		echo "# GOEXPERIMENT: $(BENCH_GOEXPERIMENT)"; \
 		echo "# tags: $(BENCH_TAGS)"; \
 		echo "# bench: $(BENCH_REGEX)"; \
 		echo "# benchtime: $(BENCH_TIME)"; \
 		echo "# count: $(BENCH_COUNT)"; \
 	} > "$(BENCH_DIR)/before.txt"
 	@tmp="$(BENCH_DIR)/before.cmd.out"; status=0; \
-	GOAMD64=$(GOAMD64) $(GO) test -tags "$(BENCH_TAGS)" -run '^$$' -bench '$(BENCH_REGEX)' -benchtime "$(BENCH_TIME)" -count "$(BENCH_COUNT)" $(BENCH_PKG) > "$$tmp" 2>&1 || status=$$?; \
+	GOEXPERIMENT=$(BENCH_GOEXPERIMENT) GOAMD64=$(GOAMD64) $(GO) test -tags "$(BENCH_TAGS)" -run '^$$' -bench '$(BENCH_REGEX)' -benchtime "$(BENCH_TIME)" -count "$(BENCH_COUNT)" $(BENCH_PKG) > "$$tmp" 2>&1 || status=$$?; \
 	tee -a "$(BENCH_DIR)/before.txt" < "$$tmp" || status=$$?; \
 	$(RM) -f "$$tmp"; \
 	exit $$status
@@ -372,13 +404,14 @@ bench-after:
 		echo "# cpu: $$(awk -F: '/model name/ {sub(/^[ \t]+/, "", $$2); print $$2; exit}' /proc/cpuinfo 2>/dev/null || sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"; \
 		echo "# governor: $$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"; \
 		echo "# GOAMD64: $(GOAMD64)"; \
+		echo "# GOEXPERIMENT: $(BENCH_GOEXPERIMENT)"; \
 		echo "# tags: $(BENCH_TAGS)"; \
 		echo "# bench: $(BENCH_REGEX)"; \
 		echo "# benchtime: $(BENCH_TIME)"; \
 		echo "# count: $(BENCH_COUNT)"; \
 	} > "$(BENCH_DIR)/after.txt"
 	@tmp="$(BENCH_DIR)/after.cmd.out"; status=0; \
-	GOAMD64=$(GOAMD64) $(GO) test -tags "$(BENCH_TAGS)" -run '^$$' -bench '$(BENCH_REGEX)' -benchtime "$(BENCH_TIME)" -count "$(BENCH_COUNT)" $(BENCH_PKG) > "$$tmp" 2>&1 || status=$$?; \
+	GOEXPERIMENT=$(BENCH_GOEXPERIMENT) GOAMD64=$(GOAMD64) $(GO) test -tags "$(BENCH_TAGS)" -run '^$$' -bench '$(BENCH_REGEX)' -benchtime "$(BENCH_TIME)" -count "$(BENCH_COUNT)" $(BENCH_PKG) > "$$tmp" 2>&1 || status=$$?; \
 	tee -a "$(BENCH_DIR)/after.txt" < "$$tmp" || status=$$?; \
 	$(RM) -f "$$tmp"; \
 	exit $$status

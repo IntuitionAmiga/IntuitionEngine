@@ -844,7 +844,29 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle, st *softw
 // rasterizeRows rasterises the triangle rows [minY, maxY) using the
 // per-triangle setup. Per-pixel results are bit-identical to the
 // previous single-loop implementation.
+// voodooRasterizeRowsSIMDFn is set by assignSIMDKernels on supported hosts to
+// the bit-exact SIMD row rasteriser. nil on every other build, so rasterizeRows
+// runs the scalar reference. The scalar path stays the canonical conformance
+// reference; SIMD is purely additive and only for eligible setups.
+var voodooRasterizeRowsSIMDFn func(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, maxY int)
+
+// voodooSetupSIMDEligible reports whether a setup is SIMD-eligible: slope-
+// register affine interpolation and RGB write. Texture, alpha test, chroma key,
+// dither and stipple were each added feature by feature, each behind its own
+// bit-exact differential gate (texture and the quantising stages run as scalar
+// hybrids inside the lane loop). Only alpha blending remains scalar-routed, as it
+// reads the destination and multiplies through per-target blend factors.
+func voodooSetupSIMDEligible(s *voodooTriangleSetup) bool {
+	return s.slopesValid &&
+		s.rgbWrite &&
+		!s.alphaBlendEnable
+}
+
 func (b *VoodooSoftwareBackend) rasterizeRows(s *voodooTriangleSetup, minY, maxY int) {
+	if voodooRasterizeRowsSIMDFn != nil && voodooSetupSIMDEligible(s) {
+		voodooRasterizeRowsSIMDFn(b, s, minY, maxY)
+		return
+	}
 	v0, v1, v2 := s.v0, s.v1, s.v2
 
 	for y := minY; y < maxY; y++ {

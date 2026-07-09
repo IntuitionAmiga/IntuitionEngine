@@ -123,6 +123,7 @@ Version metadata (version, git commit, build date) is automatically injected via
 | Tag | Effect |
 |-----|--------|
 | `headless` | Disable GUI/audio/video backends (stubs only) |
+| `goexperiment.simd` | amd64 only; compile the `simd/archsimd` span kernels (compositor, blitter fill, software Voodoo untextured spans). Default-on for `make`; scalar fallback elsewhere; `IE_SIMD=0` reverts at runtime |
 | `novulkan` | Disable Vulkan backend, use software Voodoo rasteriser |
 | `embed_basic` | Embed pre-assembled EhBASIC binary for `-basic` flag |
 | `embed_emutos` | Embed EmuTOS ROM image for `-emutos` flag and BASIC `EMUTOS` command |
@@ -485,8 +486,19 @@ make bench-compare BENCH_ITEM=m0_phase0
 
 The targets write raw captures and `benchstat.txt` under
 `benchmarks/<item>/`. Raw files include date, git SHA, CPU model, governor,
-GOAMD64, tags, bench regex, benchtime, and count headers. Keep `bench/` for
-pprof files and use `benchmarks/` for before/after optimisation evidence.
+GOAMD64, GOEXPERIMENT, tags, bench regex, benchtime, and count headers. Keep
+`bench/` for pprof files and use `benchmarks/` for before/after optimisation
+evidence.
+
+For SIMD span kernels the benchmark carries both variants as sub-benchmarks
+(`.../scalar` and `.../simd`) in one `GOEXPERIMENT=simd` binary, so benchstat
+compares them directly in a single run instead of before/after captures. The
+bench targets default `GOEXPERIMENT` to `simd` (override with
+`BENCH_GOEXPERIMENT=none` to measure the scalar world alone). A SIMD kernel merges
+only when its `simd` sub-benchmark clears the kernel's stop rule against `scalar`;
+`make test-simd` gates correctness (bit-exact differential, `-race`, and the
+`IE_SIMD=0` kill switch). See `SIMD_ACCELERATION_TDD_PLAN.md` for the per-phase
+evidence and no-go outcomes.
 
 ### Audio Demonstration Tests
 

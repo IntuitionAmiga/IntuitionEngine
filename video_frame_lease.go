@@ -129,6 +129,18 @@ func (l *VideoFrameLease) Release() {
 }
 
 func normaliseFrameLeaseAlphaRGBA(pixels []byte) {
+	normaliseFrameLeaseSpanImpl(pixels)
+}
+
+// normaliseFrameLeaseSpanImpl defaults to the scalar leaf and is reassigned to
+// the SIMD variant in assignSIMDKernels on supported hosts. Differential tests
+// call normaliseFrameLeaseSpanScalar directly.
+var normaliseFrameLeaseSpanImpl = normaliseFrameLeaseSpanScalar
+
+// normaliseFrameLeaseSpanScalar promotes zero-alpha nonzero-rgb pixels in place
+// to 0xFFRRGGBB, writing only pixels that change. Fully-zero and already
+// alpha-set pixels are left untouched.
+func normaliseFrameLeaseSpanScalar(pixels []byte) {
 	for i := 0; i+BYTES_PER_PIXEL <= len(pixels); i += BYTES_PER_PIXEL {
 		src := binary.LittleEndian.Uint32(pixels[i:])
 		if out, ok := compositorOpaquePixel(src); ok && out != src {

@@ -846,6 +846,38 @@ func (chip *VideoChip) SetPaletteEntry(index uint8, hwVal uint32) {
 
 // convertCLUT8Frame reads indexed pixels from bus memory at fbBase and
 // converts them to RGBA32 in clutFrame using the palette lookup table.
+// clut8ExpandSpanImpl defaults to the 4x-unrolled scalar leaf: it is byte-
+// identical to clut8ExpandSpanScalar, portable (always-built), and ~13% faster.
+// The Phase 5 archsimd variant regressed (~0.68x: no gather op, the staging
+// round-trip costs more than direct scalar stores), so it is not wired.
+// Differential tests call clut8ExpandSpanScalar directly.
+var clut8ExpandSpanImpl = clut8ExpandSpanUnrolled
+
+// clut8ExpandSpanScalar expands one CLUT8 index byte per source pixel into a
+// pre-packed LE RGBA32 word via the 256-entry palette. len(dst) must be at least
+// 4*len(src).
+func clut8ExpandSpanScalar(dst, src []byte, pal *[256]uint32) {
+	for i := 0; i < len(src); i++ {
+		*(*uint32)(unsafe.Pointer(&dst[i*4])) = pal[src[i]]
+	}
+}
+
+// clut8ExpandSpanUnrolled is a 4x-unrolled scalar variant used only for the
+// Phase 5 benchmark comparison. Byte-identical to clut8ExpandSpanScalar.
+func clut8ExpandSpanUnrolled(dst, src []byte, pal *[256]uint32) {
+	n := len(src)
+	i := 0
+	for ; i+4 <= n; i += 4 {
+		*(*uint32)(unsafe.Pointer(&dst[i*4])) = pal[src[i]]
+		*(*uint32)(unsafe.Pointer(&dst[i*4+4])) = pal[src[i+1]]
+		*(*uint32)(unsafe.Pointer(&dst[i*4+8])) = pal[src[i+2]]
+		*(*uint32)(unsafe.Pointer(&dst[i*4+12])) = pal[src[i+3]]
+	}
+	for ; i < n; i++ {
+		*(*uint32)(unsafe.Pointer(&dst[i*4])) = pal[src[i]]
+	}
+}
+
 func (chip *VideoChip) convertCLUT8Frame() {
 	mode := VideoModes[chip.currentMode]
 	pixelCount := uint64(mode.width * mode.height)
@@ -883,11 +915,7 @@ func (chip *VideoChip) convertCLUT8Frame() {
 	end := start + pixelCount
 	src := chip.busMemory[start:end]
 	dst := chip.clutFrame
-	for i := uint64(0); i < pixelCount; i++ {
-		rgba := chip.clutPalette[src[i]]
-		off := i * BYTES_PER_PIXEL
-		*(*uint32)(unsafe.Pointer(&dst[off])) = rgba
-	}
+	clut8ExpandSpanImpl(dst, src, &chip.clutPalette)
 	if cacheable {
 		chip.clutCacheValid = true
 		chip.clutPaletteDirty = false
@@ -1531,6 +1559,19 @@ func (chip *VideoChip) blitFillRasterOp32FrontBufferLocked(width, height int, st
 }
 
 // blitBulkFill32Locked fills a rectangle with a 32-bit color using bulk operations.
+// fillUint32LESpanImpl defaults to the scalar leaf and is reassigned to the SIMD
+// variant in assignSIMDKernels on supported hosts. Differential tests call
+// fillUint32LESpanScalar directly.
+var fillUint32LESpanImpl = fillUint32LESpanScalar
+
+// fillUint32LESpanScalar writes the little-endian 32-bit value v across dst.
+// dst length should be a multiple of 4; a sub-word tail is left untouched.
+func fillUint32LESpanScalar(dst []byte, v uint32) {
+	for i := 0; i+4 <= len(dst); i += 4 {
+		binary.LittleEndian.PutUint32(dst[i:i+4], v)
+	}
+}
+
 func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, stride, color uint32, mode VideoMode) {
 	rowBytes := uint32(width * BYTES_PER_PIXEL)
 
@@ -1543,13 +1584,8 @@ func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, strid
 		if endAddr > uint64(len(chip.busMemory)) {
 			return
 		}
-		// Fill first row
-		addr := dst
-		for range width {
-			binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], color)
-			addr += BYTES_PER_PIXEL
-		}
-		// Copy first row to remaining rows
+		// Fill first row, then copy it to the remaining rows.
+		fillUint32LESpanImpl(chip.busMemory[dst:dst+rowBytes], color)
 		firstRow := chip.busMemory[dst : dst+rowBytes]
 		rowAddr := dst + stride
 		for y := 1; y < height; y++ {
@@ -1572,11 +1608,7 @@ func (chip *VideoChip) blitBulkFill32Locked(dst uint32, width, height int, strid
 			if offset >= uint32(len(chip.frontBuffer)) && chip.busMemory != nil {
 				endAddr := uint64(dst) + uint64(stride)*uint64(height-1) + uint64(rowBytes)
 				if endAddr <= uint64(len(chip.busMemory)) {
-					addr := dst
-					for range width {
-						binary.LittleEndian.PutUint32(chip.busMemory[addr:addr+4], color)
-						addr += BYTES_PER_PIXEL
-					}
+					fillUint32LESpanImpl(chip.busMemory[dst:dst+rowBytes], color)
 					firstRow := chip.busMemory[dst : dst+rowBytes]
 					rowAddr := dst + stride
 					for y := 1; y < height; y++ {
@@ -2732,6 +2764,109 @@ func (chip *VideoChip) blitWrite8Locked(addr uint32, value uint8, mode VideoMode
 }
 
 // blitColorExpandLocked expands a 1-bit template to colored pixels.
+// colorExpandOp bundles the colour-expand raster-op selectors for the row
+// kernel. bpp is 1 (CLUT8) or 4 (RGBA32).
+type colorExpandOp struct {
+	bpp                          int
+	jam1, invertTmpl, invertMode bool
+}
+
+// colorExpandRowImpl defaults to the scalar leaf and is reassigned to the SIMD
+// variant in assignSIMDKernels on supported hosts. Differential tests call
+// colorExpandRowScalar directly.
+var colorExpandRowImpl = colorExpandRowScalar
+
+// colorExpandRowScalar expands one template row into dst (bpp bytes per pixel),
+// honouring the exact contract of the generic per-bit loop: MSB-first template
+// bits offset by maskSrcX, invertTmpl bit flip, JAM1 skip of clear bits, JAM2
+// background write, and invert mode XOR of set-bit pixels. It writes only the
+// pixels the generic loop would write and returns the written byte range
+// [wroteLo, wroteHi) within the row so the caller invalidates and updates
+// hasContent only for real writes. wrote is false for a complete no-op row (for
+// example an all-clear JAM1 row), preserving the no-op semantics.
+func colorExpandRowScalar(dst, mask []byte, maskSrcX, width int, fg, bg uint32, op colorExpandOp) (wroteLo, wroteHi int, wrote bool) {
+	bpp := op.bpp
+	rowBytes := width * bpp
+	lo, hi := rowBytes, 0
+	for x := 0; x < width; x++ {
+		bitX := maskSrcX + x
+		b := (mask[bitX>>3] >> uint(7-(bitX&7))) & 1
+		if op.invertTmpl {
+			b ^= 1
+		}
+		off := x * bpp
+		var v uint32
+		doWrite := false
+		switch {
+		case op.invertMode:
+			if b == 1 {
+				if bpp == 1 {
+					v = uint32(dst[off]) ^ 0xFF
+				} else {
+					v = binary.LittleEndian.Uint32(dst[off:off+4]) ^ 0xFFFFFFFF
+				}
+				doWrite = true
+			}
+		case b == 1:
+			v = fg
+			doWrite = true
+		case !op.jam1:
+			v = bg
+			doWrite = true
+		}
+		if doWrite {
+			if bpp == 1 {
+				dst[off] = byte(v)
+			} else {
+				binary.LittleEndian.PutUint32(dst[off:off+4], v)
+			}
+			if off < lo {
+				lo = off
+			}
+			if off+bpp > hi {
+				hi = off + bpp
+			}
+			wrote = true
+		}
+	}
+	if !wrote {
+		return 0, 0, false
+	}
+	return lo, hi, true
+}
+
+// colorExpandFastPathEligibleLocked reports whether the whole colour-expand can
+// run through the row kernel over busMemory: directVRAM mode, and every mask and
+// destination row wholly inside busMemory with the destination inside VRAM
+// (the only case where the generic loop writes busMemory rather than dispatching
+// per-pixel through the bus). maskBytesPerRow is the mask byte count each row
+// samples. On ineligibility the generic per-bit loop runs unchanged.
+func (chip *VideoChip) colorExpandFastPathEligibleLocked(width, height int, bpp int, dstRow, dstStride, maskAddr, maskMod uint32, maskSrcX int) (maskBytesPerRow int, ok bool) {
+	if chip.directVRAM == nil || chip.busMemory == nil {
+		return 0, false
+	}
+	// All bounds in uint64 so a guest-programmed dst/stride/mask that would wrap a
+	// uint32 end address cannot slip past the range checks and panic the slice in
+	// the fast path. Ineligible rows fall through to the generic per-pixel/bus
+	// path, which handles out-of-VRAM addresses via chip.bus.
+	busLen := uint64(len(chip.busMemory))
+	rowBytes := uint64(width * bpp)
+	maskBytes := uint64((maskSrcX + width + 7) / 8)
+	vramStart := uint64(VRAM_START)
+	vramEnd := uint64(VRAM_START) + uint64(VRAM_SIZE)
+	for y := 0; y < height; y++ {
+		dRow := uint64(dstRow) + uint64(y)*uint64(dstStride)
+		if dRow < vramStart || dRow >= vramEnd || dRow+rowBytes > vramEnd || dRow+rowBytes > busLen {
+			return 0, false
+		}
+		mRow := uint64(maskAddr) + uint64(y)*uint64(maskMod)
+		if mRow+maskBytes > busLen {
+			return 0, false
+		}
+	}
+	return int(maskBytes), true
+}
+
 func (chip *VideoChip) blitColorExpandLocked(mode VideoMode) {
 	width := int(chip.bltWidth)
 	height := int(chip.bltHeight)
@@ -2760,6 +2895,43 @@ func (chip *VideoChip) blitColorExpandLocked(mode VideoMode) {
 	}
 
 	dstRow := chip.bltDst
+
+	// Fast path: whole blit resolves to busMemory row spans. Removes the
+	// per-pixel busRead8Locked and blitWrite*Locked dispatch of the generic
+	// loop; byte-identical to it (verified by TestBlitColorExpandFastPathMatches
+	// GenericPath and the characterisation matrix).
+	if maskBytesPerRow, ok := chip.colorExpandFastPathEligibleLocked(width, height, bpp, dstRow, dstStride, maskAddr, maskMod, maskSrcX); ok {
+		op := colorExpandOp{bpp: bpp, jam1: jam1, invertTmpl: invertTmpl, invertMode: invertMode}
+		bm := chip.busMemory
+		rowBytes := uint32(width * bpp)
+		wroteAny := false
+		row := dstRow
+		m := maskAddr
+		for y := 0; y < height; y++ {
+			dst := bm[row : row+rowBytes]
+			maskSlice := bm[m : m+uint32(maskBytesPerRow)]
+			lo, hi, wrote := colorExpandRowImpl(dst, maskSlice, maskSrcX, width, fg, bg, op)
+			if wrote {
+				chip.invalidateBusMemoryWriteLocked(row+uint32(lo), uint32(hi-lo))
+				wroteAny = true
+			}
+			row += dstStride
+			m += maskMod
+		}
+		if wroteAny && !chip.resetting && !chip.hasContent.Load() {
+			chip.hasContent.Store(true)
+		}
+		return
+	}
+	chip.blitColorExpandGenericLocked(mode, width, height, bpp, bytesPerPx, jam1, invertTmpl, invertMode, fg, bg, maskAddr, maskMod, maskSrcX, dstStride, dstRow)
+}
+
+// blitColorExpandGenericLocked is the canonical per-bit colour-expand loop. It
+// dispatches every pixel through busRead8Locked / blitWrite*Locked so it handles
+// every destination (frontBuffer, bus fallback, non-VRAM). The fast path in
+// blitColorExpandLocked is a byte-identical specialisation for the directVRAM /
+// busMemory case.
+func (chip *VideoChip) blitColorExpandGenericLocked(mode VideoMode, width, height, bpp int, bytesPerPx uint32, jam1, invertTmpl, invertMode bool, fg, bg, maskAddr, maskMod uint32, maskSrcX int, dstStride, dstRow uint32) {
 	for y := range height {
 		_ = y
 		dstAddr := dstRow

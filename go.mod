@@ -2,6 +2,12 @@ module github.com/intuitionamiga/IntuitionEngine
 
 go 1.26.0
 
+// Pinned: the SIMD kernels use the experimental simd/archsimd package on the
+// default make build path. That API is not covered by the Go 1 compatibility
+// promise, so toolchain drift can break the build; pin the toolchain that ships
+// the probed API surface.
+toolchain go1.26.4
+
 require (
 	github.com/ebitengine/oto/v3 v3.5.0-alpha.8
 	github.com/ebitengine/purego v0.11.0-alpha.5

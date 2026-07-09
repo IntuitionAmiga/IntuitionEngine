@@ -1027,6 +1027,8 @@ FrameGenerationSource lets the compositor skip collect/copy/blend/upload work on
 
 Video frame leases are enabled by default and can be disabled with `IE_VIDEO_FRAME_LEASES=0`. Copy-buffer paths use three-slot lease rings to keep source-layer buffers alive while the hardware compositor or snapshot path still references them. Sources that implement the compositor copy interface can copy a stable frame directly into the caller-provided lease buffer, avoiding an intermediate source snapshot before compositor handoff. The software output path can also retain a lease-backed final frame for `UpdateFrame` instead of copying through the legacy output buffer. Frame leases keep compositor handoff buffers stable until release; hardware layers retain leases or stage copies when leases are unavailable. Snapshot APIs still return deep copies.
 
+SIMD acceleration kernels are enabled by default on amd64 builds and can be disabled with `IE_SIMD=0`. Hot pixel and sample spans (compositor blend and normalise, blitter fill and colour expand, software Voodoo untextured spans, audio post-effects) dispatch through package-level function variables that point at bit-exact SIMD variants when the host provides the AVX2 baseline; every kernel keeps a scalar leaf as its canonical reference, and non-amd64 targets, hosts without the baseline, or `IE_SIMD=0` route the scalar path. The SIMD variants are additive and never alter emulated results.
+
 ### Triple-Buffer Protocol
 
 All video systems except VideoChip use a lock-free triple-buffer protocol for `GetFrame()`:

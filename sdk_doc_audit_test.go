@@ -3531,6 +3531,7 @@ func TestSDKCompanionDocs_ArchitecturePerformanceRoadmapClaimsMatchSource(t *tes
 		"x86 self-modifying-code tracking uses 256-byte code pages and range invalidation.",
 		"Video frame leases are enabled by default and can be disabled with `IE_VIDEO_FRAME_LEASES=0`.",
 		"Frame leases keep compositor handoff buffers stable until release; hardware layers retain leases or stage copies when leases are unavailable.",
+		"SIMD acceleration kernels are enabled by default on amd64 builds and can be disabled with `IE_SIMD=0`.",
 		"ReadSamples uses safe block ticking only when every active sample ticker implements `ReadSamplesBlockTicker`, SFX allows block ticking, and no sample mixers are registered.",
 	} {
 		if !normalizedContains(doc, required) {

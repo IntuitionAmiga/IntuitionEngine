@@ -1384,32 +1384,91 @@ func (c *VideoCompositor) blendFrame1to1(srcFrame []byte, width, height int) {
 }
 
 func (c *VideoCompositor) copyOpaqueFrame1to1(srcFrame []byte, width, height int) {
-	rowBytes := width * BYTES_PER_PIXEL
-	for y := 0; y < height; y++ {
-		srcOffset := y * rowBytes
-		dstOffset := y * rowBytes
-		for x := 0; x < rowBytes; x += BYTES_PER_PIXEL {
-			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcOffset+x]))
-			*(*uint32)(unsafe.Pointer(&c.finalFrame[dstOffset+x])) = srcPixel | 0xFF000000
+	// 1:1 copy: src and finalFrame share the same contiguous layout, so the
+	// whole region is one span.
+	n := width * height * BYTES_PER_PIXEL
+	compositorOpaqueCopySpanImpl(c.finalFrame[:n], srcFrame[:n])
+}
+
+// Span-level compositor kernels. Scalar leaves are the canonical always-built
+// implementation; the ...Impl vars default to them and are reassigned to SIMD
+// variants in assignSIMDKernels on supported hosts (simd_dispatch_amd64.go).
+// Differential tests call the scalar leaves directly, never the Impl vars.
+var (
+	compositorBlendSpanImpl      = compositorBlendSpanScalar
+	compositorOpaqueCopySpanImpl = compositorOpaqueCopySpanScalar
+)
+
+// compositorBlendSpanScalar blends src into dst pixel by pixel: fully-zero
+// source pixels skip the write (dst preserved), zero-alpha nonzero-rgb pixels
+// promote to 0xFFRRGGBB, alpha-set pixels are written unchanged. dst and src
+// are RGBA byte spans of equal length; extra tail bytes below one pixel are
+// ignored.
+func compositorBlendSpanScalar(dst, src []byte) {
+	n := len(src)
+	if len(dst) < n {
+		n = len(dst)
+	}
+	for x := 0; x+BYTES_PER_PIXEL <= n; x += BYTES_PER_PIXEL {
+		srcPixel := *(*uint32)(unsafe.Pointer(&src[x]))
+		if pixel, ok := compositorOpaquePixel(srcPixel); ok {
+			*(*uint32)(unsafe.Pointer(&dst[x])) = pixel
 		}
 	}
+}
+
+// compositorOpaqueCopySpanScalar copies src into dst, forcing every pixel opaque
+// (src|0xFF000000). Unlike blend it always writes, including fully-zero pixels
+// (which become 0xFF000000).
+func compositorOpaqueCopySpanScalar(dst, src []byte) {
+	n := len(src)
+	if len(dst) < n {
+		n = len(dst)
+	}
+	for x := 0; x+BYTES_PER_PIXEL <= n; x += BYTES_PER_PIXEL {
+		srcPixel := *(*uint32)(unsafe.Pointer(&src[x]))
+		*(*uint32)(unsafe.Pointer(&dst[x])) = srcPixel | 0xFF000000
+	}
+}
+
+// scaledSrcXByteTable returns the per-column source byte offset, which depends
+// only on dx, so the caller hoists it out of the row loop instead of dividing
+// per pixel.
+func scaledSrcXByteTable(srcW, rectW int) []int {
+	tbl := make([]int, rectW)
+	for dx := range tbl {
+		tbl[dx] = (dx * srcW / rectW) * BYTES_PER_PIXEL
+	}
+	return tbl
 }
 
 func (c *VideoCompositor) copyOpaqueFrameScaled(srcFrame []byte, srcW, srcH int, rect scaleRect) {
 	dstW := c.frameWidth
 	srcRowBytes := srcW * BYTES_PER_PIXEL
 	dstRowBytes := dstW * BYTES_PER_PIXEL
+	rectRowBytes := rect.w * BYTES_PER_PIXEL
+	srcXByte := scaledSrcXByteTable(srcW, rect.w)
+	// Opaque copy writes every pixel, so consecutive dst rows that map to the
+	// same source row are byte-identical: copy the just-written row instead of
+	// re-sampling.
+	prevSrcY := -1
+	prevDstOffset := 0
 	for dy := range rect.h {
 		srcY := dy * srcH / rect.h
-		srcRowOffset := srcY * srcRowBytes
 		dstOffset := (rect.y+dy)*dstRowBytes + rect.x*BYTES_PER_PIXEL
-		for dx := range rect.w {
-			srcX := dx * srcW / rect.w
-			srcIdx := srcRowOffset + srcX*BYTES_PER_PIXEL
-			dstIdx := dstOffset + dx*BYTES_PER_PIXEL
-			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
-			*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = srcPixel | 0xFF000000
+		if srcY == prevSrcY {
+			copy(c.finalFrame[dstOffset:dstOffset+rectRowBytes], c.finalFrame[prevDstOffset:prevDstOffset+rectRowBytes])
+		} else {
+			srcRowOffset := srcY * srcRowBytes
+			for dx := range rect.w {
+				srcIdx := srcRowOffset + srcXByte[dx]
+				dstIdx := dstOffset + dx*BYTES_PER_PIXEL
+				srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
+				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = srcPixel | 0xFF000000
+			}
 		}
+		prevSrcY = srcY
+		prevDstOffset = dstOffset
 	}
 }
 
@@ -1418,21 +1477,11 @@ func (c *VideoCompositor) copyOpaqueFrameScaled(srcFrame []byte, srcW, srcH int,
 // promoted to opaque so BASIC-friendly 0x00RRGGBB pixels are visible.
 func (c *VideoCompositor) blendStrip(srcFrame []byte, width, startY, endY int) {
 	rowBytes := width * BYTES_PER_PIXEL
-	srcOffset := startY * rowBytes
-	dstOffset := startY * rowBytes
-
-	for y := startY; y < endY; y++ {
-		for x := 0; x < rowBytes; x += BYTES_PER_PIXEL {
-			srcIdx := srcOffset + x
-			dstIdx := dstOffset + x
-			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
-			if pixel, ok := compositorOpaquePixel(srcPixel); ok {
-				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = pixel
-			}
-		}
-		srcOffset += rowBytes
-		dstOffset += rowBytes
-	}
+	// Rows [startY, endY) are contiguous and 1:1 in both buffers, so the strip
+	// is a single span.
+	start := startY * rowBytes
+	end := endY * rowBytes
+	compositorBlendSpanImpl(c.finalFrame[start:end], srcFrame[start:end])
 }
 
 // blendFrameScaled handles scaling using optimized integer arithmetic
@@ -1446,23 +1495,29 @@ func (c *VideoCompositor) blendFrameScaled(srcFrame []byte, srcW, srcH int, rect
 	srcRowBytes := srcW * BYTES_PER_PIXEL
 	dstRowBytes := dstW * BYTES_PER_PIXEL
 
+	// srcX depends only on dx; hoist it. The scaled source row is gathered
+	// (scalar scatter-read) into a contiguous buffer once per distinct source
+	// row, then blended into the destination row through the SIMD blend span.
+	// Blend is skip-write (transparent source pixels leave the destination), so
+	// unlike the opaque copy the destination is not identical for a repeated
+	// source row and must be re-blended each row (only the gather is skipped).
+	srcXByte := scaledSrcXByteTable(srcW, rect.w)
+	rectRowBytes := rect.w * BYTES_PER_PIXEL
+	rowBuf := make([]byte, rectRowBytes)
+	prevSrcY := -1
+
 	for dy := range rect.h {
 		srcY := dy * srcH / rect.h
-		srcRowOffset := srcY * srcRowBytes
-		dstOffset := (rect.y+dy)*dstRowBytes + rect.x*BYTES_PER_PIXEL
-
-		for dx := range rect.w {
-			srcX := dx * srcW / rect.w
-			srcIdx := srcRowOffset + srcX*BYTES_PER_PIXEL
-			dstIdx := dstOffset + dx*BYTES_PER_PIXEL
-
-			// Read uint32 directly using unsafe pointer
-			srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
-			if pixel, ok := compositorOpaquePixel(srcPixel); ok {
-				// Write uint32 directly
-				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = pixel
+		if srcY != prevSrcY {
+			srcRowOffset := srcY * srcRowBytes
+			for dx := range rect.w {
+				*(*uint32)(unsafe.Pointer(&rowBuf[dx*BYTES_PER_PIXEL])) =
+					*(*uint32)(unsafe.Pointer(&srcFrame[srcRowOffset+srcXByte[dx]]))
 			}
+			prevSrcY = srcY
 		}
+		dstOffset := (rect.y+dy)*dstRowBytes + rect.x*BYTES_PER_PIXEL
+		compositorBlendSpanImpl(c.finalFrame[dstOffset:dstOffset+rectRowBytes], rowBuf)
 	}
 }
 
