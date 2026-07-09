@@ -780,7 +780,7 @@
       <div class="wrap">
         <p class="eyebrow">Shared bus machine</p>
         <h1>Six CPU views, one bus.</h1>
-        <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit home computers from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, rebuilt on one shared bus. Six CPUs, six video chips and ten audio engines covering 20+ chiptune formats.</p>
+        <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit home computers from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, rebuilt on one shared bus. Six CPUs, six video chips and ten audio engines and players covering 20+ chiptune formats.</p>
         <div class="actions">
           <a class="button" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
           <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Preview live image for x86-64-v3-compatible computers</a>
@@ -831,7 +831,7 @@
           <article class="card">
             <span class="kicker">CPU views</span>
             <h3>CPU view matrix</h3>
-            <p>IE64 uses wide registers. IE32 uses fixed-width RISC code. 6502 and Z80 use banked and mapped views, while M68K and x86 keep their own address models.</p>
+            <p>Every CPU keeps its native idioms, and they all reach the same bus. A Z80 port write, an x86 IN/OUT, a 6502 paged or banked access, and a 68020 absolute address all land on the same MachineBus devices and RAM that IE64 sees. Old CPU habits become first-class routes into one modern machine.</p>
             <p><a href="docs/IE64_ISA.pdf">IE64 ISA</a> and <a href="docs/IE32_ISA.pdf">IE32 ISA</a></p>
           </article>
           <article class="card">
