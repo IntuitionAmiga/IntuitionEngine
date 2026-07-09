@@ -255,6 +255,33 @@
       margin-top: 2rem;
     }
 
+    .demo-screen {
+      margin: 2.6rem 0 0;
+      border: 1px solid rgba(165, 153, 233, 0.55);
+      border-radius: 0.5rem;
+      overflow: hidden;
+      background: #0b0b1c;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 22px 60px rgba(0, 0, 0, 0.45), inset 0 0 60px rgba(0, 0, 0, 0.55);
+    }
+
+    .demo-screen canvas {
+      display: block;
+      width: 100%;
+      height: auto;
+      image-rendering: pixelated;
+    }
+
+    .demo-screen figcaption {
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      padding: 0.5rem 0.8rem;
+      border-top: 1px solid rgba(165, 153, 233, 0.28);
+      color: var(--muted);
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+    }
+
     .button {
       display: inline-flex;
       align-items: center;
@@ -778,6 +805,7 @@
         <a href="#iemon">IE Mon</a>
         <a href="#iescript">IEScript</a>
         <a href="#demos">Demos</a>
+        <a href="#make">Make</a>
         <a href="#guide">Guide</a>
         <a href="#docs">Docs</a>
       </div>
@@ -796,6 +824,14 @@
           <a class="button secondary" href="https://youtube.com/@IntuitionAmiga">YouTube</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
         </div>
+
+        <figure class="demo-screen">
+          <canvas id="roto" width="256" height="88" aria-label="An animated rotozoomer effect"></canvas>
+          <figcaption>
+            <span>Rotozoomer</span>
+            <span>drawn by hand in a few lines of JavaScript</span>
+          </figcaption>
+        </figure>
 
         <div class="hero-grid">
           <div class="proof-strip" aria-label="Architecture facts">
@@ -1650,6 +1686,60 @@ SOUND PLAY "SONG.MID"</code></pre>
       </div>
     </section>
 
+    <section id="make" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Write your own demo</h2>
+          <p>Intuition Engine is a machine to make things on, not only to watch. Boot the live image into IE64 BASIC and the whole machine is yours: six CPUs, the copper, a nine-operation blitter, Mode 7 affine texturing, a 3DFX Voodoo, and chip music in a stack of native formats, all reachable from BASIC or from assembly.</p>
+        </div>
+        <div class="grid three">
+          <article class="card">
+            <span class="kicker">Start in BASIC</span>
+            <h3>From idea to moving pixels</h3>
+            <p>Poke the MMIO registers directly, run the blitter, wait on the beam, and start a tune. <code>RUN</code> shows it through the interpreter; <code>RUN AOT</code> compiles the same programme to native IE64 code and runs it at once.</p>
+            <pre class="code-panel"><code>10 SOUND PLAY "TUNE.SID",0
+20 REM rotate and zoom a texture, 14 parameters
+30 BLIT MODE7 TX,BB,640,480,U0,V0,DC,DS,0-DS,DC,1023,511,TS,ST
+40 VSYNC</code></pre>
+          </article>
+          <article class="card">
+            <span class="kicker">Drop to assembly</span>
+            <h3>Readable source, both ways</h3>
+            <p><code>TRANSPILE</code> writes your BASIC out as IE64 assembly you can read and edit; <code>ASSEMBLE</code> turns source back into a flat <code>.ie64</code> image. Hand-write with <code>ie64asm</code> or <code>ie32asm</code>, and read an IE64 image back with the <code>ie64dis</code> disassembler.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">Pick your CPU</span>
+            <h3>Six instruction sets, one target</h3>
+            <p>Build for any core: <code>.ie64</code>, <code>.ie32</code>, <code>.ie65</code>, <code>.ie68</code>, <code>.ie80</code> or <code>.ie86</code>. Carry old code across with <code>ie32to64</code> and <code>m68kto64</code>. Run the music on a worker CPU with <code>COSTART</code> and <code>COCALL</code> while another core draws the screen.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">Effects</span>
+            <h3>The hardware sceners reach for</h3>
+            <p>A copper that rewrites palette registers in step with the beam for raster bars, the blitter for copy, fill, line, masked and alpha copy, colour expand and scale, Mode 7 for rotate and zoom, and the Voodoo for textured 3D. Mix a CPU, a video chip and a sound chip that never shared a board.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">Chip music</span>
+            <h3>Play the real formats</h3>
+            <p>The machine plays SID, POKEY, AY, SNDH, TED, MOD, AHX and MIDI. A stereo SAP drives two POKEY chips, and a MultiSID <code>.sid</code> runs on two or three SID chips at once.</p>
+            <pre class="code-panel"><code>SOUND PLAY "TITLE.MOD"
+SOUND PLAY "INTRO.AHX",1
+SOUND PLAY "SONG.MID"</code></pre>
+          </article>
+          <article class="card">
+            <span class="kicker">Debug it like hardware</span>
+            <h3>Freeze, step, rewind</h3>
+            <p>IE Mon freezes every CPU, single-steps one core while the rest stay frozen, sets conditional breakpoints and watchpoints, and steps back through recorded history. IEScript drives the same machine from Lua for repeatable tests.</p>
+            <p><a href="#iemon">IE Mon</a> and <a href="#iescript">IEScript</a></p>
+          </article>
+        </div>
+        <div class="actions">
+          <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
+          <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
+        </div>
+        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The live image bundles worked examples in BASIC, assembly and C. Write your demo, <code>COMPILE</code> it to a standalone <code>.ie64</code>, and it runs on the same machine as everything above.</p>
+      </div>
+    </section>
+
     <section id="guide" class="band">
       <div class="wrap">
         <div class="section-head">
@@ -1796,6 +1886,101 @@ SOUND PLAY "SONG.MID"</code></pre>
         });
       });
     });
+  </script>
+
+  <script>
+    // Hero rotozoomer: the 256x256 texture (assets/rotozoomtexture.raw,
+    // raw RGBA) rotated and zoomed into a small pixel buffer, scaled up by
+    // the browser for a chunky oldskool look. An XOR pattern stands in until
+    // the texture loads, or if the fetch fails. Not the emulator; a
+    // hand-written tribute effect. Honours prefers-reduced-motion, pauses
+    // when hidden or scrolled out of view.
+    (function () {
+      var canvas = document.getElementById('roto');
+      if (!canvas) { return; }
+      var ctx = canvas.getContext('2d', { alpha: false });
+      if (!ctx) { return; }
+
+      var W = canvas.width, H = canvas.height;
+      var img = ctx.createImageData(W, H);
+      var buf = img.data;
+
+      var TW = 256, TH = 256, TMASK = 255;
+
+      // Fallback texture: an XOR pattern in the site accent colours, shown
+      // until the real texture has loaded, or if the fetch fails.
+      var stops = [[178, 98, 255], [158, 255, 255], [165, 255, 144], [250, 208, 0], [255, 98, 140]];
+      var pal = new Uint8Array(256 * 3);
+      for (var i = 0; i < 256; i++) {
+        var f = i / 256 * stops.length;
+        var a = Math.floor(f) % stops.length;
+        var b = (a + 1) % stops.length;
+        var t = f - Math.floor(f);
+        pal[i * 3] = (stops[a][0] * (1 - t) + stops[b][0] * t) | 0;
+        pal[i * 3 + 1] = (stops[a][1] * (1 - t) + stops[b][1] * t) | 0;
+        pal[i * 3 + 2] = (stops[a][2] * (1 - t) + stops[b][2] * t) | 0;
+      }
+      var tex = new Uint8Array(TW * TH * 4);
+      for (var ty = 0; ty < TH; ty++) {
+        for (var tx = 0; tx < TW; tx++) {
+          var pc = ((tx ^ ty) & 255) * 3, po = (ty * TW + tx) * 4;
+          tex[po] = pal[pc]; tex[po + 1] = pal[pc + 1]; tex[po + 2] = pal[pc + 2]; tex[po + 3] = 255;
+        }
+      }
+
+      // Swap in the real 256x256 RGBA texture when it arrives.
+      fetch('assets/rotozoomtexture.raw').then(function (r) {
+        if (!r.ok) { throw new Error('status ' + r.status); }
+        return r.arrayBuffer();
+      }).then(function (ab) {
+        if (ab.byteLength >= TW * TH * 4) { tex = new Uint8Array(ab); }
+      }).catch(function () { /* keep the fallback texture */ });
+
+      var cx = W * 0.5, cy = H * 0.5;
+
+      function render(ms) {
+        var tsec = ms * 0.001;
+        var ang = tsec * 0.35;
+        var zoom = 1.6 + Math.sin(tsec * 0.5) * 0.9;
+        var c = Math.cos(ang) * zoom, s = Math.sin(ang) * zoom;
+        var ox = Math.sin(tsec * 0.23) * 128 + tsec * 24;
+        var oy = Math.cos(tsec * 0.19) * 128 + tsec * 16;
+        var p = 0;
+        for (var y = 0; y < H; y++) {
+          var dy = y - cy;
+          var ux = -cx * c - dy * s + ox;
+          var uy = -cx * s + dy * c + oy;
+          for (var x = 0; x < W; x++) {
+            var ti = ((((uy | 0) & TMASK) * TW) + ((ux | 0) & TMASK)) * 4;
+            buf[p++] = tex[ti];
+            buf[p++] = tex[ti + 1];
+            buf[p++] = tex[ti + 2];
+            buf[p++] = 255;
+            ux += c; uy += s;
+          }
+        }
+        ctx.putImageData(img, 0, 0);
+      }
+
+      var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      var running = false, rafId = 0;
+      function loop(ts) { if (!running) { return; } render(ts); rafId = requestAnimationFrame(loop); }
+      function start() { if (running || reduce) { return; } running = true; rafId = requestAnimationFrame(loop); }
+      function stop() { running = false; if (rafId) { cancelAnimationFrame(rafId); } rafId = 0; }
+
+      if (reduce) {
+        render(2000);
+      } else {
+        document.addEventListener('visibilitychange', function () { if (document.hidden) { stop(); } else { start(); } });
+        if ('IntersectionObserver' in window) {
+          new IntersectionObserver(function (entries) {
+            entries.forEach(function (e) { if (e.isIntersecting) { start(); } else { stop(); } });
+          }).observe(canvas);
+        } else {
+          start();
+        }
+      }
+    })();
   </script>
 </body>
 </html>
