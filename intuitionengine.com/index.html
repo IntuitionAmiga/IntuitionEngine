@@ -825,7 +825,7 @@
           <article class="card">
             <span class="kicker">MachineBus</span>
             <h3>RAM sizing for guest code</h3>
-            <p>Guest RAM is sized at boot from the host's own usable memory on Linux, Windows or macOS, less a platform reserve. Backing size, total guest RAM, active RAM, low-window bounds, and profile ceilings live on the bus. SYSINFO publishes those values; IE64 also reads <code>CR_RAM_SIZE_BYTES</code>.</p>
+            <p>Guest RAM is sized at boot from the host's own usable memory, less a platform reserve. Backing size, total guest RAM, active RAM, low-window bounds, and profile ceilings live on the bus. SYSINFO publishes those values; IE64 also reads <code>CR_RAM_SIZE_BYTES</code>.</p>
             <p><a href="docs/architecture.pdf">Architecture PDF</a></p>
           </article>
           <article class="card">
@@ -1358,7 +1358,7 @@ macro frame d pc 8; r</code></pre>
           <article class="card">
             <span class="kicker">Visual checks</span>
             <h3>Frames, hashes, recordings</h3>
-            <p>Scripts wait on compositor frames, pixels, settled frame hashes, or custom visual predicates, so a demo can be automated and then verified pixel-for-pixel across runs. The recording module captures pure-Go screenshots and MP4 video with audio, for demo clips and visual regressions.</p>
+            <p>Scripts wait on compositor frames, pixels, settled frame hashes, or custom visual predicates, so a demo can be automated and then verified pixel-for-pixel across runs. The recording module captures dependency-free screenshots and MP4 video with audio, for demo clips and visual regressions.</p>
             <pre class="code-panel"><code>sys.wait_frames(2)
 video.wait_stable(3, 120)
 hash = video.frame_hash()
@@ -1482,7 +1482,7 @@ SOUND PLAY "SONG.MID"</code></pre>
             <span class="kicker">Assembly</span>
             <h3>Native assembly for all six CPUs</h3>
             <p>Every CPU has its own hardware-definition include, so you write assembly straight against the machine: <code>ie32.inc</code> and <code>ie64.inc</code> for the IE cores, and <code>ie65.inc</code>, <code>ie68.inc</code>, <code>ie80.inc</code> and <code>ie86.inc</code> for the 6502, M68K, Z80 and x86. IE32 and IE64 use their own assemblers, <code>ie32asm</code> and <code>ie64asm</code>; the retro cores use the standard ca65, vasm and NASM.</p>
-            <p><code>ie64dis</code> disassembles IE64, and <code>ie32to64</code> and <code>m68kto64</code> translate IE32 and M68K source towards IE64 (<code>m68kto64</code> is still in development). Every tool is a single Go binary that runs on Linux, Windows and macOS, on x86-64 and ARM64.</p>
+            <p><code>ie64dis</code> disassembles IE64, and <code>ie32to64</code> and <code>m68kto64</code> translate IE32 and M68K source towards IE64 (<code>m68kto64</code> is still in development). Every tool is a single self-contained binary that runs on Linux, Windows and macOS, on x86-64 and ARM64.</p>
           </article>
         </div>
       </div>
