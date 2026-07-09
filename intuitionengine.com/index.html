@@ -766,10 +766,10 @@
         <a href="#guests">Guests</a>
         <a href="#coprocessors">Coprocessors</a>
         <a href="#devices">Audio/video</a>
-        <a href="#runtime">Runtime</a>
         <a href="#iemon">IE Mon</a>
         <a href="#iescript">IEScript</a>
         <a href="#demos">Demos</a>
+        <a href="#guide">Guide</a>
         <a href="#docs">Docs</a>
       </div>
     </nav>
@@ -780,7 +780,7 @@
       <div class="wrap">
         <p class="eyebrow">Shared bus machine</p>
         <h1>Six CPU views, one bus.</h1>
-        <p class="lead">Intuition Engine is built around MachineBus: a shared memory and MMIO backplane for six CPU views, six video systems, ten audio engines and coprocessor workers.</p>
+        <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit home computers from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, rebuilt on one shared bus. Six CPUs, six video chips and ten audio engines covering 20+ chiptune formats.</p>
         <div class="actions">
           <a class="button" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
           <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Preview live image for x86-64-v3-compatible computers</a>
@@ -825,7 +825,7 @@
           <article class="card">
             <span class="kicker">MachineBus</span>
             <h3>RAM sizing for guest code</h3>
-            <p>Backing size, total guest RAM, active RAM, low-window bounds, and profile ceilings live on the bus. SYSINFO publishes those values; IE64 also reads <code>CR_RAM_SIZE_BYTES</code>.</p>
+            <p>Guest RAM is sized at boot from the host's own usable memory on Linux, Windows or macOS, less a platform reserve. Backing size, total guest RAM, active RAM, low-window bounds, and profile ceilings live on the bus. SYSINFO publishes those values; IE64 also reads <code>CR_RAM_SIZE_BYTES</code>.</p>
             <p><a href="docs/architecture.pdf">Architecture PDF</a></p>
           </article>
           <article class="card">
@@ -839,6 +839,11 @@
             <h3>Runtime services as address ranges</h3>
             <p>Bus address ranges cover file I/O, media load, Program Executor, terminal and input devices, CPU wait, Voodoo apertures, Bootstrap HostFS, and SYSINFO.</p>
             <p><a href="#services">Service map</a></p>
+          </article>
+          <article class="card">
+            <span class="kicker">Byte order</span>
+            <h3>One value, any CPU</h3>
+            <p>The bus normalises every MMIO access. A big-endian 68020 running <code>MOVE.L</code> and a little-endian IE64 running <code>STORE.L</code> deliver the same value to the same device register. Plain RAM keeps each CPU's natural order: big-endian for the 68020, little-endian for the rest.</p>
           </article>
         </div>
 
@@ -892,6 +897,26 @@
             </tbody>
           </table>
         </div>
+
+        <article class="card" style="margin-top: 1rem">
+          <span class="kicker">IE64 CPU</span>
+          <h3>The native 64-bit core</h3>
+          <p>A 64-bit RISC load-store CPU with 32 general-purpose registers (R0 hardwired to zero), fixed 8-byte instructions and a 16-register control bank. Integer branches compare registers directly, so there is no flags register. JIT-compiled on x86-64 and ARM64.</p>
+          <p>The FPU adds 16 IEEE-754 registers, single precision with double precision on even and odd pairs. A six-level paged MMU brings address translation, page-level access control and supervisor access guards, with a hardware trap-frame stack so kernel fault handlers need no save-and-restore. Six sequentially-consistent 64-bit atomics, compare-and-swap, exchange, fetch-and-add and the bitwise operations, each act as a full memory barrier: the lock-free backbone for six CPUs on one bus. IntuitionOS and BASIC AOT both target it.</p>
+        </article>
+
+        <article class="card" style="margin-top: 1rem">
+          <span class="kicker">JIT</span>
+          <h3>Five CPUs compiled to native code</h3>
+          <p>On x86-64 hosts, five of the six CPUs, IE64, M68K, x86, Z80 and 6502, compile guest code to native machine code as it runs; only IE32 stays interpreted. IE64 also runs JIT-compiled on ARM64. The compilers carry per-CPU floating-point paths, including the M68K 68881 and the x86 x87, detect self-modifying code and recompile the affected blocks, and drop back to interpreter-equivalent helpers when a block cannot stay native, resuming only when the architectural state still matches.</p>
+          <p>Even with the paged MMU enabled, IE64 code stays JIT-compiled: the dispatcher keys native blocks by translation state, and data, stack, floating-point and control-flow accesses that need address translation take a helper exit and resume in native code instead of bailing the whole block.</p>
+        </article>
+
+        <article class="card" style="margin-top: 1rem">
+          <span class="kicker">Lifecycle</span>
+          <h3>Reset and reload</h3>
+          <p>Reset and load routines quiesce scripts, render loops, media, the CPUs, EmuTOS and AROS, then rebuild CPU and profile state, rewire the monitor and Program Executor, and reload the configured coprocessor services.</p>
+        </article>
       </div>
     </section>
 
@@ -904,7 +929,7 @@
         <div class="grid two">
           <article class="card">
             <h3>Common ranges</h3>
-            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal/input devices, CPU wait, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services.</p>
+            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal/input devices, CPU wait, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. Through that helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates its packages, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
             <div class="tag-row">
               <span class="tag">SYSINFO</span>
               <span class="tag">FILE_DATA_PTR64</span>
@@ -917,11 +942,13 @@
           </article>
           <article class="card">
             <h3>Profile bridges</h3>
-            <p>AROS maps DOS packets, Paula-style audio DMA, host sockets, clipboard access, and IRQ diagnostics. EmuTOS uses an Atari MIDI ACIA shim that feeds the live-MIDI engine.</p>
+            <p>AROS maps DOS packets, Paula-style audio DMA, host sockets, clipboard access, IRQ diagnostics, and live MIDI through a CAMD driver (DEVS:Midi/ie) under camd.library. EmuTOS uses an Atari MIDI ACIA shim that feeds the live-MIDI engine.</p>
             <div class="tag-row">
               <span class="tag">AROS_DOS</span>
               <span class="tag">AROS_AUDIO_DMA</span>
               <span class="tag">AROS_HOST_SOCKET</span>
+              <span class="tag">AROS_CLIPBOARD</span>
+              <span class="tag">camd.library</span>
               <span class="tag">IRQ_DIAG</span>
               <span class="tag">AtariMIDIACIA</span>
             </div>
@@ -933,8 +960,8 @@
     <section id="guests" class="band">
       <div class="wrap">
         <div class="section-head">
-          <h2>Guest drivers write to IE hardware</h2>
-          <p>EmuTOS, AROS, and IntuitionOS boot through different loaders. Their verified graphics, input, file, MIDI, and audio routes write to MMIO registers and mapped bus memory, then use the relevant interrupt and device-state paths.</p>
+          <h2>An Atari OS, an Amiga OS, and one of its own</h2>
+          <p>The machine boots real operating systems that drive its hardware through their own drivers. EmuTOS and AROS are established systems ported to the machine; IntuitionOS is the machine's own operating system, written from scratch and still in development. Each boots through its own loader, and their graphics, input, file, MIDI and audio routes write to MMIO registers and mapped bus memory, then use the relevant interrupt and device-state paths.</p>
         </div>
 
         <div class="table-wrap">
@@ -984,7 +1011,7 @@ IE_PSG_BASE    0x000F0C00</code></pre>
           <article class="card">
             <span class="kicker">AROS graphics and filesystem</span>
             <h3>AROS graphics target</h3>
-            <p>AROS maps a 64 MiB VideoChip VRAM slice and supports big-endian VideoChip reads. Its hardware-accelerated <code>iegfx.hidd</code> defaults to 1920 x 1080 scanout and uses the VideoChip blitter for accelerated drawing. The system-tree build includes <code>Libs/cybergraphics.library</code> and installs ScreenMode and palette preferences. Filesystem packets use the AROS DOS handler block.</p>
+            <p>AROS maps a 64 MiB VideoChip VRAM slice and supports big-endian VideoChip reads. Its hardware-accelerated <code>iegfx.hidd</code> defaults to 1920 x 1080 scanout and uses the VideoChip blitter for accelerated drawing. The system-tree build includes <code>Libs/cybergraphics.library</code> and installs ScreenMode and palette preferences. Filesystem packets use the AROS DOS handler block, and a configured host directory is served to the guest as real files through the AROS DOS handler. AROS boots all the way through to the Wanderer desktop.</p>
             <pre class="code-panel"><code>AROS direct VRAM: 0x1E00000 + 0x4000000
 AROS gfx driver:  Devs/Drivers/iegfx.hidd
 AROS_DOS:         0xF2220-0xF225F</code></pre>
@@ -999,17 +1026,23 @@ STATUS  0xF22A4
 INTENA  0xF22A8</code></pre>
           </article>
           <article class="card">
-            <span class="kicker">IntuitionOS</span>
-            <h3>IE64 graphics grants</h3>
-            <p><code>hardware.resource</code> owns the CHIP page and VRAM grant policy. CHIP is shared across clients; VRAM is single-owner. <code>graphics.library</code> requests both grants, maps the chip register page and framebuffer pages with <code>SYS_MAP_IO</code>, opens 960 x 540 scanout in VideoChip mode 7, and presents registered framebuffers.</p>
+            <span class="kicker">IntuitionOS &middot; native OS</span>
+            <h3>The machine's own OS, in development</h3>
+            <p>IntuitionOS is the machine's own operating system, written from scratch in IE64 assembly and modelled on the Amiga OS, down to Amiga-style volumes such as C:, S: and LIBS:. Its core is IExec, a protected capability-based microkernel inspired by Amiga Exec and QNX Neutrino, where services and drivers are separate protected modules that talk through named message ports. It is a work in progress, not a finished system. Today it boots to a shell with real DOS commands (<code>dir</code>, <code>list</code>, <code>type</code>, <code>assign</code> and more), runs up to 255 pre-emptive tasks that talk through Exec-style message ports, discovers libraries with <code>OpenLibrary</code> and a protected module registry, and loads ELF programmes. It brokers hardware through a grant model, with <code>graphics.library</code> opening 960 x 540 scanout in VideoChip mode 7, and reports faults the old way, with a GURU MEDITATION.</p>
             <pre class="code-panel"><code>CHIP PPN: 0xF0
 VRAM PPN: 0x100
 Mode: 960 x 540 RGBA32, stride 3840</code></pre>
           </article>
           <article class="card">
+            <span class="kicker">IntuitionOS &middot; security</span>
+            <h3>Capabilities, not trust</h3>
+            <p>A task only reaches the memory and hardware it was granted. Shared memory is handed out as opaque capability handles, reference-counted and scrubbed to zero when the last mapping drops, and MMIO maps only through explicit grants. The IE64 MMU gives every task its own page tables with separate code, stack and data and W^X enforcement, guard pages catch overruns, and the kernel validates every user pointer before it reads across the supervisor boundary.</p>
+            <p>At build time, programmes are position-independent for ASLR, no segment may be both writable and executable, and the ELF loader rejects dynamic linking, external-symbol relocation and text relocations. Kernel ASLR and a stack canary are in progress.</p>
+          </article>
+          <article class="card">
             <span class="kicker">MIDI split</span>
             <h3>Live MIDI by profile</h3>
-            <p>Raw byte-stream registers for live MIDI sit at <code>0xF0BF4-0xF0BF6</code>. EmuTOS uses an output-only MC6850 ACIA shim at <code>$FFFC04</code> and <code>$FFFC06</code>, feeding the live-MIDI parser. AROS has an ie-m68k CAMD path. The current source tree has no IntuitionOS MIDI driver path.</p>
+            <p>Raw byte-stream registers for live MIDI sit at <code>0xF0BF4-0xF0BF6</code>. EmuTOS uses an output-only MC6850 ACIA shim at <code>$FFFC04</code> and <code>$FFFC06</code>, feeding the live-MIDI parser. AROS uses an ie-m68k CAMD driver (DEVS:Midi/ie) under camd.library. The current source tree has no IntuitionOS MIDI driver path.</p>
           </article>
           <article class="card">
             <span class="kicker">Driver-level demos</span>
@@ -1024,8 +1057,8 @@ Mode: 960 x 540 RGBA32, stride 3840</code></pre>
     <section id="coprocessors" class="band">
       <div class="wrap">
         <div class="section-head">
-          <h2>A CPU can be a device for another CPU</h2>
-          <p>Coprocessor MMIO starts IE32, IE64, 6502, M68K, Z80, or x86 cores as bus workers. A caller queues a request and polls or waits on a ticket. BASIC has named entry points; assembly and C can write to the coprocessor MMIO block and mailbox rings directly.</p>
+          <h2>CPUs can be devices for another CPU</h2>
+          <p>All six CPU architectures can run at the same time on the one bus, sharing the same RAM and the same devices. There is no central bus arbiter and no interrupt controller: each CPU carries its own IRQ and NMI lines, and peripherals signal whichever CPU is active. A program on any CPU hands work to IE64, IE32, 6502, Z80, M68K or x86 workers, up to one of each type at once, and keeps running while they execute concurrently. A caller queues a request and polls or waits on a ticket; BASIC has named entry points, and assembly and C write to the coprocessor MMIO block and mailbox rings directly.</p>
         </div>
         <div class="card">
           <h3>Request flow</h3>
@@ -1074,14 +1107,15 @@ COSTOP cpuType</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>Audio, video, bus registers</h2>
-          <p>Guest-facing audio and video entry points are bus registers. The tables below name the ranges used by the chip engines, players, Paula-style DMA, SoundChip/SFX, and video systems.</p>
+          <p>Guest-facing audio and video entry points are bus registers. The tables below name the ranges used by the chip engines, players, Paula-style DMA, SoundChip/SFX, and video systems. The sound chips trace the classics, including SID from the Commodore 64, POKEY from the Atari 8-bits, the AY/YM from Spectrum, Amstrad and Atari ST, the SN76489 from the TI and Sega machines, and Paula from the Amiga.</p>
         </div>
 
         <div class="grid two" style="margin-bottom: 1rem">
           <article class="card">
-            <span class="kicker">IE-native audio</span>
-            <h3>Native synth voices</h3>
-            <p>Native audio uses ten FLEX voices and 32 SFX channels. FLEX gives each voice frequency, volume, gate/control, ADSR, waveform select, PWM, ring modulation, hard sync, and signed 8-bit DAC input. Oscillators cover square/pulse, triangle, sine, noise, and sawtooth modes.</p>
+            <span class="kicker">IE SoundChip</span>
+            <h3>A synth in its own right</h3>
+            <p>The native SoundChip is not a retro clone. Ten FLEX voices and 32 SFX sample channels, each voice with its own oscillator (square/pulse, triangle, sine, sawtooth and nine noise modes), ADSR envelope, sweep, PWM, ring modulation, hard sync and signed 8-bit DAC input. A global stage adds filter, overdrive and reverb, then auto-levelling, compression and limiting, ahead of the block-rendered mixer.</p>
+            <p>It also carries RawlandMini, a built-in GM-style patch table, so Standard MIDI Files, Doom MUS and live MIDI play straight through the chip across 16 MIDI channels and 10 active voices, with GM-style programme families and a drum channel.</p>
             <pre class="code-panel"><code>FLEX ch0-3   0xF0A80-0xF0B7F
 SID2 ch4-6   0xF0C40-0xF0CFF
 SID3 ch7-9   0xF0D40-0xF0DFF
@@ -1097,6 +1131,38 @@ MOD and Paula periods  3546895 Hz source clock
 WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
           </article>
         </div>
+
+        <article class="card" style="margin-bottom: 1rem">
+          <span class="kicker">Format coverage</span>
+          <h3>Over twenty chiptune formats</h3>
+          <p>Point the media loader at a tune and it works out the format, then feeds the right chip.</p>
+          <div class="tag-row">
+            <span class="tag">MOD 4/6/8ch</span>
+            <span class="tag">WAV</span>
+            <span class="tag">MIDI SMF</span>
+            <span class="tag">Doom MUS</span>
+            <span class="tag">AHX/THX</span>
+            <span class="tag">SID PSID/RSID/MultiSID</span>
+            <span class="tag">TED/TMF</span>
+            <span class="tag">SAP A/B/C</span>
+            <span class="tag">YM2 to YM6</span>
+            <span class="tag">AY</span>
+            <span class="tag">VGM/VGZ</span>
+            <span class="tag">SNDH</span>
+            <span class="tag">VTX</span>
+            <span class="tag">PT1/PT2/PT3</span>
+            <span class="tag">STC</span>
+            <span class="tag">SQT</span>
+            <span class="tag">ASC</span>
+            <span class="tag">FTC</span>
+          </div>
+        </article>
+
+        <article class="card" style="margin-bottom: 1rem">
+          <span class="kicker">Plus mode</span>
+          <h3>The classic chips, or something more</h3>
+          <p>Five classic engines, PSG, SID, POKEY, TED and AHX, each have an optional Plus mode. Leave it off for the authentic chip, or switch it on for an enhanced render path with drive, stereo spread, room and per-voice balance, straight from BASIC with <code>PSG PLUS ON</code>, <code>SID PLUS ON</code> and the rest. The sound registers do not change; only the rendering does.</p>
+        </article>
 
         <div class="table-wrap">
           <table>
@@ -1140,13 +1206,27 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
         <div class="grid two" style="margin-top: 1rem">
           <article class="card">
             <h3>Live MIDI</h3>
-            <p>Live MIDI maps a byte-stream port on MachineBus. EmuTOS reaches it through an output-only Atari ACIA bridge. AROS has an ie-m68k CAMD driver path. The current source tree has no IntuitionOS MIDI driver path.</p>
+            <p>Live MIDI maps a byte-stream port on MachineBus. EmuTOS reaches it through an output-only Atari ACIA bridge. AROS uses an ie-m68k CAMD driver (DEVS:Midi/ie) under camd.library. The current source tree has no IntuitionOS MIDI driver path.</p>
           </article>
           <article class="card">
-            <h3>Compositor cadence</h3>
-            <p>At 60 Hz, the compositor sorts sources by layer. Video engines publish frames through dirty rectangles, retained leases, and triple-buffer handoff; hardware layers carry dimensions, position, opacity, and dirty rectangles.</p>
+            <h3>Cadences and compositing</h3>
+            <p>CPU execution, the 60 Hz compositor and the 44.1 kHz audio mixer run on separate cadences. At 60 Hz the compositor sorts sources by layer, and video engines publish frames through dirty rectangles, retained leases and triple-buffer handoff; hardware layers carry dimensions, position, opacity and dirty rectangles. Several of the real chips can be on screen at once, each on its own layer, stacked into one frame.</p>
           </article>
         </div>
+
+        <article class="card" style="margin-bottom: 1rem">
+          <span class="kicker">IE VideoChip</span>
+          <h3>Framebuffer, blitter and copper</h3>
+          <p>Layer 0 of the compositor and the native display. A framebuffer up to 1920 x 1080 in RGBA32 or CLUT8, fed straight from main memory, with a nine-operation blitter: copy, fill, line, masked and alpha copy, colour expand, nearest-neighbour scale, memory copy, and SNES-style Mode 7 affine texture mapping, plus sixteen raster-op draw modes such as AND, OR and XOR for combining pixels with the destination.</p>
+          <p>The copper is a scanline-driven register writer. Every frame it walks a display list and writes to MMIO registers across the machine, so it can reprogram the VideoChip or any other chip mid-screen, one scanline at a time.</p>
+        </article>
+
+        <article class="card" style="margin-bottom: 1rem">
+          <span class="kicker">Voodoo 3D</span>
+          <h3>A 3dfx-style 3D accelerator</h3>
+          <p>Voodoo is a hardware triangle rasteriser: flat and Gouraud shading, textures up to 256 x 256 in paletted, intensity, alpha and ARGB formats, a depth buffer, alpha test and blend, per-pixel fog, chroma key, stipple and dithering, published through a double-buffered swap. It renders 640 x 480 by default, up to 800 x 600.</p>
+          <p>It runs on the host GPU through a Vulkan backend, or a software rasteriser, with SIMD-accelerated fills on x86-64, on <code>novulkan</code> and headless builds, with swap jobs running asynchronously. Guest CPUs feed it triangles directly, or an IE64 coprocessor runs the transform and lighting first, as in the Mario Kart 64 game port.</p>
+        </article>
 
         <div class="table-wrap" style="margin-top: 1rem">
           <table>
@@ -1161,7 +1241,7 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
               <tr>
                 <td>VideoChip</td>
                 <td>Registers <code>0xF0000+</code>, VRAM aperture, direct-VRAM modes</td>
-                <td>RGBA32 and CLUT8 modes, copper control, raster bands, blitter copy/fill/line/masked copy/alpha copy/colour expand/scale/memcopy, Mode 7 support, and direct framebuffer scanout.</td>
+                <td>RGBA32 and CLUT8 modes, copper control, raster bands, blitter copy/fill/line/masked copy/alpha copy/colour expand/scale/memcopy, SNES-style Mode 7 support, and direct framebuffer scanout.</td>
               </tr>
               <tr>
                 <td>VGA</td>
@@ -1176,7 +1256,7 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
               <tr>
                 <td>ANTIC/GTIA</td>
                 <td>Registers <code>0xF2100+</code></td>
-                <td>Display-list DMA, scanline-aware render path, GTIA colour and priority registers, player/missile buffers, VBI and DLI status.</td>
+                <td>Display-list DMA, scanline-aware render path, GTIA colour and priority registers, player/missile buffers, hardware collision detection, VBI and DLI status.</td>
               </tr>
               <tr>
                 <td>ULA</td>
@@ -1194,55 +1274,17 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
       </div>
     </section>
 
-    <section id="runtime" class="band">
-      <div class="wrap">
-        <div class="section-head">
-          <h2>Whole-machine debugging</h2>
-          <p>IE Mon can stop the machine, inspect CPU and bus state, and restore retained snapshots. Snapshot coverage includes registered CPUs, bus RAM, sparse backing pages, and versioned device blobs.</p>
-        </div>
-        <div class="grid three">
-          <article class="card">
-            <h3>Reverse history</h3>
-            <p>IE Mon stores CPU-local step history and whole-machine reverse snapshots. Whole-machine restore reports device failures instead of continuing with half-restored state.</p>
-            <p><a href="docs/iemon.pdf">IE Mon PDF</a></p>
-          </article>
-          <article class="card">
-            <h3>Observability</h3>
-            <p><code>IE_PERF_ACCT=1</code> turns on CPU timing, retired instruction counts, subsystem buckets, and JIT deopt reason accounting. When the flag is off, the hot path exits before atomic work.</p>
-          </article>
-          <article class="card">
-            <h3>IE64 above low memory</h3>
-            <p>IE64 keeps 64-bit PC, data, and stack state. JIT helper exits route high physical addresses and MMU translations through interpreter-equivalent helpers, then resume only when architectural state still matches.</p>
-            <p><a href="docs/IE64_ISA.pdf">IE64 ISA PDF</a></p>
-          </article>
-          <article class="card">
-            <h3>Lifecycle</h3>
-            <p>Reset and load routines quiesce scripts, render loops, media, CPUs, EmuTOS, and AROS. Afterwards they rebuild CPU/profile state, rewire the monitor and Program Executor, and reload configured coprocessor services.</p>
-          </article>
-          <article class="card">
-            <h3>Timing</h3>
-            <p>CPU execution, the 60 Hz compositor, and the 44.1 kHz audio mixer run on separate cadences. Published bus maps, retained video leases, and triple-buffer handoff avoid unnecessary copies in hot loops.</p>
-          </article>
-          <article class="card">
-            <h3>Monitor and script state</h3>
-            <p>IE Mon and IEScript work through the running monitor, bus, CPU registry, compositor, and snapshot machinery.</p>
-            <p><a href="#iemon">IE Mon</a> and <a href="#iescript">IEScript</a></p>
-          </article>
-        </div>
-      </div>
-    </section>
-
     <section id="iemon" class="band">
       <div class="wrap">
         <div class="section-head">
           <h2>IE Mon at hardware level</h2>
-          <p>From a frozen machine, the monitor switches CPU focus, edits registers and memory, sets breakpoints and watchpoints, shows I/O register groups, and walks reverse history across the six CPU families and coprocessor workers.</p>
+          <p>IE Mon is a whole-machine debugger. From a frozen machine it switches focus between the six CPUs, disassembles all six instruction sets, single-steps one core while the others keep running, sets conditional breakpoints and watchpoints, intercepts faults, edits memory in a hex editor, reads named I/O registers, and walks reverse history across every registered device.</p>
         </div>
         <div class="grid two">
           <article class="card">
             <span class="kicker">Execution control</span>
             <h3>CPU state, live</h3>
-            <p>IE Mon switches focus between registered CPUs, changes registers, disassembles expressions such as <code>pc+$20</code>, interleaves source locations when available, single-steps, continues, and assembles one IE64 instruction at an address.</p>
+            <p>IE Mon switches focus between the six registered CPUs and disassembles each instruction set natively, from IE64 and x86 to Z80 and 6502. It single-steps one core while the others keep running, evaluates address expressions such as <code>pc+$20</code>, interleaves source when available, sets conditional breakpoints, intercepts faults, and assembles one IE64 instruction at an address.</p>
             <pre class="code-panel"><code>cpu
 r
 d /s pc 8
@@ -1253,7 +1295,7 @@ g</code></pre>
           <article class="card">
             <span class="kicker">Bus diagnosis</span>
             <h3>Memory and MMIO traces</h3>
-            <p>SoftICE-style <code>bpm*</code> watchpoints cover byte, word, long, and quad accesses in read, write, or read/write mode. Page guards, access logs, <code>who</code>, <code>bfirst</code>, and <code>trace mmio</code> identify bus activity from recorded access data.</p>
+            <p>SoftICE-style <code>bpm*</code> watchpoints cover byte, word, long, and quad accesses in read, write, or read/write mode. Page guards, access logs, <code>who</code>, <code>bfirst</code>, and <code>trace mmio</code> identify bus activity from recorded access data. A built-in hex editor edits memory in place, memory regions export to and import from disk, and a stack-trace command shows the call chain.</p>
             <pre class="code-panel"><code>bpmqw $f0000
 pg add $f0000 $f0fff rw cpu=current
 accesslog on 1024
@@ -1263,7 +1305,7 @@ trace mmio mmio 16</code></pre>
           <article class="card">
             <span class="kicker">Reverse history</span>
             <h3>Back through snapshots</h3>
-            <p><code>rs</code> restores the focussed CPU from local step history. <code>rg</code>, <code>rt</code>, <code>tl</code>, and <code>history horizon</code> use retained whole-machine snapshots for registered CPUs, bus RAM, sparse IE64 backing pages, and versioned device blobs.</p>
+            <p><code>rs</code> restores the focussed CPU from local step history. <code>rg</code>, <code>rt</code>, <code>tl</code>, and <code>history horizon</code> use retained whole-machine snapshots for registered CPUs, bus RAM, sparse IE64 backing pages, and versioned device blobs. A whole-machine restore fails closed if a captured device is missing, rather than leaving the machine half-restored.</p>
             <pre class="code-panel"><code>history horizon
 tl 12
 rg
@@ -1282,6 +1324,16 @@ rc list
 rc trust .iemonrc
 macro frame d pc 8; r</code></pre>
           </article>
+          <article class="card">
+            <span class="kicker">Diagnostics</span>
+            <h3>Performance accounting</h3>
+            <p><code>IE_PERF_ACCT=1</code> turns on CPU timing, retired-instruction counts, subsystem buckets and JIT deopt-reason accounting. With the flag off, the hot path exits before any atomic work.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">Symbols and source</span>
+            <h3>Names and source lines</h3>
+            <p>IE Mon loads symbols for guest binaries and weaves source into disassembly: VICE label files, <code>.iesym</code> sidecars and ELF symbol tables, kept per CPU and rebased to the load address. Drop a <code>.lbl</code> beside a SID, AY, MOD or PRG and it loads on its own, so a raw retro binary disassembles with real names.</p>
+          </article>
         </div>
         <div class="actions">
           <a class="button secondary" href="docs/iemon.pdf">IE Mon PDF</a>
@@ -1293,22 +1345,20 @@ macro frame d pc 8; r</code></pre>
     <section id="iescript" class="band">
       <div class="wrap">
         <div class="section-head">
-          <h2>Lua automation for the machine</h2>
-          <p>IEScript automates programme launch, terminal input, RAM/MMIO access, and debugger sessions. The module reference covers media control, recordings, symbols, and coprocessor calls.</p>
+          <h2>IEScript drives the whole machine</h2>
+          <p>IEScript is the machine's own scripting engine, a Lua layer over the whole machine. Scripts launch programmes, inject keyboard and mouse input, read and write memory and MMIO, freeze and step CPUs, drive each audio and video chip, capture screenshots and video, and run a full debugger. Waits on frames, timers and settled frame hashes give deterministic synchronisation.</p>
         </div>
         <div class="grid two">
           <article class="card">
             <span class="kicker">Launch</span>
             <h3>Script launch paths</h3>
-            <p><code>.ies</code> files run from the command line, through Program Executor dispatch, or from BASIC with <code>RUN "demo.ies"</code>. Press <code>F8</code> for the Lua REPL overlay. Frame and timer waits provide synchronisation points.</p>
-            <pre class="code-panel"><code>./bin/IntuitionEngine -script demo.ies
-./bin/IntuitionEngine demo.ies
-RUN "demo.ies"</code></pre>
+            <p><code>.ies</code> files run from BASIC with <code>RUN "demo.ies"</code>, through Program Executor dispatch, or from the <code>F8</code> IEScript REPL overlay. Frame and timer waits provide synchronisation points.</p>
+            <pre class="code-panel"><code>RUN "demo.ies"</code></pre>
           </article>
           <article class="card">
             <span class="kicker">Visual checks</span>
             <h3>Frames, hashes, recordings</h3>
-            <p>Scripts wait on compositor frames, pixels, settled frame hashes, or custom visual predicates. The recording module captures screenshots and video for demo runs and regressions.</p>
+            <p>Scripts wait on compositor frames, pixels, settled frame hashes, or custom visual predicates, so a demo can be automated and then verified pixel-for-pixel across runs. The recording module captures pure-Go screenshots and MP4 video with audio, for demo clips and visual regressions.</p>
             <pre class="code-panel"><code>sys.wait_frames(2)
 video.wait_stable(3, 120)
 hash = video.frame_hash()
@@ -1318,8 +1368,8 @@ rec.stop()</code></pre>
           </article>
           <article class="card">
             <span class="kicker">Hardware automation</span>
-            <h3>MMIO from Lua</h3>
-            <p>IEScript provides memory and MMIO operations plus modules for audio, video, media, coprocessors, symbols, and regions. The shipped rotozoomer script stages data with <code>mem.write_block</code>, writes to VideoChip and blitter registers, and starts MIDI through MMIO.</p>
+            <h3>MMIO from IEScript</h3>
+            <p>IEScript reaches memory and MMIO directly, plus dedicated modules for each chip: PSG, SID, TED, POKEY, AHX and MIDI on the audio side, and VGA, ULA, ANTIC, GTIA, TED and Voodoo, with the copper and blitter, on the video side. It also injects keyboard input through <code>term.key_press</code> with the <code>keys</code> scancode table, and mouse movement and clicks through <code>term.mouse_press</code> and <code>term.mouse_click</code>. The shipped rotozoomer script stages data with <code>mem.write_block</code>, writes VideoChip and blitter registers, and starts MIDI through MMIO.</p>
             <pre class="code-panel"><code>cpu.freeze()
 mem.write_block(texturePtr, texture)
 cpu.resume()
@@ -1330,7 +1380,7 @@ video.blit_wait()</code></pre>
           <article class="card">
             <span class="kicker">Debugger API</span>
             <h3>Monitor API</h3>
-            <p>With <code>dbg</code>, scripts open the monitor, step or continue execution, set breakpoints and watchpoints, read registers and memory, disassemble, inspect I/O views, and snapshot registered devices. Raw RAM access requires an explicit freeze; MMIO access does not.</p>
+            <p>With <code>dbg</code>, scripts open the monitor, step or continue, set breakpoints and watchpoints, add page guards, intercept faults, read registers and memory, disassemble and trace, inspect I/O views, snapshot devices, save and load CPU-local snapshots, and switch between CPUs. Raw RAM access requires an explicit freeze; MMIO access does not.</p>
             <pre class="code-panel"><code>dbg.open()
 dbg.set_bp(0x2000)
 dbg.step()
@@ -1350,8 +1400,8 @@ dbg.close()</code></pre>
     <section id="tooling" class="band">
       <div class="wrap">
         <div class="section-head">
-          <h2>IE64 BASIC build modes</h2>
-          <p>IE64 BASIC runs on the IE64 CPU and stores programmes through the machine File I/O block. Stored lines can run through the interpreter, AOT compiler, standalone image writer, assembly text path, or in-machine assembler. Typed BASIC also writes to MMIO, waits for video, drives blitter modes, starts music, and calls coprocessor workers.</p>
+          <h2>IE64 BASIC and the assembly toolchain</h2>
+          <p>IE64 BASIC runs on the native 64-bit core. The same stored programme can run through the interpreter, compile ahead-of-time to native IE64 machine code and run at once, write itself out as a standalone .ie64 image, or transpile to readable IE64 assembly that you can inspect, edit and assemble back. Typed BASIC also drives MMIO, waits for video, runs the blitter, starts music and calls coprocessor workers.</p>
         </div>
 
         <div class="table-wrap">
@@ -1400,12 +1450,12 @@ dbg.close()</code></pre>
 
         <div class="grid two" style="margin-top: 1rem">
           <article class="card">
-            <h3>Native commands</h3>
+            <h3>Compiler and transpiler</h3>
             <pre class="code-panel"><code>RUN AOT
 COMPILE "name"
 TRANSPILE "name"
 ASSEMBLE "name"</code></pre>
-            <p><code>COMPILE</code> rejects direct-mode-only commands and stored forms unsupported by standalone images. Use <code>TRANSPILE</code> for inspection. <code>ASSEMBLE</code> reads IE64 source from the disk volume and emits a flat image.</p>
+            <p><code>RUN AOT</code> compiles the stored programme to native IE64 code and runs it straight away. <code>COMPILE</code> writes a standalone <code>.ie64</code> image with a matching assembly listing. <code>TRANSPILE</code> emits IE64 assembly text on its own, and <code>ASSEMBLE</code> turns that source back into a flat image. <code>COMPILE</code> rejects direct-mode-only commands and stored forms a standalone image cannot support.</p>
           </article>
           <article class="card">
             <h3>Hardware from BASIC</h3>
@@ -1426,10 +1476,13 @@ SOUND PLAY "SONG.MID"</code></pre>
           </article>
           <article class="card">
             <h3>SDK and debug tools</h3>
-            <p>Build output includes <code>ie32asm</code>, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie32to64</code>, and <code>m68kto64</code> alongside the VM. The preview image includes the SDK tool bundle with a checksum manifest, and IE Mon supplies the debugger.</p>
-            <pre class="code-panel"><code>make
-make headless-novulkan
-go test -tags headless ./...</code></pre>
+            <p>The live image bundles the SDK tools, <code>ie32asm</code>, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie32to64</code> and <code>m68kto64</code>, with a checksum manifest, and IE Mon supplies the debugger.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">Assembly</span>
+            <h3>Native assembly for all six CPUs</h3>
+            <p>Every CPU has its own hardware-definition include, so you write assembly straight against the machine: <code>ie32.inc</code> and <code>ie64.inc</code> for the IE cores, and <code>ie65.inc</code>, <code>ie68.inc</code>, <code>ie80.inc</code> and <code>ie86.inc</code> for the 6502, M68K, Z80 and x86. IE32 and IE64 use their own assemblers, <code>ie32asm</code> and <code>ie64asm</code>; the retro cores use the standard ca65, vasm and NASM.</p>
+            <p><code>ie64dis</code> disassembles IE64, and <code>ie32to64</code> and <code>m68kto64</code> translate IE32 and M68K source towards IE64 (<code>m68kto64</code> is still in development). Every tool is a single Go binary that runs on Linux, Windows and macOS, on x86-64 and ARM64.</p>
           </article>
         </div>
       </div>
@@ -1439,7 +1492,7 @@ go test -tags headless ./...</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>Demos: one machine, many ways in</h2>
-          <p>Every demo below draws to the screen or drives the audio hardware. They are grouped by what they prove rather than by CPU: the same effects reached from six instruction sets, two guest operating systems, BASIC, and Lua.</p>
+          <p>Every demo below draws to the screen or drives the audio hardware. They are grouped by what they prove rather than by CPU: the same effects reached from six instruction sets, two guest operating systems, BASIC, and IEScript.</p>
         </div>
 
         <article class="card" style="margin-bottom: 1rem">
@@ -1581,11 +1634,65 @@ go test -tags headless ./...</code></pre>
       </div>
     </section>
 
+    <section id="guide" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>The Programmer's Reference Guide</h2>
+          <p>A from-zero tutorial and a reference in one book: 65 chapters and 12 appendices that start with a single line of BASIC and end with a complete game port. Worked examples run on the machine as you read, and every register, opcode and memory map is written down.</p>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Part</th>
+                <th>Chapters</th>
+                <th>What you learn</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>I. Intuition Engine BASIC</td><td>1 to 2</td><td>The BASIC dialect and its full keyword vocabulary.</td></tr>
+              <tr><td>II. Programming Graphics</td><td>3 to 10</td><td>The display model, VideoChip, VGA, TED, ANTIC/GTIA, ULA, Voodoo, and tile and sprite layers.</td></tr>
+              <tr><td>III. Programming Sound and Music</td><td>11 to 23</td><td>Every sound chip and player, from SoundChip and SID to MOD, MIDI/MUS and Paula DMA.</td></tr>
+              <tr><td>IV. BASIC to Machine Language</td><td>24 to 34</td><td>The memory model, all six CPUs, timing and traps, coprocessors, IE Mon and IEScript.</td></tr>
+              <tr><td>V. Input / Output Guide</td><td>35 to 38</td><td>Disk and file I/O, the HOST command, keyboard, mouse and controller input, and serial.</td></tr>
+              <tr><td>VI. Whole-Machine Project</td><td>39 to 44</td><td>Interrupts, raster timing, programme layout, and two cookbooks, built into a working machine.</td></tr>
+              <tr><td>VII. Demo Programming</td><td>45 to 55</td><td>A guided build from a first frame loop to a complete intro.</td></tr>
+              <tr><td>VIII. A Full Game Port Case Study</td><td>56 to 65</td><td>A complete game port, from Fast3D to hardware T&amp;L and native IE audio.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <article class="card" style="margin-top: 1rem">
+          <span class="kicker">Appendices</span>
+          <h3>Twelve reference appendices</h3>
+          <ol class="toc-columns">
+            <li>A. IE64 BASIC keyword abbreviations and token map</li>
+            <li>B. Screen and character codes</li>
+            <li>C. ASCII and CHR$ tables</li>
+            <li>D. Per-engine MMIO maps</li>
+            <li>E. Music note and frequency tables</li>
+            <li>F. Maths and derivative helpers</li>
+            <li>G. Per-CPU opcode quick reference</li>
+            <li>H. Per-CPU symbol index</li>
+            <li>I. Error message index</li>
+            <li>J. Full memory map</li>
+            <li>K. Block diagrams</li>
+            <li>L. Index</li>
+          </ol>
+        </article>
+
+        <div class="actions">
+          <a class="button" href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Download the Reference Guide</a>
+        </div>
+      </div>
+    </section>
+
     <section id="docs" class="band">
       <div class="wrap">
         <div class="section-head">
           <h2>Manuals and register maps</h2>
-          <p>PDFs and the reference-guide bundle hold ISA tables, monitor commands, IEScript APIs, MMIO maps, examples, and the Mario Kart 64 port case study.</p>
+          <p>PDFs and the reference-guide bundle hold ISA tables, monitor commands, IEScript APIs, MMIO maps, examples, and the Part VIII full game-port case study.</p>
         </div>
         <div class="doc-list">
           <article class="card">
@@ -1606,28 +1713,14 @@ go test -tags headless ./...</code></pre>
           </article>
           <article class="card">
             <h3><a href="docs/iescript.pdf">iescript.pdf</a></h3>
-            <p>Lua automation API for programme control, MMIO, screenshots, recording, frame hashes, waits, and debugger integration.</p>
+            <p>IEScript automation API for programme control, MMIO, screenshots, recording, frame hashes, waits, and debugger integration.</p>
           </article>
           <article class="card">
             <h3><a href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Intuition Engine Programmers Reference Guide.zip</a></h3>
-            <p>Programmer's Reference Guide bundle, including the Part VIII game-port case study for Mario Kart 64 IE.</p>
+            <p>Programmer's Reference Guide bundle, including the Part VIII full game-port case study.</p>
           </article>
         </div>
 
-        <article class="card" style="margin-top: 1rem">
-          <h3>Programmer's Reference Guide contents</h3>
-          <ol class="toc-columns">
-            <li>Part I - Intuition Engine BASIC</li>
-            <li>Part II - Programming Graphics</li>
-            <li>Part III - Programming Sound and Music</li>
-            <li>Part IV - BASIC to Machine Language</li>
-            <li>Part V - Input / Output Guide</li>
-            <li>Part VI - Whole-Machine Project</li>
-            <li>Part VII - Demo Programming</li>
-            <li>Part VIII - A Full Game Port Case Study</li>
-            <li>Appendices A to L - abbreviations, character codes, MMIO maps, tables, opcode references, symbol index, errors, memory map, block diagrams, and index.</li>
-          </ol>
-        </article>
       </div>
     </section>
   </main>
@@ -1636,7 +1729,7 @@ go test -tags headless ./...</code></pre>
     <div class="wrap">
       <div>
         <strong>Intuition Engine</strong><br>
-        One MachineBus, six CPU views, and tools that inspect the whole machine.
+        Thirty-five years in the making, a machine I have been building since I was fifteen. Six CPUs, the classic video and sound chips, a copper, a blitter and a Voodoo, all on one bus. Made for the people who still write a rotozoomer by hand.
       </div>
       <div class="actions">
         <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
