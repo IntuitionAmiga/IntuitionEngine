@@ -902,7 +902,7 @@
           <span class="kicker">IE64 CPU</span>
           <h3>The native 64-bit core</h3>
           <p>A 64-bit RISC load-store CPU with 32 general-purpose registers (R0 hardwired to zero), fixed 8-byte instructions and a 16-register control bank. Integer branches compare registers directly, so there is no flags register. JIT-compiled on x86-64 and ARM64.</p>
-          <p>The FPU adds 16 IEEE-754 registers, single precision with double precision on even and odd pairs. A six-level paged MMU brings address translation, page-level access control and supervisor access guards, with a hardware trap-frame stack so kernel fault handlers need no save-and-restore. Six sequentially-consistent 64-bit atomics, compare-and-swap, exchange, fetch-and-add and the bitwise operations, each act as a full memory barrier: the lock-free backbone for six CPUs on one bus. IntuitionOS and BASIC AOT both target it.</p>
+          <p>The FPU adds 16 IEEE-754 registers, single precision with double precision on even and odd pairs. A six-level paged MMU brings address translation, page-level access control and supervisor access guards, with a hardware trap-frame stack that preserves the fault-control registers across nested traps, so a handler survives a second fault without saving them by hand. Six sequentially-consistent 64-bit atomics, compare-and-swap, exchange, fetch-and-add and the bitwise operations, each act as a full memory barrier: the lock-free backbone for six CPUs on one bus. IntuitionOS and BASIC AOT both target it.</p>
         </article>
 
         <article class="card" style="margin-top: 1rem">
@@ -1135,7 +1135,7 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
         <article class="card" style="margin-bottom: 1rem">
           <span class="kicker">Format coverage</span>
           <h3>Over twenty chiptune formats</h3>
-          <p>Point the media loader at a tune and it works out the format, then feeds the right chip.</p>
+          <p>Point the media loader at a tune and it works out the format, then feeds the right chip. Tunes that call for more than one chip get more than one: a stereo SAP drives two Atari POKEY chips at once, and a MultiSID <code>.sid</code> runs on two or three independently emulated SID chips, up to nine SID voices together.</p>
           <div class="tag-row">
             <span class="tag">MOD 4/6/8ch</span>
             <span class="tag">WAV</span>
@@ -1144,7 +1144,7 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
             <span class="tag">AHX/THX</span>
             <span class="tag">SID PSID/RSID/MultiSID</span>
             <span class="tag">TED/TMF</span>
-            <span class="tag">SAP A/B/C</span>
+            <span class="tag">SAP B/C/D/S/R</span>
             <span class="tag">YM2 to YM6</span>
             <span class="tag">AY</span>
             <span class="tag">VGM/VGZ</span>
@@ -1278,13 +1278,13 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>IE Mon at hardware level</h2>
-          <p>IE Mon is a whole-machine debugger. From a frozen machine it switches focus between the six CPUs, disassembles all six instruction sets, single-steps one core while the others keep running, sets conditional breakpoints and watchpoints, intercepts faults, edits memory in a hex editor, reads named I/O registers, and walks reverse history across every registered device.</p>
+          <p>IE Mon is a whole-machine debugger. From a frozen machine it switches focus between the six CPUs, disassembles all six instruction sets, single-steps one core while the rest stay frozen, or thaws chosen cores to run alongside it, sets conditional breakpoints and watchpoints, intercepts faults, edits memory in a hex editor, reads named I/O registers, and walks reverse history across every registered device.</p>
         </div>
         <div class="grid two">
           <article class="card">
             <span class="kicker">Execution control</span>
             <h3>CPU state, live</h3>
-            <p>IE Mon switches focus between the six registered CPUs and disassembles each instruction set natively, from IE64 and x86 to Z80 and 6502. It single-steps one core while the others keep running, evaluates address expressions such as <code>pc+$20</code>, interleaves source when available, sets conditional breakpoints, intercepts faults, and assembles one IE64 instruction at an address.</p>
+            <p>IE Mon switches focus between the six registered CPUs and disassembles each instruction set natively, from IE64 and x86 to Z80 and 6502. It single-steps one core while the rest stay frozen, or thaws chosen cores to run alongside it, evaluates address expressions such as <code>pc+$20</code>, interleaves source when available, sets conditional breakpoints, intercepts faults, and assembles one IE64 instruction at an address.</p>
             <pre class="code-panel"><code>cpu
 r
 d /s pc 8
@@ -1305,7 +1305,7 @@ trace mmio mmio 16</code></pre>
           <article class="card">
             <span class="kicker">Reverse history</span>
             <h3>Back through snapshots</h3>
-            <p><code>rs</code> restores the focussed CPU from local step history. <code>rg</code>, <code>rt</code>, <code>tl</code>, and <code>history horizon</code> use retained whole-machine snapshots for registered CPUs, bus RAM, sparse IE64 backing pages, and versioned device blobs. A whole-machine restore fails closed if a captured device is missing, rather than leaving the machine half-restored.</p>
+            <p><code>rs</code> restores the focussed CPU from local step history. <code>rg</code>, <code>rt</code>, <code>tl</code>, and <code>history horizon</code> use retained whole-machine snapshots for registered CPUs, bus RAM, sparse IE64 backing pages, and versioned device blobs. A whole-machine restore reports any missing registered device rather than passing over it in silence.</p>
             <pre class="code-panel"><code>history horizon
 tl 12
 rg
@@ -1316,7 +1316,7 @@ sl checkpoint.ie64state</code></pre>
           <article class="card">
             <span class="kicker">Device views</span>
             <h3>Named register groups</h3>
-            <p><code>io</code> reads named I/O views at native width: audio, video, SYSINFO, cpu_wait, Voodoo, MIDI, and other MMIO devices. Trusted <code>.iemonrc</code> files, aliases, macros, scripts, and the IEScript <code>dbg.*</code> API reuse those monitor commands.</p>
+            <p><code>io</code> reads named I/O views at native width: audio, video, SYSINFO, cpu_wait, Voodoo, live and player MIDI, and other MMIO devices. Trusted <code>.iemonrc</code> files, aliases, macros, scripts, and the IEScript <code>dbg.*</code> API reuse those monitor commands.</p>
             <pre class="code-panel"><code>io all
 io sfx
 io voodoo
@@ -1491,14 +1491,14 @@ SOUND PLAY "SONG.MID"</code></pre>
     <section id="demos" class="band">
       <div class="wrap">
         <div class="section-head">
-          <h2>Demos: one machine, many ways in</h2>
-          <p>Every demo below draws to the screen or drives the audio hardware. They are grouped by what they prove rather than by CPU: the same effects reached from six instruction sets, two guest operating systems, BASIC, and IEScript.</p>
+          <h2>Impossible machine demos</h2>
+          <p>Each demo is a CPU, a video chip and a sound chip that never shared a board. An Intel x86 driving Atari ANTIC graphics with Commodore SID music. A 6502 painting a ZX Spectrum screen while an Amiga tracker plays. Several run the music on a second CPU entirely, and the copper reprograms display hardware that never had a copper. Grouped by what they prove, not by the CPU behind them.</p>
         </div>
 
         <article class="card" style="margin-bottom: 1rem">
           <span class="kicker">One effect, every way in</span>
           <h3>The same rotozoomer, thirteen origins</h3>
-          <p>One Mode 7 affine transform, written again and again. Six CPUs run identical maths down to the same VideoChip registers; IE64 BASIC and IEScript reach those registers from a higher level; EmuTOS and AROS drive them as guest operating systems. The picture is the same. The point is where it comes from.</p>
+          <p>One Mode 7 affine transform, written again and again. Six CPUs run identical maths down to the same VideoChip registers; IE64 BASIC and IEScript reach those registers from a higher level; EmuTOS and AROS drive them as guest operating systems. The picture is the same. The point is where it comes from. The IE64 build even scores it with a stereo SAP tune spread across two Atari POKEY chips at once.</p>
           <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-DEMO-ROTO" data-id="P52ripOFWJQ"><button type="button" class="lty-playbtn" aria-label="Play rotozoomer comparison demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
           <div class="tag-row" style="margin-top: 0.8rem">
             <span class="tag">IE64 &middot; rotozoomer_ie64.ie64</span>
@@ -1522,38 +1522,38 @@ SOUND PLAY "SONG.MID"</code></pre>
         <div class="thumb-grid">
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D006-SHOT" data-id="j2rgVw2kElQ"><button type="button" class="lty-playbtn" aria-label="Play voodoo_mega_demo.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>voodoo_mega_demo.iex</code><div class="runtime">IE32</div><p>Extended Voodoo rasteriser showcase.</p></div>
+            <div class="thumb-body"><code>voodoo_mega_demo.iex</code><div class="runtime">IE32</div><p>IE32 CPU driving a 3dfx-style Voodoo, while a second CPU, a 6502 core, plays the C64 SID soundtrack.</p></div>
           </article>
         </div>
 
         <div class="subhead">
           <h3>Real video chips, signature modes</h3>
-          <p>Not one framebuffer. Authentic VGA, the TED 121-colour model, the ZX Spectrum ULA, and ANTIC/GTIA, each in its defining mode. The IE Video Chip Copper can reprogram the display in real-time on any of these classic chips, the Rotating Copper Cube demo shows this with the VGA chip.</p>
+          <p>Not one framebuffer. Authentic VGA, the TED 121-colour model, the ZX Spectrum ULA, and ANTIC/GTIA, each in its defining mode, each driven by a CPU that never shipped with it.</p>
         </div>
         <div class="thumb-grid">
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D007-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play vga_mode13h_fire.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>vga_mode13h_fire.iex</code><div class="runtime">IE32</div><p>VGA Mode 13h fire effect.</p></div>
+            <div class="thumb-body"><code>vga_mode13h_fire.iex</code><div class="runtime">IE32</div><p>IE32 CPU on authentic PC VGA Mode 13h. The classic palette-cycled fire.</p></div>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D010-SHOT" data-id="jwG_bnqXOh4"><button type="button" class="lty-playbtn" aria-label="Play VGA Mode 03h Z80 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>vga_text_sap_demo.ie80</code><div class="runtime">Z80</div><p>VGA Mode 03h text with POKEY audio.</p></div>
+            <div class="thumb-body"><code>vga_text_sap_demo.ie80</code><div class="runtime">Z80</div><p>Zilog Z80 CPU on a PC VGA Mode 03h text screen, with Atari POKEY playing a SAP tune.</p></div>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D015-SHOT" data-id="_3TczWJLqF8"><button type="button" class="lty-playbtn" aria-label="Play ted_121_colors_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>ted_121_colors_68k.ie68</code><div class="runtime">M68K</div><p>TED 121-colour video mode.</p></div>
+            <div class="thumb-body"><code>ted_121_colors_68k.ie68</code><div class="runtime">M68K</div><p>Motorola 68020 CPU on the Commodore TED's 121-colour mode, with a Spectrum AY chip in Plus mode.</p></div>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D024-SHOT" data-id="7foRgyOmZwE"><button type="button" class="lty-playbtn" aria-label="Play ula_rotating_cube_65.ie65 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>ula_rotating_cube_65.ie65</code><div class="runtime">6502</div><p>Rotating cube on ZX Spectrum ULA video.</p></div>
+            <div class="thumb-body"><code>ula_rotating_cube_65.ie65</code><div class="runtime">6502</div><p>MOS 6502 CPU on ZX Spectrum ULA video, playing an Amiga AHX tracker. Three houses on one board.</p></div>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D027-SHOT" data-id="_LjUHepi9lo"><button type="button" class="lty-playbtn" aria-label="Play antic_plasma_x86.ie86 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>antic_plasma_x86.ie86</code><div class="runtime">x86</div><p>ANTIC/GTIA plasma.</p></div>
+            <div class="thumb-body"><code>antic_plasma_x86.ie86</code><div class="runtime">x86</div><p>Intel x86 CPU driving Atari ANTIC/GTIA graphics, with Commodore SID music. A plasma from three rival makers at once.</p></div>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D016-SHOT" data-id="ZY-coUUBYGY"><button type="button" class="lty-playbtn" aria-label="Play rotating_cube_copper_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>rotating_cube_copper_68k.ie68</code><div class="runtime">M68K</div><p>Copper-driven rotating cube over VGA. IE's copper can reprogram any memory region on any video chip.</p></div>
+            <div class="thumb-body"><code>rotating_cube_copper_68k.ie68</code><div class="runtime">M68K</div><p>Motorola 68020 CPU on PC VGA, while a second CPU, a 6502 core, plays the C64 SID soundtrack. The native IE Video Copper rewrites the VGA palette registers in step with the beam as it sweeps the screen, for raster bars real VGA silicon never had a copper to make.</p></div>
           </article>
         </div>
 
@@ -1564,34 +1564,34 @@ SOUND PLAY "SONG.MID"</code></pre>
         <div class="thumb-grid">
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D002-SHOT" data-id="hOhwO8FsOYs"><button type="button" class="lty-playbtn" aria-label="Play wobble_zoom.bas demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>wobble_zoom.bas</code><div class="runtime">IE64 BASIC</div><p>Texture wobble-zoom effect.</p></div>
+            <div class="thumb-body"><code>wobble_zoom.bas</code><div class="runtime">IE64 BASIC</div><p>A texture wobble-zoom over a MIDI soundtrack, written entirely in IE64 BASIC.</p></div>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D003-SHOT" data-id="3Jm4T8XIQt8"><button type="button" class="lty-playbtn" aria-label="Play resonance.bas demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>resonance.bas</code><div class="runtime">IE64 BASIC</div><p>Music-synchronised: MIDI position, raster bands, scroll.</p></div>
+            <div class="thumb-body"><code>resonance.bas</code><div class="runtime">IE64 BASIC</div><p>IE64 BASIC locked to a MIDI orchestral track: raster bands, stars and scroll all synchronised to the music.</p></div>
           </article>
         </div>
 
         <div class="subhead">
           <h3>One old-school intro, four CPUs</h3>
-          <p>The same RoboCop intro sequence running on IE32, M68K, Z80, and 6502.</p>
+          <p>The same RoboCop intro, identical down to the IE Video Chip blitter and copper effects and the AY theme in Plus mode, rebuilt for four different instruction sets: IE32, 68020, Z80 and 6502.</p>
         </div>
         <div class="thumb-grid">
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D011-SHOT" data-id="r4jifuv9Rkk"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>robocop_intro.iex</code><div class="runtime">IE32</div><p>Ported RoboCop intro.</p></div>
+            <div class="thumb-body"><code>robocop_intro.iex</code><div class="runtime">IE32</div><p>The RoboCop intro on the IE32 CPU.</p></div>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D020-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>robocop_intro_68k.ie68</code><div class="runtime">M68K</div><p>Ported RoboCop intro.</p></div>
+            <div class="thumb-body"><code>robocop_intro_68k.ie68</code><div class="runtime">M68K</div><p>The RoboCop intro on the Motorola 68020.</p></div>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D022-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_z80.ie80 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>robocop_intro_z80.ie80</code><div class="runtime">Z80</div><p>Ported RoboCop intro.</p></div>
+            <div class="thumb-body"><code>robocop_intro_z80.ie80</code><div class="runtime">Z80</div><p>The RoboCop intro on the Zilog Z80.</p></div>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D025-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_65.ie65 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>robocop_intro_65.ie65</code><div class="runtime">6502</div><p>Ported RoboCop intro.</p></div>
+            <div class="thumb-body"><code>robocop_intro_65.ie65</code><div class="runtime">6502</div><p>The RoboCop intro on the MOS 6502.</p></div>
           </article>
         </div>
 
