@@ -224,6 +224,15 @@
       font-size: 1.15rem;
     }
 
+    .tagline {
+      max-width: 900px;
+      margin: 1rem 0 0;
+      color: var(--amber);
+      font-weight: 720;
+      font-size: clamp(1.5rem, 3.4vw, 2.6rem);
+      line-height: 1.08;
+    }
+
     .lead {
       max-width: 820px;
       margin: 1.2rem 0 0;
@@ -778,24 +787,25 @@
   <main id="content">
     <section id="top" class="hero">
       <div class="wrap">
-        <p class="eyebrow">Shared bus machine</p>
-        <h1>Six CPU views, one bus.</h1>
-        <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit home computers from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, rebuilt on one shared bus. Six CPUs, six video chips and ten audio engines and players covering 20+ chiptune formats.</p>
+        <p class="eyebrow">The machine that never was</p>
+        <h1>Intuition Engine</h1>
+        <p class="tagline">Six rival home computers on one bus.</p>
+        <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit machines from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, with a touch of SNES-style Mode 7 affine texturing and a 3DFX Voodoo thrown in, rebuilt on a single shared bus. A 6502 can play a SID tune while an x86 draws Atari ANTIC graphics or a 68020 drives a copper down PC VGA modes, all six architectures live on the same bus at once. Combinations no silicon ever shipped, running as one machine. The exact combination is all up to you as a game or demo coder.</p>
         <div class="actions">
-          <a class="button" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
-          <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Preview live image for x86-64-v3-compatible computers</a>
+          <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://youtube.com/@IntuitionAmiga">YouTube</a>
+          <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
         </div>
 
         <div class="hero-grid">
           <div class="proof-strip" aria-label="Architecture facts">
             <div class="proof">
-              <strong>Six ways in</strong>
-              <span>Each loader sets up its own CPU view; guest code then reads from and writes to the MachineBus device map.</span>
+              <strong>Six architectures, one bus</strong>
+              <span>IE64, 68020, Z80, 6502, x86 and IE32 can run at the same time, each in its own thread, reaching the same RAM and MMIO devices.</span>
             </div>
             <div class="proof">
-              <strong>MMIO blocks</strong>
-              <span>Audio, video, file I/O, and guest bridges sit behind fixed MMIO ranges.</span>
+              <strong>Chips that never met</strong>
+              <span>A demo can run its CPU on one maker's silicon, its video on a second and its music on a third.</span>
             </div>
             <div class="proof">
               <strong>CPU workers</strong>
@@ -819,15 +829,9 @@
       <div class="wrap">
         <div class="section-head">
           <h2>Six CPU views, one bus</h2>
-          <p>CPU profiles choose the instruction set, loader, and RAM ceiling. After boot, code uses MachineBus RAM, SYSINFO, MMIO devices, video and audio engines, files, debug state, and coprocessor services.</p>
+          <p>A profile boots the machine into one of six instruction sets and sets its loader and RAM ceiling. Any CPU can then start the others as concurrent workers, and every core reaches the same MachineBus RAM, SYSINFO, MMIO devices, video and audio engines, files, debug state, and coprocessor services.</p>
         </div>
         <div class="grid three">
-          <article class="card">
-            <span class="kicker">MachineBus</span>
-            <h3>RAM sizing for guest code</h3>
-            <p>Guest RAM is sized at boot from the host's own usable memory, less a platform reserve. Backing size, total guest RAM, active RAM, low-window bounds, and profile ceilings live on the bus. SYSINFO publishes those values; IE64 also reads <code>CR_RAM_SIZE_BYTES</code>.</p>
-            <p><a href="docs/architecture.pdf">Architecture PDF</a></p>
-          </article>
           <article class="card">
             <span class="kicker">CPU views</span>
             <h3>CPU view matrix</h3>
@@ -835,15 +839,27 @@
             <p><a href="docs/IE64_ISA.pdf">IE64 ISA</a> and <a href="docs/IE32_ISA.pdf">IE32 ISA</a></p>
           </article>
           <article class="card">
+            <span class="kicker">Byte order</span>
+            <h3>One value, any CPU</h3>
+            <p>The bus normalises every MMIO access. A big-endian 68020 running <code>MOVE.L</code> and a little-endian IE64 running <code>STORE.L</code> deliver the same value to the same device register. Plain RAM keeps each CPU's natural order: big-endian for the 68020, little-endian for the rest.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">Concurrency</span>
+            <h3>Many CPUs at once</h3>
+            <p>A profile boots the machine into one instruction set, then any CPU can bring the others online as workers, up to one of each of the six types, all running at the same time on the same bus. There is no central bus arbiter and no interrupt controller: each CPU carries its own interrupt lines, and peripherals signal whichever CPU is active.</p>
+            <p><a href="#coprocessors">Coprocessor model</a></p>
+          </article>
+          <article class="card">
+            <span class="kicker">MachineBus</span>
+            <h3>RAM sizing for guest code</h3>
+            <p>Guest RAM is sized at boot from the host's own usable memory, less a platform reserve. Backing size, total guest RAM, active RAM, low-window bounds, and profile ceilings live on the bus. SYSINFO publishes those values; IE64 also reads <code>CR_RAM_SIZE_BYTES</code>.</p>
+            <p><a href="docs/architecture.pdf">Architecture PDF</a></p>
+          </article>
+          <article class="card">
             <span class="kicker">Bus services</span>
             <h3>Runtime services as address ranges</h3>
             <p>Bus address ranges cover file I/O, media load, Program Executor, terminal and input devices, CPU wait, Voodoo apertures, Bootstrap HostFS, and SYSINFO.</p>
             <p><a href="#services">Service map</a></p>
-          </article>
-          <article class="card">
-            <span class="kicker">Byte order</span>
-            <h3>One value, any CPU</h3>
-            <p>The bus normalises every MMIO access. A big-endian 68020 running <code>MOVE.L</code> and a little-endian IE64 running <code>STORE.L</code> deliver the same value to the same device register. Plain RAM keeps each CPU's natural order: big-endian for the 68020, little-endian for the rest.</p>
           </article>
         </div>
 
@@ -854,7 +870,7 @@
                 <th>CPU view</th>
                 <th>Programme form</th>
                 <th>Hardware contract</th>
-                <th>Preview amd64 execution</th>
+                <th>amd64 execution</th>
               </tr>
             </thead>
             <tbody>
@@ -899,6 +915,12 @@
         </div>
 
         <article class="card" style="margin-top: 1rem">
+          <span class="kicker">Lifecycle</span>
+          <h3>Reset and reload</h3>
+          <p>Reset and load routines quiesce scripts, render loops, media, the CPUs, EmuTOS and AROS, then rebuild CPU and profile state, rewire the monitor and Program Executor, and reload the configured coprocessor services.</p>
+        </article>
+
+        <article class="card" style="margin-top: 1rem">
           <span class="kicker">IE64 CPU</span>
           <h3>The native 64-bit core</h3>
           <p>A 64-bit RISC load-store CPU with 32 general-purpose registers (R0 hardwired to zero), fixed 8-byte instructions and a 16-register control bank. Integer branches compare registers directly, so there is no flags register. JIT-compiled on x86-64 and ARM64.</p>
@@ -910,12 +932,6 @@
           <h3>Five CPUs compiled to native code</h3>
           <p>On x86-64 hosts, five of the six CPUs, IE64, M68K, x86, Z80 and 6502, compile guest code to native machine code as it runs; only IE32 stays interpreted. IE64 also runs JIT-compiled on ARM64. The compilers carry per-CPU floating-point paths, including the M68K 68881 and the x86 x87, detect self-modifying code and recompile the affected blocks, and drop back to interpreter-equivalent helpers when a block cannot stay native, resuming only when the architectural state still matches.</p>
           <p>Even with the paged MMU enabled, IE64 code stays JIT-compiled: the dispatcher keys native blocks by translation state, and data, stack, floating-point and control-flow accesses that need address translation take a helper exit and resume in native code instead of bailing the whole block.</p>
-        </article>
-
-        <article class="card" style="margin-top: 1rem">
-          <span class="kicker">Lifecycle</span>
-          <h3>Reset and reload</h3>
-          <p>Reset and load routines quiesce scripts, render loops, media, the CPUs, EmuTOS and AROS, then rebuild CPU and profile state, rewire the monitor and Program Executor, and reload the configured coprocessor services.</p>
         </article>
       </div>
     </section>
@@ -929,7 +945,7 @@
         <div class="grid two">
           <article class="card">
             <h3>Common ranges</h3>
-            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal/input devices, CPU wait, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. Through that helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates its packages, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
+            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal/input devices, CPU wait, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. Through that helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates the live image's host OS packages, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
             <div class="tag-row">
               <span class="tag">SYSINFO</span>
               <span class="tag">FILE_DATA_PTR64</span>
@@ -1058,7 +1074,7 @@ Mode: 960 x 540 RGBA32, stride 3840</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>CPUs can be devices for another CPU</h2>
-          <p>All six CPU architectures can run at the same time on the one bus, sharing the same RAM and the same devices. There is no central bus arbiter and no interrupt controller: each CPU carries its own IRQ and NMI lines, and peripherals signal whichever CPU is active. A program on any CPU hands work to IE64, IE32, 6502, Z80, M68K or x86 workers, up to one of each type at once, and keeps running while they execute concurrently. A caller queues a request and polls or waits on a ticket; BASIC has named entry points, and assembly and C write to the coprocessor MMIO block and mailbox rings directly.</p>
+          <p>All six CPU architectures can run at the same time on the one bus, sharing the same RAM and the same devices. There is no central bus arbiter and no interrupt controller: each CPU carries its own interrupt lines, and peripherals signal whichever CPU is active. A program on any CPU hands work to IE64, IE32, 6502, Z80, M68K or x86 workers, up to one of each type at once, and keeps running while they execute concurrently. A caller queues a request and polls or waits on a ticket; BASIC has named entry points, and assembly and C write to the coprocessor MMIO block and mailbox rings directly.</p>
         </div>
         <div class="card">
           <h3>Request flow</h3>
