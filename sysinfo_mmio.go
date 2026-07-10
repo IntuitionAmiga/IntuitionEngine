@@ -23,7 +23,8 @@ func RegisterSysInfoMMIO(bus *MachineBus, total, active uint64) {
 	window := uint64(len(bus.GetMemory()))
 	windowLo := uint32(window & 0xFFFFFFFF)
 	windowHi := uint32(window >> 32)
-	features := uint32(SYSINFO_FEATURE_WAIT | SYSINFO_FEATURE_VOODOO_CMD_STREAM)
+	features := uint32(SYSINFO_FEATURE_WAIT | SYSINFO_FEATURE_VOODOO_CMD_STREAM |
+		SYSINFO_FEATURE_VOODOO_TEX_SLOTS)
 	if MMIOStatsEnabled() {
 		features |= SYSINFO_FEATURE_MMIO_STATS
 	}

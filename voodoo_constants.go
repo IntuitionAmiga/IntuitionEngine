@@ -179,6 +179,8 @@ const (
 	VOODOO_CMD_SUBMIT    = VOODOO_BASE + 0x344 // Write 1 to replay command stream
 	VOODOO_TEX_SRC_PTR   = VOODOO_BASE + 0x348 // Guest RAM texture upload source pointer
 	VOODOO_TEX_SRC_BYTES = VOODOO_BASE + 0x34C // Guest RAM texture upload source byte count
+	VOODOO_TEX_SLOT      = VOODOO_BASE + 0x350 // Slot id the next TEX_UPLOAD also stores to (IE extension)
+	VOODOO_TEX_BIND      = VOODOO_BASE + 0x354 // Bind a previously uploaded slot, no data transfer (IE extension)
 	VOODOO_PALETTE_BASE  = VOODOO_BASE + 0x400 // Texture palette (256 entries)
 )
 

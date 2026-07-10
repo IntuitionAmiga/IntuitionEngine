@@ -50,10 +50,65 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
+	"hash/crc32"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// voodooDupTraceOn enables the published-frame duplicate/cadence tracer
+// (IE_VOODOO_DUP_TRACE=1): each published frame is content-hashed and
+// compared to the previous one, and a once-per-second summary reports
+// the publish rate, how many publishes carried identical pixels, and
+// the min/max inter-publish interval. Diagnostic for "unique image
+// rate" versus "swap rate" mismatches.
+var voodooDupTraceOn = os.Getenv("IE_VOODOO_DUP_TRACE") == "1"
+
+var voodooDupState struct {
+	lastCRC  uint32
+	haveLast bool
+	lastPub  time.Time
+	winStart time.Time
+	pubs     int
+	dups     int
+	minGap   time.Duration
+	maxGap   time.Duration
+}
+
+// voodooDupTrace runs on the swap worker goroutine only; no locking needed.
+func voodooDupTrace(frame []byte) {
+	now := time.Now()
+	s := &voodooDupState
+	c := crc32.ChecksumIEEE(frame)
+	if s.haveLast {
+		gap := now.Sub(s.lastPub)
+		if s.pubs == 0 || gap < s.minGap {
+			s.minGap = gap
+		}
+		if gap > s.maxGap {
+			s.maxGap = gap
+		}
+		if c == s.lastCRC {
+			s.dups++
+		}
+		s.pubs++
+	} else {
+		s.haveLast = true
+		s.winStart = now
+	}
+	s.lastCRC = c
+	s.lastPub = now
+	if now.Sub(s.winStart) >= time.Second && s.pubs > 0 {
+		fmt.Printf("dup-trace: %d publishes/s, %d identical (%.0f%%), gap min %.1fms max %.1fms\n",
+			s.pubs, s.dups, float64(s.dups)*100/float64(s.pubs),
+			float64(s.minGap.Microseconds())/1000, float64(s.maxGap.Microseconds())/1000)
+		s.pubs, s.dups = 0, 0
+		s.minGap, s.maxGap = 0, 0
+		s.winStart = now
+	}
+}
 
 // VoodooVertex represents a single vertex with all attributes
 type VoodooVertex struct {
@@ -231,6 +286,15 @@ type VoodooEngine struct {
 	texSrcPtr     uint32
 	texSrcBytes   uint32
 
+	// Slot-resident textures (VOODOO_TEX_SLOT / VOODOO_TEX_BIND). A
+	// TEX_UPLOAD with a slot selected also stores the immutable texture
+	// under that id; a later TEX_BIND makes it current again without the
+	// guest re-streaming any texels. Entries are immutable VoodooTexture
+	// snapshots, so in-flight batches keep sampling what they were
+	// stamped with.
+	texSlotSel uint32
+	texSlots   map[uint32]*VoodooTexture
+
 	// Guest RAM command stream. The stream is a big-endian array of
 	// {absolute Voodoo register address, value} u32 pairs. Writing
 	// VOODOO_CMD_SUBMIT replays the stream through the normal register
@@ -239,6 +303,14 @@ type VoodooEngine struct {
 	cmdStreamCount   uint32
 	cmdStreamScratch []byte
 }
+
+// voodooTexSlotNone means no slot is selected: TEX_UPLOAD behaves as the
+// legacy single-live-texture upload. voodooTexSlotMax bounds the slot id
+// space so a misbehaving guest cannot grow the slot map without limit.
+const (
+	voodooTexSlotNone = 0xFFFFFFFF
+	voodooTexSlotMax  = 65536
+)
 
 // voodooMaxSwapJobsInFlight bounds the swap pipeline depth. Depth 2
 // lets the guest build frame N+1 while frame N renders. This is only
@@ -323,6 +395,8 @@ func NewVoodooEngine(bus *MachineBus) (*VoodooEngine, error) {
 		textureMemory: make([]byte, VOODOO_TEXMEM_SIZE),
 		clipRight:     VOODOO_DEFAULT_WIDTH,
 		clipBottom:    VOODOO_DEFAULT_HEIGHT,
+		texSlotSel:    voodooTexSlotNone,
+		texSlots:      make(map[uint32]*VoodooTexture),
 	}
 	v.width.Store(int32(VOODOO_DEFAULT_WIDTH))
 	v.height.Store(int32(VOODOO_DEFAULT_HEIGHT))
@@ -438,7 +512,8 @@ func rasterStateRegister(addr uint32) bool {
 	case VOODOO_FBZ_MODE, VOODOO_ALPHA_MODE, VOODOO_FBZCOLOR_PATH,
 		VOODOO_TEXTURE_MODE, VOODOO_FOG_MODE, VOODOO_FOG_COLOR,
 		VOODOO_CHROMA_KEY, VOODOO_CHROMA_RANGE, VOODOO_STIPPLE,
-		VOODOO_CLIP_LEFT_RIGHT, VOODOO_CLIP_LOW_Y_HIGH, VOODOO_TEX_UPLOAD:
+		VOODOO_CLIP_LEFT_RIGHT, VOODOO_CLIP_LOW_Y_HIGH, VOODOO_TEX_UPLOAD,
+		VOODOO_TEX_BIND:
 		return true
 	}
 	// Slope registers forward into the bound state as well.
@@ -646,8 +721,26 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 					Format: format,
 					Data:   data,
 				}
+				if v.texSlotSel != voodooTexSlotNone {
+					// Slot-resident store: a later TEX_BIND re-selects
+					// this texture without another data transfer.
+					v.texSlots[v.texSlotSel] = v.currentTexture
+				}
 				v.backend.SetTextureData(v.textureWidth, v.textureHeight, data, format)
 			}
+		}
+	case VOODOO_TEX_SLOT:
+		if value < voodooTexSlotMax || value == voodooTexSlotNone {
+			v.texSlotSel = value
+		}
+	case VOODOO_TEX_BIND:
+		// Bind a slot-resident texture as current. Rendering resolves
+		// through the raster-state snapshot (captureRasterStateLocked
+		// stamps currentTexture onto subsequent triangles), so no
+		// backend data transfer is needed; the backends' content-keyed
+		// caches recognise the snapshot by slice identity.
+		if tex := v.texSlots[value]; tex != nil {
+			v.currentTexture = tex
 		}
 	case VOODOO_FOG_MODE:
 		v.fogMode = value
@@ -1191,6 +1284,9 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 
 		if perfAcctOn {
 			perfT0 = time.Now()
+		}
+		if voodooDupTraceOn && frame != nil {
+			voodooDupTrace(frame)
 		}
 		v.mu.Lock()
 		// Copy rendered frame to write buffer for triple-buffer publish:
