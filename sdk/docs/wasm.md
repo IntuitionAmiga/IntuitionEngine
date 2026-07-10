@@ -86,11 +86,18 @@ compile, and DevTools' "Disable cache" defeats it entirely.
 - **Cooperative yield.** Wasm has one cooperatively scheduled thread and no
   async preemption, so a tight interpreter loop would starve the JS event
   loop: no requestAnimationFrame, no rendering, no keyboard events. Every CPU
-  interpreter loop calls `hostCooperativeYield()` (`cpu_yield_wasm.go`) once
-  per 4096 instructions; it parks the goroutine for 1 ms at most once every
-  16 ms of wall time (one park per display frame), handing the thread back to
-  the browser. The interval is overridable with `IE_WASM_YIELD_MS`; the demo
-  page maps `/demo/?yield=N` onto it for in-browser A/B measurement.
+  interpreter loop calls `hostCooperativeYield()` (`cpu_yield_wasm.go`)
+  periodically (the JIT dispatcher every 64 dispatch iterations, since one
+  iteration there can be a whole chained run). After each guest slice
+  (default 6 ms) the CPU goroutine parks until the browser's next
+  requestAnimationFrame, resuming through a zero-delay timeout so the paint
+  happens first; a 50 ms timeout races the frame so hidden tabs (where rAF
+  stops) keep executing. Fixed-duration sleeps are not used by default: an
+  expired Go timer callback often runs before the same turn's rendering
+  step, so the guest re-blocks the thread and frames are skipped. The guest
+  slice is overridable with `IE_WASM_YIELD_MS` (`/demo/?yield=N`), and
+  `IE_WASM_YIELD_SLEEP_MS` (`/demo/?ysleep=N`) forces the legacy fixed-sleep
+  mode for A/B measurement.
 - **In-memory disk volume.** There is no host filesystem. The FileIO and
   BootstrapHostFS devices run against in-memory stores (`file_io_mem.go`,
   `bootstrap_hostfs_mem.go`). At boot the machine fetches `assets/MANIFEST`

@@ -55,13 +55,18 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 			return
 		}
 		checkCounter++
-		if checkCounter&0xFFF == 0 {
+		if checkCounter&0x3F == 0 {
 			if !cpu.running.Load() {
 				return
 			}
 			// Parks the goroutine briefly: the JS event loop renders, takes
 			// input, and resolves pending WebAssembly.instantiate promises,
-			// which installs freshly compiled blocks.
+			// which installs freshly compiled blocks. Every 64 iterations,
+			// NOT 4096: a dispatcher iteration on the compiled path is an
+			// entire chained run (up to 256 blocks), so a 4096-iteration
+			// cadence starved the browser of frames and keyboard input the
+			// moment the JIT tiered up. hostCooperativeYield self-throttles
+			// by wall time, so the tighter check costs one time read.
 			hostCooperativeYield()
 		}
 
