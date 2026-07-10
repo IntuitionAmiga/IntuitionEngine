@@ -67,21 +67,40 @@ import (
 var voodooDupTraceOn = os.Getenv("IE_VOODOO_DUP_TRACE") == "1"
 
 var voodooDupState struct {
-	lastCRC  uint32
-	haveLast bool
-	lastPub  time.Time
-	winStart time.Time
-	pubs     int
-	dups     int
-	minGap   time.Duration
-	maxGap   time.Duration
+	lastCRC       uint32
+	lastCenterCRC uint32
+	haveLast      bool
+	lastPub       time.Time
+	winStart      time.Time
+	pubs          int
+	dups          int
+	centerDups    int
+	minGap        time.Duration
+	maxGap        time.Duration
 }
 
 // voodooDupTrace runs on the swap worker goroutine only; no locking needed.
-func voodooDupTrace(frame []byte) {
+// Two content hashes per frame: the full frame, and a centre band that
+// excludes HUD chrome (timers, minimaps) whose per-frame animation would
+// otherwise mask a repeated 3D view - a scene rendered twice with a
+// ticking timer is "unique" by full-frame hash but duplicated where it
+// matters for motion.
+func voodooDupTrace(frame []byte, width, height int) {
 	now := time.Now()
 	s := &voodooDupState
 	c := crc32.ChecksumIEEE(frame)
+	cc := c
+	if width > 0 && height > 0 && len(frame) >= width*height*4 {
+		rowLo, rowHi := height/3, 2*height/3
+		colLo := width / 4
+		span := (width / 2) * 4
+		h := crc32.NewIEEE()
+		for y := rowLo; y < rowHi; y++ {
+			off := (y*width + colLo) * 4
+			h.Write(frame[off : off+span])
+		}
+		cc = h.Sum32()
+	}
 	if s.haveLast {
 		gap := now.Sub(s.lastPub)
 		if s.pubs == 0 || gap < s.minGap {
@@ -93,18 +112,23 @@ func voodooDupTrace(frame []byte) {
 		if c == s.lastCRC {
 			s.dups++
 		}
+		if cc == s.lastCenterCRC {
+			s.centerDups++
+		}
 		s.pubs++
 	} else {
 		s.haveLast = true
 		s.winStart = now
 	}
 	s.lastCRC = c
+	s.lastCenterCRC = cc
 	s.lastPub = now
 	if now.Sub(s.winStart) >= time.Second && s.pubs > 0 {
-		fmt.Printf("dup-trace: %d publishes/s, %d identical (%.0f%%), gap min %.1fms max %.1fms\n",
+		fmt.Printf("dup-trace: %d publishes/s, %d identical (%.0f%%), %d centre-identical (%.0f%%), gap min %.1fms max %.1fms\n",
 			s.pubs, s.dups, float64(s.dups)*100/float64(s.pubs),
+			s.centerDups, float64(s.centerDups)*100/float64(s.pubs),
 			float64(s.minGap.Microseconds())/1000, float64(s.maxGap.Microseconds())/1000)
-		s.pubs, s.dups = 0, 0
+		s.pubs, s.dups, s.centerDups = 0, 0, 0
 		s.minGap, s.maxGap = 0, 0
 		s.winStart = now
 	}
@@ -294,6 +318,19 @@ type VoodooEngine struct {
 	// stamped with.
 	texSlotSel uint32
 	texSlots   map[uint32]*VoodooTexture
+
+	// Publish generation stamps for monotonic GetFrame. bufGens[i] is
+	// the generation of the frame in frameBufs[i] (written by the
+	// producer before the sharedIdx swap publishes it); sharedGen is
+	// the generation in the shared slot; readGen is the generation the
+	// consumer last returned. The compositor can call GetFrame more
+	// often than frames publish (its skip gate is disabled whenever a
+	// frame callback is installed), and an unconditional triple-buffer
+	// swap then alternately returns frame N and N-1 - a persistent
+	// double image during motion.
+	bufGens   [3]uint64
+	sharedGen atomic.Uint64
+	readGen   uint64
 
 	// Guest RAM command stream. The stream is a big-endian array of
 	// {absolute Voodoo register address, value} u32 pairs. Writing
@@ -1286,16 +1323,21 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 			perfT0 = time.Now()
 		}
 		if voodooDupTraceOn && frame != nil {
-			voodooDupTrace(frame)
+			voodooDupTrace(frame, int(v.width.Load()), int(v.height.Load()))
 		}
 		v.mu.Lock()
 		// Copy rendered frame to write buffer for triple-buffer publish:
 		// swap our write buffer into the shared slot, get back the old
-		// shared buffer to write next frame.
+		// shared buffer to write next frame. The generation is stamped
+		// on the buffer before the swap makes it visible, so the
+		// consumer can tell a newer shared frame from the one it
+		// already returned (see GetFrame).
 		if frame != nil && len(frame) == len(v.frameBufs[v.writeIdx]) {
+			gen := v.frameGen.Add(1)
 			copy(v.frameBufs[v.writeIdx], frame)
+			v.bufGens[v.writeIdx] = gen
 			v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
-			v.frameGen.Add(1)
+			v.sharedGen.Store(gen)
 		}
 		if perfAcctOn {
 			perfSubsysAcct.VoodooPublish.AddSince(perfT0, 1)
@@ -1470,11 +1512,22 @@ func (v *VoodooEngine) GetFrame() []byte {
 	if v.swapInFlight.Load() && !v.waitSwapIdleBounded(getFrameDrainBound) {
 		return v.frameBufs[v.readingIdx.Load()]
 	}
-	// Swap our read buffer into the shared slot, get back the latest frame.
+	// Only take the shared buffer when it holds a NEWER frame than the
+	// one already returned. The compositor composites on its own 60Hz
+	// cadence (its skip gate is disabled whenever a frame callback is
+	// installed, which the script engine always does), so GetFrame runs
+	// more often than frames publish; an unconditional swap would then
+	// alternately return frame N and N-1 - rendered as a persistent
+	// double image during motion.
+	if v.sharedGen.Load() <= v.readGen {
+		return v.frameBufs[v.readingIdx.Load()]
+	}
+	// Swap our read buffer into the shared slot, get back the newer frame.
 	// This is lock-free: single atomic Swap ensures no tearing.
 	oldRead := v.readingIdx.Load()
 	newRead := v.sharedIdx.Swap(oldRead)
 	v.readingIdx.Store(newRead)
+	v.readGen = v.bufGens[newRead]
 	return v.frameBufs[newRead]
 }
 
