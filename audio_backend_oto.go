@@ -53,7 +53,12 @@ func NewOtoPlayer(sampleRate int) (*OtoPlayer, error) {
 	if err != nil {
 		return nil, err
 	}
-	<-ready
+	// On native the device is ready almost immediately. On js/wasm the ready
+	// channel only closes once the browser's AudioContext leaves "suspended",
+	// which requires a user gesture; blocking here would stall machine boot
+	// forever on a page loaded without one, so the wasm variant returns
+	// immediately and audio starts on the first keypress or click.
+	otoAwaitReady(ready)
 
 	return &OtoPlayer{
 		ctx:     ctx,

@@ -30,11 +30,29 @@ browser machine sees.
 ## Running
 
 Serve `intuitionengine.com/` over HTTP (any static server) and open `/demo/`.
-The page preloads and compiles `ie.wasm` while the visitor reads, and a Launch
-button starts the machine; the click is the user gesture WebAudio requires
-before sound may play. The page's Content-Security-Policy needs
+The page downloads and compiles `ie.wasm`, then boots the machine as soon as
+instantiation finishes; no Launch click is needed. WebAudio still requires a
+user gesture before sound may play, and Oto resumes its AudioContext on the
+first keypress or click in the machine, so audio unlocks the moment the
+visitor starts typing. The page's Content-Security-Policy needs
 `'wasm-unsafe-eval'` and `blob:` in `script-src` because Oto loads its
 AudioWorklet from a blob URL.
+
+When a visitor scrolls within 1200px of the main page's launch section, the
+page warms the demo: `wasm_exec.js` is fetched into the browser's HTTP cache,
+and `ie.wasm` goes through `WebAssembly.compileStreaming`, which both commits
+the download to the HTTP cache (a real fetch, not a droppable `rel=prefetch`
+hint) and gives the engine the chance to seed its URL-keyed compiled-wasm
+code cache while the visitor reads. The compiled Module is discarded; it
+cannot cross a navigation, but the caches can. The demo page's own fetch is
+then a cheap ETag revalidation, and its Response is handed to
+`instantiateStreaming` untouched, deliberately NOT served through a service
+worker or wrapped in a constructed Response: Chromium's compiled-wasm code
+cache only attaches to responses that come from the network stack's HTTP
+cache, so either indirection forces a full recompile on every load. Cold
+visits pay the wasm compile; warmed and repeat visits skip most of it. The
+code cache is written in the background, so two rapid reloads may both
+compile, and DevTools' "Disable cache" defeats it entirely.
 
 ## What is different from native
 

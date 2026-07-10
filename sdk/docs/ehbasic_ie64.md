@@ -767,11 +767,16 @@ COPPER END                  Emit END instruction at build pointer
 
 `COPPER LIST` with no address allocates a 4 KB list from the public `MEMALLOC` low32 ranges and stores it in `COPPER_PTR`. `COPPER LIST addr` remains valid when `addr` is already a suitable low32 list address, typically a pointer returned by `MEMALLOC`. `COPPER MOVE addr, value` takes an absolute register address (>= `&HA0000`). Addresses below `&HA0000` raise `?FC ERROR`. Each MOVE auto-emits a SETBASE instruction (12 bytes total). `COPPER WAIT` emits 4 bytes. `COPPER END` emits 4 bytes.
 
+A raster band draws when `VIDEO_RASTER_CTRL` (`&HF0054`) bit 0 is written. `VIDEO_RASTER_COLOR` (`&HF0050`) only latches the colour; the band fills at `VIDEO_RASTER_Y` (`&HF0048`) for `VIDEO_RASTER_HEIGHT` (`&HF004C`) scanlines. Colour words are R,G,B,A with red in the low byte.
+
 **Example:**
 ```basic
 COPPER LIST
 COPPER WAIT 100
-COPPER MOVE &HF0050, &HFF0000    : REM set raster colour
+COPPER MOVE &HF0048, 100         : REM band start scanline
+COPPER MOVE &HF004C, 8           : REM band height
+COPPER MOVE &HF0050, &H000000FF  : REM band colour, red in the low byte
+COPPER MOVE &HF0054, 1           : REM draw the band
 COPPER END
 COPPER ON
 ```
@@ -2468,16 +2473,25 @@ The copper is a display-list coprocessor that executes instructions synchronised
 | SETBASE | `0x80000000 \| (addr >> 2)` (bits 31:30=10) | Set I/O base for subsequent MOVEs |
 | END | `0xC0000000` (bits 31:30=11) | End of copper list |
 
-**Example: Rainbow bars**
+**Example: raster bands**
+
+Each band programmes the raster-band registers and then triggers the draw
+with `VIDEO_RASTER_CTRL` bit 0; writing `VIDEO_RASTER_COLOR` alone draws
+nothing. A bare `COPPER LIST` is 4 KB, so band loops rather than
+per-scanline loops keep the list within its allocation.
+
 ```basic
 10 SCREEN &H13
 20 COPPER LIST
-30 FOR I = 0 TO 199
-40   COPPER WAIT I
-50   COPPER MOVE &HF0050, I
-60 NEXT I
-70 COPPER END
-80 COPPER ON
+30 FOR I = 0 TO 19
+40   COPPER WAIT I * 10
+50   COPPER MOVE &HF0048, I * 10
+60   COPPER MOVE &HF004C, 10
+70   COPPER MOVE &HF0050, I * 12
+80   COPPER MOVE &HF0054, 1
+90 NEXT I
+100 COPPER END
+110 COPPER ON
 ```
 
 ### 6.3 Blitter Operations
@@ -3448,7 +3462,7 @@ dither, bits 20-31=depth offset.
 | `&HF0044` | BLT_STATUS | Blitter status |
 | `&HF0048` | VIDEO_RASTER_Y | Raster Y position |
 | `&HF004C` | VIDEO_RASTER_HEIGHT | Raster height |
-| `&HF0050` | VIDEO_RASTER_COLOR | Raster colour, BGRA |
+| `&HF0050` | VIDEO_RASTER_COLOR | Raster colour, R,G,B,A with red in the low byte |
 | `&HF0054` | VIDEO_RASTER_CTRL | Raster control |
 | `&HF0058`-`&HF0074` | BLT_MODE7_* | Mode7 U/V origin, deltas, and texture masks |
 | `&HF0078` | VIDEO_PAL_INDEX | CLUT palette write index |
@@ -3774,20 +3788,29 @@ Use `TRON` to trace line execution when debugging control-flow issues.
 
 ### 12.6 Copper Rainbow Bars
 
+Twenty bands of ten scanlines each. Every band sets `VIDEO_RASTER_Y`,
+`VIDEO_RASTER_HEIGHT` and `VIDEO_RASTER_COLOR`, then triggers the draw with
+`VIDEO_RASTER_CTRL` bit 0. Colour words are R,G,B,A with red in the low
+byte.
+
 ```basic
 10 SCREEN &H13
 20 CLS
 30 COPPER LIST
-40 FOR I = 0 TO 199
-50   COPPER WAIT I
-60   R = INT((SIN(I * PI / 100) + 1) * 127)
-70   G = INT((SIN(I * PI / 100 + 2) + 1) * 127)
-80   B = INT((SIN(I * PI / 100 + 4) + 1) * 127)
-90   COPPER MOVE &HF0050, R * 65536 + G * 256 + B
-100 NEXT I
-110 COPPER END
-120 COPPER ON
-130 GOTO 130
+40 FOR I = 0 TO 19
+50   Y = I * 10
+60   R = INT((SIN(Y * PI / 100) + 1) * 127)
+70   G = INT((SIN(Y * PI / 100 + 2) + 1) * 127)
+80   B = INT((SIN(Y * PI / 100 + 4) + 1) * 127)
+90   COPPER WAIT Y
+100  COPPER MOVE &HF0048, Y
+110  COPPER MOVE &HF004C, 10
+120  COPPER MOVE &HF0050, R + G * 256 + B * 65536
+130  COPPER MOVE &HF0054, 1
+140 NEXT I
+150 COPPER END
+160 COPPER ON
+170 GOTO 170
 ```
 
 ### 12.7 ULA Drawing

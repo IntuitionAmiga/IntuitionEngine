@@ -23,6 +23,7 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,6 +41,7 @@ func init() {
 
 type EbitenOutput struct {
 	running            atomic.Bool
+	firstFrameOnce     sync.Once
 	window             *ebiten.Image
 	width              int
 	height             int
@@ -184,7 +186,11 @@ func (eo *EbitenOutput) Start() error {
 		ebiten.SetRunnableOnUnfocused(true)
 		ebiten.SetVsyncEnabled(true)
 		eo.applySystemCursorMode(hideSystemCursor)
-		if fullscreen {
+		// Browsers only grant requestFullscreen inside a user gesture, so the
+		// boot-time request is guaranteed to fail on js (the canvas fills the
+		// page regardless). The runtime toggle still works there: it runs
+		// inside a key event, which is a gesture.
+		if fullscreen && runtime.GOOS != "js" {
 			ebiten.SetFullscreen(true)
 		}
 		if err := ebiten.RunGame(eo); err != nil {
@@ -1373,6 +1379,11 @@ func (eo *EbitenOutput) handleClipboardPaste() {
 }
 
 func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
+	// First rendered frame: let the host page know the screen is live. The
+	// browser demo keeps its loading overlay up until this fires, because the
+	// canvas element exists long before anything has been drawn to it.
+	eo.firstFrameOnce.Do(hostSignalFirstFrame)
+
 	// Defer screen-capture recording: reads pixels after all rendering is done
 	if eo.recorder != nil && eo.recorder.IsRecordingScreen() {
 		sw, sh := screen.Bounds().Dx(), screen.Bounds().Dy()
