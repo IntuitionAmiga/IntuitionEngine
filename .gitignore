@@ -106,3 +106,6 @@ sdk/scripts/iedoom_diag/
 
 # Local Netlify folder
 .netlify
+
+# Copyrighted ROM conversions: never commit
+intuitionengine.com/assets/Demos/**/mariokart*

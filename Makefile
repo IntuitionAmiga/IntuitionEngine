@@ -672,7 +672,7 @@ web-demos:
 	@cp -a sdk/examples/assets intuitionengine.com/assets/sdk/examples/ 2>/dev/null || true
 	@# Recursive manifest of the whole document-root assets folder (relative
 	@# paths), which is the BASIC disk volume the browser preloads over HTTP.
-	@(cd intuitionengine.com/assets && find . -type f ! -name MANIFEST ! -name '.gitkeep' ! -iname 'README.TXT' | sed 's|^\./||' | LC_ALL=C sort) > intuitionengine.com/assets/MANIFEST
+	@(cd intuitionengine.com/assets && find . -type f ! -name MANIFEST ! -name '.gitkeep' ! -iname 'README.TXT' ! -iname 'mariokart*' | sed 's|^\./||' | LC_ALL=C sort) > intuitionengine.com/assets/MANIFEST
 	@echo "  $$(grep -vc '^$$' intuitionengine.com/assets/MANIFEST 2>/dev/null || echo 0) file(s) in the assets disk volume"
 
 wasm: setup aot-runtime-blob web-demos
