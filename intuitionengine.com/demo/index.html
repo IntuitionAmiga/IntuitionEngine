@@ -10,67 +10,82 @@
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; }
     body {
-      background:
-        linear-gradient(115deg, rgba(45, 43, 85, 0.97), rgba(30, 30, 63, 0.95)),
-        repeating-linear-gradient(90deg, rgba(158, 255, 255, 0.06) 0 1px, transparent 1px 88px);
+      background: #000;
       color: #F8F7FF;
       font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: 1.4rem;
-      padding: 1.5rem;
       text-align: center;
     }
     h1 { font-size: clamp(1.4rem, 4vw, 2.2rem); margin: 0; }
     p { color: #C9C3F5; max-width: 42rem; margin: 0; line-height: 1.5; }
     .hint { font-size: 0.85rem; color: #9A8FD8; }
-    #launch {
-      appearance: none;
-      border: 1px solid #FAD000;
-      background: #FAD000;
-      color: #1E1E3F;
-      font: inherit;
-      font-weight: 720;
-      padding: 0.9rem 1.6rem;
-      border-radius: 0.35rem;
-      cursor: pointer;
+    /* Fixed overlay above everything, including the Ebiten canvas, which
+       appears (full-page) as soon as go.run starts, well before the machine
+       has drawn its first frame. The loader stays on top until the screen is
+       ready, then hides. */
+    #loader {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1.4rem;
+      padding: 1.5rem;
+      background:
+        linear-gradient(115deg, rgba(45, 43, 85, 0.97), rgba(30, 30, 63, 0.95)),
+        repeating-linear-gradient(90deg, rgba(158, 255, 255, 0.06) 0 1px, transparent 1px 88px);
     }
-    #launch:disabled { opacity: 0.6; cursor: progress; }
+    #loader[hidden] { display: none; }
+    .loader-line {
+      color: #A5FF90;
+      font-size: clamp(1rem, 2.4vw, 1.25rem);
+      font-weight: 700;
+    }
+    /* Blinking block cursor after the loader line, terminal style. */
+    .loader-line::after {
+      content: "\2588";
+      margin-left: 0.35rem;
+      animation: blink 1s steps(1) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+    @media (prefers-reduced-motion: reduce) {
+      .loader-line::after { animation: none; }
+    }
     #stage { width: 100%; display: flex; justify-content: center; }
     /* Ebiten injects its own <canvas> as a child of <body>; style every
-       canvas so it is visible and framed wherever it lands. */
+       canvas so the machine's screen fills the whole viewport edge to edge,
+       the closest a page gets to booting fullscreen without a user gesture. */
     canvas {
       display: block;
-      max-width: 100%;
-      height: auto;
+      max-width: 100vw;
+      max-height: 100dvh;
       image-rendering: pixelated;
-      border: 1px solid rgba(165, 153, 233, 0.55);
-      border-radius: 0.4rem;
-      box-shadow: 0 22px 60px rgba(0, 0, 0, 0.45);
-      background: #0b0b1c;
+      background: #000;
     }
     a { color: #9EFFFF; }
-    .back { position: fixed; top: 1rem; left: 1rem; font-size: 0.85rem; }
   </style>
 </head>
 <body>
-  <a class="back" href="/">&larr; intuitionengine.com</a>
-  <h1>IE64 BASIC, in your browser</h1>
-  <p id="intro">
-    A real Intuition Engine, compiled to WebAssembly and interpreted (no JIT in the
-    browser). It preloads while you read; click Launch to boot IE64 BASIC. The demos are
-    on the disk: try <code>DIR "Demos"</code>.
-  </p>
-  <button id="launch" type="button" disabled>Loading...</button>
-  <p class="hint" id="status"></p>
+  <div id="loader" aria-live="polite">
+    <h1>IE64 BASIC, in your browser</h1>
+    <p class="loader-line" id="status">Downloading Intuition Engine</p>
+    <p id="intro">
+      A real Intuition Engine: the whole machine is WebAssembly, and your browser is
+      compiling it to native code right now. BASIC appears here the moment it boots.
+      The demos are on the disk: try <code>DIR "Demos"</code>. Sound unlocks on your
+      first keypress or click.
+    </p>
+  </div>
   <div id="stage"></div>
 
   <script src="wasm_exec.js"></script>
   <script>
     (function () {
-      var launch = document.getElementById('launch');
       var status = document.getElementById('status');
       var go = null;
       var pendingInstance = null;
@@ -78,11 +93,12 @@
 
       function setStatus(msg) { status.textContent = msg; }
 
-      // Preload: download and instantiate the wasm in the background on page
-      // load, so clicking Launch boots instantly. No user gesture is needed for
-      // this; only WebAudio needs one, satisfied by the Launch click.
-      async function preload() {
-        setStatus('Downloading ie.wasm (a full emulator, so it is large)...');
+      // Boot path: download and instantiate the wasm, then run it straight
+      // away, so arriving on the page is all it takes. Downloading and running
+      // need no user gesture; only WebAudio does, and Oto resumes its
+      // AudioContext on the first keypress or click in the machine.
+      async function boot() {
+        setStatus('Downloading Intuition Engine and compiling it to native code');
         try {
           if (typeof Go === 'undefined') {
             throw new Error('wasm_exec.js did not load');
@@ -99,64 +115,125 @@
           if (params.has('yield')) {
             go.env.IE_WASM_YIELD_MS = params.get('yield');
           }
-          // No cache-busting query: the browser revalidates via ETag (a 304
-          // reuses the cached download AND the engine's compiled-code cache),
-          // and a redeploy changes the ETag so a fresh copy is fetched.
-          var resp = fetch('ie.wasm');
+          // The main site warms the HTTP cache for ie.wasm near its launch
+          // button, so this fetch is usually a cheap revalidation. The
+          // Response must reach instantiateStreaming untouched AND come from
+          // the network stack's HTTP cache: a JS-constructed Response or a
+          // service-worker CacheStorage response carries no URL/metadata for
+          // Chromium's compiled-wasm code cache, forcing a recompile on every
+          // load. No cache-busting query either: ETag revalidation keeps the
+          // HTTP and code caches warm, and a redeploy changes the ETag so a
+          // fresh copy is fetched.
+          // An earlier revision registered a service worker that served
+          // ie.wasm from CacheStorage, which never carries the compiled-wasm
+          // code cache. Unregistering does NOT detach the worker from a page
+          // it already controls, and fetch() cannot bypass its controller, so
+          // a controlled page must finish the cleanup and then reload once:
+          // the next load is uncontrolled and fetches through the network
+          // stack. sessionStorage guards against a reload loop if
+          // unregistration ever fails.
+          if ('serviceWorker' in navigator) {
+            try {
+              var regs = await navigator.serviceWorker.getRegistrations();
+              if (regs.length) {
+                await Promise.all(regs.map(function (r) { return r.unregister(); }));
+                if (window.caches) { await caches.delete('ie-demo-v1'); }
+                if (navigator.serviceWorker.controller && !sessionStorage.getItem('ie-sw-cleanup')) {
+                  sessionStorage.setItem('ie-sw-cleanup', '1');
+                  location.reload();
+                  return;
+                }
+              }
+            } catch (e) { /* no SW access; the plain fetch below works regardless */ }
+          }
+          var t0 = performance.now();
+          var resp = await fetch('ie.wasm');
+          if (!resp.ok) {
+            throw new Error('ie.wasm fetch failed: HTTP ' + resp.status);
+          }
+          var t1 = performance.now();
           var result;
           if (WebAssembly.instantiateStreaming) {
             result = await WebAssembly.instantiateStreaming(resp, go.importObject);
           } else {
-            var bytes = await (await resp).arrayBuffer();
+            var bytes = await resp.arrayBuffer();
             result = await WebAssembly.instantiate(bytes, go.importObject);
           }
+          var t2 = performance.now();
+          // A warm code cache shows up here as a instantiate time that drops
+          // from seconds to tens of milliseconds between visits.
+          console.log('ie.wasm headers ' + Math.round(t1 - t0) + ' ms, download+instantiate ' + Math.round(t2 - t1) + ' ms');
           pendingInstance = result.instance;
-          launch.disabled = false;
-          launch.textContent = 'Launch IE64 BASIC';
-          setStatus('Ready. Click Launch.');
+          launchBASIC();
         } catch (err) {
           setStatus('Failed to load: ' + (err && err.message ? err.message : err));
         }
       }
 
-      // Launch: run the preloaded instance. Instant, and the click is the
-      // WebAudio user gesture.
+      // Run the instantiated machine immediately. The loader stays on screen
+      // until the machine's canvas actually exists, then BASIC takes its place.
       function launchBASIC() {
         if (started || !pendingInstance) { return; }
         started = true;
-        launch.hidden = true;
-        document.getElementById('intro').hidden = true;
-        setStatus('Booting IE64 BASIC... waiting for the screen.');
+        setStatus('Booting IE64 BASIC');
         go.run(pendingInstance);
         adoptCanvas();
       }
 
-      // Ebiten creates its <canvas> under <body> during RunGame, which runs
-      // shortly after go.run on the pumped main goroutine. Poll for it, move it
-      // into the stage, focus it and report its size so a blank result is
-      // distinguishable from a missing canvas.
+      // Ebiten creates its <canvas> during package initialisation, long
+      // before RunGame has drawn anything, so canvas existence is not
+      // "screen ready". Adopt the canvas as soon as it exists, but keep the
+      // loading overlay up until the machine reports its first rendered
+      // frame (the wasm build sets window.ieFirstFrame and dispatches
+      // ie-first-frame from the first Ebiten Draw).
       function adoptCanvas() {
         var stage = document.getElementById('stage');
+        var adopted = false;
         var tries = 0;
         var timer = setInterval(function () {
           tries++;
           var c = document.querySelector('canvas');
-          if (c) {
-            clearInterval(timer);
+          if (c && !adopted) {
+            adopted = true;
             if (c.parentNode !== stage) { stage.appendChild(c); }
             c.setAttribute('tabindex', '0');
+          }
+          if (adopted && window.ieFirstFrame) {
+            clearInterval(timer);
+            document.getElementById('loader').hidden = true;
             c.scrollIntoView({ block: 'center' });
             c.focus();
-            setStatus('Screen ready (' + c.width + '×' + c.height + '). Click it and type.');
-          } else if (tries > 100) { // ~10s
+            promoteToFullscreen();
+          } else if (tries > 300) { // ~30s
             clearInterval(timer);
-            setStatus('No canvas appeared after 10s - main() may be blocked before RunGame. Check the console.');
+            setStatus(adopted
+              ? 'The screen has not drawn a frame after 30s. Check the console.'
+              : 'No canvas appeared after 30s - main() may be blocked before RunGame. Check the console.');
           }
         }, 100);
       }
 
-      launch.addEventListener('click', launchBASIC);
-      preload();
+      // The machine boots fullscreen on native. A browser only grants the
+      // Fullscreen API inside a user gesture, so true fullscreen at boot is
+      // impossible; the page fakes it (canvas edge to edge on a black
+      // viewport) and promotes to real fullscreen on the visitor's first
+      // keypress or click, one-shot. Leaving fullscreen afterwards (Esc) is
+      // respected: no re-entry.
+      function promoteToFullscreen() {
+        var root = document.documentElement;
+        if (!root.requestFullscreen) { return; }
+        function once() {
+          document.removeEventListener('keydown', once, true);
+          document.removeEventListener('pointerdown', once, true);
+          if (!document.fullscreenElement) {
+            root.requestFullscreen().catch(function () { /* denied; stay faux-fullscreen */ });
+          }
+        }
+        document.addEventListener('keydown', once, true);
+        document.addEventListener('pointerdown', once, true);
+      }
+
+      boot();
     })();
   </script>
 </body>

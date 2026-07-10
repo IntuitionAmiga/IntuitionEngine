@@ -6,7 +6,7 @@
   <title>Intuition Engine - Shared Bus Multi-CPU Machine</title>
   <meta name="description" content="Intuition Engine architecture: MachineBus, MMIO devices, guest driver routes, coprocessor workers, audio/video devices, IE Mon, IEScript, SDK tooling, and demos.">
   <meta name="robots" content="index,follow">
-  <link rel="canonical" href="https://intuitionengine.com/">
+  <link rel="canonical" href="https://intuitionengine.io/">
   <link rel="preconnect" href="https://www.youtube-nocookie.com">
   <link rel="preconnect" href="https://i.ytimg.com">
   <link rel="icon" type="image/png" href="/favicon.png">
@@ -169,18 +169,50 @@
     }
 
     .hero {
+      position: relative;
       display: grid;
-      background:
-        linear-gradient(115deg, rgba(45, 43, 85, 0.97), rgba(30, 30, 63, 0.9)),
-        repeating-linear-gradient(90deg, rgba(158, 255, 255, 0.08) 0 1px, transparent 1px 88px),
-        repeating-linear-gradient(0deg, rgba(250, 208, 0, 0.07) 0 1px, transparent 1px 76px);
+      overflow: hidden;
+      background: #1E1E3F;
       border-bottom: 1px solid var(--line);
     }
 
+    .hero-bg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      image-rendering: pixelated;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      background:
+        linear-gradient(115deg, rgba(30, 30, 63, 0.62), rgba(30, 30, 63, 0.42)),
+        repeating-linear-gradient(90deg, rgba(158, 255, 255, 0.05) 0 1px, transparent 1px 88px),
+        repeating-linear-gradient(0deg, rgba(250, 208, 0, 0.04) 0 1px, transparent 1px 76px);
+      pointer-events: none;
+    }
+
     .hero .wrap {
+      position: relative;
+      z-index: 1;
       width: 100%;
       padding-top: clamp(4.5rem, 10vh, 8rem);
       padding-bottom: clamp(3.5rem, 8vh, 6rem);
+    }
+
+    .hero-credit {
+      position: absolute;
+      right: 0.9rem;
+      bottom: 0.55rem;
+      z-index: 1;
+      color: var(--muted);
+      font-size: 0.72rem;
+      letter-spacing: 0.02em;
     }
 
     .eyebrow {
@@ -253,33 +285,6 @@
       flex-wrap: wrap;
       gap: 0.75rem;
       margin-top: 2rem;
-    }
-
-    .demo-screen {
-      margin: 2.6rem 0 0;
-      border: 1px solid rgba(165, 153, 233, 0.55);
-      border-radius: 0.5rem;
-      overflow: hidden;
-      background: #0b0b1c;
-      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 22px 60px rgba(0, 0, 0, 0.45), inset 0 0 60px rgba(0, 0, 0, 0.55);
-    }
-
-    .demo-screen canvas {
-      display: block;
-      width: 100%;
-      height: auto;
-      image-rendering: pixelated;
-    }
-
-    .demo-screen figcaption {
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      padding: 0.5rem 0.8rem;
-      border-top: 1px solid rgba(165, 153, 233, 0.28);
-      color: var(--muted);
-      font-size: 0.78rem;
-      letter-spacing: 0.02em;
     }
 
     .button {
@@ -814,24 +819,19 @@
 
   <main id="content">
     <section id="top" class="hero">
+      <canvas id="roto" class="hero-bg" width="320" height="180" aria-hidden="true"></canvas>
+      <span class="hero-credit">Rotozoomer, drawn by hand in a few lines of JavaScript</span>
       <div class="wrap">
         <p class="eyebrow">The machine that never was</p>
         <h1>Intuition Engine</h1>
         <p class="tagline">Six rival home computers on one bus.</p>
-        <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit machines from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, with a touch of SNES-style Mode 7 affine texturing and a 3DFX Voodoo thrown in, rebuilt on a single shared bus. A 6502 can play a SID tune while an x86 draws Atari ANTIC graphics or a 68020 drives a copper down PC VGA modes, all six architectures live on the same bus at once. Combinations no silicon ever shipped, running as one machine. The exact combination is all up to you as a game or demo coder.</p>
+        <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit machines from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, with a touch of SNES-style Mode 7 affine texturing and a 3DFX Voodoo thrown in, rebuilt on a single shared bus. A 6502 can play a SID tune while an x86 draws Atari ANTIC graphics or a 68020 drives a copper down PC VGA modes, all six architectures live on the same bus at once. Combinations no silicon ever shipped, running as one machine. The exact runtime combination for your code is all up to you as a game or demo coder.</p>
         <div class="actions">
           <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://youtube.com/@IntuitionAmiga">YouTube</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
         </div>
 
-        <figure class="demo-screen">
-          <canvas id="roto" width="256" height="88" aria-label="An animated rotozoomer effect"></canvas>
-          <figcaption>
-            <span>Rotozoomer</span>
-            <span>drawn by hand in a few lines of JavaScript</span>
-          </figcaption>
-        </figure>
 
         <div class="hero-grid">
           <div class="proof-strip" aria-label="Architecture facts">
@@ -1690,17 +1690,24 @@ SOUND PLAY "SONG.MID"</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>Write your own demo</h2>
-          <p>Intuition Engine is a machine to make things on, not only to watch. Boot the live image into IE64 BASIC and the whole machine is yours: six CPUs, the copper, a nine-operation blitter, Mode 7 affine texturing, a 3DFX Voodoo, and chip music in a stack of native formats, all reachable from BASIC or from assembly.</p>
+          <p>Intuition Engine is a machine to make things on, not only to watch. Start at the BASIC prompt and stay on one machine all the way down: <code>RUN</code> interprets your programme, <code>RUN AOT</code> compiles the same source to native IE64 code, <code>TRANSPILE</code> writes it out as assembly you can read and edit, and the same bus is still under you when you retarget any of the six CPUs. The copper, the nine-operation blitter, Mode 7, the Voodoo and the chip-music players are reachable from the first line you type. For a guided route, <a href="#guide">Part VII of the Reference Guide</a> builds a complete intro from a first frame loop.</p>
         </div>
         <div class="grid three">
           <article class="card">
             <span class="kicker">Start in BASIC</span>
             <h3>From idea to moving pixels</h3>
-            <p>Poke the MMIO registers directly, run the blitter, wait on the beam, and start a tune. <code>RUN</code> shows it through the interpreter; <code>RUN AOT</code> compiles the same programme to native IE64 code and runs it at once.</p>
-            <pre class="code-panel"><code>10 SOUND PLAY "TUNE.SID",0
-20 REM rotate and zoom a texture, 14 parameters
-30 BLIT MODE7 TX,BB,640,480,U0,V0,DC,DS,0-DS,DC,1023,511,TS,ST
-40 VSYNC</code></pre>
+            <p>This is a whole programme: the copper paints sixteen raster bands down the frame, a red gradient brightening band by band, while a SID from the demo disk plays. Type it into the browser demo, <code>RUN</code> it, then <code>RUN AOT</code> to run the same programme compiled to native IE64 code.</p>
+            <pre class="code-panel"><code>10 COPPER LIST
+20 FOR Y=0 TO 15
+30 COPPER WAIT 200+Y*8
+40 COPPER MOVE &amp;HF0048, 200+Y*8
+50 COPPER MOVE &amp;HF004C, 8
+60 COPPER MOVE &amp;HF0050, 40+Y*13
+70 COPPER MOVE &amp;HF0054, 1
+80 NEXT Y
+90 COPPER END
+100 COPPER ON
+110 SOUND PLAY "ODDNB.SID",0</code></pre>
           </article>
           <article class="card">
             <span class="kicker">Drop to assembly</span>
@@ -1715,7 +1722,7 @@ SOUND PLAY "SONG.MID"</code></pre>
           <article class="card">
             <span class="kicker">Effects</span>
             <h3>The hardware sceners reach for</h3>
-            <p>A copper that rewrites palette registers in step with the beam for raster bars, the blitter for copy, fill, line, masked and alpha copy, colour expand and scale, Mode 7 for rotate and zoom, and the Voodoo for textured 3D. Mix a CPU, a video chip and a sound chip that never shared a board.</p>
+            <p>A copper that rewrites registers in step with the beam, a blitter with copy, fill, line, masked and alpha copy, colour expand, scale, Mode 7 and raw memory copy, and the Voodoo for textured 3D. Mix a CPU, a video chip and a sound chip that never shared a board. <a href="#demos">Watch the same rotozoomer written thirteen ways</a>, then write the fourteenth.</p>
           </article>
           <article class="card">
             <span class="kicker">Chip music</span>
@@ -1737,7 +1744,8 @@ SOUND PLAY "SONG.MID"</code></pre>
           <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
         </div>
-        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC, interpreter only, with a disk volume of demos to <code>DIR</code>, <code>LOAD</code> and <code>RUN</code>. The live image bundles worked examples in BASIC, assembly and C. Write your demo, <code>COMPILE</code> it to a standalone <code>.ie64</code>, and it runs on the same machine as everything above.</p>
+        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">Your first ninety seconds: launch the browser demo, and at the Ready prompt type <code>DIR "Demos"</code>, then <code>RUN "iedoom.ie68"</code> or any file that catches your eye. <code>LOAD</code> a BASIC demo and <code>LIST</code> it to see how it is made.</p>
+        <p style="margin-top: 0.5rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC, interpreter only, with a disk volume of demos. The live image bundles worked examples in BASIC, assembly and C. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
       </div>
     </section>
 
@@ -1853,7 +1861,7 @@ SOUND PLAY "SONG.MID"</code></pre>
     "description": "Shared-bus multi-CPU fantasy computer with six CPU views, MMIO devices, coprocessor workers, audio and video devices, tooling, and demos.",
     "codeRepository": "https://github.com/IntuitionAmiga/IntuitionEngine",
     "programmingLanguage": "Go",
-    "url": "https://intuitionengine.com/"
+    "url": "https://intuitionengine.io/"
   }
   </script>
 
@@ -1890,12 +1898,13 @@ SOUND PLAY "SONG.MID"</code></pre>
   </script>
 
   <script>
-    // Hero rotozoomer: the 256x256 texture (assets/rotozoomtexture.raw,
-    // raw RGBA) rotated and zoomed into a small pixel buffer, scaled up by
-    // the browser for a chunky oldskool look. An XOR pattern stands in until
-    // the texture loads, or if the fetch fails. Not the emulator; a
-    // hand-written tribute effect. Honours prefers-reduced-motion, pauses
-    // when hidden or scrolled out of view.
+    // Hero background rotozoomer: the 256x256 texture
+    // (assets/rotozoomtexture.raw, raw RGBA) rotated and zoomed into a small
+    // pixel buffer, cover-scaled by the browser across the whole hero for a
+    // chunky oldskool look; a dark scrim above it keeps the copy legible.
+    // An XOR pattern stands in until the texture loads, or if the fetch
+    // fails. Not the emulator; a hand-written tribute effect. Honours
+    // prefers-reduced-motion, pauses when hidden or scrolled out of view.
     (function () {
       var canvas = document.getElementById('roto');
       if (!canvas) { return; }
@@ -1984,29 +1993,62 @@ SOUND PLAY "SONG.MID"</code></pre>
     })();
   </script>
   <script>
-    // Prefetch the browser demo's wasm binary once the visitor scrolls near
-    // the "Write your own demo" section, so clicking Launch is near-instant.
+    // Warm the browser demo once the visitor scrolls within 1200px of the
+    // "Write your own demo" section, so opening /demo/ is near-instant.
     // Deliberately not on page load: the binary is large and most visitors
-    // never reach the demo. The browser drops prefetch on data-saver or slow
-    // connections, and the demo page's own fetch reuses the cached copy.
+    // never reach the demo. ie.wasm is not merely downloaded but compiled
+    // here via WebAssembly.compileStreaming: the download lands in the HTTP
+    // cache (a real fetch, not a droppable rel=prefetch hint) and the compile
+    // seeds Chromium's URL-keyed compiled-wasm code cache while the visitor
+    // reads, so the demo page's instantiateStreaming of the same URL can skip
+    // most of its compile. The Module object itself is discarded; it cannot
+    // cross a navigation. Crucially the demo response must come from the
+    // HTTP cache, NOT a service worker's CacheStorage: Chromium's compiled
+    // wasm code cache only attaches to network-stack responses, and a
+    // service-worker-synthesised response forces a full recompile every load.
     (function () {
       var make = document.getElementById('make');
       if (!make || !('IntersectionObserver' in window)) { return; }
+
+      // An earlier revision registered a service worker that served ie.wasm
+      // from CacheStorage (recompiling every visit); clean it up before any
+      // warming so the two never race. If this page load is still controlled
+      // by the old worker the warm fetches may go through it once more (a
+      // page cannot detach its own controller); the demo page detects that
+      // case itself and reloads once, so the demo path stays correct.
+      var swCleanup = Promise.resolve();
+      if ('serviceWorker' in navigator) {
+        swCleanup = navigator.serviceWorker.getRegistrations().then(function (regs) {
+          return Promise.all(regs.map(function (r) { return r.unregister(); }));
+        }).then(function () {
+          if (window.caches) { return caches.delete('ie-demo-v1'); }
+        }).catch(function () {});
+      }
+
+      function warm() {
+        fetch('/demo/wasm_exec.js', { priority: 'low' }).then(function (resp) {
+          // Drain so the body is fully committed to the HTTP cache.
+          return resp.arrayBuffer();
+        }).catch(function () { /* offline or blocked; the demo page fetches normally */ });
+        var wasm = fetch('/demo/ie.wasm', { priority: 'low' });
+        if (WebAssembly.compileStreaming) {
+          WebAssembly.compileStreaming(wasm)
+            .catch(function () { /* wrong MIME or offline; the demo page compiles instead */ });
+        } else {
+          wasm.then(function (resp) { return resp.arrayBuffer(); })
+            .catch(function () { /* offline or blocked */ });
+        }
+      }
+
       var done = false;
       var obs = new IntersectionObserver(function (entries) {
         entries.forEach(function (e) {
           if (!e.isIntersecting || done) { return; }
           done = true;
           obs.disconnect();
-          ['/demo/ie.wasm', '/demo/wasm_exec.js'].forEach(function (href) {
-            var l = document.createElement('link');
-            l.rel = 'prefetch';
-            l.href = href;
-            l.as = 'fetch';
-            document.head.appendChild(l);
-          });
+          swCleanup.then(warm);
         });
-      }, { rootMargin: '600px' });
+      }, { rootMargin: '1200px' });
       obs.observe(make);
     })();
   </script>
