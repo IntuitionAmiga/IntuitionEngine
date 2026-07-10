@@ -9,6 +9,14 @@
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
 
+# The wasm binary has no fingerprinted filename, so it must revalidate: Netlify
+# ETags make a repeat visit a 304 and the browser reuses its cached (and
+# compiled) copy; a new deploy changes the ETag and downloads fresh.
+[[headers]]
+  for = "/demo/ie.wasm"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
 [[headers]]
   for = "/assets/*.webp"
   [headers.values]
