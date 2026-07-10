@@ -1733,10 +1733,11 @@ SOUND PLAY "SONG.MID"</code></pre>
           </article>
         </div>
         <div class="actions">
+          <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
           <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
         </div>
-        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The live image bundles worked examples in BASIC, assembly and C. Write your demo, <code>COMPILE</code> it to a standalone <code>.ie64</code>, and it runs on the same machine as everything above.</p>
+        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC, interpreter only, with a disk volume of demos to <code>DIR</code>, <code>LOAD</code> and <code>RUN</code>. The live image bundles worked examples in BASIC, assembly and C. Write your demo, <code>COMPILE</code> it to a standalone <code>.ie64</code>, and it runs on the same machine as everything above.</p>
       </div>
     </section>
 
@@ -1980,6 +1981,33 @@ SOUND PLAY "SONG.MID"</code></pre>
           start();
         }
       }
+    })();
+  </script>
+  <script>
+    // Prefetch the browser demo's wasm binary once the visitor scrolls near
+    // the "Write your own demo" section, so clicking Launch is near-instant.
+    // Deliberately not on page load: the binary is large and most visitors
+    // never reach the demo. The browser drops prefetch on data-saver or slow
+    // connections, and the demo page's own fetch reuses the cached copy.
+    (function () {
+      var make = document.getElementById('make');
+      if (!make || !('IntersectionObserver' in window)) { return; }
+      var done = false;
+      var obs = new IntersectionObserver(function (entries) {
+        entries.forEach(function (e) {
+          if (!e.isIntersecting || done) { return; }
+          done = true;
+          obs.disconnect();
+          ['/demo/ie.wasm', '/demo/wasm_exec.js'].forEach(function (href) {
+            var l = document.createElement('link');
+            l.rel = 'prefetch';
+            l.href = href;
+            l.as = 'fetch';
+            document.head.appendChild(l);
+          });
+        });
+      }, { rootMargin: '600px' });
+      obs.observe(make);
     })();
   </script>
 </body>
