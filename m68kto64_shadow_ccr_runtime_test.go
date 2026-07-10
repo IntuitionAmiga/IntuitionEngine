@@ -103,11 +103,11 @@ func runToHalt(t *testing.T, bin []byte, maxSteps int) *CPU64 {
 // values after lowering. Inputs are written into d0 (dst) and d1
 // (src); the producer runs against (d0, d1) at the given size.
 type shadowCase struct {
-	name string
-	op   string // m68k op like "sub.w", "add.w"
-	d0   uint32 // dst preload
-	d1   uint32 // src preload
-	n, z, c, v, x byte // expected shadow values (0 or 1)
+	name          string
+	op            string // m68k op like "sub.w", "add.w"
+	d0            uint32 // dst preload
+	d1            uint32 // src preload
+	n, z, c, v, x byte   // expected shadow values (0 or 1)
 }
 
 // runShadowCase emits `move.l #d0,d0; move.l #d1,d1; <op> d1,d0` and
@@ -162,12 +162,12 @@ func boolBit(b bool) byte {
 // C=borrow, V=signed overflow, X=C.
 func TestShadowCCR_SubW(t *testing.T) {
 	cases := []shadowCase{
-		{"1-1=0",        "sub.w", 0x00000001, 0x00000001, 0, 1, 0, 0, 0},
-		{"0-1=-1",       "sub.w", 0x00000000, 0x00000001, 1, 0, 1, 0, 1},
-		{"-32768-1",     "sub.w", 0x00008000, 0x00000001, 0, 0, 0, 1, 0},
-		{"32767-(-1)",   "sub.w", 0x00007FFF, 0x0000FFFF, 1, 0, 1, 1, 1},
-		{"-1 - -1 = 0",  "sub.w", 0x0000FFFF, 0x0000FFFF, 0, 1, 0, 0, 0},
-		{"$1234-$5678",  "sub.w", 0x00001234, 0x00005678, 1, 0, 1, 0, 1},
+		{"1-1=0", "sub.w", 0x00000001, 0x00000001, 0, 1, 0, 0, 0},
+		{"0-1=-1", "sub.w", 0x00000000, 0x00000001, 1, 0, 1, 0, 1},
+		{"-32768-1", "sub.w", 0x00008000, 0x00000001, 0, 0, 0, 1, 0},
+		{"32767-(-1)", "sub.w", 0x00007FFF, 0x0000FFFF, 1, 0, 1, 1, 1},
+		{"-1 - -1 = 0", "sub.w", 0x0000FFFF, 0x0000FFFF, 0, 1, 0, 0, 0},
+		{"$1234-$5678", "sub.w", 0x00001234, 0x00005678, 1, 0, 1, 0, 1},
 	}
 	for _, c := range cases {
 		c := c
@@ -180,11 +180,11 @@ func TestShadowCCR_SubW(t *testing.T) {
 // V=signed overflow, X=C.
 func TestShadowCCR_AddW(t *testing.T) {
 	cases := []shadowCase{
-		{"1+1=2",        "add.w", 0x00000001, 0x00000001, 0, 0, 0, 0, 0},
-		{"32767+1",      "add.w", 0x00007FFF, 0x00000001, 1, 0, 0, 1, 0},
-		{"-1+1=0",       "add.w", 0x0000FFFF, 0x00000001, 0, 1, 1, 0, 1},
-		{"-32768+-32768","add.w", 0x00008000, 0x00008000, 0, 1, 1, 1, 1},
-		{"$1234+$5678",  "add.w", 0x00001234, 0x00005678, 0, 0, 0, 0, 0},
+		{"1+1=2", "add.w", 0x00000001, 0x00000001, 0, 0, 0, 0, 0},
+		{"32767+1", "add.w", 0x00007FFF, 0x00000001, 1, 0, 0, 1, 0},
+		{"-1+1=0", "add.w", 0x0000FFFF, 0x00000001, 0, 1, 1, 0, 1},
+		{"-32768+-32768", "add.w", 0x00008000, 0x00008000, 0, 1, 1, 1, 1},
+		{"$1234+$5678", "add.w", 0x00001234, 0x00005678, 0, 0, 0, 0, 0},
 	}
 	for _, c := range cases {
 		c := c
@@ -195,10 +195,10 @@ func TestShadowCCR_AddW(t *testing.T) {
 // TestShadowCCR_SubL exercises sub.l d1,d0 — full 32-bit width.
 func TestShadowCCR_SubL(t *testing.T) {
 	cases := []shadowCase{
-		{"1-1=0",         "sub.l", 0x00000001, 0x00000001, 0, 1, 0, 0, 0},
-		{"0-1=-1",        "sub.l", 0x00000000, 0x00000001, 1, 0, 1, 0, 1},
-		{"INT32_MIN-1",   "sub.l", 0x80000000, 0x00000001, 0, 0, 0, 1, 0},
-		{"INT32_MAX-(-1)","sub.l", 0x7FFFFFFF, 0xFFFFFFFF, 1, 0, 1, 1, 1},
+		{"1-1=0", "sub.l", 0x00000001, 0x00000001, 0, 1, 0, 0, 0},
+		{"0-1=-1", "sub.l", 0x00000000, 0x00000001, 1, 0, 1, 0, 1},
+		{"INT32_MIN-1", "sub.l", 0x80000000, 0x00000001, 0, 0, 0, 1, 0},
+		{"INT32_MAX-(-1)", "sub.l", 0x7FFFFFFF, 0xFFFFFFFF, 1, 0, 1, 1, 1},
 	}
 	for _, c := range cases {
 		c := c
@@ -209,9 +209,9 @@ func TestShadowCCR_SubL(t *testing.T) {
 // TestShadowCCR_AddL exercises add.l d1,d0 — full 32-bit width.
 func TestShadowCCR_AddL(t *testing.T) {
 	cases := []shadowCase{
-		{"1+1=2",         "add.l", 0x00000001, 0x00000001, 0, 0, 0, 0, 0},
-		{"INT32_MAX+1",   "add.l", 0x7FFFFFFF, 0x00000001, 1, 0, 0, 1, 0},
-		{"-1+1=0",        "add.l", 0xFFFFFFFF, 0x00000001, 0, 1, 1, 0, 1},
+		{"1+1=2", "add.l", 0x00000001, 0x00000001, 0, 0, 0, 0, 0},
+		{"INT32_MAX+1", "add.l", 0x7FFFFFFF, 0x00000001, 1, 0, 0, 1, 0},
+		{"-1+1=0", "add.l", 0xFFFFFFFF, 0x00000001, 0, 1, 1, 0, 1},
 		{"INT32_MIN+INT32_MIN", "add.l", 0x80000000, 0x80000000, 0, 1, 1, 1, 1},
 	}
 	for _, c := range cases {

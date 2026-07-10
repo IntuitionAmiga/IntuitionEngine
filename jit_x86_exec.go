@@ -727,9 +727,16 @@ func (cpu *CPU_X86) finishFastMMIOWrite(nextPC uint32) {
 // loops; no per-program shortcuts.
 func (cpu *CPU_X86) x86RunInterpreter() {
 	bounded := cpu.x86BudgetActive
+	yieldCheck := uint32(0)
 	for cpu.Running() && !cpu.Halted {
 		if bounded && cpu.x86InstrBudget <= 0 {
 			return
+		}
+		// Once per 4096 instructions: on js/wasm park briefly so the browser
+		// event loop runs (no-op on native builds).
+		yieldCheck++
+		if yieldCheck&0xFFF == 0 {
+			hostCooperativeYield()
 		}
 		if cpu.tryFastMMIOPollLoop() {
 			continue

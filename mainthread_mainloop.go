@@ -1,4 +1,11 @@
-//go:build darwin && !headless
+//go:build (darwin || wasm) && !headless
+
+// This queue-and-pump also serves the js/wasm browser build: Ebiten's js
+// backend requires ebiten.RunGame to run on the main goroutine (it drives
+// requestAnimationFrame from the JS event loop), so RunGame is posted via
+// mainThreadCall and executed by driveMainThread on the main goroutine while
+// the wait-block runs in a child goroutine. runtime.LockOSThread is harmless
+// on single-threaded wasm.
 
 package main
 

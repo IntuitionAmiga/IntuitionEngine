@@ -21,8 +21,10 @@
 // promotion (region attempt, fall back to single-block) is backend-specific
 // and stays in jit_x86_exec.go. The shared piece is the threshold/gate
 // arithmetic so a behavioral change applies uniformly.
-
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
+//
+// The controller is pure threshold arithmetic with no host dependency, so it
+// carries no build constraint: the js/wasm interpreter-only build needs the
+// same policy types and default thresholds as the native JIT backends.
 
 package main
 

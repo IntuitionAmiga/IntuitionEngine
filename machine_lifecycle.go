@@ -95,7 +95,7 @@ type MachineDeps struct {
 
 func (d MachineDeps) withDefaults() MachineDeps {
 	if d.ReadFile == nil {
-		d.ReadFile = os.ReadFile
+		d.ReadFile = hostReadFile
 	}
 	if d.ModeFromExtension == nil {
 		d.ModeFromExtension = modeFromExtension

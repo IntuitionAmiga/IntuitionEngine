@@ -335,7 +335,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile test-wasm-build test-wasm x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -633,6 +633,100 @@ headless-novulkan: setup aot-runtime-blob
 	@CGO_ENABLED=0 $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "novulkan headless" .
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM (headless-novulkan) build complete"
+
+# --- WebAssembly demo (interpreter-only IE64 BASIC in the browser) ----------
+# The js/wasm target has no JIT (jitAvailable is false) and no Vulkan (the
+# Vulkan files carry a !js constraint, so the software Voodoo rasteriser is
+# used); every CPU runs its interpreter. GOEXPERIMENT=none because the simd
+# experiment is amd64 only. See sdk/docs/wasm.md.
+WASM_DEMO_DIR := intuitionengine.com/demo
+WASM_BINARY   := $(WASM_DEMO_DIR)/ie.wasm
+WASM_TAGS     := embed_basic
+WASM_GOENV    := GOOS=js GOARCH=wasm GOEXPERIMENT=none
+# Web BASIC disk volume: an exact mirror of the USB live image IESHARE Demos
+# subtree (Demos/{ie32,ie64,m68k,z80,m6502,x86}), so the browser disk has the
+# same content and CPU-sorted layout. Only the Demos subtree is mirrored, not
+# the Systems/Docs/SDK/Coproc siblings. MANIFEST is a recursive list of the
+# relative paths the browser preloads over HTTP.
+WEB_DEMOS_DIR := intuitionengine.com/assets/Demos
+IESHARE_DEMOS := $(X64_LIVE_DIR)/work/ieshare-payload/Demos
+
+.PHONY: web-demos
+web-demos:
+	@if [ ! -d "$(IESHARE_DEMOS)" ]; then \
+		echo "Warning: $(IESHARE_DEMOS) not staged; run 'make x64-live-demos' first to build the IESHARE Demos tree" >&2; \
+		mkdir -p $(WEB_DEMOS_DIR); \
+	else \
+		echo "Mirroring IESHARE Demos tree into $(WEB_DEMOS_DIR)..."; \
+		rm -rf $(WEB_DEMOS_DIR); \
+		mkdir -p $(WEB_DEMOS_DIR); \
+		cp -a $(IESHARE_DEMOS)/. $(WEB_DEMOS_DIR)/; \
+	fi
+	@# Recursive manifest of the whole document-root assets folder (relative
+	@# paths), which is the BASIC disk volume the browser preloads over HTTP.
+	@# BASIC demos (.bas) and the media they BLOAD/SOUND PLAY by their built-in
+	@# "sdk/examples/assets/..." paths. Files are lazy-loaded, so large art only
+	@# fetches when a demo uses it.
+	@mkdir -p intuitionengine.com/assets/sdk/examples
+	@cp -a sdk/examples/basic intuitionengine.com/assets/sdk/examples/ 2>/dev/null || true
+	@cp -a sdk/examples/assets intuitionengine.com/assets/sdk/examples/ 2>/dev/null || true
+	@# Recursive manifest of the whole document-root assets folder (relative
+	@# paths), which is the BASIC disk volume the browser preloads over HTTP.
+	@(cd intuitionengine.com/assets && find . -type f ! -name MANIFEST ! -name '.gitkeep' ! -iname 'README.TXT' | sed 's|^\./||' | LC_ALL=C sort) > intuitionengine.com/assets/MANIFEST
+	@echo "  $$(grep -vc '^$$' intuitionengine.com/assets/MANIFEST 2>/dev/null || echo 0) file(s) in the assets disk volume"
+
+wasm: setup aot-runtime-blob web-demos
+	@echo "Building WebAssembly demo (interpreter-only IE64 BASIC)..."
+	@mkdir -p $(WASM_DEMO_DIR)
+	$(WASM_GOENV) $(GO) build -ldflags "-s -w" -tags "$(WASM_TAGS)" -o $(WASM_BINARY) .
+	@cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_DEMO_DIR)/wasm_exec.js
+	@if command -v wasm-opt >/dev/null 2>&1; then \
+		echo "Optimising with wasm-opt..."; \
+		if wasm-opt -Oz --enable-bulk-memory --enable-sign-ext --enable-nontrapping-float-to-int --enable-mutable-globals --enable-reference-types $(WASM_BINARY) -o $(WASM_BINARY).opt 2>/dev/null; then \
+			mv $(WASM_BINARY).opt $(WASM_BINARY); \
+		else \
+			echo "  wasm-opt could not process this binary (Go/wasm feature mismatch); shipping unoptimised"; \
+			rm -f $(WASM_BINARY).opt; \
+		fi; \
+	else \
+		echo "wasm-opt not found; shipping unoptimised wasm"; \
+	fi
+	@ls -lh $(WASM_BINARY) | awk '{print "  wasm size:", $$5}'
+	@# The BASIC disk volume is served from the document-root assets folder
+	@# (staged by web-demos, with the MANIFEST at assets/MANIFEST) and fetched
+	@# over HTTP at boot; nothing is copied into the demo folder. Remove any
+	@# stale mirror left by earlier builds.
+	@rm -rf $(WASM_DEMO_DIR)/assets
+
+# Profiling build: keeps the wasm name section (no -s -w, no wasm-opt) so the
+# browser devtools Performance tab shows Go function names. Overwrites the
+# shipping ie.wasm; run 'make wasm' again before deploying.
+wasm-profile: setup aot-runtime-blob
+	@echo "Building WebAssembly demo (PROFILING: symbols kept, unoptimised)..."
+	@mkdir -p $(WASM_DEMO_DIR)
+	$(WASM_GOENV) $(GO) build -tags "$(WASM_TAGS)" -o $(WASM_BINARY) .
+	@cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_DEMO_DIR)/wasm_exec.js
+	@ls -lh $(WASM_BINARY) | awk '{print "  wasm size:", $$5, "(profiling build - do not deploy)"}'
+
+# Layer B: the package must compile and link for js/wasm, both with Vulkan
+# excluded by construction (plain) and via the interim -tags novulkan.
+test-wasm-build:
+	@echo "Checking js/wasm build (plain, Vulkan excluded by !js)..."
+	$(WASM_GOENV) $(GO) build -tags "$(WASM_TAGS)" -o /dev/null .
+	@echo "Checking js/wasm build (-tags novulkan)..."
+	$(WASM_GOENV) $(GO) build -tags "novulkan $(WASM_TAGS)" -o /dev/null .
+	@echo "js/wasm build OK"
+
+# Layer C: run the wasm boot tests under Node. Running `go test` for the whole
+# main package under GOOS=js is not viable: it compiles every _test.go, and the
+# large native JIT/kernel test-helper graph does not exist on wasm. The Layer C
+# harness is therefore a black-box test that loads the built ie.wasm under Node
+# and drives BASIC through a syscall/js bridge, asserting the framebuffer and
+# console output. That bridge is built in Phase 4; until then this target runs
+# the Layer B build gate and reports the pending runtime harness.
+test-wasm: test-wasm-build
+	@echo "Layer C runtime harness (Node black-box drive of ie.wasm) lands in Phase 4."
+	@echo "Layer B build gate passed above."
 
 test-cross:
 	@bash ./scripts/test-cross-compile.sh
@@ -2495,6 +2589,10 @@ help:
 	@echo "  novulkan         - Build without Vulkan (software Voodoo only)"
 	@echo "  headless         - Build without display/audio (CI/testing)"
 	@echo "  headless-novulkan - Fully portable CGO_ENABLED=0 build"
+	@echo "  wasm             - Build the browser demo (js/wasm, interpreter-only IE64 BASIC)"
+	@echo "  wasm-profile     - Browser demo build with symbols for devtools profiling (do not deploy)"
+	@echo "  test-wasm-build  - Verify the package compiles and links for js/wasm"
+	@echo "  web-demos        - Mirror the IESHARE demos into the website assets disk volume"
 	@echo "  ie32asm          - Build only the IE32 assembler"
 	@echo "  ie64asm          - Build only the IE64 assembler"
 	@echo "  ie64dis          - Build only the IE64 disassembler"

@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sync"
 )
 
@@ -843,7 +842,7 @@ func NewCPUZ80Runner(bus *MachineBus, config CPUZ80Config) *CPUZ80Runner {
 }
 
 func (r *CPUZ80Runner) LoadProgram(filename string) error {
-	program, err := os.ReadFile(filename)
+	program, err := hostReadFile(filename)
 	if err != nil {
 		return err
 	}

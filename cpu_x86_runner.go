@@ -9,7 +9,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sync"
 	"time"
 )
@@ -695,7 +694,7 @@ func (r *CPUX86Runner) LoadProgramBytes(data []byte) {
 
 // LoadProgram loads a binary program from a file (implements EmulatorCPU interface)
 func (r *CPUX86Runner) LoadProgram(filename string) error {
-	data, err := os.ReadFile(filename)
+	data, err := hostReadFile(filename)
 	if err != nil {
 		return fmt.Errorf("failed to read file: %w", err)
 	}

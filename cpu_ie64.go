@@ -56,7 +56,6 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
-	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -1328,7 +1327,7 @@ func (cpu *CPU64) storeMem(vaddr uint64, val uint64, size byte) {
 // ------------------------------------------------------------------------------
 
 func (cpu *CPU64) LoadProgram(filename string) error {
-	program, err := os.ReadFile(filename)
+	program, err := hostReadFile(filename)
 	if err != nil {
 		return err
 	}
@@ -1337,7 +1336,7 @@ func (cpu *CPU64) LoadProgram(filename string) error {
 }
 
 func (cpu *CPU64) LoadFlatProgram(filename string) error {
-	program, err := os.ReadFile(filename)
+	program, err := hostReadFile(filename)
 	if err != nil {
 		return err
 	}
@@ -1544,8 +1543,13 @@ func (cpu *CPU64) Execute() {
 		}
 		// Periodic check of external stop signal (every 4096 instructions)
 		checkCounter++
-		if checkCounter&0xFFF == 0 && !cpu.running.Load() {
-			break
+		if checkCounter&0xFFF == 0 {
+			if !cpu.running.Load() {
+				break
+			}
+			// Hand the single wasm thread back to the JS event loop so the
+			// browser can render a frame and deliver input. No-op on native.
+			hostCooperativeYield()
 		}
 
 		// External interrupt delivery, before PC translation and instruction

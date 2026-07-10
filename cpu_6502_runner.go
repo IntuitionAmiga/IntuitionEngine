@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sync"
 )
 
@@ -44,7 +43,7 @@ func NewCPU6502Runner(bus *MachineBus, config CPU6502Config) *CPU6502Runner {
 }
 
 func (r *CPU6502Runner) LoadProgram(filename string) error {
-	program, err := os.ReadFile(filename)
+	program, err := hostReadFile(filename)
 	if err != nil {
 		return err
 	}

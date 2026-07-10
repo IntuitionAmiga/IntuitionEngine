@@ -1,9 +1,10 @@
 // machine_bus_alloc_other.go - PLAN_MAX_RAM slice 10 reviewer P1 fallback.
 //
-// Platforms without an mmap-backed allocator (notably windows): bus.memory
-// is allocated from the Go heap. The boot-time clamp in main.go keeps
-// memSize sensible on these platforms so we do not eagerly commit a
-// multi-GiB Go slice.
+// Platforms without an mmap-backed allocator (windows and js/wasm): bus.memory
+// is allocated from the Go heap. The boot-time clamp keeps memSize sensible on
+// these platforms so we do not eagerly commit a multi-GiB Go slice. For the
+// browser build this heap path is the whole story: BASIC boots on a single
+// 256 MiB bus.memory (busMemBootClamp below), no mmap.
 
 //go:build !linux && !darwin
 

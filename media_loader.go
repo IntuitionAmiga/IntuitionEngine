@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -138,6 +139,7 @@ func (m *MediaLoader) startPlay() {
 		m.errCode = MEDIA_ERR_PATH_INVALID
 		m.typ = MEDIA_TYPE_NONE
 		m.mu.Unlock()
+		traceHostIO("MEDIA", "PLAY path-rejected", fileName, "", nil, 0)
 		return
 	}
 	if typ == MEDIA_TYPE_NONE {
@@ -145,6 +147,7 @@ func (m *MediaLoader) startPlay() {
 		m.errCode = MEDIA_ERR_UNSUPPORTED
 		m.typ = MEDIA_TYPE_NONE
 		m.mu.Unlock()
+		traceHostIO("MEDIA", "PLAY unsupported-extension", fileName, "", nil, 0)
 		return
 	}
 	m.reqGen++
@@ -161,15 +164,21 @@ func (m *MediaLoader) loadAndStart(reqGen uint64, fileName, fullPath string, typ
 	defer func() {
 		if r := recover(); r != nil {
 			m.mu.Lock()
-			defer m.mu.Unlock()
 			if reqGen == m.reqGen {
 				m.status = MEDIA_STATUS_ERROR
 				m.errCode = MEDIA_ERR_BAD_FORMAT
 			}
+			m.mu.Unlock()
+			traceHostIO("MEDIA", fmt.Sprintf("PLAY panic type=%d: %v", typ, r), fileName, fullPath, nil, 0)
+			return
 		}
+		m.mu.Lock()
+		st, ec := m.status, m.errCode
+		m.mu.Unlock()
+		traceHostIO("MEDIA", fmt.Sprintf("PLAY result status=%d err=%d type=%d", st, ec, typ), fileName, fullPath, nil, 0)
 	}()
 
-	data, err := os.ReadFile(fullPath)
+	data, err := hostReadFile(fullPath)
 	traceHostIO("MEDIA", "READ", fileName, fullPath, err, len(data))
 	if err != nil {
 		m.mu.Lock()
@@ -593,39 +602,10 @@ func (e mediaLoaderError) Error() string {
 	}
 }
 
+// sanitizePathLocked confines the guest-supplied name via
+// sanitizeMediaHostPath (media_path_native.go / media_path_wasm.go).
 func (m *MediaLoader) sanitizePathLocked(path string) (string, bool) {
-	if path == "" || strings.Contains(path, "..") {
-		return "", false
-	}
-	root, err := filepath.EvalSymlinks(m.baseDir)
-	if err != nil {
-		root = filepath.Clean(m.baseDir)
-	}
-	root, err = filepath.Abs(root)
-	if err != nil {
-		return "", false
-	}
-
-	var fullPath string
-	if filepath.IsAbs(path) {
-		fullPath = filepath.Clean(path)
-	} else {
-		fullPath = filepath.Join(root, path)
-	}
-
-	target := fullPath
-	if resolved, err := filepath.EvalSymlinks(fullPath); err == nil {
-		target = resolved
-	}
-	target, err = filepath.Abs(target)
-	if err != nil {
-		return "", false
-	}
-	rel, err := filepath.Rel(root, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", false
-	}
-	return fullPath, true
+	return sanitizeMediaHostPath(m.baseDir, path)
 }
 
 func (m *MediaLoader) readFileNameLocked(ptr uint32) string {

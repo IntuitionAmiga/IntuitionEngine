@@ -1167,7 +1167,7 @@ func (cpu *M68KCPU) applyBareStackBounds() {
 }
 
 func (cpu *M68KCPU) LoadProgram(filename string) error {
-	program, err := os.ReadFile(filename)
+	program, err := hostReadFile(filename)
 	if err != nil {
 		return err
 	}
@@ -2858,6 +2858,10 @@ func (cpu *M68KCPU) ExecuteInstruction() {
 				cpu.lastPerfReport = now
 			}
 		}
+
+		// Once per 4096-instruction batch: on js/wasm park briefly so the
+		// browser event loop runs (no-op on native builds).
+		hostCooperativeYield()
 	}
 
 	fmt.Printf("\n\nM68K: CPU halted at PC=%08x after %d instructions\n",

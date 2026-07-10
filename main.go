@@ -1458,12 +1458,14 @@ func main() {
 	}
 
 	// Initialize File I/O
-	fileIO := NewFileIODevice(sysBus, runtimeBaseDir)
+	fileIO := newRuntimeFileIODevice(sysBus, runtimeBaseDir)
 	fileIO.SetRuntimeBlob(embeddedRuntimeBlob) // serve the COMPILE runtime blob virtually
+	seedRuntimeFileIOAssets(fileIO)            // js/wasm: preload the assets volume over HTTP
 	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
 	sysBus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fileIO.HandleWrite8)
 	sysBus.MapIO64(FILE_DATA_PTR64, FILE_DATA_PTR64_END, fileIO.HandleRead64, fileIO.HandleWrite64)
-	bootHostFS := NewBootstrapHostFSDevice(sysBus, intuitionOSResolved.Root)
+	bootHostFS := newRuntimeHostFSDevice(sysBus, intuitionOSResolved.Root)
+	seedRuntimeHostFSAssets(bootHostFS)
 	sysBus.MapIO(BOOT_HOSTFS_BASE, BOOT_HOSTFS_END, bootHostFS.HandleRead, bootHostFS.HandleWrite)
 
 	// Attach bus memory to sound engines and SoundChip so register writes
@@ -1751,7 +1753,7 @@ func main() {
 		return b, paths.Image, nil
 	}
 	machine := NewMachine(MachineDeps{
-		ReadFile:                     os.ReadFile,
+		ReadFile:                     hostReadFile,
 		ModeFromExtension:            modeFromExtension,
 		LoadBasicBootImage:           loadBasicBootImage,
 		LoadIntuitionOSImage:         loadIntuitionOSImage,
@@ -2598,15 +2600,18 @@ func main() {
 		})
 	}
 
-	// Start IPC server for single-instance file opening
-	ipcServer, err := NewIPCServer(func(path string) error {
-		return machine.LaunchProgramOrScript(path)
-	})
-	if err != nil {
-		fmt.Printf("Warning: IPC server failed to start: %v\n", err)
-	} else {
-		ipcServer.Start()
-		defer ipcServer.Stop()
+	// Start IPC server for single-instance file opening. The browser build has
+	// no unix sockets (and no second instance), so skip it there.
+	if runtime.GOOS != "js" {
+		ipcServer, err := NewIPCServer(func(path string) error {
+			return machine.LaunchProgramOrScript(path)
+		})
+		if err != nil {
+			fmt.Printf("Warning: IPC server failed to start: %v\n", err)
+		} else {
+			ipcServer.Start()
+			defer ipcServer.Stop()
+		}
 	}
 
 	// Suppress unused warnings for variables used by the closure

@@ -1,6 +1,6 @@
 // jit_ie64_region_policy_stub.go - non-AMD64 IE64 region policy stubs.
 
-//go:build arm64 && (linux || windows || darwin)
+//go:build !(amd64 && (linux || windows || darwin))
 
 package main
 

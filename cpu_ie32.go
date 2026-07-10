@@ -82,7 +82,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/bits"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -450,7 +449,7 @@ func (cpu *CPU) LoadProgram(filename string) error {
 	   - error: An error if the file cannot be read, or nil on success.
 	*/
 
-	program, err := os.ReadFile(filename)
+	program, err := hostReadFile(filename)
 	if err != nil {
 		return err
 	}
@@ -958,8 +957,13 @@ func (cpu *CPU) Execute() {
 		}
 		// Periodic check of external stop signal (every 4096 instructions)
 		checkCounter++
-		if checkCounter&0xFFF == 0 && !cpu.running.Load() {
-			break
+		if checkCounter&0xFFF == 0 {
+			if !cpu.running.Load() {
+				break
+			}
+			// Hand the single wasm thread back to the JS event loop so the
+			// browser can render and deliver input. No-op on native.
+			hostCooperativeYield()
 		}
 
 		// Performance measurement: count instructions and report periodically

@@ -3795,6 +3795,10 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				cpu_6502.lastPerfReport = now
 			}
 		}
+
+		// Once per 4096-instruction batch: on js/wasm park briefly so the
+		// browser event loop runs (no-op on native builds).
+		hostCooperativeYield()
 	}
 
 	// Final spill on loop exit.

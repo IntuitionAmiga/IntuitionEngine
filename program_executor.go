@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -171,19 +170,15 @@ func (e *ProgramExecutor) startExecute() {
 		e.mu.Unlock()
 		return
 	}
-	st, err := os.Stat(fullPath)
-	if err != nil {
+	isDir, exists := hostStatExists(fullPath)
+	if !exists {
 		e.status = EXEC_STATUS_ERROR
-		if os.IsNotExist(err) {
-			e.errCode = EXEC_ERR_NOT_FOUND
-		} else {
-			e.errCode = EXEC_ERR_LOAD_FAILED
-		}
+		e.errCode = EXEC_ERR_NOT_FOUND
 		e.typ = typ
 		e.mu.Unlock()
 		return
 	}
-	if st.IsDir() {
+	if isDir {
 		e.status = EXEC_STATUS_ERROR
 		e.errCode = EXEC_ERR_LOAD_FAILED
 		e.typ = typ
@@ -333,7 +328,7 @@ func (e *ProgramExecutor) startHardReset() {
 }
 
 func (e *ProgramExecutor) executeAsync(session uint32, fullPath string, typ uint32) {
-	data, err := os.ReadFile(fullPath)
+	data, err := hostReadFile(fullPath)
 	if err != nil {
 		e.failSession(session, EXEC_ERR_LOAD_FAILED)
 		return

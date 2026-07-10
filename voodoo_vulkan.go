@@ -1,4 +1,4 @@
-//go:build !headless && !novulkan
+//go:build !headless && !novulkan && !js
 
 // voodoo_vulkan.go - Vulkan Backend for Voodoo Graphics
 

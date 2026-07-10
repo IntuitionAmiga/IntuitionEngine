@@ -1,4 +1,4 @@
-//go:build !headless && novulkan
+//go:build !headless && (novulkan || js)
 
 // voodoo_novulkan.go - Software-only Voodoo backend (no Vulkan dependency)
 

@@ -1,4 +1,4 @@
-//go:build headless || (!headless && novulkan)
+//go:build headless || (!headless && (novulkan || js))
 
 package main
 

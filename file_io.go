@@ -29,6 +29,21 @@ type FileIODevice struct {
 	// the host (embedded image or generated) so COMPILE can bundle it without the
 	// user having to place a sidecar file in their working directory.
 	runtimeBlob []byte
+
+	// memFS selects the in-memory disk volume used by the js/wasm build, which
+	// has no host filesystem. When true, READ/WRITE/LIST operate on memFiles
+	// instead of os. Files are keyed case-insensitively (canonical lower-case
+	// key) but memNames preserves the original name for DIR display, matching
+	// the native device's case-insensitive lookup and real listing.
+	// See file_io_mem.go.
+	memFS    bool
+	memFiles map[string][]byte // canonical key -> loaded data (cache)
+	memNames map[string]string // canonical key -> original path (known set, for DIR)
+	// memFetch lazily fetches a file's bytes by its original relative path when
+	// it is known (in memNames) but not yet cached (in memFiles). Set on wasm to
+	// an HTTP fetch of the assets folder; nil on native. This keeps boot fast:
+	// only the manifest is preloaded, contents load on first LOAD/RUN.
+	memFetch func(relPath string) ([]byte, bool)
 }
 
 // runtimeBlobFileName is the reserved virtual filename the in-guest COMPILE path
@@ -371,6 +386,18 @@ func (f *FileIODevice) doRead() {
 		f.writeReadResult(f.runtimeBlob, rawName, "<embedded>", readMax)
 		return
 	}
+	if f.memFS {
+		// Apply the same lexical rejection as the native path below so a
+		// traversal-like name cannot resolve by suffix or basename matching.
+		if _, ok := f.sanitizePath(rawName); !ok {
+			f.fileStatus = 1
+			f.fileErrorCode = FILE_ERR_PATH_TRAVERSAL
+			f.fileResultLen = 0
+			return
+		}
+		f.doReadMem(rawName, readMax)
+		return
+	}
 	fileName := f.resolveReadFileName(rawName)
 	data, fullPath, err, ok := f.readHostFile(fileName)
 	if !ok {
@@ -480,6 +507,13 @@ func (f *FileIODevice) doWrite() {
 		data[i] = f.readFileData8(f.fileDataPtr + uint64(i))
 	}
 
+	if f.memFS {
+		f.putMemFile(fileName, data)
+		f.fileStatus = 0
+		f.fileErrorCode = FILE_ERR_OK
+		return
+	}
+
 	err := os.WriteFile(fullPath, data, 0644)
 	traceHostIO("FILEIO", fmt.Sprintf("WRITE name_ptr=0x%08X", f.fileNamePtr), fileName, fullPath, err, len(data))
 	if err != nil {
@@ -500,6 +534,10 @@ func (f *FileIODevice) doList() {
 		f.fileStatus = 1
 		f.fileErrorCode = FILE_ERR_PATH_TRAVERSAL
 		f.fileResultLen = 0
+		return
+	}
+	if f.memFS {
+		f.doListMem()
 		return
 	}
 

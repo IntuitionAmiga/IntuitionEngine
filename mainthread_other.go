@@ -1,4 +1,4 @@
-//go:build !darwin || headless
+//go:build (!darwin && !wasm) || headless
 
 package main
 

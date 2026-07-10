@@ -672,6 +672,7 @@ build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
 | `novulkan` | `-tags novulkan` | Voodoo uses the software backend and does not require the Vulkan SDK. Guest Voodoo registers remain mapped. |
 | `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
 | `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
+| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | Interpreter-only build for the website demo. Ebiten renders to a WebGL canvas and Oto plays through WebAudio. No JIT (the browser provides no executable memory), Vulkan is excluded by `!js` build constraints, and guest RAM is a fixed 256 MiB heap backing. The FileIO and HostFS devices run against an in-memory volume seeded from the web server's assets folder over HTTP, with file contents fetched lazily on first read, so `DIR`, `LOAD`, `SAVE`, `BLOAD`, `SOUND PLAY` and `RUN "file.ie64"` work as on native. CPU interpreter loops call a cooperative yield every 4096 instructions so the browser event loop keeps running on the single wasm thread. See `wasm.md`. |
 
 Headless stubs should be treated as backend substitutes, not as a different
 machine model. A test can still write video or audio MMIO and inspect guest

@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/hajimehoshi/ebiten/v2"
-	"github.com/hajimehoshi/ebiten/v2/ebitenutil"
 	"github.com/hajimehoshi/ebiten/v2/inpututil"
 	"github.com/hajimehoshi/ebiten/v2/text"
 	"github.com/intuitionamiga/IntuitionEngine/internal/clipboard"
@@ -1560,6 +1559,24 @@ type statusToken struct {
 
 const runtimeStatusBarAlpha = 40
 
+// statusBarPixel is a lazily created 1x1 white image scaled and tinted to draw
+// filled rectangles. Replaces the deprecated ebitenutil.DrawRect: dropping the
+// ebitenutil import keeps net/http (and with it the TLS/x509 stack) out of the
+// js/wasm binary.
+var statusBarPixel *ebiten.Image
+
+func drawFilledRect(screen *ebiten.Image, x, y, w, h float64, clr color.RGBA) {
+	if statusBarPixel == nil {
+		statusBarPixel = ebiten.NewImage(1, 1)
+		statusBarPixel.Fill(color.White)
+	}
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Scale(w, h)
+	op.GeoM.Translate(x, y)
+	op.ColorScale.ScaleWithColor(clr)
+	screen.DrawImage(statusBarPixel, op)
+}
+
 func drawStatusLine(screen *ebiten.Image, x, baselineY int, label string, tokens []statusToken) {
 	face := basicfont.Face7x13
 	labelColor := color.RGBA{190, 190, 190, 255}
@@ -1690,7 +1707,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 		return
 	}
 	y := eo.height - barHeight
-	ebitenutil.DrawRect(screen, 0, float64(y), float64(eo.width), float64(barHeight), color.RGBA{0, 0, 0, runtimeStatusBarAlpha})
+	drawFilledRect(screen, 0, float64(y), float64(eo.width), float64(barHeight), color.RGBA{0, 0, 0, runtimeStatusBarAlpha})
 
 	drawStatusLine(screen, 6, y+13, "CPU  ", runtimeCPUStatusTokens(s))
 	drawStatusLine(screen, 6, y+26, "VIDEO", []statusToken{

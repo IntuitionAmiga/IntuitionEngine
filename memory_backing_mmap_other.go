@@ -1,6 +1,6 @@
 // memory_backing_mmap_other.go - PLAN_MAX_RAM slice 10a fallback.
 //
-// Platforms without an mmap-backed implementation (notably windows). High-
+// Platforms without an mmap-backed implementation (windows and js/wasm). High-
 // range allocations above busMemMaxBytes return ErrHighRangeBackingUnsupported
 // so AllocateBacking does not silently halve down to a small Go-heap
 // allocation, and bootGuestRAMFromComputed soft-falls back to the bus.memory

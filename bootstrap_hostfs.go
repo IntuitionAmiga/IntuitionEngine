@@ -26,6 +26,13 @@ type BootstrapHostFSDevice struct {
 	memHandles map[uint32]*bootstrapHostFSMemHandle
 	specials   map[string][]byte
 
+	// memFS selects the in-memory store used by the js/wasm build, which has
+	// no host filesystem. When true, createWrite/write/close and readDir
+	// operate on specials (reads and stat already consult specials first) so
+	// the whole surface works without os. See bootstrap_hostfs_mem.go.
+	memFS           bool
+	memWriteHandles map[uint32]*bootstrapHostFSMemWriteHandle
+
 	arg1 uint32
 	arg2 uint32
 	arg3 uint32
@@ -189,6 +196,19 @@ func (d *BootstrapHostFSDevice) createWrite() {
 		d.err = 3 // read-only namespace
 		return
 	}
+	if d.memFS {
+		// Mirror the native resolveForCreate lexical rejections so invalid
+		// guest paths never become committed store entries.
+		if errCode := validateMemCreatePath(rel); errCode != 0 {
+			d.err = errCode
+			return
+		}
+		handle := d.nextHandle
+		d.nextHandle++
+		d.memWriteHandles[handle] = &bootstrapHostFSMemWriteHandle{name: rel}
+		d.res1 = handle
+		return
+	}
 	hostPath, mkErr := d.resolveForCreate(rel)
 	if mkErr != 0 {
 		d.err = mkErr
@@ -207,6 +227,31 @@ func (d *BootstrapHostFSDevice) createWrite() {
 
 // write appends bytes from the guest buffer to an open hostfs handle.
 func (d *BootstrapHostFSDevice) write() {
+	if mh := d.memWriteHandles[d.arg1]; mh != nil {
+		if d.arg2 == 0 {
+			d.err = 3
+			return
+		}
+		effective := d.arg3
+		if d.testShortWriteLimit > 0 && d.testShortWriteLimit < effective {
+			effective = d.testShortWriteLimit
+		}
+		// Stage the whole guest buffer first, matching the native path: a
+		// fault partway through must leave mh.buf untouched so a retry does
+		// not duplicate the readable prefix and close does not commit it.
+		staged := make([]byte, 0, effective)
+		for i := uint32(0); i < effective; i++ {
+			b, ok := d.readGuest8(d.arg2 + i)
+			if !ok {
+				d.err = 5
+				return
+			}
+			staged = append(staged, b)
+		}
+		mh.buf = append(mh.buf, staged...)
+		d.res1 = effective
+		return
+	}
 	f := d.handles[d.arg1]
 	if f == nil {
 		d.err = 2
@@ -348,6 +393,12 @@ func (d *BootstrapHostFSDevice) open() {
 		d.res1 = handle
 		return
 	}
+	if d.memFS {
+		// In-memory store only: a miss is a clean not-found, never a host
+		// filesystem lookup (there is no host root in the browser).
+		d.err = 4
+		return
+	}
 	hostPath, errCode := d.resolveExistingPath(d.arg1)
 	if errCode != 0 {
 		d.err = errCode
@@ -427,6 +478,14 @@ func (d *BootstrapHostFSDevice) close() {
 		delete(d.memHandles, d.arg1)
 		return
 	}
+	if mh, ok := d.memWriteHandles[d.arg1]; ok {
+		// Commit the in-memory write buffer to the specials store so a
+		// subsequent LOAD/BLOAD/SOUND PLAY sees it. SetSpecialFile applies
+		// the canonical key normalisation and clones the bytes.
+		d.SetSpecialFile(mh.name, mh.buf)
+		delete(d.memWriteHandles, d.arg1)
+		return
+	}
 	f := d.handles[d.arg1]
 	if f == nil {
 		d.err = 2
@@ -451,6 +510,29 @@ func (d *BootstrapHostFSDevice) stat() {
 		}
 		d.res1 = uint32(len(data))
 		d.res2 = BOOT_HOSTFS_KIND_FILE
+		return
+	}
+	if d.memFS {
+		// A name that prefixes deeper store keys is a directory READDIR would
+		// list, so STAT must agree (size 0, KIND_DIR) as native os.Stat does.
+		if d.memDirKnown(rel) {
+			if d.arg2 != 0 {
+				if !d.writeGuest64(d.arg2+BOOT_HOSTFS_STAT_SIZE_OFF, 0) {
+					d.err = 5
+					return
+				}
+				if !d.writeGuest64(d.arg2+BOOT_HOSTFS_STAT_KIND_OFF, uint64(BOOT_HOSTFS_KIND_DIR)) {
+					d.err = 5
+					return
+				}
+			}
+			d.res1 = 0
+			d.res2 = BOOT_HOSTFS_KIND_DIR
+			return
+		}
+		// In-memory store only: a miss is a clean not-found, never a host
+		// filesystem stat.
+		d.err = 4
 		return
 	}
 	hostPath, errCode := d.resolveExistingPath(d.arg1)
@@ -480,6 +562,10 @@ func (d *BootstrapHostFSDevice) stat() {
 }
 
 func (d *BootstrapHostFSDevice) readDir() {
+	if d.memFS {
+		d.readDirMem()
+		return
+	}
 	hostPath, errCode := d.resolveExistingPath(d.arg1)
 	if errCode != 0 {
 		d.err = errCode

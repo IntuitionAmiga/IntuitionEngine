@@ -327,8 +327,16 @@ func (c *CPU_Z80) Execute() {
 		c.InstructionCount = 0
 	}
 
+	yieldCheck := uint32(0)
 	for c.running.Load() {
 		c.Step()
+
+		// Once per 4096 instructions: on js/wasm park briefly so the browser
+		// event loop runs (no-op on native builds).
+		yieldCheck++
+		if yieldCheck&0xFFF == 0 {
+			hostCooperativeYield()
+		}
 
 		// Performance monitoring (matching IE32 pattern)
 		if c.PerfEnabled {
