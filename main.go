@@ -1815,7 +1815,7 @@ func main() {
 		ie64CPU = NewCPU64(sysBus)
 		wireVideoInterruptSinks(videoChip, anticEngine, NewIE64InterruptSink(ie64CPU))
 		ie64CPU.PerfEnabled = perfMode
-		ie64CPU.jitEnabled = jitAvailable && !noJIT
+		ie64CPU.jitEnabled = (jitAvailable || wasmJITSupported) && !noJIT
 		runtimeStatus.setCPUs(runtimeCPUIE64, nil, ie64CPU, nil, nil, nil, nil)
 		progExec.SetCPU(ie64CPU)
 

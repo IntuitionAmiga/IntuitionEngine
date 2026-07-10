@@ -14,6 +14,8 @@
 //
 // Tests use SparseBacking so sizes above 4 GiB do not allocate a giant []byte,
 // and the mmuMap test helper to install multi-level radix mappings.
+//go:build !js
+
 package main
 
 import (

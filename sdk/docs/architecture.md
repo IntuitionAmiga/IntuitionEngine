@@ -521,8 +521,75 @@ never emitted unless the host supports them.
 | Windows arm64 | IE64 | IE64 dispatch only; per-core non-IE64 stubs |
 | macOS amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
 | macOS arm64 | IE64 | IE64 dispatch plus Darwin arm64 JIT write-protect helpers |
+| Browser (js/wasm) | IE64 (wasm bytecode backend) | `jit_exec_wasm.go`, `jit_wasm_runtime.go` |
 
 On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles, and non-IE64 guest cores remain interpreter-only on arm64 hosts.
+
+On js/wasm the native backends are absent (the browser gives Go no executable
+memory), and IE64 has a wasm bytecode backend instead; see "IE64 wasm JIT
+backend" below. The other guest cores interpret in the browser.
+
+### IE64 wasm JIT backend (js/wasm)
+
+The browser build cannot emit machine code, but it can emit WebAssembly and
+let the browser's engine compile it. The wasm backend keeps the native JIT's
+shape and reuses its shared front end:
+
+- **Scanner and context.** Blocks come from the same `scanBlock` and operate
+  on the same `JITContext` through the `jitCtxOff*` field offsets. GOARCH=wasm
+  is a 64-bit Go target (8-byte `uintptr`), so the layout is identical; a
+  layout guard test (`jit_wasm_ctx_layout_test.go`) pins this on both native
+  and js runs.
+- **Encoder and translator.** `jit_wasm_encoder.go` writes wasm binaries;
+  `jit_wasm_ie64_emit.go` translates a scanned block into one wasm function
+  with signature `(ctxPtr i32) -> ()`. Both are untagged pure Go, so the
+  differential test suite (`jit_wasm_ie64_diff_test.go`) executes generated
+  blocks under wazero on native hosts and compares registers, PC, retired
+  counts and guest RAM against the interpreter, instruction class by
+  instruction class. Interpreter semantics are the reference wherever the
+  amd64 emitter differs (Q-size ALU immediates zero-extend).
+- **Shared memory.** Generated modules import the machine's own linear
+  memory (`env.mem`; the hosting page exposes `instance.exports.mem` as
+  `__goMem`), so blocks read and write the register file, guest RAM and the
+  context in place at the same addresses the native backends use.
+- **Exit protocol.** Blocks write `RetPC`/`RetCount` and return. MMIO
+  accesses, out-of-window addresses and stack faults exit through the same
+  `HELPER_*` protocol as the native backends; the Go-side dispatcher
+  (`jit_wasm_runtime.go`) services the helper via the interpreter's memory
+  and stack primitives and resumes. Generated code never calls back into Go.
+- **Instruction coverage.** An explicit allowlist (`wasmSupportedOpcode`)
+  delimits the backend: the MMU-off integer core (data movement, ALU,
+  load/store, conditional branches, BRA/JMP/HALT, JSR/RTS/PUSH/POP/JSR_IND)
+  plus FP64 (DMOV/DLOAD/DSTORE, arithmetic, DABS/DNEG/DSQRT/DINT, DCMP and
+  the integer converts, with FPSR condition codes and sticky exception
+  flags replicated bit-exactly). A hot block is compiled up to its longest
+  supported prefix; anything else, including the FP64 transcendentals,
+  stays on the interpreter.
+- **MMU gate.** While `cpu.mmuEnabled` is true the runtime neither enqueues
+  compiles nor enters installed blocks; both halves of the gate are tested
+  under node.
+- **Self-modifying code.** Generated STOREs (including PUSH/JSR return
+  address writes) probe the code-page bitmap exactly like the native
+  emitters and set `NeedInval`; the runtime then drops every compiled block
+  and clears the bitmap (full invalidation only, no range bookkeeping).
+- **Tiering.** The dispatcher (`jit_exec_wasm.go`) interprets through
+  `StepOne` and counts visits to block-start PCs; at the hot threshold a
+  compile is submitted through `WebAssembly.instantiate`, which is
+  asynchronous. Promises resolve during the cooperative yield, so block
+  installation costs the machine nothing. The backend is on by default;
+  `IE64_WASM_JIT=0` (mapped from `/demo/?jit=0`) disables it, and it also
+  stays off when the hosting page does not expose `__goMem`.
+
+Dispatch between compiled blocks stays inside wasm: a driver module
+(`wasmBuildDriverModule`) reads the next PC from the context, looks it up in
+a direct-mapped PC-to-slot cache in linear memory and `call_indirect`s
+through a shared funcref table until the chain budget runs out, the lookup
+misses, or a block reports a helper exit or an SMC invalidation. The
+measured basis (node, V8): roughly 15 ns per in-wasm indirect call against
+roughly 700 ns per JS-boundary `Invoke`, which is why per-block Go round
+trips are reserved for helper exits. On the node hot-loop benchmark
+(`TestWasmJIT_Node_EndToEndParity`, 2 million iterations) the chained JIT
+runs 5.3 times faster than the interpreter.
 
 ### IE64 JIT 64-bit Execution Model
 

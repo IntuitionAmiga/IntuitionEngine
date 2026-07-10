@@ -5,6 +5,8 @@
 // emitter ends the compiled prefix, leaving FPU state untouched, so
 // these tests fail until the emitter exists.
 
+//go:build !js
+
 package main
 
 import (

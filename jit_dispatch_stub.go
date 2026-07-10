@@ -1,6 +1,9 @@
-// jit_dispatch_stub.go - JIT stub for non-JIT platforms
+// jit_dispatch_stub.go - JIT stub for non-JIT platforms.
+//
+// js/wasm is excluded: it has its own dispatcher (jit_exec_wasm.go) driving
+// the wasm bytecode backend.
 
-//go:build !((amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin)))
+//go:build !js && !((amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin)))
 
 package main
 

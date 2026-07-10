@@ -435,7 +435,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 			}
 		}
 		cpu := NewCPU64(e.bus)
-		cpu.jitEnabled = jitAvailable
+		cpu.jitEnabled = jitAvailable || wasmJITSupported
 		if err := cpu.LoadFlatProgramBytes(data); err != nil {
 			return err
 		}

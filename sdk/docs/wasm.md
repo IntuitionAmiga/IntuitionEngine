@@ -56,10 +56,28 @@ compile, and DevTools' "Disable cache" defeats it entirely.
 
 ## What is different from native
 
-- **Interpreter only.** The browser gives Go no executable memory, so no JIT
-  tier exists on wasm. `jitAvailable` is false and every CPU runs its
-  interpreter. The heavy pixel work in the showcase demos (blitter, copper,
-  Mode 7) is compiled Go, so it runs at full speed regardless.
+- **IE64 has a wasm JIT tier; the other CPUs interpret.** The browser gives
+  Go no executable memory, so the native JIT backends are absent and
+  `jitAvailable` is false. IE64 instead carries a wasm bytecode backend: the
+  dispatcher (`jit_exec_wasm.go`) counts visits to block-start PCs, and hot
+  blocks are translated to WebAssembly (`jit_wasm_ie64_emit.go`, using the
+  same scanner and JITContext protocol as the native backends) and handed to
+  the browser's own engine through `WebAssembly.instantiate`. Compilation is
+  asynchronous; the interpreter keeps running and the block installs at the
+  next cooperative yield. Generated modules import the machine's own linear
+  memory (the page exposes it as `__goMem`), so they mutate CPU state in
+  place. MMIO accesses, stack faults and anything outside the supported
+  instruction set exit to the Go dispatcher through the helper protocol.
+  Block-to-block dispatch chains inside wasm through a driver module and a
+  shared function table (about 5.3 times interpreter speed on the node
+  hot-loop benchmark). While the MMU is enabled, blocks are neither
+  compiled nor entered. Stores into compiled code pages are detected in
+  generated code and flush the block cache. The backend is on by default and `IE64_WASM_JIT=0` (or
+  `/demo/?jit=0`) disables it. Runtime-generated modules are small and are
+  never cached by the browser; only the main `ie.wasm` participates in the
+  compiled-wasm code cache. The heavy pixel work in the showcase demos
+  (blitter, copper, Mode 7) is compiled Go and runs at full speed
+  regardless.
 - **No Vulkan.** The Voodoo uses the software rasteriser; Vulkan files carry
   `!js` build constraints, so the exclusion needs no `-tags novulkan`.
 - **Fixed 256 MiB guest RAM.** There is no `/proc/meminfo` and no mmap in the
@@ -98,8 +116,9 @@ compile, and DevTools' "Disable cache" defeats it entirely.
 
 Unchanged. The MMIO map, ISA, BASIC dialect and device registers are the
 reference surface; only host backends differ. A `.bas` or `.ie*` programme
-that runs on the native VM runs on the browser VM within the limits above (no
-JIT means interpreter speed for guest code).
+that runs on the native VM runs on the browser VM within the limits above
+(IE64 code reaches wasm-JIT speed once hot; the other CPUs run at interpreter
+speed).
 
 ## Testing
 
@@ -107,10 +126,17 @@ JIT means interpreter speed for guest code).
   test natively; run `go test -tags headless -run 'TestWasm' .`.
 - Layer B (build gate): `make test-wasm-build` builds the package for js/wasm
   both plain (Vulkan excluded by `!js`) and with `-tags novulkan`.
-- Layer C (runtime): a Node black-box harness that boots `ie.wasm` and drives
-  BASIC is planned; until it lands, `make test-wasm` runs the Layer B gate and
-  says so. Browser verification is manual: serve the site, launch, `DIR`,
-  `RUN` a demo, `SOUND PLAY` a tune.
+- Layer C (runtime): `make test-wasm-node` runs the js/wasm test suite under
+  Node via the repo-local runner (`tools/wasm/go_js_wasm_exec`), which
+  exposes the module memory as `__goMem` exactly like the demo page. It
+  covers the JITContext ABI guard, end-to-end interpreter-versus-JIT parity
+  on a hot loop, both halves of the MMU gate and the kill switch. The wasm
+  JIT's differential suite (generated blocks executed under wazero against
+  the interpreter) runs natively:
+  `go test -tags headless -run 'TestWasmJIT_|TestWasmEnc_' .`
+  Browser verification: serve the site, open `/demo/` and `/demo/?jit=0`;
+  the JIT variant logs `IE64 wasm JIT: first block installed` to the
+  console, both boot to the BASIC Ready prompt.
 
 ## Diagnostics
 
@@ -126,7 +152,14 @@ JIT means interpreter speed for guest code).
 - 24 MB artefact (after `wasm-opt`), roughly 6 MB over the wire once the CDN
   compresses it; first visit pays the download, and repeat visits revalidate
   by ETag and reuse the browser's cached, already-compiled copy.
-- Interpreter-only guest CPU speed.
+- Guest CPU speed: IE64 tiers up through the wasm JIT; IE32, M68K, Z80, 6502
+  and x86 are interpreter-only in the browser.
+- The wasm JIT covers the MMU-off integer core (ALU, load/store, branches,
+  subroutine and stack operations) and FP64 (arithmetic, moves, compares,
+  converts, DINT rounding modes, sticky exception flags and condition
+  codes). FP64 transcendentals (DSIN and friends), FP32, MMU-on execution
+  and the remaining system opcodes stay on the interpreter; blocks
+  containing them are simply not compiled past that point.
 - The disk volume is per-tab and in-memory; `SAVE` does not persist across a
   reload.
 - No serial, no host shell (`HOST` command paths that spawn processes are

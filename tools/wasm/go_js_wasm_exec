@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Repo-local js/wasm test runner for `go test -exec`. Uses the sibling
+# wasm_exec_node_ie.js (which exposes __goMem for the wasm JIT backend) and
+# the wasm_exec.js from the active toolchain. The GOROOT copy of
+# go_js_wasm_exec is not executable on this system (mode 644), so a local
+# wrapper is needed regardless.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export IE_WASM_EXEC_JS="$(go env GOROOT)/lib/wasm/wasm_exec.js"
+exec node --stack-size=8192 "$DIR/wasm_exec_node_ie.js" "$@"

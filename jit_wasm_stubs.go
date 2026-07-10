@@ -1,10 +1,14 @@
-// jit_wasm_stubs.go - inert JIT symbols for the js/wasm interpreter-only build.
+// jit_wasm_stubs.go - inert native-JIT symbols for the js/wasm build.
 //
-// WebAssembly cannot execute JIT-compiled native code, so jitAvailable is
-// false (jit_dispatch_stub.go) and every CPU runs its interpreter. A handful
-// of JIT symbols are still referenced by untagged shared code that compiles on
-// every target (perf_tuning_profiles.go, mmu_ie64.go, jit_mmap_arena.go). This
-// file supplies inert definitions so the wasm build links; none of it runs.
+// WebAssembly cannot execute native machine code, so jitAvailable stays false
+// and the native JIT backends are absent. IE64 instead has a wasm bytecode
+// backend (jit_wasm_encoder.go, jit_wasm_ie64_emit.go, jit_wasm_runtime.go,
+// jit_exec_wasm.go): hot blocks are translated to wasm modules and compiled
+// by the browser's own engine at runtime. The other CPUs run their
+// interpreters. A handful of native-JIT symbols are still referenced by
+// untagged shared code that compiles on every target
+// (perf_tuning_profiles.go, mmu_ie64.go, jit_mmap_arena.go); this file
+// supplies inert definitions so the wasm build links.
 
 //go:build wasm
 

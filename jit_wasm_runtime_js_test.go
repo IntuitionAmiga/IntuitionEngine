@@ -1,0 +1,350 @@
+//go:build js && wasm
+
+// jit_wasm_runtime_js_test.go - node-run integration tests for the IE64 wasm
+// JIT backend (make test-wasm-node). The repo-local runner
+// (tools/wasm/wasm_exec_node_ie.js) exposes the module memory as __goMem,
+// exactly like the demo page, so real blocks compile and execute under V8.
+
+/*
+(c) 2024 - 2026 Zayn Otley
+https://github.com/IntuitionAmiga/IntuitionEngine
+License: GPLv3 or later
+*/
+
+package main
+
+import (
+	"bytes"
+	"encoding/binary"
+	"os"
+	"testing"
+	"time"
+)
+
+// wasmNodeProgram builds a counting loop hot enough to tier up mid-run:
+//
+//	1000: MOVE  R1, #0
+//	1008: MOVEQ R2, #iters
+//	1010: ADD   R1, R1, #3
+//	1018: SUB   R2, R2, #1
+//	1020: BNE   R2, R0, -0x10   ; back to 1010
+//	1028: HALT
+func wasmNodeProgram(iters uint32) []byte {
+	return bytes.Join([][]byte{
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0),
+		ie64Instr(OP_MOVEQ, 2, 0, 0, 0, 0, iters),
+		ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 3),
+		ie64Instr(OP_SUB, 2, IE64_SIZE_Q, 1, 2, 0, 1),
+		ie64Instr(OP_BNE, 0, 0, 0, 2, 0, 0xFFFFFFF0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	}, nil)
+}
+
+func newWasmNodeMachine(t *testing.T, program []byte) *CPU64 {
+	t.Helper()
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	copy(cpu.memory[PROG_START:], program)
+	cpu.PC = PROG_START
+	cpu.running.Store(true)
+	return cpu
+}
+
+func waitForInstall(rt *wasmJITRuntime, pc uint64) bool {
+	for i := 0; i < 400; i++ {
+		if _, ok := rt.blocks[pc]; ok {
+			return true
+		}
+		// Parks the goroutine: the node event loop turns and pending
+		// WebAssembly.instantiate promises resolve.
+		time.Sleep(5 * time.Millisecond)
+	}
+	return false
+}
+
+func TestWasmJIT_Node_EndToEndParity(t *testing.T) {
+	const iters = 2_000_000
+	program := wasmNodeProgram(iters)
+
+	// Reference: pure interpreter.
+	ref := newWasmNodeMachine(t, program)
+	t0 := time.Now()
+	ref.Execute()
+	interpDur := time.Since(t0)
+
+	// JIT dispatcher.
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable: __goMem not exposed by the node runner")
+	}
+	t0 = time.Now()
+	cpu.wasmJITDispatch(rt)
+	jitDur := time.Since(t0)
+
+	if cpu.regs[1] != ref.regs[1] || cpu.regs[2] != ref.regs[2] {
+		t.Errorf("state diverged: JIT R1/R2 = %d/%d, interpreter %d/%d",
+			cpu.regs[1], cpu.regs[2], ref.regs[1], ref.regs[2])
+	}
+	if want := uint64(iters) * 3; cpu.regs[1] != want {
+		t.Errorf("R1 = %d, want %d", cpu.regs[1], want)
+	}
+	if rt.compiles == 0 {
+		t.Error("no blocks compiled during a 2M-iteration hot loop")
+	}
+	if rt.blockRuns == 0 {
+		t.Error("no compiled block ever executed")
+	}
+	if rt.chainRuns == 0 {
+		t.Error("chain driver never engaged (block entries all went through Invoke)")
+	}
+	t.Logf("compiles=%d blockRuns=%d chainRuns=%d interp=%v jit=%v speedup=%.2fx",
+		rt.compiles, rt.blockRuns, rt.chainRuns, interpDur, jitDur,
+		float64(interpDur)/float64(jitDur))
+}
+
+func TestWasmJIT_Node_MMUGateEnqueueHalf(t *testing.T) {
+	program := wasmNodeProgram(10)
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	cpu.mmuEnabled = true
+	for i := 0; i < 100; i++ {
+		rt.noteHot(PROG_START)
+	}
+	if len(rt.inFlight) != 0 || len(rt.blocks) != 0 || rt.compiles != 0 {
+		t.Errorf("MMU-on noteHot enqueued work: inFlight=%d blocks=%d compiles=%d",
+			len(rt.inFlight), len(rt.blocks), rt.compiles)
+	}
+}
+
+func TestWasmJIT_Node_MMUGateEntryHalf(t *testing.T) {
+	program := wasmNodeProgram(10)
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	// Install a block for PROG_START while the MMU is off.
+	for i := 0; i < wasmJITHotThreshold; i++ {
+		rt.noteHot(PROG_START)
+	}
+	if !waitForInstall(rt, PROG_START) {
+		t.Fatal("block never installed")
+	}
+	blk := rt.blocks[PROG_START]
+
+	// Entry half: MMU on, the installed block must not be entered.
+	cpu.mmuEnabled = true
+	if rt.tryBlock(PROG_START) {
+		t.Fatal("tryBlock entered a compiled block while the MMU is enabled")
+	}
+	if blk.execs != 0 {
+		t.Fatalf("block body ran %d times under MMU", blk.execs)
+	}
+
+	// Positive control: MMU off, the same block runs.
+	cpu.mmuEnabled = false
+	cpu.PC = PROG_START
+	if !rt.tryBlock(PROG_START) {
+		t.Fatal("tryBlock refused with MMU off")
+	}
+	if blk.execs != 1 {
+		t.Fatalf("block execs = %d, want 1", blk.execs)
+	}
+}
+
+func TestWasmJIT_Node_StaleCompileNotInstalled(t *testing.T) {
+	// An SMC invalidation while a compile is in flight must prevent the
+	// install: the module was built from bytes that may have changed. The
+	// runtime is single-threaded, so the promise cannot resolve between the
+	// enqueue and the invalidation below.
+	program := wasmNodeProgram(10)
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	rt.enqueueCompile(PROG_START)
+	if !rt.inFlight[PROG_START] {
+		t.Fatal("compile not submitted")
+	}
+	rt.invalidateAll()
+	if waitForInstall(rt, PROG_START) {
+		t.Fatal("stale compile installed after invalidation")
+	}
+	if rt.compiles != 0 || len(rt.blocks) != 0 {
+		t.Fatalf("stale install leaked: compiles=%d blocks=%d", rt.compiles, len(rt.blocks))
+	}
+	// The PC is not blacklisted and not stuck in flight: it can re-tier.
+	if rt.blacklist[PROG_START] || rt.inFlight[PROG_START] {
+		t.Fatal("PC cannot re-tier after a dropped stale compile")
+	}
+}
+
+func TestWasmJIT_Node_NoJITFlagHonoured(t *testing.T) {
+	// cpu.jitEnabled false (the -nojit path in main) must route jitExecute to
+	// the plain interpreter: no runtime is created, observable via the
+	// code-page bitmap newWasmJITRuntime would allocate.
+	program := wasmNodeProgram(50_000)
+	cpu := newWasmNodeMachine(t, program)
+	cpu.jitEnabled = false
+	cpu.jitExecute()
+	if cpu.jitCodePageBitmap != nil {
+		t.Fatal("jitExecute created a wasm JIT runtime despite jitEnabled=false")
+	}
+	if want := uint64(50_000) * 3; cpu.regs[1] != want {
+		t.Fatalf("interpreter path wrong result: R1 = %d, want %d", cpu.regs[1], want)
+	}
+
+	// Positive control: jitEnabled true creates the runtime.
+	cpu2 := newWasmNodeMachine(t, program)
+	cpu2.jitEnabled = true
+	cpu2.jitExecute()
+	if cpu2.jitCodePageBitmap == nil {
+		t.Fatal("jitExecute did not engage the wasm JIT with jitEnabled=true")
+	}
+}
+
+func TestWasmJIT_Node_HotHALTStillTerminates(t *testing.T) {
+	// A HALT PC driven hot must never compile into a self-re-entering block:
+	// programmes that halt repeatedly (machine restarts) would spin forever.
+	program := wasmNodeProgram(1000)
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	haltPC := uint64(PROG_START + 5*8)
+	for i := 0; i < wasmJITHotThreshold*2; i++ {
+		rt.noteHot(haltPC)
+	}
+	time.Sleep(50 * time.Millisecond) // let any (wrong) compile land
+	if _, ok := rt.blocks[haltPC]; ok {
+		t.Fatal("a block compiled at a HALT PC")
+	}
+	if !rt.blacklist[haltPC] {
+		t.Fatal("HALT PC not blacklisted; would re-enqueue forever")
+	}
+	// End to end: the run must terminate.
+	done := make(chan struct{})
+	go func() {
+		cpu.wasmJITDispatch(rt)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("dispatcher never terminated with a hot HALT PC")
+	}
+	if want := uint64(1000) * 3; cpu.regs[1] != want {
+		t.Fatalf("R1 = %d, want %d", cpu.regs[1], want)
+	}
+}
+
+func TestWasmJIT_Node_InterruptBeforeBlock(t *testing.T) {
+	// A pending external interrupt at a compiled-block boundary must be
+	// delivered BEFORE the block runs: the pushed return PC is the block's
+	// start, not a post-block PC.
+	handler := uint64(PROG_START + 0x100)
+	program := bytes.Join([][]byte{
+		ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	}, nil)
+	cpu := newWasmNodeMachine(t, program)
+	copy(cpu.memory[handler:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, 0xBEEF))
+	copy(cpu.memory[handler+8:], ie64Instr(OP_RTI64, 0, 0, 0, 0, 0, 0))
+	cpu.interruptVector = handler
+	cpu.regs[31] = STACK_START
+	cpu.interruptEnabled.Store(true)
+
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	for i := 0; i < wasmJITHotThreshold; i++ {
+		rt.noteHot(PROG_START)
+	}
+	if !waitForInstall(rt, PROG_START) {
+		t.Fatal("block never installed")
+	}
+
+	NewIE64InterruptSink(cpu).Pulse(IntMaskBlitter)
+	cpu.wasmJITDispatch(rt)
+
+	if cpu.regs[10] != 0xBEEF {
+		t.Fatalf("handler never ran: R10 = %#x", cpu.regs[10])
+	}
+	pushed := binary.LittleEndian.Uint64(cpu.memory[STACK_START-8:])
+	if pushed != PROG_START {
+		t.Fatalf("interrupt delivered after compiled code ran: pushed PC = %#x, want block start %#x",
+			pushed, uint64(PROG_START))
+	}
+}
+
+func TestWasmJIT_Node_InstructionAccounting(t *testing.T) {
+	// Cold run (below the hot threshold end to end): every instruction goes
+	// through StepOne and must still be counted, from a fresh zero.
+	program := wasmNodeProgram(2) // 2 iterations: well under any tier-up
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	cpu.InstructionCount = 999999 // stale value from a previous run
+	cpu.wasmJITDispatch(rt)
+	// MOVE + MOVEQ + 2x(ADD+SUB+BNE) + HALT = 9 retired instructions.
+	if cpu.InstructionCount != 9 {
+		t.Fatalf("InstructionCount = %d, want 9", cpu.InstructionCount)
+	}
+
+	// Interrupt delivery consumes no retired instruction: NOP+NOP+HALT plus
+	// a handler (MOVE+RTI) retires exactly 5, the delivery itself 0.
+	handler := uint64(PROG_START + 0x100)
+	icpu := newWasmNodeMachine(t, bytes.Join([][]byte{
+		ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	}, nil))
+	copy(icpu.memory[handler:], ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, 0xBEEF))
+	copy(icpu.memory[handler+8:], ie64Instr(OP_RTI64, 0, 0, 0, 0, 0, 0))
+	icpu.interruptVector = handler
+	icpu.regs[31] = STACK_START
+	icpu.interruptEnabled.Store(true)
+	irt := newWasmJITRuntime(icpu)
+	NewIE64InterruptSink(icpu).Pulse(IntMaskBlitter)
+	icpu.wasmJITDispatch(irt)
+	if icpu.regs[10] != 0xBEEF {
+		t.Fatalf("handler never ran: R10 = %#x", icpu.regs[10])
+	}
+	if icpu.InstructionCount != 5 {
+		t.Fatalf("interrupt-only step counted: InstructionCount = %d, want 5", icpu.InstructionCount)
+	}
+
+	// Hot run: compiled-path accounting matches the interpreter's total.
+	const iters = 500_000
+	ref := newWasmNodeMachine(t, wasmNodeProgram(iters))
+	refRT := newWasmJITRuntime(ref)
+	ref.wasmJITDispatch(refRT)
+	want := uint64(2 + 3*iters + 1) // MOVE+MOVEQ, loop body, HALT
+	if ref.InstructionCount != want {
+		t.Fatalf("hot-run InstructionCount = %d, want %d", ref.InstructionCount, want)
+	}
+	if refRT.compiles == 0 {
+		t.Fatal("hot run never compiled (accounting test lost its JIT half)")
+	}
+}
+
+func TestWasmJIT_Node_KillSwitch(t *testing.T) {
+	if !wasmJITEnabled() {
+		t.Fatal("backend should be enabled by default under the node runner")
+	}
+	os.Setenv("IE64_WASM_JIT", "0")
+	defer os.Unsetenv("IE64_WASM_JIT")
+	if wasmJITEnabled() {
+		t.Fatal("IE64_WASM_JIT=0 did not disable the backend")
+	}
+}

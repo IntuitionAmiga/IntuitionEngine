@@ -18,7 +18,10 @@ require (
 	golang.org/x/term v0.44.0
 )
 
-require github.com/jfreymuth/pulse v0.1.1 // indirect
+require (
+	github.com/jfreymuth/pulse v0.1.1 // indirect
+	github.com/tetratelabs/wazero v1.12.0 // indirect
+)
 
 require (
 	github.com/ebitengine/gomobile v0.0.0-20260211053922-3d992dae95d1 // indirect

@@ -107,13 +107,17 @@
           // Diagnostic mode: /demo/?trace=1 traces host file I/O (FileIO,
           // HostFS, media loader) to the browser console. /demo/?yield=N
           // overrides the CPU cooperative-yield interval (ms) for A/B speed
-          // measurement.
+          // measurement. /demo/?jit=0 disables the IE64 wasm JIT backend
+          // (kill switch; the JIT is on by default).
           var params = new URLSearchParams(location.search);
           if (params.has('trace')) {
             go.env.IE_TRACE_HOSTIO = '1';
           }
           if (params.has('yield')) {
             go.env.IE_WASM_YIELD_MS = params.get('yield');
+          }
+          if (params.get('jit') === '0') {
+            go.env.IE64_WASM_JIT = '0';
           }
           // The main site warms the HTTP cache for ie.wasm near its launch
           // button, so this fetch is usually a cheap revalidation. The
@@ -164,6 +168,10 @@
           // from seconds to tens of milliseconds between visits.
           console.log('ie.wasm headers ' + Math.round(t1 - t0) + ' ms, download+instantiate ' + Math.round(t2 - t1) + ' ms');
           pendingInstance = result.instance;
+          // The IE64 wasm JIT imports the machine's own linear memory into
+          // every block module it compiles at runtime; without this global
+          // the backend stays off and the interpreter runs alone.
+          window.__goMem = result.instance.exports.mem;
           launchBASIC();
         } catch (err) {
           setStatus('Failed to load: ' + (err && err.message ? err.message : err));
