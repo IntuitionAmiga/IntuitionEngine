@@ -67,17 +67,23 @@ type wasmJITRuntime struct {
 	// diag (IE64_WASM_JIT_DIAG=1, ?jitdiag=1 on the demo page) publishes
 	// dispatcher state to globalThis.__ieJITDiag and logs throttled
 	// zero-progress exits, the signature of a dispatch livelock.
-	diag        bool
-	zeroProg    uint64
-	helperCnt   [16]uint64 // per-helper exit counts (diag)
-	smcNoDrop   uint64     // false-share SMC exits (diag)
-	fallSteps   uint64     // interpreter fallback steps (diag)
-	enqueues    uint64     // compile submissions (diag)
-	claimFails  uint64     // orphaned callbacks that lost ownership (diag)
-	genDrops    uint64     // installs dropped by the generation check (diag)
-	flushes     uint64     // invalidateAll calls (diag)
-	rangeDrops  uint64     // blocks dropped by range invalidation (diag)
-	smcAddrRing [8]uint64  // last false-share store addresses (diag)
+	diag      bool
+	zeroProg  uint64
+	helperCnt [16]uint64 // per-helper exit counts (diag)
+
+	// MMIO poll-loop detection: consecutive LOAD helper exits at one PC arm
+	// the parking poll service in the dispatcher (jit_mmio_poll_exec_wasm.go).
+	lastLoadPC  uint64
+	loadStreak  uint32
+	pollRuns    uint64    // times the parking poll service engaged (diag)
+	smcNoDrop   uint64    // false-share SMC exits (diag)
+	fallSteps   uint64    // interpreter fallback steps (diag)
+	enqueues    uint64    // compile submissions (diag)
+	claimFails  uint64    // orphaned callbacks that lost ownership (diag)
+	genDrops    uint64    // installs dropped by the generation check (diag)
+	flushes     uint64    // invalidateAll calls (diag)
+	rangeDrops  uint64    // blocks dropped by range invalidation (diag)
+	smcAddrRing [8]uint64 // last false-share store addresses (diag)
 
 	// In-wasm chaining: a shared funcref table holds every installed block,
 	// and pcCache is a direct-mapped {pc, slot+1} table in linear memory the
@@ -642,6 +648,17 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 	cpu.InstructionCount += executed
 }
 
+// markStackSMCWrite invalidates compiled blocks covering a raw stack write,
+// the wasm equivalent of the native dispatcher's markJITSMCWrite: stack
+// pushes bypass the generated-store SMC probe and the bus, so nothing else
+// notices a push landing in a compiled code page.
+func (rt *wasmJITRuntime) markStackSMCWrite(addr uint64) {
+	bm := rt.cpu.jitCodePageBitmap
+	if page := addr >> 8; page < uint64(len(bm)) && bm[page] != 0 {
+		rt.invalidateRange(addr, 8)
+	}
+}
+
 // handleHelper services the helper exits this backend's translator emits,
 // mirroring the native dispatcher's semantics (jit_helper_dispatch.go).
 // Returns true when the bailing instruction retired.
@@ -660,8 +677,30 @@ func (rt *wasmJITRuntime) handleHelper() bool {
 
 	size := byte(ctx.HelperSize)
 	rd := byte(ctx.HelperRd)
+
+	// Stack helpers use the memBase/memSize variant of mmuStackWrite and
+	// mmuStackRead, mirroring the native dispatcher (jit_helper_dispatch.go)
+	// and the interpreter: stack traffic inside the memory window is a raw
+	// RAM access and must never fire MMIO callbacks. The Voodoo texture
+	// aperture at 0xD0000 is bitmap-marked IO, and a guest stack parked
+	// there (rotozoomer_ie64.ie64 uses 0xDF000) would otherwise push into
+	// RAM via the interpreter but pop through the device handler, returning
+	// zeros and sending the guest to PC 0.
+	var memBase unsafe.Pointer
+	var memSize uint64
+	if len(cpu.memory) > 0 {
+		memBase = unsafe.Pointer(&cpu.memory[0])
+		memSize = uint64(len(cpu.memory))
+	}
+
 	switch ctx.NeedHelper {
 	case HELPER_LOAD:
+		if ctx.HelperPC == rt.lastLoadPC {
+			rt.loadStreak++
+		} else {
+			rt.lastLoadPC = ctx.HelperPC
+			rt.loadStreak = 1
+		}
 		val := cpu.loadMem(ctx.HelperAddr, size)
 		if cpu.trapped {
 			cpu.trapped = false
@@ -680,15 +719,18 @@ func (rt *wasmJITRuntime) handleHelper() bool {
 		return true
 	case HELPER_PUSH:
 		cpu.regs[31] -= 8
-		if !cpu.mmuStackWriteU64(cpu.regs[31], ctx.HelperVal) {
+		if !cpu.mmuStackWrite(cpu.regs[31], ctx.HelperVal, memBase, memSize) {
 			cpu.regs[31] += 8
+			cpu.trapped = false
 			return false
 		}
+		rt.markStackSMCWrite(cpu.regs[31])
 		cpu.PC += 8
 		return true
 	case HELPER_POP:
-		val, ok := cpu.mmuStackReadU64(cpu.regs[31])
+		val, ok := cpu.mmuStackRead(cpu.regs[31], memBase, memSize)
 		if !ok {
+			cpu.trapped = false
 			return false
 		}
 		cpu.regs[31] += 8
@@ -697,15 +739,18 @@ func (rt *wasmJITRuntime) handleHelper() bool {
 		return true
 	case HELPER_JSR, HELPER_JSR_IND:
 		cpu.regs[31] -= 8
-		if !cpu.mmuStackWriteU64(cpu.regs[31], ctx.HelperVal) {
+		if !cpu.mmuStackWrite(cpu.regs[31], ctx.HelperVal, memBase, memSize) {
 			cpu.regs[31] += 8
+			cpu.trapped = false
 			return false
 		}
+		rt.markStackSMCWrite(cpu.regs[31])
 		cpu.PC = ctx.HelperAddr
 		return true
 	case HELPER_RTS:
-		val, ok := cpu.mmuStackReadU64(cpu.regs[31])
+		val, ok := cpu.mmuStackRead(cpu.regs[31], memBase, memSize)
 		if !ok {
+			cpu.trapped = false
 			return false
 		}
 		cpu.regs[31] += 8

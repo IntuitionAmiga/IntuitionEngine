@@ -60,6 +60,29 @@ func hostCooperativeYield() {
 	if now.Sub(lastWasmYield) < wasmYieldInterval {
 		return
 	}
+	wasmParkUntilFrame()
+	// Restart the throttle clock after the park so the interval measures
+	// guest time, not guest plus park time.
+	lastWasmYield = time.Now()
+}
+
+// wasmPollFramePark parks between MMIO poll re-reads. A short timer park
+// rather than a rAF park: rAF-aligned wake-ups sample the polled register
+// exactly once per compositor tick, which aliases against edge-shaped
+// status bits (VBlank hold windows would be observed either always set or
+// always clear). A 2 ms park samples the register several times per frame
+// while still handing the event loop to timers, rendering and input. The
+// yield throttle restarts so a poll exit is not followed by an immediate
+// second park from the ordinary yield cadence.
+func wasmPollFramePark() {
+	time.Sleep(2 * time.Millisecond)
+	lastWasmYield = time.Now()
+}
+
+// wasmParkUntilFrame parks the CPU goroutine until the browser has rendered
+// a frame (or briefly, in fixed-sleep/node mode), unconditionally: callers
+// own any throttling.
+func wasmParkUntilFrame() {
 	switch {
 	case wasmYieldSleep > 0 || !wasmHasRAF:
 		// Legacy fixed-sleep mode (explicit override, or no rAF under node).
@@ -116,7 +139,4 @@ func hostCooperativeYield() {
 		timerID = global.Call("setTimeout", fallback, 50)
 		<-done
 	}
-	// Restart the throttle clock after the park so the interval measures
-	// guest time, not guest plus park time.
-	lastWasmYield = time.Now()
 }

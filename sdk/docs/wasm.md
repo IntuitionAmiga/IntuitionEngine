@@ -74,6 +74,24 @@ compile, and DevTools' "Disable cache" defeats it entirely.
   memory (the page exposes it as `__goMem`), so they mutate CPU state in
   place. MMIO accesses, stack faults and anything outside the supported
   instruction set exit to the Go dispatcher through the helper protocol.
+  Stack operations serviced there (PUSH, POP, JSR, RTS) are raw RAM
+  accesses, exactly as in the interpreter and the native dispatcher: they
+  never fire MMIO callbacks, so a guest stack parked inside a bitmap-marked
+  aperture such as the Voodoo texture window at `0xD0000` behaves
+  identically under JIT and interpreter. Any future wasm backend for the
+  other CPUs must hold the same invariant
+  (`TestWasmJIT_Node_StackOnMMIOPage` pins it). A guest that busy-polls an
+  MMIO status register (the canonical LOAD, AND, branch-back spin) is
+  recognised after a streak of load exits and handed to a parking poll
+  service: the goroutine sleeps briefly between re-reads instead of
+  spinning, because on this single-threaded build the polled bit can only
+  advance while the CPU goroutine is parked. Paired with it, the VBlank
+  status bit is held readable for a few milliseconds after each set edge
+  (`videoVBlankHoldNs`, js builds only): the compositor sets and clears
+  VBlank within one tick while the guest is parked, so without the hold a
+  polling guest would never observe the set state and WAIT-VSYNC loops ran
+  at single-digit frame rates (`TestWasmJIT_Node_MMIOPollParks` pins the
+  poll service).
   Block-to-block dispatch chains inside wasm through a driver module and a
   shared function table (about 5.3 times interpreter speed on the node
   hot-loop benchmark). While the MMU is enabled, blocks are neither

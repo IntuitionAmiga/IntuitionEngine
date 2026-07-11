@@ -503,13 +503,14 @@ type VideoChip struct {
 	dirtyColStride int32  // 4 bytes - Changed from int to int32 for alignment
 
 	// Status flags - atomic for lock-free access (part of Cache Line 0)
-	enabled        atomic.Bool // Lock-free enable status
-	hasContent     atomic.Bool // Lock-free content flag
-	inVBlank       atomic.Bool // Lock-free VBlank status for CPU polling
-	everSignaled   atomic.Bool // true once compositor-driven VBlank is active
-	stopped        atomic.Bool // Stop is final; stopped chips cannot be restarted
-	framebufferErr atomic.Bool // Latched when the selected full-frame source is unsupported
-	resetting      bool        // 1 byte - still needs mutex for multi-field operations
+	enabled        atomic.Bool  // Lock-free enable status
+	hasContent     atomic.Bool  // Lock-free content flag
+	inVBlank       atomic.Bool  // Lock-free VBlank status for CPU polling
+	vblankSetAt    atomic.Int64 // Unix nanoseconds of the last VBlank set edge
+	everSignaled   atomic.Bool  // true once compositor-driven VBlank is active
+	stopped        atomic.Bool  // Stop is final; stopped chips cannot be restarted
+	framebufferErr atomic.Bool  // Latched when the selected full-frame source is unsupported
+	resetting      bool         // 1 byte - still needs mutex for multi-field operations
 
 	// Synchronization (Cache Line 1)
 	mu         sync.Mutex // 8 bytes - Keep mutex at cache line boundary
@@ -3127,6 +3128,7 @@ func (chip *VideoChip) BlitStartCount() uint64 {
 func (chip *VideoChip) setVBlank(active bool) {
 	wasActive := chip.inVBlank.Swap(active)
 	if active && !wasActive {
+		chip.vblankSetAt.Store(time.Now().UnixNano())
 		chip.vblankSeq.Add(1)
 		chip.vblankMu.Lock()
 		chip.vblankCond.Broadcast()
@@ -3186,6 +3188,15 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 			status |= videoStatusHasContent
 		}
 		if chip.inVBlank.Load() {
+			status |= videoStatusVBlank
+		} else if videoVBlankHoldNs > 0 &&
+			time.Now().UnixNano()-chip.vblankSetAt.Load() < videoVBlankHoldNs {
+			// Single-threaded builds only (js/wasm): the compositor tick
+			// both sets VBlank and clears it again during frame collection
+			// while the CPU goroutine is parked, so a polling guest would
+			// never observe the set state. Hold the readable bit for a
+			// short window after each set edge, approximating the real
+			// VBlank period instead of a transient no guest can see.
 			status |= videoStatusVBlank
 		} else if !chip.everSignaled.Load() {
 			frameStart := chip.lastFrameStart.Load()

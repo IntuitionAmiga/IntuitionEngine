@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -536,4 +537,201 @@ func TestWasmJIT_Node_KillSwitch(t *testing.T) {
 	if wasmJITEnabled() {
 		t.Fatal("IE64_WASM_JIT=0 did not disable the backend")
 	}
+}
+
+// wasmNodeJSRProgram mirrors the shape that killed rotozoomer_ie64.ie64 in
+// the browser: SP set high, a main loop that JSRs into a subroutine holding
+// an MMIO read and a short spin, then RTS back. The subroutine tiers up hot
+// while the main-loop JSR blocks stay cool, so compiled RTS blocks return
+// into interpreted callers every iteration.
+//
+//	1000: LEA   SP, #0xDF000
+//	1008: MOVEQ R2, #iters
+//	1010: JSR   +0x30            ; -> 1040
+//	1018: ADD   R1, R1, #3
+//	1020: SUB   R2, R2, #1
+//	1028: BNE   R2, R0, -0x18    ; back to 1010
+//	1030: HALT
+//	1038: HALT                   ; pad
+//	1040: LEA   R3, #0xF0008
+//	1048: LOAD.L R4, (R3)        ; MMIO read
+//	1050: MOVEQ R6, #8
+//	1058: SUB   R6, R6, #1
+//	1060: BNE   R6, R0, -0x8
+//	1068: RTS
+func wasmNodeJSRProgram(iters uint32) []byte {
+	return bytes.Join([][]byte{
+		ie64Instr(OP_LEA, 31, IE64_SIZE_Q, 1, 0, 0, 0xDF000),
+		ie64Instr(OP_MOVEQ, 2, 0, 0, 0, 0, iters),
+		ie64Instr(OP_JSR64, 0, IE64_SIZE_Q, 0, 0, 0, 0x30),
+		ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 3),
+		ie64Instr(OP_SUB, 2, IE64_SIZE_Q, 1, 2, 0, 1),
+		ie64Instr(OP_BNE, 0, 0, 0, 2, 0, 0xFFFFFFE8),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+		ie64Instr(OP_LEA, 3, IE64_SIZE_Q, 1, 0, 0, 0xF0008),
+		ie64Instr(OP_LOAD, 4, IE64_SIZE_L, 0, 3, 0, 0),
+		ie64Instr(OP_MOVEQ, 6, 0, 0, 0, 0, 8),
+		ie64Instr(OP_SUB, 6, IE64_SIZE_Q, 1, 6, 0, 1),
+		ie64Instr(OP_BNE, 0, 0, 0, 6, 0, 0xFFFFFFF8),
+		ie64Instr(OP_RTS64, 0, 0, 0, 0, 0, 0),
+	}, nil)
+}
+
+func TestWasmJIT_Node_JSRRTSMainLoop(t *testing.T) {
+	const iters = 300_000
+	program := wasmNodeJSRProgram(iters)
+
+	ref := newWasmNodeMachine(t, program)
+	ref.Execute()
+
+	cpu := newWasmNodeMachine(t, program)
+	// Mark the polled page as IO so every LOAD in the subroutine takes the
+	// helper exit, as it does on the real machine where 0xF0008 is a video
+	// register. The test bus has no handler there, so the read still sees
+	// plain RAM and the interpreter reference behaves identically.
+	cpu.bus.ioPageBitmap[0xF0008>>8] = true
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable: __goMem not exposed by the node runner")
+	}
+	cpu.wasmJITDispatch(rt)
+
+	if rt.compiles == 0 {
+		t.Fatal("nothing compiled; test shape lost its hot loop")
+	}
+	if rt.helperCnt[HELPER_LOAD] == 0 {
+		t.Fatal("no LOAD helper exits; the poll never took the MMIO path this test exists to exercise")
+	}
+	if cpu.regs[1] != ref.regs[1] {
+		t.Errorf("R1 diverged: JIT %d, interpreter %d", cpu.regs[1], ref.regs[1])
+	}
+	if want := uint64(iters) * 3; cpu.regs[1] != want {
+		t.Errorf("R1 = %d, want %d (main loop died early)", cpu.regs[1], want)
+	}
+	if cpu.regs[31] != ref.regs[31] || cpu.regs[31] != 0xDF000 {
+		t.Errorf("SP drifted: JIT %#x, interpreter %#x, want 0xDF000", cpu.regs[31], ref.regs[31])
+	}
+	if cpu.PC != ref.PC {
+		t.Errorf("PC diverged: JIT %#x, interpreter %#x", cpu.PC, ref.PC)
+	}
+	t.Logf("compiles=%d blockRuns=%d helpers=%v", rt.compiles, rt.blockRuns, rt.helperCnt)
+}
+
+// TestWasmJIT_Node_StackOnMMIOPage pins the interpreter's stack semantics
+// for the JIT helper path: PUSH/POP/JSR/RTS are raw RAM accesses even when
+// SP sits inside an MMIO-mapped page, exactly like mmuStackWrite/mmuStackRead
+// in the interpreter. The real machine maps the Voodoo texture aperture over
+// 0xD0000-0xDFFFF with handlers that read texture memory rather than bus
+// RAM, and rotozoomer_ie64.ie64 parks its stack at 0xDF000 inside it; a
+// helper that routes the pop through the bus reads zeros and the guest
+// jumps to PC 0. Any future wasm backend for the other CPUs must hold the
+// same invariant: stack traffic never fires MMIO callbacks.
+func TestWasmJIT_Node_StackOnMMIOPage(t *testing.T) {
+	const iters = 300_000
+	program := wasmNodeJSRProgram(iters)
+
+	newMachine := func() *CPU64 {
+		bus := NewMachineBus()
+		// A Voodoo-texture-aperture stand-in: reads see device memory
+		// (zeros), not bus RAM, and writes are swallowed.
+		bus.MapIO(0xD0000, 0xDFFFF,
+			func(addr uint32) uint32 { return 0 },
+			func(addr uint32, value uint32) {})
+		cpu := NewCPU64(bus)
+		copy(cpu.memory[PROG_START:], program)
+		cpu.PC = PROG_START
+		cpu.running.Store(true)
+		return cpu
+	}
+
+	ref := newMachine()
+	ref.Execute()
+
+	cpu := newMachine()
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable: __goMem not exposed by the node runner")
+	}
+	// Watchdog: the historical failure mode jumps to PC 0 and can wedge the
+	// dispatcher; fail fast instead of eating the whole suite timeout.
+	watchdog := time.AfterFunc(60*time.Second, func() { cpu.running.Store(false) })
+	cpu.wasmJITDispatch(rt)
+	if !watchdog.Stop() {
+		t.Fatal("watchdog fired: JIT run wedged (stack semantics regression)")
+	}
+
+	if rt.compiles == 0 {
+		t.Fatal("nothing compiled; test shape lost its hot loop")
+	}
+	if cpu.regs[1] != ref.regs[1] {
+		t.Errorf("R1 diverged: JIT %d, interpreter %d", cpu.regs[1], ref.regs[1])
+	}
+	if want := uint64(iters) * 3; cpu.regs[1] != want {
+		t.Errorf("R1 = %d, want %d (main loop died early)", cpu.regs[1], want)
+	}
+	if cpu.regs[31] != ref.regs[31] || cpu.regs[31] != 0xDF000 {
+		t.Errorf("SP diverged: JIT %#x, interpreter %#x, want 0xDF000", cpu.regs[31], ref.regs[31])
+	}
+	if cpu.PC != ref.PC {
+		t.Errorf("PC diverged: JIT %#x, interpreter %#x", cpu.PC, ref.PC)
+	}
+	t.Logf("compiles=%d helpers=%v", rt.compiles, rt.helperCnt)
+}
+
+// TestWasmJIT_Node_MMIOPollParks pins the parking poll service: a guest
+// spinning LOAD/AND/BEQ on an MMIO status register must be recognised after
+// a streak of LOAD helper exits and then park between re-reads rather than
+// burning its yield slice, because on the single-threaded wasm build the
+// polled bit only advances while the CPU goroutine is parked. Without the
+// service this shape ran WAIT-VSYNC demos at single-digit frame rates.
+//
+//	1000: LEA    R1, #0xF0008
+//	1008: LOAD.L R2, (R1)
+//	1010: AND.L  R2, R2, #2
+//	1018: BEQ    R2, R0, -16   ; spin while the bit is clear
+//	1020: HALT
+func TestWasmJIT_Node_MMIOPollParks(t *testing.T) {
+	program := bytes.Join([][]byte{
+		ie64Instr(OP_LEA, 1, IE64_SIZE_Q, 1, 0, 0, 0xF0008),
+		ie64Instr(OP_LOAD, 2, IE64_SIZE_L, 0, 1, 0, 0),
+		ie64Instr(OP_AND64, 2, IE64_SIZE_L, 1, 2, 0, 2),
+		ie64Instr(OP_BEQ, 0, 0, 0, 2, 0, 0xFFFFFFF0),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	}, nil)
+
+	// The device side: a mapped status register whose bit appears after
+	// 300 ms, which only happens if the CPU goroutine parks often enough
+	// for the timer goroutine to run.
+	var status atomic.Uint32
+	bus := NewMachineBus()
+	bus.MapIO(0xF0008, 0xF000B,
+		func(addr uint32) uint32 { return status.Load() },
+		func(addr uint32, value uint32) {})
+	cpu := NewCPU64(bus)
+	copy(cpu.memory[PROG_START:], program)
+	cpu.PC = PROG_START
+	cpu.running.Store(true)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable: __goMem not exposed by the node runner")
+	}
+	time.AfterFunc(300*time.Millisecond, func() { status.Store(2) })
+
+	watchdog := time.AfterFunc(60*time.Second, func() { cpu.running.Store(false) })
+	cpu.wasmJITDispatch(rt)
+	if !watchdog.Stop() {
+		t.Fatal("watchdog fired: poll loop never completed")
+	}
+
+	if cpu.regs[2] != 2 {
+		t.Errorf("R2 = %d, want 2 (loop exited without observing the bit)", cpu.regs[2])
+	}
+	if rt.pollRuns == 0 {
+		t.Error("parking poll service never engaged; the guest spun through compiled blocks instead")
+	}
+	if rt.helperCnt[HELPER_LOAD] > 50_000 {
+		t.Errorf("LOAD helper exits = %d; a parked poll should re-read at park cadence, not spin", rt.helperCnt[HELPER_LOAD])
+	}
+	t.Logf("pollRuns=%d loadHelpers=%d compiles=%d", rt.pollRuns, rt.helperCnt[HELPER_LOAD], rt.compiles)
 }

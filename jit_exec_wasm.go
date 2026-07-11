@@ -75,12 +75,12 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 			hostCooperativeYield()
 			if rt.diag {
 				js.Global().Set("__ieJITDiag", fmt.Sprintf(
-					"pc=%#x gen=%d compiles=%d blockRuns=%d chainRuns=%d ic=%d blacklist=%d blocks=%d fall=%d smcNoDrop=%d enq=%d claimFail=%d genDrop=%d flushes=%d rangeDrops=%d slot=%d inflight=%d hot=%d helpers=%v",
+					"pc=%#x gen=%d compiles=%d blockRuns=%d chainRuns=%d ic=%d blacklist=%d blocks=%d fall=%d smcNoDrop=%d enq=%d claimFail=%d genDrop=%d flushes=%d rangeDrops=%d slot=%d inflight=%d hot=%d pollRuns=%d helpers=%v",
 					cpu.PC, rt.gen, rt.compiles, rt.blockRuns, rt.chainRuns,
 					cpu.InstructionCount, len(rt.blacklist), len(rt.blocks),
 					rt.fallSteps, rt.smcNoDrop, rt.enqueues, rt.claimFails,
 					rt.genDrops, rt.flushes, rt.rangeDrops, rt.nextSlot,
-					len(rt.inFlight), len(rt.hot), rt.helperCnt)+
+					len(rt.inFlight), len(rt.hot), rt.pollRuns, rt.helperCnt)+
 					fmt.Sprintf(" smcAddrs=%#x", rt.smcAddrRing))
 			}
 		}
@@ -96,6 +96,40 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 				return
 			}
 			continue
+		}
+
+		// A sustained streak of LOAD helper exits at one PC is a guest
+		// spinning on an MMIO register. Hand the loop to the parking poll
+		// service: on this single-threaded build the polled bit can only
+		// advance while the CPU goroutine is parked, so spinning through
+		// compiled blocks burnt whole yield slices per observable edge
+		// (WAIT-VSYNC demos ran at single-digit frame rates). The streak
+		// leaves PC just past the serviced load, so re-enter at the loop
+		// head; re-reading a polled status register is what the loop does
+		// anyway.
+		if rt.loadStreak >= wasmPollStreakThreshold && cpu.PC == rt.lastLoadPC+IE64_INSTR_SIZE {
+			rt.loadStreak = 0
+			pollPC := rt.lastLoadPC
+			if matched, retired := cpu.wasmRunMMIOPollLoop(pollPC); matched {
+				rt.pollRuns++
+				// The LOAD that armed the service already retired through
+				// the helper path and was counted by runBlock; the service
+				// re-enters at the loop head, so its first iteration
+				// re-executes that LOAD. Discount one instruction per
+				// engagement that ran at least one iteration, keeping the
+				// count at one per architecturally retired instruction. On
+				// zero-iteration exits (stop or pending interrupt before
+				// the first re-read) retired is 0 and the rewound LOAD is
+				// counted by whoever executes it next.
+				if retired > 0 {
+					retired--
+				}
+				cpu.InstructionCount += uint64(retired)
+				if rt.diag && rt.pollRuns&0x3FF == 1 {
+					wasmConsoleLog(fmt.Sprintf("IE64 wasm JIT diag: poll service #%d pc=%#x retired=%d exitPC=%#x", rt.pollRuns, pollPC, retired, cpu.PC))
+				}
+				continue
+			}
 		}
 
 		// Compiled block at this PC? (peek refuses while the MMU is on.)
