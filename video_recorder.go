@@ -16,6 +16,15 @@ const (
 	recorderAudioRate   = SAMPLE_RATE
 	recorderAudioSecs   = 2
 	recorderSignalDepth = 1
+
+	// recorderAudioGraceTicks is how many consecutive pump ticks may pass
+	// with the sample ring short before the audio stream is treated as
+	// absent rather than lagging, and silence is written in its place.
+	// Half a second at the pump cadence.
+	recorderAudioGraceTicks = 25
+
+	// recorderAudioPumpTick is the audio pump cadence.
+	recorderAudioPumpTick = 20 * time.Millisecond
 )
 
 type sampleRing struct {
@@ -79,6 +88,7 @@ type VideoRecorder struct {
 	audioR    *os.File
 	stopCh    chan struct{}
 	doneCh    chan struct{}
+	pumpDone  chan struct{}
 	waitDone  chan struct{}
 	frameCh   chan struct{}
 	sampleTap func(float32)
@@ -94,7 +104,6 @@ type VideoRecorder struct {
 	width  int
 	height int
 	fps    int
-	accNum int
 }
 
 func NewVideoRecorder(compositor *VideoCompositor) *VideoRecorder {
@@ -151,9 +160,10 @@ func (r *VideoRecorder) Start(path string) error {
 		"-ac", "1",
 		"-i", "pipe:3",
 		"-c:v", "libx264",
+		"-preset", "ultrafast",
+		"-crf", "20",
 		"-pix_fmt", "yuv420p",
 		"-c:a", "aac",
-		"-shortest",
 		path,
 	)
 	cmd.ExtraFiles = []*os.File{audioR}
@@ -177,6 +187,7 @@ func (r *VideoRecorder) Start(path string) error {
 	ring := newSampleRing(recorderAudioRate * recorderAudioSecs)
 	stopCh := make(chan struct{})
 	doneCh := make(chan struct{})
+	pumpDone := make(chan struct{})
 	waitDone := make(chan struct{})
 	frameCh := make(chan struct{}, recorderSignalDepth)
 	screenFrameCh := make(chan struct{}, 1)
@@ -193,6 +204,7 @@ func (r *VideoRecorder) Start(path string) error {
 	r.audioW = audioW
 	r.stopCh = stopCh
 	r.doneCh = doneCh
+	r.pumpDone = pumpDone
 	r.waitDone = waitDone
 	r.frameCh = frameCh
 	r.screenFrameCh = screenFrameCh
@@ -204,7 +216,6 @@ func (r *VideoRecorder) Start(path string) error {
 	r.width = w
 	r.height = h
 	r.fps = fps
-	r.accNum = 0
 	sound := r.sound
 	tap := func(s float32) { ring.push(s) }
 	r.sampleTap = tap
@@ -225,6 +236,7 @@ func (r *VideoRecorder) Start(path string) error {
 
 	go r.waitProc(cmd, waitDone)
 	go r.loop(stopCh, frameCh, screenFrameCh, doneCh)
+	go r.audioPump(stopCh, audioW, ring, sound != nil, pumpDone)
 	return nil
 }
 
@@ -240,6 +252,7 @@ func (r *VideoRecorder) cleanupStartupFailure(cmd *exec.Cmd, videoIn io.WriteClo
 	r.audioW = nil
 	r.stopCh = nil
 	r.doneCh = nil
+	r.pumpDone = nil
 	r.waitDone = nil
 	r.frameCh = nil
 	r.screenFrameCh = nil
@@ -290,36 +303,63 @@ func (r *VideoRecorder) waitProc(cmd *exec.Cmd, waitDone chan struct{}) {
 	close(waitDone)
 }
 
+// loop paces video writes by wall clock at the recording frame rate. New
+// frames arrive via the frame signals; when none has arrived by the next
+// tick, the current frame is written again. A frozen machine (debugger
+// stops, unchanged composites) therefore records as a held shot rather
+// than a gap: gaps stall ffmpeg's muxer interleaving against the audio
+// stream and -shortest then truncates the file at the pause.
 func (r *VideoRecorder) loop(stopCh <-chan struct{}, frameCh <-chan struct{}, screenFrameCh <-chan struct{}, doneCh chan struct{}) {
 	defer close(doneCh)
-	// Branch on mode at start: screen-capture or compositor
-	if r.useScreen.Load() {
-		// Screen-capture mode: only screenFrameCh drives writes
-		for {
-			select {
-			case <-stopCh:
-				return
-			case <-screenFrameCh:
-				if !r.running.Load() {
-					return
-				}
-				// Swap readIdx with shared to get latest frame
-				r.screenReadIdx = int(r.screenShared.Swap(int32(r.screenReadIdx)))
-				r.writeFrameData(r.screenBufs[r.screenReadIdx])
-			}
-		}
+	r.mu.Lock()
+	fps := r.fps
+	r.mu.Unlock()
+	if fps <= 0 {
+		fps = COMPOSITOR_REFRESH_RATE
 	}
-	// Compositor mode: only frameCh drives writes
+	ticker := time.NewTicker(time.Second / time.Duration(fps))
+	defer ticker.Stop()
+	start := time.Now()
+	var written int64
+	useScreen := r.useScreen.Load()
 	for {
 		select {
 		case <-stopCh:
 			return
+		case <-screenFrameCh:
+			// A fresh screen frame was pushed; take it. The write itself
+			// waits for the ticker so pacing stays wall-clock.
+			r.screenReadIdx = int(r.screenShared.Swap(int32(r.screenReadIdx)))
+			continue
 		case <-frameCh:
+			// Compositor frames are pulled at write time; the signal only
+			// wakes the loop early so a stop is noticed promptly.
+			continue
+		case <-ticker.C:
+		}
+		if !r.running.Load() {
+			return
+		}
+		owed := int64(time.Since(start).Seconds()*float64(fps)) - written
+		if owed <= 0 {
+			continue
+		}
+		// After a long stall (blocked encoder), catch up at most one
+		// second per tick rather than bursting unboundedly.
+		if owed > int64(fps) {
+			owed = int64(fps)
+		}
+		for i := int64(0); i < owed; i++ {
+			if useScreen {
+				r.writeFrameData(r.screenBufs[r.screenReadIdx])
+			} else {
+				r.writeFrame()
+			}
 			if !r.running.Load() {
 				return
 			}
-			r.writeFrame()
 		}
+		written += owed
 	}
 }
 
@@ -334,24 +374,19 @@ func (r *VideoRecorder) writeFrame() {
 	r.writeFrameData(frame[:w*h*4])
 }
 
-// writeFrameData writes one video frame and its corresponding audio samples to ffmpeg.
-// Used by both compositor mode (writeFrame) and screen-capture mode (loop).
+// writeFrameData writes one video frame to ffmpeg. Used by both compositor
+// mode (writeFrame) and screen-capture mode (loop). Audio travels through
+// audioPump on its own goroutine: the two ffmpeg input pipes are
+// interdependent through the muxer's interleaving, so a single loop writing
+// both in sequence deadlocks the moment the encoder falls behind and ffmpeg
+// throttles one of them (historically the audio pipe filled at exactly one
+// 64 KiB pipe buffer, 44 frames, and every recording froze there).
 func (r *VideoRecorder) writeFrameData(pixels []byte) {
 	r.mu.Lock()
 	videoIn := r.videoIn
-	audioW := r.audioW
-	ring := r.ring
-	fps := r.fps
-	sound := r.sound
-	r.accNum += recorderAudioRate
-	targetSamples := r.accNum / fps
-	r.accNum -= targetSamples * fps
 	r.mu.Unlock()
 
-	if videoIn == nil || audioW == nil || ring == nil || targetSamples < 0 {
-		return
-	}
-	if sound != nil && ring.available() < uint32(targetSamples) {
+	if videoIn == nil {
 		return
 	}
 
@@ -367,38 +402,70 @@ func (r *VideoRecorder) writeFrameData(pixels []byte) {
 		return
 	}
 
-	if targetSamples == 0 {
-		r.frameCount.Add(1)
-		return
-	}
-
-	buf := make([]byte, targetSamples*2)
-	for i := range targetSamples {
-		s, ok := ring.pop()
-		if !ok {
-			s = 0
-		}
-		if s > 1 {
-			s = 1
-		} else if s < -1 {
-			s = -1
-		}
-		iv := int16(math.Round(float64(s) * 32767))
-		binary.LittleEndian.PutUint16(buf[i*2:], uint16(iv))
-	}
-	if _, err := audioW.Write(buf); err != nil {
-		if r.running.Load() {
-			r.mu.Lock()
-			if r.lastErr == nil {
-				r.lastErr = err
-			}
-			r.mu.Unlock()
-		}
-		r.running.Store(false)
-		return
-	}
-
 	r.frameCount.Add(1)
+}
+
+// audioPump feeds the audio pipe at the real sample rate on its own
+// goroutine, paced by wall clock. Samples come from the sound tap's ring;
+// a ring that stays short past the grace window is treated as an absent
+// audio stream (headless hosts, suspended sinks) and silence is written in
+// its place rather than stalling the recording. Exits on stop or on a pipe
+// error; Stop closes the pipes after signalling stop, so a pump blocked in
+// Write is always released.
+func (r *VideoRecorder) audioPump(stopCh <-chan struct{}, audioW *os.File, ring *sampleRing, haveSound bool, pumpDone chan struct{}) {
+	defer close(pumpDone)
+	ticker := time.NewTicker(recorderAudioPumpTick)
+	defer ticker.Stop()
+	start := time.Now()
+	var written int64
+	shortTicks := 0
+	for {
+		select {
+		case <-stopCh:
+			return
+		case <-ticker.C:
+		}
+		if !r.running.Load() {
+			return
+		}
+		owed := int64(time.Since(start).Seconds()*recorderAudioRate) - written
+		if owed <= 0 {
+			continue
+		}
+		if haveSound && ring.available() < uint32(owed) {
+			if shortTicks < recorderAudioGraceTicks {
+				shortTicks++
+				continue
+			}
+		} else {
+			shortTicks = 0
+		}
+		buf := make([]byte, owed*2)
+		for i := int64(0); i < owed; i++ {
+			s, ok := ring.pop()
+			if !ok {
+				s = 0
+			}
+			if s > 1 {
+				s = 1
+			} else if s < -1 {
+				s = -1
+			}
+			iv := int16(math.Round(float64(s) * 32767))
+			binary.LittleEndian.PutUint16(buf[i*2:], uint16(iv))
+		}
+		if _, err := audioW.Write(buf); err != nil {
+			if r.running.Load() {
+				r.mu.Lock()
+				if r.lastErr == nil {
+					r.lastErr = err
+				}
+				r.mu.Unlock()
+			}
+			return
+		}
+		written += owed
+	}
 }
 
 func (r *VideoRecorder) Stop() error {
@@ -412,6 +479,7 @@ func (r *VideoRecorder) Stop() error {
 	}
 	stopCh := r.stopCh
 	doneCh := r.doneCh
+	pumpDone := r.pumpDone
 	frameCh := r.frameCh
 	screenFrameCh := r.screenFrameCh
 	videoIn := r.videoIn
@@ -423,6 +491,7 @@ func (r *VideoRecorder) Stop() error {
 	r.cmd = nil
 	r.stopCh = nil
 	r.doneCh = nil
+	r.pumpDone = nil
 	r.frameCh = nil
 	r.screenFrameCh = nil
 	r.sampleTap = nil
@@ -456,6 +525,9 @@ func (r *VideoRecorder) Stop() error {
 	}
 	if doneCh != nil {
 		<-doneCh
+	}
+	if pumpDone != nil {
+		<-pumpDone
 	}
 	if waitDone != nil {
 		select {

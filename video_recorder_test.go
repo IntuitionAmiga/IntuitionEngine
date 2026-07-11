@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -179,4 +180,80 @@ func TestVideoRecorder_StopClosesPipesBeforeWaitingForLoop(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 		t.Fatal("Stop blocked waiting for loop before closing encoder pipes")
 	}
+}
+
+// TestVideoRecorder_AudioStarvationDoesNotStallRecording pins the audio
+// pump's grace window: a tap that stops delivering (headless hosts,
+// suspended sinks) must only hold the audio stream for the grace period and
+// then write silence at the real sample rate, and video writes must never
+// depend on audio availability at all. The historical single-loop design
+// gated video on the ring and later deadlocked against ffmpeg's muxer
+// interleaving; every recording froze at exactly one 64 KiB audio pipe
+// buffer (44 frames).
+func TestVideoRecorder_AudioStarvationDoesNotStallRecording(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	rec := NewVideoRecorder(comp)
+
+	// Video path: writes must flow with an empty, starved ring.
+	rec.mu.Lock()
+	rec.videoIn = &closeTrackingWriteCloser{}
+	rec.ring = newSampleRing(recorderAudioRate * recorderAudioSecs)
+	rec.sound = &SoundChip{}
+	rec.width = 4
+	rec.height = 4
+	rec.fps = 60
+	rec.mu.Unlock()
+	rec.running.Store(true)
+
+	pixels := make([]byte, 4*4*4)
+	for i := 0; i < 120; i++ {
+		rec.writeFrameData(pixels)
+	}
+	if got := rec.FrameCount(); got != 120 {
+		t.Fatalf("video frames written with starved audio = %d, want 120", got)
+	}
+
+	// Audio pump: with an empty ring it must hold through the grace window,
+	// then deliver silence at the sample rate rather than nothing.
+	audioR, audioW, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer audioR.Close()
+
+	var consumed atomic.Int64
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, err := audioR.Read(buf)
+			consumed.Add(int64(n))
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	stopCh := make(chan struct{})
+	pumpDone := make(chan struct{})
+	rec.mu.Lock()
+	ring := rec.ring
+	rec.mu.Unlock()
+	go rec.audioPump(stopCh, audioW, ring, true, pumpDone)
+
+	graceDeadline := time.Duration(recorderAudioGraceTicks+2) * recorderAudioPumpTick
+	time.Sleep(graceDeadline / 2)
+	if got := consumed.Load(); got != 0 {
+		t.Fatalf("audio written inside grace window = %d bytes, want 0", got)
+	}
+	deadline := time.Now().Add(graceDeadline + 2*time.Second)
+	for consumed.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if consumed.Load() == 0 {
+		t.Fatal("audio pump never wrote silence after the grace window; recording would stall")
+	}
+
+	close(stopCh)
+	<-pumpDone
+	_ = audioW.Close()
 }

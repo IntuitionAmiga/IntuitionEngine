@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -2425,6 +2426,10 @@ func TestVideoRecorder_ResolutionLock(t *testing.T) {
 }
 
 func TestVideoRecorder_AudioSync(t *testing.T) {
+	// Video writes are decoupled from audio availability: the old design
+	// gated each frame on the sample ring and deadlocked against ffmpeg's
+	// muxer interleaving (every recording froze at one 64 KiB audio pipe
+	// buffer). A short ring must not hold back video frames.
 	comp := NewVideoCompositor(nil)
 	rec := NewVideoRecorder(comp)
 	rec.sound = &SoundChip{}
@@ -2437,74 +2442,64 @@ func TestVideoRecorder_AudioSync(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateTemp video failed: %v", err)
 	}
-	audioOut, err := os.CreateTemp(t.TempDir(), "audio-*.raw")
-	if err != nil {
-		t.Fatalf("CreateTemp audio failed: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = videoOut.Close()
-		_ = audioOut.Close()
-	})
+	t.Cleanup(func() { _ = videoOut.Close() })
 	rec.videoIn = videoOut
-	rec.audioW = audioOut
+	rec.running.Store(true)
 
 	for range 100 {
 		rec.ring.push(0.5)
 	}
 	rec.writeFrame()
-	if got := rec.FrameCount(); got != 0 {
-		t.Fatalf("frame count with insufficient audio=%d, want 0", got)
-	}
-
-	for range 1000 {
-		rec.ring.push(0.5)
-	}
-	rec.writeFrame()
 	if got := rec.FrameCount(); got != 1 {
-		t.Fatalf("frame count after sufficient audio=%d, want 1", got)
+		t.Fatalf("frame count with a short audio ring = %d, want 1 (video must not be gated on audio)", got)
 	}
 }
 
 func TestRecorder_AVSync_NoDrift(t *testing.T) {
+	// The audio pump paces itself by wall clock at the real sample rate, so
+	// audio length tracks recording length regardless of how many video
+	// frames the encoder accepted. Run the pump for a stretch of wall time
+	// against a well-fed ring and check the written sample count matches
+	// the elapsed time.
 	rec := NewVideoRecorder(nil)
-	rec.sound = &SoundChip{}
-	rec.ring = newSampleRing(recorderAudioRate * 20)
-	rec.width = 1
-	rec.height = 1
-	rec.fps = 60
+	ring := newSampleRing(recorderAudioRate * 20)
+	for range recorderAudioRate * 2 {
+		ring.push(0.25)
+	}
+	rec.running.Store(true)
 
-	videoOut, err := os.CreateTemp(t.TempDir(), "video-*.raw")
+	audioR, audioW, err := os.Pipe()
 	if err != nil {
-		t.Fatalf("CreateTemp video failed: %v", err)
+		t.Fatal(err)
 	}
-	audioOut, err := os.CreateTemp(t.TempDir(), "audio-*.raw")
-	if err != nil {
-		t.Fatalf("CreateTemp audio failed: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = videoOut.Close()
-		_ = audioOut.Close()
-	})
-	rec.videoIn = videoOut
-	rec.audioW = audioOut
+	defer audioR.Close()
+	var consumed atomic.Int64
+	go func() {
+		buf := make([]byte, 65536)
+		for {
+			n, err := audioR.Read(buf)
+			consumed.Add(int64(n))
+			if err != nil {
+				return
+			}
+		}
+	}()
 
-	const frames = 1000
-	expectedSamples := recorderAudioRate * frames / rec.fps
-	for range expectedSamples + rec.fps {
-		rec.ring.push(0.25)
-	}
-	pixels := make([]byte, 4)
-	for range frames {
-		rec.writeFrameData(pixels)
-	}
+	stopCh := make(chan struct{})
+	pumpDone := make(chan struct{})
+	start := time.Now()
+	go rec.audioPump(stopCh, audioW, ring, true, pumpDone)
+	time.Sleep(500 * time.Millisecond)
+	close(stopCh)
+	<-pumpDone
+	elapsed := time.Since(start)
+	_ = audioW.Close()
 
-	info, err := audioOut.Stat()
-	if err != nil {
-		t.Fatalf("audio Stat failed: %v", err)
-	}
-	gotSamples := int(info.Size() / 2)
-	if gotSamples < expectedSamples-1 || gotSamples > expectedSamples+1 {
-		t.Fatalf("audio samples after %d frames = %d, want %d +/- 1", frames, gotSamples, expectedSamples)
+	gotSamples := consumed.Load() / 2
+	minSamples := int64(float64(recorderAudioRate) * (elapsed.Seconds() - 0.2))
+	maxSamples := int64(float64(recorderAudioRate) * elapsed.Seconds())
+	if gotSamples < minSamples || gotSamples > maxSamples {
+		t.Fatalf("audio samples after %v = %d, want between %d and %d", elapsed, gotSamples, minSamples, maxSamples)
 	}
 }
 

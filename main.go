@@ -1037,7 +1037,20 @@ func main() {
 		Z80: modeZ80, X86: modeX86, M6502: modeM6502,
 	})
 
-	ms, err := ComputeMemorySizing(^uint64(0), SizingOverrides{})
+	// Hidden diagnostic override, in the spirit of the SizingOverrides test
+	// hooks: IE_TOTAL_GUEST_RAM_MIB caps total guest RAM below the
+	// autodetected figure. Whole-machine reverse-debug snapshots refuse
+	// backings above snapshotMaxMemory (512 MiB), so on large hosts this is
+	// currently the only way to boot a machine whose state they can capture.
+	var sizingOverrides SizingOverrides
+	if v := os.Getenv("IE_TOTAL_GUEST_RAM_MIB"); v != "" {
+		// Bounded to 16 TiB so a nonsense value cannot overflow the
+		// byte conversion; ComputeMemorySizing enforces the floor.
+		if mib, err := strconv.ParseUint(v, 10, 64); err == nil && mib <= 16<<20 && mib*1024*1024 >= MIN_GUEST_RAM {
+			sizingOverrides.TotalGuestRAM = mib * 1024 * 1024
+		}
+	}
+	ms, err := ComputeMemorySizing(^uint64(0), sizingOverrides)
 	if err != nil {
 		// Fallback: synthesise a 256 MiB total so SYSINFO is at least
 		// non-zero on hosts where /proc/meminfo is unavailable (CI,
