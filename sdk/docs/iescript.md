@@ -885,7 +885,7 @@ Monitor/debugger integration. The Machine Monitor is always built into the engin
 
 ### Core
 
-`dbg.open()` - Activate the monitor. The first nested `dbg.open()` / `dbg.freeze()` held by the script also increments the freeze counter. Further nested opens only increase the script debugger-open count. This is the standard way to enter a debug session from a script. Returns: nothing.
+`dbg.open()` - Activate the monitor. Activation freezes the whole machine: every CPU stops and the audio clock freezes with them (deactivation restores the pre-entry audio state). The first nested `dbg.open()` / `dbg.freeze()` held by the script also increments the freeze counter. Further nested opens only increase the script debugger-open count. This is the standard way to enter a debug session from a script. Returns: nothing.
 
 `dbg.close()` - Release one script debugger open. The monitor is deactivated and the script-owned debugger freeze is released only when the nested debugger-open count reaches zero. Extra closes beyond zero are harmless. Returns: nothing.
 

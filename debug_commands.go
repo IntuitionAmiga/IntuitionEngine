@@ -1980,6 +1980,7 @@ func (m *MachineMonitor) cmdFreezeAudio(_ MonitorCommand) bool {
 		return false
 	}
 	m.soundChip.audioFrozen.Store(true)
+	m.audioCmdInSession = true
 	m.appendOutput("Audio frozen", colorCyan)
 	return false
 }
@@ -1990,6 +1991,7 @@ func (m *MachineMonitor) cmdThawAudio(_ MonitorCommand) bool {
 		return false
 	}
 	m.soundChip.audioFrozen.Store(false)
+	m.audioCmdInSession = true
 	m.appendOutput("Audio thawed", colorCyan)
 	return false
 }

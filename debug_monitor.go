@@ -152,7 +152,12 @@ type MachineMonitor struct {
 
 	wasRunning map[int]bool
 	soundChip  *SoundChip
-	devices    map[string]DebugSnapshotDevice
+	// Whole-machine freeze state for media: the audio clock's pre-entry
+	// state, restored on exit unless an explicit fa/ta was issued during
+	// the session.
+	audioWasFrozen    bool
+	audioCmdInSession bool
+	devices           map[string]DebugSnapshotDevice
 
 	bus       *MachineBus
 	coprocMgr *CoprocessorManager
@@ -402,7 +407,35 @@ func (m *MachineMonitor) FocusedCPU() *CPUEntry {
 	return m.cpus[m.focusedID]
 }
 
-// Activate freezes all CPUs and enters the monitor.
+// freezeMediaOnEntry pauses the machine's audio clock when the monitor
+// activates. The SoundChip drives every player and audio engine from the
+// output pull, so freezing it holds song positions and silences output in
+// one step; the pre-entry state is kept so a freeze that predates the
+// session (a guest write to the control register, an earlier fa) survives
+// the monitor exit.
+func (m *MachineMonitor) freezeMediaOnEntry() {
+	if m.soundChip == nil {
+		return
+	}
+	m.audioCmdInSession = false
+	m.audioWasFrozen = m.soundChip.audioFrozen.Swap(true)
+}
+
+// resumeMediaOnExit restores the audio clock to its pre-entry state, unless
+// an explicit fa or ta was issued during the session, in which case the
+// user's command outlives the monitor.
+func (m *MachineMonitor) resumeMediaOnExit() {
+	if m.soundChip == nil {
+		return
+	}
+	if m.audioCmdInSession {
+		m.audioCmdInSession = false
+		return
+	}
+	m.soundChip.audioFrozen.Store(m.audioWasFrozen)
+}
+
+// Activate freezes all CPUs, the audio clock and enters the monitor.
 func (m *MachineMonitor) Activate() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -419,6 +452,7 @@ func (m *MachineMonitor) Activate() {
 			entry.CPU.Freeze()
 		}
 	}
+	m.freezeMediaOnEntry()
 
 	m.scrollOffset = 0
 	m.inputLine = nil
@@ -467,6 +501,21 @@ func (m *MachineMonitor) Deactivate() {
 			entry.CPU.Resume()
 		}
 	}
+	m.resumeMediaOnExit()
+}
+
+// exitFromOverlay is the overlay's Escape and command-exit path: the same
+// resume semantics as Deactivate, callable from the UI loop which does not
+// hold the monitor lock.
+func (m *MachineMonitor) exitFromOverlay() {
+	m.state = MonitorInactive
+	m.clearAssembleModeLocked()
+	for id, entry := range m.cpus {
+		if m.wasRunning[id] {
+			entry.CPU.Resume()
+		}
+	}
+	m.resumeMediaOnExit()
 }
 
 // FreezeAll freezes all registered CPUs.
@@ -671,6 +720,7 @@ func (m *MachineMonitor) handleBreakpointHit(ev BreakpointEvent) {
 	// Activate the monitor
 	m.state = MonitorActive
 	m.wasRunning = wasRunning
+	m.freezeMediaOnEntry()
 	if _, ok := m.cpus[ev.CPUID]; ok {
 		m.focusedID = ev.CPUID
 	}

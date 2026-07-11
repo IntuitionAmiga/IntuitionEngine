@@ -4,7 +4,7 @@
 
 ## Overview
 
-The Machine Monitor is a built-in hardware-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, the Commodore Plus/4 built-in monitor, NuMega SoftICE, MAME's debugger, and the VICE monitor. In interactive display builds, press **F9** to freeze the guest CPUs and enter the monitor. Press **x** or **Esc** to close the monitor and resume CPUs that were running when it was entered.
+The Machine Monitor is a built-in hardware-level debugger inspired by the Commodore 64/Amiga Action Replay cartridge, HRTMon, the Commodore Plus/4 built-in monitor, NuMega SoftICE, MAME's debugger, and the VICE monitor. In interactive display builds, press **F9** to freeze the machine and enter the monitor: every guest CPU stops, and the audio clock freezes with them, so music halts mid-note and song positions hold. Press **x** or **Esc** to close the monitor; CPUs that were running resume, and the audio clock returns to its pre-entry state.
 
 The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios, including coprocessors.
 It is also exposed to IEScript Lua via the `dbg.*` API for scripted debugging workflows. See [iescript.md](iescript.md) for the full `dbg.*` module reference.
@@ -1153,7 +1153,7 @@ Macros persist for the duration of the session. Macro names are case-insensitive
 
 #### `fa` - Freeze Audio
 
-Freeze audio playback. By default, audio continues playing while the monitor is open (it's output-only and doesn't affect memory state). Use this command to silence audio during debugging.
+Freeze the audio clock. Entering the monitor freezes audio automatically, so `fa` is mostly useful after a `ta`, to silence the machine again within the same session.
 
 ```
 > fa
@@ -1162,12 +1162,14 @@ Audio frozen
 
 #### `ta` - Thaw Audio
 
-Resume audio playback.
+Thaw the audio clock while the monitor stays open: players resume from their held positions and the mixer runs, so you can listen to what the frozen machine last programmed into the sound hardware.
 
 ```
 > ta
 Audio thawed
 ```
+
+Monitor exit normally restores the audio clock to its pre-entry state, so a freeze that predates the session (a guest write to the SoundChip control register, for example) survives it. An explicit `fa` or `ta` issued during the session outlives the exit instead: the monitor takes your command as the new intended state.
 
 ### Help
 

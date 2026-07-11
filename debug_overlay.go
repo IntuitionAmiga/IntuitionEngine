@@ -426,13 +426,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 	// Escape = exit
 	if inpututil.IsKeyJustPressed(ebiten.KeyEscape) {
 		o.selClear()
-		m.state = MonitorInactive
-		m.clearAssembleModeLocked()
-		for id, entry := range m.cpus {
-			if m.wasRunning[id] {
-				entry.CPU.Resume()
-			}
-		}
+		m.exitFromOverlay()
 		return true
 	}
 
@@ -510,12 +504,7 @@ func (o *MonitorOverlay) HandleInput() bool {
 
 		if m.executeCommand(input) {
 			// Command requested exit
-			m.state = MonitorInactive
-			for id, entry := range m.cpus {
-				if m.wasRunning[id] {
-					entry.CPU.Resume()
-				}
-			}
+			m.exitFromOverlay()
 			return true
 		}
 		return false
