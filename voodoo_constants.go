@@ -181,7 +181,16 @@ const (
 	VOODOO_TEX_SRC_BYTES = VOODOO_BASE + 0x34C // Guest RAM texture upload source byte count
 	VOODOO_TEX_SLOT      = VOODOO_BASE + 0x350 // Slot id the next TEX_UPLOAD also stores to (IE extension)
 	VOODOO_TEX_BIND      = VOODOO_BASE + 0x354 // Bind a previously uploaded slot, no data transfer (IE extension)
-	VOODOO_PALETTE_BASE  = VOODOO_BASE + 0x400 // Texture palette (256 entries)
+
+	// Deterministic per-swap frame hashing (IE extension, enabled with
+	// IE_SWAP_HASH=1). Unlike the compositor hash, these are captured on
+	// the swap worker at present time, so hash N is the frame published
+	// by the guest's Nth SWAP_BUFFER_CMD regardless of compositor timing.
+	VOODOO_SWAP_HASH_SEQ   = VOODOO_BASE + 0x358 // RO: latest presented swap sequence number
+	VOODOO_SWAP_HASH_QUERY = VOODOO_BASE + 0x35C // WO: sequence number to query
+	VOODOO_SWAP_HASH_VALUE = VOODOO_BASE + 0x360 // RO: FNV-1a hash for the queried swap, 0 if evicted
+
+	VOODOO_PALETTE_BASE = VOODOO_BASE + 0x400 // Texture palette (256 entries)
 )
 
 const (

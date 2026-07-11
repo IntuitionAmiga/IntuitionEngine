@@ -66,6 +66,12 @@ import (
 // rate" versus "swap rate" mismatches.
 var voodooDupTraceOn = os.Getenv("IE_VOODOO_DUP_TRACE") == "1"
 
+// voodooSwapHashOn enables per-swap frame hashing for parity oracles;
+// off by default to avoid a full-frame hash per present.
+var voodooSwapHashOn = os.Getenv("IE_SWAP_HASH") == "1"
+
+const voodooSwapHashRingSize = 64
+
 var voodooDupState struct {
 	lastCRC       uint32
 	lastCenterCRC uint32
@@ -279,6 +285,13 @@ type VoodooEngine struct {
 	jobsInFlight  int
 	swapInFlight  atomic.Bool // lock-free mirror of jobsInFlight > 0 for GetFrame
 	spareBatches  [][]VoodooTriangle
+
+	// Per-swap frame hashes (IE_SWAP_HASH=1): captured on the swap
+	// worker right after readback, so entry N is deterministically the
+	// guest's Nth presented swap. Ring guarded by mu.
+	swapHashSeq   uint32
+	swapHashQuery uint32
+	swapHashRing  [voodooSwapHashRingSize]struct{ seq, hash uint32 }
 
 	// Frame generation counter: incremented once per published frame
 	// (present swaps, not flush-only jobs). The compositor uses it to
@@ -525,6 +538,14 @@ func (v *VoodooEngine) readReg32Locked(addr uint32) uint32 {
 	switch addr {
 	case VOODOO_STATUS:
 		return v.getStatus()
+	case VOODOO_SWAP_HASH_SEQ:
+		return v.swapHashSeq
+	case VOODOO_SWAP_HASH_VALUE:
+		e := v.swapHashRing[v.swapHashQuery%voodooSwapHashRingSize]
+		if e.seq == v.swapHashQuery {
+			return e.hash
+		}
+		return 0
 	default:
 		// Return shadow register value
 		regIndex := (addr - VOODOO_BASE) / 4
@@ -602,6 +623,9 @@ func (v *VoodooEngine) writeReg32Locked(addr uint32, value uint32) {
 	// Enable/disable the Voodoo engine
 	case VOODOO_ENABLE:
 		v.enabled.Store(value != 0)
+
+	case VOODOO_SWAP_HASH_QUERY:
+		v.swapHashQuery = value
 
 	// Vertex coordinates (12.4 fixed-point)
 	case VOODOO_VERTEX_AX:
@@ -1315,6 +1339,13 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 		if perfAcctOn {
 			perfSubsysAcct.VoodooReadback.AddSince(perfT0, 1)
 		}
+		// Hash before taking the engine lock: a full-frame FNV pass is
+		// too slow to hold mu across. Sequence numbering stays aligned
+		// with guest swaps even on nil readback (hash 0).
+		var swapHash uint32
+		if voodooSwapHashOn && frame != nil {
+			swapHash = frameHash(frame)
+		}
 		if job.postClear {
 			backend.ClearFramebuffer(job.postClearColor)
 		}
@@ -1326,6 +1357,11 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 			voodooDupTrace(frame, int(v.width.Load()), int(v.height.Load()))
 		}
 		v.mu.Lock()
+		if voodooSwapHashOn {
+			v.swapHashSeq++
+			v.swapHashRing[v.swapHashSeq%voodooSwapHashRingSize] =
+				struct{ seq, hash uint32 }{v.swapHashSeq, swapHash}
+		}
 		// Copy rendered frame to write buffer for triple-buffer publish:
 		// swap our write buffer into the shared slot, get back the old
 		// shared buffer to write next frame. The generation is stamped
