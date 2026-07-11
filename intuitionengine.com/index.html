@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Intuition Engine - Shared Bus Multi-CPU Machine</title>
-  <meta name="description" content="Intuition Engine architecture: MachineBus, MMIO devices, guest driver routes, coprocessor workers, audio/video devices, IE Mon, IEScript, SDK tooling, and demos.">
+  <title>Intuition Engine - Six Rival Home Computers on One Bus</title>
+  <meta name="description" content="Intuition Engine is the home computer that never was: six CPUs, the classic video and sound chips, a copper, a blitter and a Voodoo on one shared bus. Write demos and games in BASIC, assembly or C. Free and open source, and it runs in your browser.">
   <meta name="robots" content="index,follow">
   <link rel="canonical" href="https://intuitionengine.io/">
   <link rel="preconnect" href="https://www.youtube-nocookie.com">
@@ -802,6 +802,9 @@
         <span>Intuition Engine</span>
       </a>
       <div class="nav-links">
+        <a href="#demos">Demos</a>
+        <a href="#make">Make</a>
+        <a href="#guide">Guide</a>
         <a href="#architecture">Architecture</a>
         <a href="#services">MMIO</a>
         <a href="#guests">Guests</a>
@@ -809,9 +812,6 @@
         <a href="#devices">Audio/video</a>
         <a href="#iemon">IE Mon</a>
         <a href="#iescript">IEScript</a>
-        <a href="#demos">Demos</a>
-        <a href="#make">Make</a>
-        <a href="#guide">Guide</a>
         <a href="#docs">Docs</a>
       </div>
     </nav>
@@ -825,12 +825,15 @@
         <p class="eyebrow">The machine that never was</p>
         <h1>Intuition Engine</h1>
         <p class="tagline">Six rival home computers on one bus.</p>
-        <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit machines from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, with a touch of SNES-style Mode 7 affine texturing and a 3DFX Voodoo thrown in, rebuilt on a single shared bus. A 6502 can play a SID tune while an x86 draws Atari ANTIC graphics or a 68020 drives a copper down PC VGA modes, all six architectures live on the same bus at once. Combinations no silicon ever shipped, running as one machine. The exact runtime combination for your code is all up to you as a game or demo coder.</p>
+        <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit machines from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, with a touch of SNES-style Mode 7 affine texturing and a 3DFX Voodoo thrown in, rebuilt on a single shared bus.</p>
+        <p class="lead">A 6502 can play a SID tune while an x86 draws Atari ANTIC graphics or a 68020 drives a copper down PC VGA modes; all six architectures live on the same bus at once, in combinations no silicon ever shipped. Which chips your demo runs on is your call. The whole machine is free and open source.</p>
         <div class="actions">
-          <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
+          <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
+          <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://youtube.com/@IntuitionAmiga">YouTube</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
         </div>
+        <p style="max-width: 820px; margin: 1rem 0 0; color: var(--muted); font-size: 0.95rem;">Your first ninety seconds: launch the browser demo, and at the Ready prompt type <code>DIR "Demos"</code>, then <code>RUN "rotozoomer_ie64.ie64"</code> or any file that catches your eye. <code>LOAD</code> a BASIC demo and <code>LIST</code> it to see how it is made, then <code>RUN AOT</code> to compile it to native IE64 code and run it.</p>
 
 
         <div class="hero-grid">
@@ -857,6 +860,276 @@
   -> MachineBus
   -> device, worker, or runtime service
   -> response through RAM, ticket, IRQ, or status</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="demos" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Impossible machine demos</h2>
+          <p>Each demo is a CPU, a video chip and a sound chip that never shared a board. An Intel x86 driving Atari ANTIC graphics with Commodore SID music. A 6502 painting a ZX Spectrum screen while an Amiga tracker plays. Several run the music on a second CPU entirely, and the copper reprograms display hardware that never had a copper. Grouped by what they prove, not by the CPU behind them.</p>
+        </div>
+
+        <article class="card" style="margin-bottom: 1rem">
+          <span class="kicker">One effect, every way in</span>
+          <h3>The same rotozoomer, thirteen origins</h3>
+          <p>One Mode 7 affine transform, written again and again. Six CPUs run identical maths down to the same VideoChip registers; IE64 BASIC and IEScript reach those registers from a higher level; EmuTOS and AROS drive them as guest operating systems. The picture is the same. The point is where it comes from. The IE64 build even scores it with a stereo SAP tune spread across two Atari POKEY chips at once.</p>
+          <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-DEMO-ROTO" data-id="P52ripOFWJQ"><button type="button" class="lty-playbtn" aria-label="Play rotozoomer comparison demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+          <div class="tag-row" style="margin-top: 0.8rem">
+            <span class="tag">IE64 &middot; rotozoomer_ie64.ie64</span>
+            <span class="tag">IE32 &middot; rotozoomer.iex</span>
+            <span class="tag">M68K &middot; rotozoomer_68k.ie68</span>
+            <span class="tag">Z80 &middot; rotozoomer_z80.ie80</span>
+            <span class="tag">6502 &middot; rotozoomer_65.ie65</span>
+            <span class="tag">x86 &middot; rotozoomer_x86.ie86</span>
+            <span class="tag">BASIC &middot; rotozoomer_basic.bas</span>
+            <span class="tag">IEScript &middot; rotozoomer_ies.ies</span>
+            <span class="tag">EmuTOS GEM &middot; rotozoomer_gem.prg</span>
+            <span class="tag">AROS asm &middot; RotoAPI / RotoHW</span>
+            <span class="tag">AROS C &middot; RotoAPIc / RotoHWc</span>
+          </div>
+        </article>
+
+        <div class="subhead">
+          <h3>3D through the Voodoo</h3>
+          <p>Guest CPUs feed a 3dfx-style rasteriser: Gouraud shading, Z-buffering, texture upload, and fog.</p>
+        </div>
+        <div class="thumb-grid">
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D006-SHOT" data-id="j2rgVw2kElQ"><button type="button" class="lty-playbtn" aria-label="Play voodoo_mega_demo.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>voodoo_mega_demo.iex</code><div class="runtime">IE32</div><p>IE32 CPU driving a 3dfx-style Voodoo, while a second CPU, a 6502 core, plays the C64 SID soundtrack.</p></div>
+          </article>
+        </div>
+
+        <div class="subhead">
+          <h3>Real video chips, signature modes</h3>
+          <p>Not one framebuffer. Authentic VGA, the TED 121-colour model, the ZX Spectrum ULA, and ANTIC/GTIA, each in its defining mode, each driven by a CPU that never shipped with it.</p>
+        </div>
+        <div class="thumb-grid">
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D007-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play vga_mode13h_fire.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>vga_mode13h_fire.iex</code><div class="runtime">IE32</div><p>IE32 CPU on authentic PC VGA Mode 13h. The classic palette-cycled fire.</p></div>
+          </article>
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D010-SHOT" data-id="jwG_bnqXOh4"><button type="button" class="lty-playbtn" aria-label="Play VGA Mode 03h Z80 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>vga_text_sap_demo.ie80</code><div class="runtime">Z80</div><p>Zilog Z80 CPU on a PC VGA Mode 03h text screen, with Atari POKEY playing a SAP tune.</p></div>
+          </article>
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D015-SHOT" data-id="_3TczWJLqF8"><button type="button" class="lty-playbtn" aria-label="Play ted_121_colors_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>ted_121_colors_68k.ie68</code><div class="runtime">M68K</div><p>Motorola 68020 CPU on the Commodore TED's 121-colour mode, with a Spectrum AY chip in Plus mode.</p></div>
+          </article>
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D024-SHOT" data-id="7foRgyOmZwE"><button type="button" class="lty-playbtn" aria-label="Play ula_rotating_cube_65.ie65 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>ula_rotating_cube_65.ie65</code><div class="runtime">6502</div><p>MOS 6502 CPU on ZX Spectrum ULA video, playing an Amiga AHX tracker. Three houses on one board.</p></div>
+          </article>
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D027-SHOT" data-id="_LjUHepi9lo"><button type="button" class="lty-playbtn" aria-label="Play antic_plasma_x86.ie86 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>antic_plasma_x86.ie86</code><div class="runtime">x86</div><p>Intel x86 CPU driving Atari ANTIC/GTIA graphics, with Commodore SID music. A plasma from three rival makers at once.</p></div>
+          </article>
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D016-SHOT" data-id="ZY-coUUBYGY"><button type="button" class="lty-playbtn" aria-label="Play rotating_cube_copper_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>rotating_cube_copper_68k.ie68</code><div class="runtime">M68K</div><p>Motorola 68020 CPU on PC VGA, while a second CPU, a 6502 core, plays the C64 SID soundtrack. The native IE Video Copper rewrites the VGA palette registers in step with the beam as it sweeps the screen, for raster bars real VGA silicon never had a copper to make.</p></div>
+          </article>
+        </div>
+
+        <div class="subhead">
+          <h3>Hardware effects from BASIC</h3>
+          <p>Effects without leaving IE64 BASIC. <code>COMPILE</code> turns any of them into a standalone <code>.ie64</code> image.</p>
+        </div>
+        <div class="thumb-grid">
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D002-SHOT" data-id="hOhwO8FsOYs"><button type="button" class="lty-playbtn" aria-label="Play wobble_zoom.bas demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>wobble_zoom.bas</code><div class="runtime">IE64 BASIC</div><p>A texture wobble-zoom over a MIDI soundtrack, written entirely in IE64 BASIC.</p></div>
+          </article>
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D003-SHOT" data-id="3Jm4T8XIQt8"><button type="button" class="lty-playbtn" aria-label="Play resonance.bas demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>resonance.bas</code><div class="runtime">IE64 BASIC</div><p>IE64 BASIC locked to a MIDI orchestral track: raster bands, stars and scroll all synchronised to the music.</p></div>
+          </article>
+        </div>
+
+        <div class="subhead">
+          <h3>One old-school intro, four CPUs</h3>
+          <p>The same RoboCop intro, identical down to the IE Video Chip blitter and copper effects and the AY theme in Plus mode, rebuilt for four different instruction sets: IE32, 68020, Z80 and 6502.</p>
+        </div>
+        <div class="thumb-grid">
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D011-SHOT" data-id="r4jifuv9Rkk"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>robocop_intro.iex</code><div class="runtime">IE32</div><p>The RoboCop intro on the IE32 CPU.</p></div>
+          </article>
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D020-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>robocop_intro_68k.ie68</code><div class="runtime">M68K</div><p>The RoboCop intro on the Motorola 68020.</p></div>
+          </article>
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D022-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_z80.ie80 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>robocop_intro_z80.ie80</code><div class="runtime">Z80</div><p>The RoboCop intro on the Zilog Z80.</p></div>
+          </article>
+          <article class="thumb">
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D025-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_65.ie65 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="thumb-body"><code>robocop_intro_65.ie65</code><div class="runtime">6502</div><p>The RoboCop intro on the MOS 6502.</p></div>
+          </article>
+        </div>
+
+        <div class="subhead">
+          <h3>Full games on the live image</h3>
+          <p>Not effect demos. Complete, playable ports. Mario Kart 64 splits work across two CPUs; the same Chocolate Doom engine runs on both x86 and the 68020, proving the shared-bus contract at game scale.</p>
+        </div>
+        <div class="grid two">
+          <article id="mariokart" class="demo-card">
+            <span class="kicker">Coprocessor case study</span>
+            <h3>Mario Kart 64</h3>
+            <div class="runtime">M68K + IE64 worker</div>
+            <p>mk64-ie packs an M68K loader, the game payload, and <code>svc/tnl.ie64</code> into <code>mariokart64.ie68</code>. The M68K game code starts that service and sends vertex transform-and-lighting batches to an IE64 coprocessor worker: the shared-bus worker model doing real work behind a real port.</p>
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D028-SHOT" data-id="5tpO-e3vlIY"><button type="button" class="lty-playbtn" aria-label="Play mariokart64.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+          </article>
+          <article class="demo-card">
+            <span class="kicker">Texture-mapped 3D</span>
+            <h3>Alien Breed 3D II</h3>
+            <div class="runtime">M68K (68020)</div>
+            <p>Team17's texture-mapped 3D shooter (<em>Redux High Overdrive</em>) running as a bare-metal 68020 flat programme, <code>ab3d2_ie68.ie68</code>. Ships in redux low and high builds, a high-overdrive build, and optional SID-audio variants.</p>
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-GAME-AB3D2" data-id="24yvCaXeJlw"><button type="button" class="lty-playbtn" aria-label="Play Alien Breed 3D II demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+          </article>
+          <article class="demo-card">
+            <span class="kicker">id Software Doom</span>
+            <h3>Chocolate Doom (x86)</h3>
+            <div class="runtime">x86</div>
+            <p>Chocolate Doom compiled to a freestanding x86 image, <code>iedoom.ie86</code>, drawing straight to the framebuffer and loading <code>doom1.wad</code> from the disk volume.</p>
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-GAME-DOOMX86" data-id=""><button type="button" class="lty-playbtn" aria-label="Play Chocolate Doom (x86) demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+          </article>
+          <article class="demo-card">
+            <span class="kicker">id Software Doom</span>
+            <h3>Chocolate Doom (M68K)</h3>
+            <div class="runtime">M68K (68020)</div>
+            <p>The same engine as a bare-metal 68020 flat programme, <code>iedoom.ie68</code>, a true ELF-to-flat build with no hosted OS. Same <code>doom1.wad</code>, same renderer, a different CPU.</p>
+            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-GAME-DOOM68K" data-id=""><button type="button" class="lty-playbtn" aria-label="Play Chocolate Doom (M68K) demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+          </article>
+        </div>
+
+        <p style="margin-top: 1.4rem; color: var(--muted); font-size: 0.92rem;">Screen captures and video links are being added; every demo above ships in the preview live image. <a href="https://youtube.com/@IntuitionAmiga">YouTube channel</a>.</p>
+      </div>
+    </section>
+
+    <section id="make" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>Write your own demo</h2>
+          <p>Intuition Engine is a machine to make things on, not only to watch. Start at the BASIC prompt and stay on one machine all the way down: <code>RUN</code> interprets your programme, <code>RUN AOT</code> compiles the same source to native IE64 code, <code>TRANSPILE</code> writes it out as assembly you can read and edit, and the same bus is still under you when you retarget any of the six CPUs. The copper, the nine-operation blitter, Mode 7, the Voodoo and the chip-music players are reachable from the first line you type. For a guided route, <a href="#guide">Part VII of the Reference Guide</a> builds a complete intro from a first frame loop.</p>
+        </div>
+        <div class="grid three">
+          <article class="card">
+            <span class="kicker">Start in BASIC</span>
+            <h3>From idea to moving pixels</h3>
+            <p>This is a whole programme: the copper paints sixteen raster bands down the frame, a red gradient brightening band by band, while a SID from the demo disk plays. Type it into the browser demo, <code>RUN</code> it, then <code>RUN AOT</code> to run the same programme compiled to native IE64 code.</p>
+            <pre class="code-panel"><code>10 COPPER LIST
+20 FOR Y=0 TO 15
+30 COPPER WAIT 200+Y*8
+40 COPPER MOVE &amp;HF0048, 200+Y*8
+50 COPPER MOVE &amp;HF004C, 8
+60 COPPER MOVE &amp;HF0050, 40+Y*13
+70 COPPER MOVE &amp;HF0054, 1
+80 NEXT Y
+90 COPPER END
+100 COPPER ON
+110 SOUND PLAY "ODDNB.SID",0</code></pre>
+          </article>
+          <article class="card">
+            <span class="kicker">Drop to assembly</span>
+            <h3>Readable source, both ways</h3>
+            <p><code>TRANSPILE</code> writes your BASIC out as IE64 assembly you can read and edit; <code>ASSEMBLE</code> turns source back into a flat <code>.ie64</code> image. Hand-write with <code>ie64asm</code> or <code>ie32asm</code>, and read an IE64 image back with the <code>ie64dis</code> disassembler.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">Pick your CPU</span>
+            <h3>Six instruction sets, one target</h3>
+            <p>Build for any core: <code>.ie64</code>, <code>.ie32</code>, <code>.ie65</code>, <code>.ie68</code>, <code>.ie80</code> or <code>.ie86</code>. Carry old code across with <code>ie32to64</code> and <code>m68kto64</code>. Run the music on a worker CPU with <code>COSTART</code> and <code>COCALL</code> while another core draws the screen.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">Effects</span>
+            <h3>The hardware sceners reach for</h3>
+            <p>A copper that rewrites registers in step with the beam, a blitter with copy, fill, line, masked and alpha copy, colour expand, scale, Mode 7 and raw memory copy, and the Voodoo for textured 3D. Mix a CPU, a video chip and a sound chip that never shared a board. <a href="#demos">Watch the same rotozoomer written thirteen ways</a>, then write the fourteenth.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">Chip music</span>
+            <h3>Play the real formats</h3>
+            <p>The machine plays SID, POKEY, AY, SNDH, TED, MOD, AHX and MIDI. A stereo SAP drives two POKEY chips, and a MultiSID <code>.sid</code> runs on two or three SID chips at once.</p>
+            <pre class="code-panel"><code>SOUND PLAY "TITLE.MOD"
+SOUND PLAY "INTRO.AHX",1
+SOUND PLAY "SONG.MID"</code></pre>
+          </article>
+          <article class="card">
+            <span class="kicker">Debug it like hardware</span>
+            <h3>Freeze, step, rewind</h3>
+            <p>IE Mon freezes every CPU, single-steps one core while the rest stay frozen, sets conditional breakpoints and watchpoints, and steps back through recorded history. IEScript drives the same machine from Lua for repeatable tests.</p>
+            <p><a href="#iemon">IE Mon</a> and <a href="#iescript">IEScript</a></p>
+          </article>
+        </div>
+        <div class="actions">
+          <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
+          <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
+          <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
+        </div>
+        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos, and a JIT that hands your hot IE64 code to the browser's own engine, so <code>RUN AOT</code> is fast in the tab too; the other five CPUs run at interpreter speed there. The live image bundles worked examples in BASIC, assembly and C. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
+      </div>
+    </section>
+
+    <section id="guide" class="band">
+      <div class="wrap">
+        <div class="section-head">
+          <h2>The Programmer's Reference Guide</h2>
+          <p>A from-zero tutorial and a reference in one book. It starts at the BASIC prompt because that is the quickest way to touch the machine: you type short programmes, inspect memory with <code>PEEK</code>, change hardware with <code>POKE</code>, and later enter machine code directly in IE Mon. No assembler, no build system and no second computer are needed to follow it. Sixty-five chapters and twelve appendices later, it ends with a complete game port, and every register, opcode and memory map along the way is written down.</p>
+        </div>
+
+        <article class="card" style="margin-bottom: 1rem">
+          <span class="kicker">Why this book exists</span>
+          <h3>The manual that comes in the box</h3>
+          <p>The 8-bit Commodore under the Christmas tree in 1988 came with a manual that assumed an eleven-year-old could learn to program the machine, and it was right. This guide is written in that spirit: for kids starting from nothing, for sceners who want every register, and for anyone who wants to learn game and demo programming from scratch, on the machine, for the machine.</p>
+        </article>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Part</th>
+                <th>Chapters</th>
+                <th>What you learn</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr><td>I. Intuition Engine BASIC</td><td>1 to 2</td><td>The BASIC dialect and its full keyword vocabulary.</td></tr>
+              <tr><td>II. Programming Graphics</td><td>3 to 10</td><td>The display model, VideoChip, VGA, TED, ANTIC/GTIA, ULA, Voodoo, and tile and sprite layers.</td></tr>
+              <tr><td>III. Programming Sound and Music</td><td>11 to 23</td><td>Every sound chip and player, from SoundChip and SID to MOD, MIDI/MUS and Paula DMA.</td></tr>
+              <tr><td>IV. BASIC to Machine Language</td><td>24 to 34</td><td>The memory model, all six CPUs, timing and traps, coprocessors, IE Mon and IEScript.</td></tr>
+              <tr><td>V. Input / Output Guide</td><td>35 to 38</td><td>Disk and file I/O, the HOST command, keyboard, mouse and controller input, and serial.</td></tr>
+              <tr><td>VI. Whole-Machine Project</td><td>39 to 44</td><td>Interrupts, raster timing, programme layout, and two cookbooks, built into a working machine.</td></tr>
+              <tr><td>VII. Demo Programming</td><td>45 to 55</td><td>A guided build from a first frame loop to a complete intro.</td></tr>
+              <tr><td>VIII. A Full Game Port Case Study</td><td>56 to 65</td><td>A complete game port, from Fast3D to hardware T&amp;L and native IE audio.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <article class="card" style="margin-top: 1rem">
+          <span class="kicker">Appendices</span>
+          <h3>Twelve reference appendices</h3>
+          <ol class="toc-columns">
+            <li>A. IE64 BASIC keyword abbreviations and token map</li>
+            <li>B. Screen and character codes</li>
+            <li>C. ASCII and CHR$ tables</li>
+            <li>D. Per-engine MMIO maps</li>
+            <li>E. Music note and frequency tables</li>
+            <li>F. Maths and derivative helpers</li>
+            <li>G. Per-CPU opcode quick reference</li>
+            <li>H. Per-CPU symbol index</li>
+            <li>I. Error message index</li>
+            <li>J. Full memory map</li>
+            <li>K. Block diagrams</li>
+            <li>L. Index</li>
+          </ol>
+        </article>
+
+        <div class="actions">
+          <a class="button" href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Download the Reference Guide</a>
+          <a class="button secondary" href="docs/00-Preface.pdf">Read the preface</a>
+          <a class="button secondary" href="docs/45-first-frame-loop.pdf">Sample chapter: Your First Frame Loop</a>
         </div>
       </div>
     </section>
@@ -1540,269 +1813,6 @@ SOUND PLAY "SONG.MID"</code></pre>
       </div>
     </section>
 
-    <section id="demos" class="band">
-      <div class="wrap">
-        <div class="section-head">
-          <h2>Impossible machine demos</h2>
-          <p>Each demo is a CPU, a video chip and a sound chip that never shared a board. An Intel x86 driving Atari ANTIC graphics with Commodore SID music. A 6502 painting a ZX Spectrum screen while an Amiga tracker plays. Several run the music on a second CPU entirely, and the copper reprograms display hardware that never had a copper. Grouped by what they prove, not by the CPU behind them.</p>
-        </div>
-
-        <article class="card" style="margin-bottom: 1rem">
-          <span class="kicker">One effect, every way in</span>
-          <h3>The same rotozoomer, thirteen origins</h3>
-          <p>One Mode 7 affine transform, written again and again. Six CPUs run identical maths down to the same VideoChip registers; IE64 BASIC and IEScript reach those registers from a higher level; EmuTOS and AROS drive them as guest operating systems. The picture is the same. The point is where it comes from. The IE64 build even scores it with a stereo SAP tune spread across two Atari POKEY chips at once.</p>
-          <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-DEMO-ROTO" data-id="P52ripOFWJQ"><button type="button" class="lty-playbtn" aria-label="Play rotozoomer comparison demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-          <div class="tag-row" style="margin-top: 0.8rem">
-            <span class="tag">IE64 &middot; rotozoomer_ie64.ie64</span>
-            <span class="tag">IE32 &middot; rotozoomer.iex</span>
-            <span class="tag">M68K &middot; rotozoomer_68k.ie68</span>
-            <span class="tag">Z80 &middot; rotozoomer_z80.ie80</span>
-            <span class="tag">6502 &middot; rotozoomer_65.ie65</span>
-            <span class="tag">x86 &middot; rotozoomer_x86.ie86</span>
-            <span class="tag">BASIC &middot; rotozoomer_basic.bas</span>
-            <span class="tag">IEScript &middot; rotozoomer_ies.ies</span>
-            <span class="tag">EmuTOS GEM &middot; rotozoomer_gem.prg</span>
-            <span class="tag">AROS asm &middot; RotoAPI / RotoHW</span>
-            <span class="tag">AROS C &middot; RotoAPIc / RotoHWc</span>
-          </div>
-        </article>
-
-        <div class="subhead">
-          <h3>3D through the Voodoo</h3>
-          <p>Guest CPUs feed a 3dfx-style rasteriser: Gouraud shading, Z-buffering, texture upload, and fog.</p>
-        </div>
-        <div class="thumb-grid">
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D006-SHOT" data-id="j2rgVw2kElQ"><button type="button" class="lty-playbtn" aria-label="Play voodoo_mega_demo.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>voodoo_mega_demo.iex</code><div class="runtime">IE32</div><p>IE32 CPU driving a 3dfx-style Voodoo, while a second CPU, a 6502 core, plays the C64 SID soundtrack.</p></div>
-          </article>
-        </div>
-
-        <div class="subhead">
-          <h3>Real video chips, signature modes</h3>
-          <p>Not one framebuffer. Authentic VGA, the TED 121-colour model, the ZX Spectrum ULA, and ANTIC/GTIA, each in its defining mode, each driven by a CPU that never shipped with it.</p>
-        </div>
-        <div class="thumb-grid">
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D007-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play vga_mode13h_fire.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>vga_mode13h_fire.iex</code><div class="runtime">IE32</div><p>IE32 CPU on authentic PC VGA Mode 13h. The classic palette-cycled fire.</p></div>
-          </article>
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D010-SHOT" data-id="jwG_bnqXOh4"><button type="button" class="lty-playbtn" aria-label="Play VGA Mode 03h Z80 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>vga_text_sap_demo.ie80</code><div class="runtime">Z80</div><p>Zilog Z80 CPU on a PC VGA Mode 03h text screen, with Atari POKEY playing a SAP tune.</p></div>
-          </article>
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D015-SHOT" data-id="_3TczWJLqF8"><button type="button" class="lty-playbtn" aria-label="Play ted_121_colors_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>ted_121_colors_68k.ie68</code><div class="runtime">M68K</div><p>Motorola 68020 CPU on the Commodore TED's 121-colour mode, with a Spectrum AY chip in Plus mode.</p></div>
-          </article>
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D024-SHOT" data-id="7foRgyOmZwE"><button type="button" class="lty-playbtn" aria-label="Play ula_rotating_cube_65.ie65 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>ula_rotating_cube_65.ie65</code><div class="runtime">6502</div><p>MOS 6502 CPU on ZX Spectrum ULA video, playing an Amiga AHX tracker. Three houses on one board.</p></div>
-          </article>
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D027-SHOT" data-id="_LjUHepi9lo"><button type="button" class="lty-playbtn" aria-label="Play antic_plasma_x86.ie86 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>antic_plasma_x86.ie86</code><div class="runtime">x86</div><p>Intel x86 CPU driving Atari ANTIC/GTIA graphics, with Commodore SID music. A plasma from three rival makers at once.</p></div>
-          </article>
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D016-SHOT" data-id="ZY-coUUBYGY"><button type="button" class="lty-playbtn" aria-label="Play rotating_cube_copper_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>rotating_cube_copper_68k.ie68</code><div class="runtime">M68K</div><p>Motorola 68020 CPU on PC VGA, while a second CPU, a 6502 core, plays the C64 SID soundtrack. The native IE Video Copper rewrites the VGA palette registers in step with the beam as it sweeps the screen, for raster bars real VGA silicon never had a copper to make.</p></div>
-          </article>
-        </div>
-
-        <div class="subhead">
-          <h3>Hardware effects from BASIC</h3>
-          <p>Effects without leaving IE64 BASIC. <code>COMPILE</code> turns any of them into a standalone <code>.ie64</code> image.</p>
-        </div>
-        <div class="thumb-grid">
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D002-SHOT" data-id="hOhwO8FsOYs"><button type="button" class="lty-playbtn" aria-label="Play wobble_zoom.bas demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>wobble_zoom.bas</code><div class="runtime">IE64 BASIC</div><p>A texture wobble-zoom over a MIDI soundtrack, written entirely in IE64 BASIC.</p></div>
-          </article>
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D003-SHOT" data-id="3Jm4T8XIQt8"><button type="button" class="lty-playbtn" aria-label="Play resonance.bas demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>resonance.bas</code><div class="runtime">IE64 BASIC</div><p>IE64 BASIC locked to a MIDI orchestral track: raster bands, stars and scroll all synchronised to the music.</p></div>
-          </article>
-        </div>
-
-        <div class="subhead">
-          <h3>One old-school intro, four CPUs</h3>
-          <p>The same RoboCop intro, identical down to the IE Video Chip blitter and copper effects and the AY theme in Plus mode, rebuilt for four different instruction sets: IE32, 68020, Z80 and 6502.</p>
-        </div>
-        <div class="thumb-grid">
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D011-SHOT" data-id="r4jifuv9Rkk"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>robocop_intro.iex</code><div class="runtime">IE32</div><p>The RoboCop intro on the IE32 CPU.</p></div>
-          </article>
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D020-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>robocop_intro_68k.ie68</code><div class="runtime">M68K</div><p>The RoboCop intro on the Motorola 68020.</p></div>
-          </article>
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D022-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_z80.ie80 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>robocop_intro_z80.ie80</code><div class="runtime">Z80</div><p>The RoboCop intro on the Zilog Z80.</p></div>
-          </article>
-          <article class="thumb">
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D025-SHOT" data-id=""><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_65.ie65 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>robocop_intro_65.ie65</code><div class="runtime">6502</div><p>The RoboCop intro on the MOS 6502.</p></div>
-          </article>
-        </div>
-
-        <div class="subhead">
-          <h3>Full games on the live image</h3>
-          <p>Not effect demos. Complete, playable ports. Mario Kart 64 splits work across two CPUs; the same Chocolate Doom engine runs on both x86 and the 68020, proving the shared-bus contract at game scale.</p>
-        </div>
-        <div class="grid two">
-          <article id="mariokart" class="demo-card">
-            <span class="kicker">Coprocessor case study</span>
-            <h3>Mario Kart 64</h3>
-            <div class="runtime">M68K + IE64 worker</div>
-            <p>mk64-ie packs an M68K loader, the game payload, and <code>svc/tnl.ie64</code> into <code>mariokart64.ie68</code>. The M68K game code starts that service and sends vertex transform-and-lighting batches to an IE64 coprocessor worker: the shared-bus worker model doing real work behind a real port.</p>
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D028-SHOT" data-id="5tpO-e3vlIY"><button type="button" class="lty-playbtn" aria-label="Play mariokart64.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-          </article>
-          <article class="demo-card">
-            <span class="kicker">Texture-mapped 3D</span>
-            <h3>Alien Breed 3D II</h3>
-            <div class="runtime">M68K (68020)</div>
-            <p>Team17's texture-mapped 3D shooter (<em>Redux High Overdrive</em>) running as a bare-metal 68020 flat programme, <code>ab3d2_ie68.ie68</code>. Ships in redux low and high builds, a high-overdrive build, and optional SID-audio variants.</p>
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-GAME-AB3D2" data-id="24yvCaXeJlw"><button type="button" class="lty-playbtn" aria-label="Play Alien Breed 3D II demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-          </article>
-          <article class="demo-card">
-            <span class="kicker">id Software Doom</span>
-            <h3>Chocolate Doom (x86)</h3>
-            <div class="runtime">x86</div>
-            <p>Chocolate Doom compiled to a freestanding x86 image, <code>iedoom.ie86</code>, drawing straight to the framebuffer and loading <code>doom1.wad</code> from the disk volume.</p>
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-GAME-DOOMX86" data-id=""><button type="button" class="lty-playbtn" aria-label="Play Chocolate Doom (x86) demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-          </article>
-          <article class="demo-card">
-            <span class="kicker">id Software Doom</span>
-            <h3>Chocolate Doom (M68K)</h3>
-            <div class="runtime">M68K (68020)</div>
-            <p>The same engine as a bare-metal 68020 flat programme, <code>iedoom.ie68</code>, a true ELF-to-flat build with no hosted OS. Same <code>doom1.wad</code>, same renderer, a different CPU.</p>
-            <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-GAME-DOOM68K" data-id=""><button type="button" class="lty-playbtn" aria-label="Play Chocolate Doom (M68K) demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-          </article>
-        </div>
-
-        <p style="margin-top: 1.4rem; color: var(--muted); font-size: 0.92rem;">Screen captures and video links are being added; every demo above ships in the preview live image. <a href="https://youtube.com/@IntuitionAmiga">YouTube channel</a>.</p>
-      </div>
-    </section>
-
-    <section id="make" class="band">
-      <div class="wrap">
-        <div class="section-head">
-          <h2>Write your own demo</h2>
-          <p>Intuition Engine is a machine to make things on, not only to watch. Start at the BASIC prompt and stay on one machine all the way down: <code>RUN</code> interprets your programme, <code>RUN AOT</code> compiles the same source to native IE64 code, <code>TRANSPILE</code> writes it out as assembly you can read and edit, and the same bus is still under you when you retarget any of the six CPUs. The copper, the nine-operation blitter, Mode 7, the Voodoo and the chip-music players are reachable from the first line you type. For a guided route, <a href="#guide">Part VII of the Reference Guide</a> builds a complete intro from a first frame loop.</p>
-        </div>
-        <div class="grid three">
-          <article class="card">
-            <span class="kicker">Start in BASIC</span>
-            <h3>From idea to moving pixels</h3>
-            <p>This is a whole programme: the copper paints sixteen raster bands down the frame, a red gradient brightening band by band, while a SID from the demo disk plays. Type it into the browser demo, <code>RUN</code> it, then <code>RUN AOT</code> to run the same programme compiled to native IE64 code.</p>
-            <pre class="code-panel"><code>10 COPPER LIST
-20 FOR Y=0 TO 15
-30 COPPER WAIT 200+Y*8
-40 COPPER MOVE &amp;HF0048, 200+Y*8
-50 COPPER MOVE &amp;HF004C, 8
-60 COPPER MOVE &amp;HF0050, 40+Y*13
-70 COPPER MOVE &amp;HF0054, 1
-80 NEXT Y
-90 COPPER END
-100 COPPER ON
-110 SOUND PLAY "ODDNB.SID",0</code></pre>
-          </article>
-          <article class="card">
-            <span class="kicker">Drop to assembly</span>
-            <h3>Readable source, both ways</h3>
-            <p><code>TRANSPILE</code> writes your BASIC out as IE64 assembly you can read and edit; <code>ASSEMBLE</code> turns source back into a flat <code>.ie64</code> image. Hand-write with <code>ie64asm</code> or <code>ie32asm</code>, and read an IE64 image back with the <code>ie64dis</code> disassembler.</p>
-          </article>
-          <article class="card">
-            <span class="kicker">Pick your CPU</span>
-            <h3>Six instruction sets, one target</h3>
-            <p>Build for any core: <code>.ie64</code>, <code>.ie32</code>, <code>.ie65</code>, <code>.ie68</code>, <code>.ie80</code> or <code>.ie86</code>. Carry old code across with <code>ie32to64</code> and <code>m68kto64</code>. Run the music on a worker CPU with <code>COSTART</code> and <code>COCALL</code> while another core draws the screen.</p>
-          </article>
-          <article class="card">
-            <span class="kicker">Effects</span>
-            <h3>The hardware sceners reach for</h3>
-            <p>A copper that rewrites registers in step with the beam, a blitter with copy, fill, line, masked and alpha copy, colour expand, scale, Mode 7 and raw memory copy, and the Voodoo for textured 3D. Mix a CPU, a video chip and a sound chip that never shared a board. <a href="#demos">Watch the same rotozoomer written thirteen ways</a>, then write the fourteenth.</p>
-          </article>
-          <article class="card">
-            <span class="kicker">Chip music</span>
-            <h3>Play the real formats</h3>
-            <p>The machine plays SID, POKEY, AY, SNDH, TED, MOD, AHX and MIDI. A stereo SAP drives two POKEY chips, and a MultiSID <code>.sid</code> runs on two or three SID chips at once.</p>
-            <pre class="code-panel"><code>SOUND PLAY "TITLE.MOD"
-SOUND PLAY "INTRO.AHX",1
-SOUND PLAY "SONG.MID"</code></pre>
-          </article>
-          <article class="card">
-            <span class="kicker">Debug it like hardware</span>
-            <h3>Freeze, step, rewind</h3>
-            <p>IE Mon freezes every CPU, single-steps one core while the rest stay frozen, sets conditional breakpoints and watchpoints, and steps back through recorded history. IEScript drives the same machine from Lua for repeatable tests.</p>
-            <p><a href="#iemon">IE Mon</a> and <a href="#iescript">IEScript</a></p>
-          </article>
-        </div>
-        <div class="actions">
-          <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
-          <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
-          <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
-        </div>
-        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">Your first ninety seconds: launch the browser demo, and at the Ready prompt type <code>DIR "Demos"</code>, then <code>RUN "iedoom.ie68"</code> or any file that catches your eye. <code>LOAD</code> a BASIC demo and <code>LIST</code> it to see how it is made.</p>
-        <p style="margin-top: 0.5rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos, and a JIT that hands your hot IE64 code to the browser's own engine, so <code>RUN AOT</code> is fast in the tab too; the other five CPUs run at interpreter speed there. The live image bundles worked examples in BASIC, assembly and C. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
-      </div>
-    </section>
-
-    <section id="guide" class="band">
-      <div class="wrap">
-        <div class="section-head">
-          <h2>The Programmer's Reference Guide</h2>
-          <p>A from-zero tutorial and a reference in one book: 65 chapters and 12 appendices that start with a single line of BASIC and end with a complete game port. Worked examples run on the machine as you read, and every register, opcode and memory map is written down.</p>
-        </div>
-
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Part</th>
-                <th>Chapters</th>
-                <th>What you learn</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr><td>I. Intuition Engine BASIC</td><td>1 to 2</td><td>The BASIC dialect and its full keyword vocabulary.</td></tr>
-              <tr><td>II. Programming Graphics</td><td>3 to 10</td><td>The display model, VideoChip, VGA, TED, ANTIC/GTIA, ULA, Voodoo, and tile and sprite layers.</td></tr>
-              <tr><td>III. Programming Sound and Music</td><td>11 to 23</td><td>Every sound chip and player, from SoundChip and SID to MOD, MIDI/MUS and Paula DMA.</td></tr>
-              <tr><td>IV. BASIC to Machine Language</td><td>24 to 34</td><td>The memory model, all six CPUs, timing and traps, coprocessors, IE Mon and IEScript.</td></tr>
-              <tr><td>V. Input / Output Guide</td><td>35 to 38</td><td>Disk and file I/O, the HOST command, keyboard, mouse and controller input, and serial.</td></tr>
-              <tr><td>VI. Whole-Machine Project</td><td>39 to 44</td><td>Interrupts, raster timing, programme layout, and two cookbooks, built into a working machine.</td></tr>
-              <tr><td>VII. Demo Programming</td><td>45 to 55</td><td>A guided build from a first frame loop to a complete intro.</td></tr>
-              <tr><td>VIII. A Full Game Port Case Study</td><td>56 to 65</td><td>A complete game port, from Fast3D to hardware T&amp;L and native IE audio.</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <article class="card" style="margin-top: 1rem">
-          <span class="kicker">Appendices</span>
-          <h3>Twelve reference appendices</h3>
-          <ol class="toc-columns">
-            <li>A. IE64 BASIC keyword abbreviations and token map</li>
-            <li>B. Screen and character codes</li>
-            <li>C. ASCII and CHR$ tables</li>
-            <li>D. Per-engine MMIO maps</li>
-            <li>E. Music note and frequency tables</li>
-            <li>F. Maths and derivative helpers</li>
-            <li>G. Per-CPU opcode quick reference</li>
-            <li>H. Per-CPU symbol index</li>
-            <li>I. Error message index</li>
-            <li>J. Full memory map</li>
-            <li>K. Block diagrams</li>
-            <li>L. Index</li>
-          </ol>
-        </article>
-
-        <div class="actions">
-          <a class="button" href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Download the Reference Guide</a>
-        </div>
-      </div>
-    </section>
-
     <section id="docs" class="band">
       <div class="wrap">
         <div class="section-head">
@@ -1858,7 +1868,7 @@ SOUND PLAY "SONG.MID"</code></pre>
     "@context": "https://schema.org",
     "@type": "SoftwareSourceCode",
     "name": "Intuition Engine",
-    "description": "Shared-bus multi-CPU fantasy computer with six CPU views, MMIO devices, coprocessor workers, audio and video devices, tooling, and demos.",
+    "description": "The home computer that never was: six CPUs, the classic video and sound chips, a copper, a blitter and a Voodoo on one shared bus. Write demos and games in BASIC, assembly or C. Free and open source.",
     "codeRepository": "https://github.com/IntuitionAmiga/IntuitionEngine",
     "programmingLanguage": "Go",
     "url": "https://intuitionengine.io/"
