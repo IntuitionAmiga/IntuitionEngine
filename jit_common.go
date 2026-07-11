@@ -112,6 +112,13 @@ type JITContext struct {
 	CodeHighEndPage     uint64    // 368: last compiled code page outside CodePageBitmapLen, 0 if none
 	PhysCodeBitmapPtr   uintptr   // 376: &cpu.jitPhysCodePageBitmap[0], physical 256-byte pages
 	PhysCodeBitmapLen   uint32    // 384: len(cpu.jitPhysCodePageBitmap), bounds native MMU SMC probes
+	// CodePageSpansPtr points at two bytes per 256-byte code page holding the
+	// inclusive [min, max] byte offsets of compiled code within that page
+	// (0xFF/0x00 when the page holds none). The wasm store probe consults it
+	// so a store into data that merely shares a page with compiled code never
+	// exits; backends that do not maintain spans leave the pointer zero and
+	// must not emit span-refined probes.
+	CodePageSpansPtr uintptr // 392: &cpu.jitCodePageSpans[0], 2 bytes per page
 }
 
 // HELPER_* opcodes for the JITContext.NeedHelper field. Phase 5: native
@@ -188,6 +195,7 @@ const (
 	jitCtxOffCodeHighEndPage     = 368
 	jitCtxOffPhysCodeBitmapPtr   = 376
 	jitCtxOffPhysCodeBitmapLen   = 384
+	jitCtxOffCodePageSpansPtr    = 392
 	jitCtxMicroTLBEntries        = 4
 	jitCtxMicroTLBStride         = 8
 )

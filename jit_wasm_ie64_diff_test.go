@@ -38,6 +38,7 @@ const (
 	wasmDiffRegsOff   = 0x800
 	wasmDiffFPUOff    = 0xC00
 	wasmDiffBitmapOff = 0x10000
+	wasmDiffSpansOff  = 0x34000
 	wasmDiffGuestOff  = 0x40000
 )
 
@@ -143,6 +144,18 @@ func runWasmDiffBlock(t *testing.T, program []byte, initRegs map[int]uint64, twe
 	putU32(jitCtxOffIOStart, IO_REGION_START)
 	putU64(jitCtxOffIOBitmapPtr, wasmDiffBitmapOff)
 	putU64(jitCtxOffFPUPtr, wasmDiffFPUOff)
+	// Code-page spans default to the full page ([0, 255] per page): identical
+	// behaviour to a spanless probe. SMC tests narrow individual pages to
+	// exercise the false-share skip.
+	putU64(jitCtxOffCodePageSpansPtr, wasmDiffSpansOff)
+	fullSpans := make([]byte, 0x4000)
+	for i := 0; i < len(fullSpans); i += 2 {
+		fullSpans[i] = 0x00
+		fullSpans[i+1] = 0xFF
+	}
+	if !mem.Write(wasmDiffSpansOff, fullSpans) {
+		t.Fatal("spans write out of range")
+	}
 
 	// Register file: reset defaults from the donor CPU (NewCPU64 seeds SP and
 	// friends), then the test's overrides on top - identical to what the
@@ -858,6 +871,98 @@ func TestWasmJIT_SMC_StoreProbe(t *testing.T) {
 	res = runWasmDiffBlock(t, program, init2, nil)
 	if res.needInval != 0 {
 		t.Errorf("clean rig: NeedInval = %d, want 0", res.needInval)
+	}
+}
+
+func TestWasmJIT_SMC_SpanSkipsFalseShare(t *testing.T) {
+	// A store into a marked page but OUTSIDE the page's compiled-code span
+	// is a false share: it must commit and continue with no SMC report and
+	// no block exit. A store overlapping the span still reports. This is the
+	// EhBASIC 0x1a9a8 pattern: one hot data word beside compiled code took
+	// tens of thousands of chain exits a second before the span check.
+	target := uint64(0x50000) // page 0x500, offset 0x00
+	page := uint32(target >> 8)
+	bitmapLen := uint32((target >> 8) + 16)
+	const smcBitmapOff = 0x30000
+
+	// Code span [0x90, 0x9F]; the data word sits at offset 0xA8.
+	plant := func(mem api.Memory) {
+		if !mem.WriteUint64Le(wasmDiffCtxOff+jitCtxOffCodePageBitmapPtr, smcBitmapOff) {
+			t.Fatal("ctx write")
+		}
+		if !mem.WriteUint32Le(wasmDiffCtxOff+jitCtxOffCodePageBitmapLen, bitmapLen) {
+			t.Fatal("ctx write")
+		}
+		if !mem.WriteByte(smcBitmapOff+page, 1) {
+			t.Fatal("bitmap write")
+		}
+		if !mem.WriteByte(wasmDiffSpansOff+page*2, 0x90) {
+			t.Fatal("span min write")
+		}
+		if !mem.WriteByte(wasmDiffSpansOff+page*2+1, 0x9F) {
+			t.Fatal("span max write")
+		}
+	}
+
+	// Store beside the span, then a follow-up that proves the block did NOT
+	// exit.
+	init := map[int]uint64{2: target, 3: 0x11}
+	program := bytes.Join([][]byte{
+		ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 2, 0, 0xA8), // false share: no exit
+		ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 0, 0, 7),      // must still run
+	}, nil)
+	res := runWasmDiffBlock(t, program, init, plant)
+	if res.needInval != 0 {
+		t.Fatalf("false share reported SMC: NeedInval = %d, want 0", res.needInval)
+	}
+	if res.regs[4] != 7 {
+		t.Errorf("block exited on false share: R4 = %d, want 7", res.regs[4])
+	}
+	if res.retCount != 2 {
+		t.Errorf("RetCount = %d, want 2 (both instructions retired)", res.retCount)
+	}
+
+	// Store overlapping the span's first byte (write covers 0x8C..0x93).
+	program = bytes.Join([][]byte{
+		ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 2, 0, 0x8C),
+		ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 1, 0, 0, 7), // must NOT run
+	}, nil)
+	res = runWasmDiffBlock(t, program, init, plant)
+	if res.needInval != 1 || res.invalAddr != target+0x8C || res.invalSize != 8 {
+		t.Errorf("span overlap: NeedInval/Addr/Size = %d/%#x/%d, want 1/%#x/8",
+			res.needInval, res.invalAddr, res.invalSize, target+0x8C)
+	}
+	if res.regs[4] != 0 {
+		t.Errorf("dirty store did not end the block: R4 = %d, want 0", res.regs[4])
+	}
+
+	// Store just past the span's last byte: false share again.
+	program = ie64Instr(OP_STORE, 3, IE64_SIZE_B, 0, 2, 0, 0xA0)
+	res = runWasmDiffBlock(t, program, init, plant)
+	if res.needInval != 0 {
+		t.Errorf("byte past span: NeedInval = %d, want 0", res.needInval)
+	}
+
+	// Straddling store out of the PREVIOUS page into this one: covers
+	// offsets 0xFC..0x103 of the pair, i.e. this page's bytes 0x00..0x03,
+	// below the span: false share. The previous page is unmarked.
+	init2 := map[int]uint64{2: target - 4, 3: 0x1122334455667788}
+	program = ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 2, 0, 0)
+	res = runWasmDiffBlock(t, program, init2, plant)
+	if res.needInval != 0 {
+		t.Errorf("straddle below span: NeedInval = %d, want 0", res.needInval)
+	}
+
+	// Same straddle, but the span starts at 0: dirty.
+	plantAtZero := func(mem api.Memory) {
+		plant(mem)
+		if !mem.WriteByte(wasmDiffSpansOff+page*2, 0x00) {
+			t.Fatal("span min write")
+		}
+	}
+	res = runWasmDiffBlock(t, program, init2, plantAtZero)
+	if res.needInval != 1 {
+		t.Errorf("straddle into span at 0: NeedInval = %d, want 1", res.needInval)
 	}
 }
 

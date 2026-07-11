@@ -54,7 +54,7 @@ func TestResonanceProgramShape(t *testing.T) {
 		"CP=MEMALLOC(4096,4096):SR=MEMALLOC(235520,4096):SB=MEMALLOC(2162688,4096)",
 		"POKE32 &HF0084,FB",
 		"BLIT MODE7",
-		"BLIT MEMCOPY BB,FB,1228800",
+		"POKE32 &HF0084,BB:T=FB:FB=BB:BB=T",
 		"VSYNC",
 		"SOUND PLAY",
 		"COPPER",
@@ -280,7 +280,10 @@ func TestResonanceProgramShape(t *testing.T) {
 	if strings.Contains(text, "SR+10*ST+70*4") || strings.Contains(text, "SR+22*ST+520*4") {
 		t.Fatal("demo must not reintroduce the old Adagio-shaped source logo")
 	}
-	flipIdx := strings.Index(text, "910 BLIT MEMCOPY BB,FB,1228800")
+	flipIdx := strings.Index(text, "910 POKE32 &HF0084,BB:T=FB:FB=BB:BB=T")
+	if strings.Contains(text, "BLIT MEMCOPY BB,FB,1228800") {
+		t.Fatal("demo must flip by repointing VIDEO_FB_BASE, not by copying the full frame")
+	}
 	if strings.Contains(text, "BLIT LINE") {
 		t.Fatal("demo must not reintroduce arbitrary vector-line overlays")
 	}

@@ -34,7 +34,11 @@ import (
 // forces the legacy fixed-sleep mode with the given park duration (the demo
 // page maps ?ysleep=N). Without requestAnimationFrame (node), yields fall
 // back to a 1 ms sleep, which is plenty: nothing renders there.
-var wasmYieldInterval = wasmYieldEnvMS("IE_WASM_YIELD_MS", 6)
+// 16 ms (one display frame) rather than the original 6: the guest gets one
+// whole frame period of execution per rendered frame, which nearly triples
+// throughput on frame-bound demos, and measured key-to-frame latency stays
+// under one frame. Interactive demo measurements drove both values.
+var wasmYieldInterval = wasmYieldEnvMS("IE_WASM_YIELD_MS", 16)
 
 var wasmYieldSleep = wasmYieldEnvMS("IE_WASM_YIELD_SLEEP_MS", 0)
 

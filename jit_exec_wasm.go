@@ -75,10 +75,13 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 			hostCooperativeYield()
 			if rt.diag {
 				js.Global().Set("__ieJITDiag", fmt.Sprintf(
-					"pc=%#x gen=%d compiles=%d blockRuns=%d chainRuns=%d ic=%d blacklist=%d blocks=%d fall=%d smcNoDrop=%d helpers=%v",
+					"pc=%#x gen=%d compiles=%d blockRuns=%d chainRuns=%d ic=%d blacklist=%d blocks=%d fall=%d smcNoDrop=%d enq=%d claimFail=%d genDrop=%d flushes=%d rangeDrops=%d slot=%d inflight=%d hot=%d helpers=%v",
 					cpu.PC, rt.gen, rt.compiles, rt.blockRuns, rt.chainRuns,
 					cpu.InstructionCount, len(rt.blacklist), len(rt.blocks),
-					rt.fallSteps, rt.smcNoDrop, rt.helperCnt))
+					rt.fallSteps, rt.smcNoDrop, rt.enqueues, rt.claimFails,
+					rt.genDrops, rt.flushes, rt.rangeDrops, rt.nextSlot,
+					len(rt.inFlight), len(rt.hot), rt.helperCnt)+
+					fmt.Sprintf(" smcAddrs=%#x", rt.smcAddrRing))
 			}
 		}
 

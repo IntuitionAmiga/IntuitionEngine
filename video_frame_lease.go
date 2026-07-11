@@ -7,6 +7,7 @@ package main
 import (
 	"encoding/binary"
 	"sync"
+	"unsafe"
 )
 
 type VideoFrameLeaseRing struct {
@@ -141,7 +142,26 @@ var normaliseFrameLeaseSpanImpl = normaliseFrameLeaseSpanScalar
 // to 0xFFRRGGBB, writing only pixels that change. Fully-zero and already
 // alpha-set pixels are left untouched.
 func normaliseFrameLeaseSpanScalar(pixels []byte) {
-	for i := 0; i+BYTES_PER_PIXEL <= len(pixels); i += BYTES_PER_PIXEL {
+	i := 0
+	n := len(pixels)
+	// Two pixels per iteration. A pixel is promoted only when it is nonzero
+	// with a zero alpha byte; alpha-set pixels (any alpha value) and fully
+	// zero pixels pass through untouched, matching compositorOpaquePixel.
+	for ; i+8 <= n; i += 8 {
+		v := *(*uint64)(unsafe.Pointer(&pixels[i]))
+		lo := uint32(v)
+		hi := uint32(v >> 32)
+		if lo != 0 && lo&0xFF000000 == 0 {
+			lo |= 0xFF000000
+		}
+		if hi != 0 && hi&0xFF000000 == 0 {
+			hi |= 0xFF000000
+		}
+		if nv := uint64(hi)<<32 | uint64(lo); nv != v {
+			*(*uint64)(unsafe.Pointer(&pixels[i])) = nv
+		}
+	}
+	for ; i+BYTES_PER_PIXEL <= n; i += BYTES_PER_PIXEL {
 		src := binary.LittleEndian.Uint32(pixels[i:])
 		if out, ok := compositorOpaquePixel(src); ok && out != src {
 			binary.LittleEndian.PutUint32(pixels[i:], out)

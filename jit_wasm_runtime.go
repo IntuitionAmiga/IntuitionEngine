@@ -67,11 +67,17 @@ type wasmJITRuntime struct {
 	// diag (IE64_WASM_JIT_DIAG=1, ?jitdiag=1 on the demo page) publishes
 	// dispatcher state to globalThis.__ieJITDiag and logs throttled
 	// zero-progress exits, the signature of a dispatch livelock.
-	diag      bool
-	zeroProg  uint64
-	helperCnt [16]uint64 // per-helper exit counts (diag)
-	smcNoDrop uint64     // false-share SMC exits (diag)
-	fallSteps uint64     // interpreter fallback steps (diag)
+	diag        bool
+	zeroProg    uint64
+	helperCnt   [16]uint64 // per-helper exit counts (diag)
+	smcNoDrop   uint64     // false-share SMC exits (diag)
+	fallSteps   uint64     // interpreter fallback steps (diag)
+	enqueues    uint64     // compile submissions (diag)
+	claimFails  uint64     // orphaned callbacks that lost ownership (diag)
+	genDrops    uint64     // installs dropped by the generation check (diag)
+	flushes     uint64     // invalidateAll calls (diag)
+	rangeDrops  uint64     // blocks dropped by range invalidation (diag)
+	smcAddrRing [8]uint64  // last false-share store addresses (diag)
 
 	// In-wasm chaining: a shared funcref table holds every installed block,
 	// and pcCache is a direct-mapped {pc, slot+1} table in linear memory the
@@ -142,6 +148,11 @@ func newWasmJITRuntime(cpu *CPU64) *wasmJITRuntime {
 		ctx.CodePageBitmapPtr = uintptr(unsafe.Pointer(&cpu.jitCodePageBitmap[0]))
 		ctx.CodePageBitmapLen = uint32(len(cpu.jitCodePageBitmap))
 	}
+	if len(cpu.jitCodePageSpans) == 0 {
+		cpu.jitCodePageSpans = make([]byte, len(cpu.jitCodePageBitmap)*2)
+		wasmResetCodePageSpans(cpu.jitCodePageSpans)
+	}
+	ctx.CodePageSpansPtr = uintptr(unsafe.Pointer(&cpu.jitCodePageSpans[0]))
 	global := js.Global()
 	tblDesc := global.Get("Object").New()
 	tblDesc.Set("element", "anyfunc")
@@ -165,9 +176,17 @@ func newWasmJITRuntime(cpu *CPU64) *wasmJITRuntime {
 }
 
 const (
-	wasmJITCacheEntries  = 4096 // power of two; 16 bytes per entry
-	wasmJITTableInitial  = 256
-	wasmJITTableMaxSlots = 4096 // full flush compacts leaked slots past this
+	wasmJITCacheEntries = 16384 // power of two; 16 bytes per entry; sized above the RUN AOT working set to keep the driver's direct-mapped hit rate up
+	wasmJITTableInitial = 256
+	// wasmJITTableMaxSlots bounds the funcref table (and so the number of
+	// simultaneously installed blocks) before a compacting full flush. It must
+	// comfortably exceed a real workload's hot working set: RUN AOT of a large
+	// BASIC programme installs 5000+ distinct blocks, and a cap below that
+	// (4096, originally) put the runtime into a permanent flush-recompile
+	// cycle that ran the demo at interpreter-fraction speed. The table costs
+	// a few bytes per slot; the flush is compaction of slots leaked by range
+	// invalidations, not a working-set limit.
+	wasmJITTableMaxSlots = 65536
 )
 
 // instantiateDriver compiles the chain driver asynchronously. Until it
@@ -298,6 +317,7 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 	rt.compileSeq++
 	myToken := rt.compileSeq
 	rt.inFlight[pc] = wasmPendingCompile{endPC: endPC, token: myToken}
+	rt.enqueues++
 	// Mark the pending range's pages now, not at install: a guest store into
 	// bytes being compiled must trip the generated-store probe even when no
 	// installed block shares the page, or the asynchronous install would
@@ -315,9 +335,11 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 			// Ownership lost: the entry was cleared and a newer compile for
 			// this PC may be pending. This module is stale by construction;
 			// touch nothing, especially not the bitmap.
+			rt.claimFails++
 			return nil
 		}
 		if rt.gen != myGen {
+			rt.genDrops++
 			// Invalidated while compiling: the module was built from
 			// instruction bytes that may have been overwritten. Drop it; the
 			// PC re-tiers from scratch if it stays hot. The pending range's
@@ -377,13 +399,41 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 }
 
 // markCodePages flags the block's 256-byte pages so generated STOREs (and
-// the interpreter's own SMC accounting) detect self-modifying writes.
+// the interpreter's own SMC accounting) detect self-modifying writes, and
+// widens each page's [min, max] compiled-byte span. The store probe uses the
+// span to let false shares (data beside code in the same page) pass without
+// exiting.
 func (rt *wasmJITRuntime) markCodePages(startPC, endPC uint64) {
 	bmp := rt.cpu.jitCodePageBitmap
+	spans := rt.cpu.jitCodePageSpans
 	for page := startPC >> 8; page <= (endPC-1)>>8; page++ {
-		if page < uint64(len(bmp)) {
-			bmp[page] = 1
+		if page >= uint64(len(bmp)) {
+			continue
 		}
+		bmp[page] = 1
+		lo := byte(0)
+		if s := startPC; s > page<<8 {
+			lo = byte(s & 255)
+		}
+		hi := byte(255)
+		if e := endPC; e < (page+1)<<8 {
+			hi = byte((e - 1) & 255)
+		}
+		if lo < spans[page*2] {
+			spans[page*2] = lo
+		}
+		if hi > spans[page*2+1] {
+			spans[page*2+1] = hi
+		}
+	}
+}
+
+// wasmResetCodePageSpans restores every span to the empty sentinel
+// (min 0xFF, max 0x00), matching a cleared bitmap.
+func wasmResetCodePageSpans(spans []byte) {
+	for i := 0; i < len(spans); i += 2 {
+		spans[i] = 0xFF
+		spans[i+1] = 0
 	}
 }
 
@@ -421,6 +471,7 @@ func (rt *wasmJITRuntime) invalidateRange(addr uint64, size uint32) {
 		if blk == nil {
 			continue // straddling block collected via both pages
 		}
+		rt.rangeDrops++
 		delete(rt.blocks, pc)
 		rt.cacheDrop(pc)
 		rt.unindexBlock(pc, blk.endPC)
@@ -439,6 +490,9 @@ func (rt *wasmJITRuntime) invalidateRange(addr uint64, size uint32) {
 		// False share: the page keeps its mark (it still holds compiled
 		// code), so stores here keep exiting, but nothing recompiles.
 		rt.smcNoDrop++
+		if rt.diag {
+			rt.smcAddrRing[rt.smcNoDrop&7] = addr
+		}
 		return
 	}
 	// The generation bump makes every pending install callback drop its
@@ -490,6 +544,7 @@ func (rt *wasmJITRuntime) cacheDrop(pc uint64) {
 // tripping the store probes.
 func (rt *wasmJITRuntime) rebuildCodePageBitmap() {
 	clear(rt.cpu.jitCodePageBitmap)
+	wasmResetCodePageSpans(rt.cpu.jitCodePageSpans)
 	for pc, blk := range rt.blocks {
 		rt.markCodePages(pc, blk.endPC)
 	}
@@ -504,6 +559,7 @@ func (rt *wasmJITRuntime) rebuildCodePageBitmap() {
 // the degraded (size-lost) SMC path and the table-slot compaction path.
 func (rt *wasmJITRuntime) invalidateAll() {
 	rt.gen++
+	rt.flushes++
 	rt.blocks = map[uint64]*wasmJITBlock{}
 	rt.hot = map[uint64]uint32{}
 	rt.inFlight = map[uint64]wasmPendingCompile{}
@@ -514,6 +570,7 @@ func (rt *wasmJITRuntime) invalidateAll() {
 	// change when code is rewritten at OTHER addresses, and a rewritten
 	// blacklisted PC simply stays on the interpreter.
 	clear(rt.cpu.jitCodePageBitmap)
+	wasmResetCodePageSpans(rt.cpu.jitCodePageSpans)
 }
 
 // runBlock refreshes the exit-protocol fields, enters compiled code and

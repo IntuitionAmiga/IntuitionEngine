@@ -1566,9 +1566,17 @@ var fillUint32LESpanImpl = fillUint32LESpanScalar
 
 // fillUint32LESpanScalar writes the little-endian 32-bit value v across dst.
 // dst length should be a multiple of 4; a sub-word tail is left untouched.
+// Long spans are filled by doubling copies of the already-filled prefix, so
+// the bulk of the work runs at memmove speed on hosts without SIMD kernels.
 func fillUint32LESpanScalar(dst []byte, v uint32) {
-	for i := 0; i+4 <= len(dst); i += 4 {
-		binary.LittleEndian.PutUint32(dst[i:i+4], v)
+	n := len(dst) &^ 3
+	if n == 0 {
+		return
+	}
+	dst = dst[:n]
+	binary.LittleEndian.PutUint32(dst, v)
+	for filled := 4; filled < n; filled *= 2 {
+		copy(dst[filled:], dst[:filled])
 	}
 }
 
@@ -2414,31 +2422,32 @@ func (chip *VideoChip) blitMode7Locked(mode VideoMode) {
 	duRow := int32(chip.bltMode7DuRow)
 	dvRow := int32(chip.bltMode7DvRow)
 
-	if _, srcEnd, srcOK := chip.blitLowBusRectSliceLocked(chip.bltSrc, int(texMaskU)+1, int(texMaskV)+1, srcStride, bpp); srcOK {
+	if srcRect, _, srcOK := chip.blitLowBusRectSliceLocked(chip.bltSrc, int(texMaskU)+1, int(texMaskV)+1, srcStride, bpp); srcOK {
 		if _, dstEnd, dstOK := chip.blitLowBusRectSliceLocked(chip.bltDst, width, height, dstStride, bpp); dstOK {
+			// The source rect covers (texMaskV+1) rows of srcStride plus a full
+			// row of texels, and u/v are masked into that rect, so the largest
+			// possible texel offset is already inside srcRect: no per-texel
+			// bounds test is needed in the sampling loop.
 			dstRow := chip.bltDst
+			rowBytes := width * bpp
 			for range height {
 				u := rowU
 				v := rowV
-				dstAddr := dstRow
-				for range width {
-					uInt := (u >> 16) & texMaskU
-					vInt := (v >> 16) & texMaskV
-					texOff := uint64(uint32(vInt))*uint64(srcStride) + uint64(uint32(uInt))*bytesPerPx
-					texAddr := uint64(chip.bltSrc) + texOff
-					if texAddr+bytesPerPx > srcEnd {
-						chip.bltErr = true
-						return
+				row := chip.busMemory[dstRow:][:rowBytes]
+				if bpp == 1 {
+					for x := range row {
+						texOff := uint32((v>>16)&texMaskV)*srcStride + uint32((u>>16)&texMaskU)
+						row[x] = srcRect[texOff]
+						u += duCol
+						v += dvCol
 					}
-					if bpp == 1 {
-						chip.busMemory[dstAddr] = chip.busMemory[uint32(texAddr)]
-					} else {
-						value := binary.LittleEndian.Uint32(chip.busMemory[uint32(texAddr) : uint32(texAddr)+BYTES_PER_PIXEL])
-						binary.LittleEndian.PutUint32(chip.busMemory[dstAddr:dstAddr+BYTES_PER_PIXEL], value)
+				} else {
+					for x := 0; x+BYTES_PER_PIXEL <= len(row); x += BYTES_PER_PIXEL {
+						texOff := uint32((v>>16)&texMaskV)*srcStride + uint32((u>>16)&texMaskU)*BYTES_PER_PIXEL
+						binary.LittleEndian.PutUint32(row[x:], binary.LittleEndian.Uint32(srcRect[texOff:]))
+						u += duCol
+						v += dvCol
 					}
-					dstAddr += uint32(bytesPerPx)
-					u += duCol
-					v += dvCol
 				}
 				rowU += duRow
 				rowV += dvRow

@@ -329,6 +329,10 @@ type CPU64 struct {
 	// code. Native stores probe it to detect self-modifying writes without a
 	// Go-side map lookup on every RAM store.
 	jitCodePageBitmap []byte
+	// jitCodePageSpans holds two bytes per 256-byte code page: the inclusive
+	// [min, max] compiled-byte offsets inside the page (0xFF/0x00 = no code).
+	// Maintained by the wasm JIT runtime; native backends leave it nil.
+	jitCodePageSpans []byte
 	// jitPhysCodePageBitmap marks 256-byte physical pages backing compiled
 	// MMU-mode IE64 code. Native MMU store fast paths probe it after
 	// micro-TLB translation so virtual aliases cannot bypass SMC invalidation.

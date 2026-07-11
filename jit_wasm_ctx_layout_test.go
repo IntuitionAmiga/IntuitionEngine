@@ -77,6 +77,7 @@ func TestWasmJIT_CtxLayout(t *testing.T) {
 		{"CodeHighEndPage", unsafe.Offsetof(ctx.CodeHighEndPage), jitCtxOffCodeHighEndPage},
 		{"PhysCodeBitmapPtr", unsafe.Offsetof(ctx.PhysCodeBitmapPtr), jitCtxOffPhysCodeBitmapPtr},
 		{"PhysCodeBitmapLen", unsafe.Offsetof(ctx.PhysCodeBitmapLen), jitCtxOffPhysCodeBitmapLen},
+		{"CodePageSpansPtr", unsafe.Offsetof(ctx.CodePageSpansPtr), jitCtxOffCodePageSpansPtr},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

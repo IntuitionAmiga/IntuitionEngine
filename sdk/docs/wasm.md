@@ -78,9 +78,11 @@ compile, and DevTools' "Disable cache" defeats it entirely.
   shared function table (about 5.3 times interpreter speed on the node
   hot-loop benchmark). While the MMU is enabled, blocks are neither
   compiled nor entered. Stores into compiled code pages are detected in
-  generated code; the runtime drops only the blocks whose bytes were
-  actually written (a store into data that merely shares a 256-byte page
-  with compiled code drops nothing). The backend is on by default and `IE64_WASM_JIT=0` (or
+  generated code, refined by per-page code extents: a store into data that
+  merely shares a 256-byte page with compiled code does not even exit the
+  chain, and a genuine overlap drops only the blocks whose bytes were
+  written. The block table holds up to 65536 blocks before a compacting
+  flush; sustained RUN AOT workloads install several thousand. The backend is on by default and `IE64_WASM_JIT=0` (or
   `/demo/?jit=0`) disables it, and `IE64_WASM_JIT_DIAG=1` (or
   `/demo/?jitdiag=1`) publishes dispatcher counters to `__ieJITDiag` and
   logs livelock signatures to the console. Runtime-generated modules are small and are
@@ -99,7 +101,8 @@ compile, and DevTools' "Disable cache" defeats it entirely.
   interpreter loop calls `hostCooperativeYield()` (`cpu_yield_wasm.go`)
   periodically (the JIT dispatcher every 64 dispatch iterations, since one
   iteration there can be a whole chained run). After each guest slice
-  (default 6 ms) the CPU goroutine parks until the browser's next
+  (default 16 ms, one display frame) the CPU goroutine parks until the
+  browser's next
   requestAnimationFrame, resuming through a zero-delay timeout so the paint
   happens first; a 50 ms timeout races the frame so hidden tabs (where rAF
   stops) keep executing. Fixed-duration sleeps are not used by default: an

@@ -40,6 +40,8 @@ const (
 	wasmLocP0      = 14 // i64: SMC probe first page (T0/T1 stay live across smcProbe)
 	wasmLocP1      = 15 // i64: SMC probe last page
 	wasmLocFpu     = 16 // i32: FPUPtr
+	wasmLocSpans   = 17 // i32: CodePageSpansPtr (per-page [min,max] code extents)
+	wasmLocS0      = 18 // i32 scratch (SMC probe span clamp)
 )
 
 // wasmBlockLocals lists the extra locals (beyond the ctx param) every block
@@ -51,6 +53,7 @@ var wasmBlockLocals = []byte{
 	wasmTypeI64, wasmTypeI64, wasmTypeI64, wasmTypeI64,
 	wasmTypeI64, wasmTypeI64,
 	wasmTypeI32,
+	wasmTypeI32, wasmTypeI32,
 }
 
 // wasmSupportedOpcode is the backend capability allowlist for the current
@@ -186,6 +189,7 @@ func (e *wasmBlockEmitter) prologue() {
 	}
 	if e.needsSMC {
 		loadPtr(jitCtxOffCodePageBitmapPtr, wasmLocCpb)
+		loadPtr(jitCtxOffCodePageSpansPtr, wasmLocSpans)
 		b.localGet(wasmLocCtx)
 		b.memOp(wasmOpI64Load32U, 2, jitCtxOffCodePageBitmapLen)
 		b.localSet(wasmLocCpbLen)
@@ -698,12 +702,36 @@ func (e *wasmBlockEmitter) smcProbe(n uint32) {
 	b.op(wasmOpI64ShrU)
 	b.localSet(wasmLocP1)
 
+	// spanLoad pushes spans[page*2+off]: the page's min (off 0) or max
+	// (off 1) compiled-byte offset.
+	spanLoad := func(loc uint32, off uint32) {
+		b.localGet(wasmLocSpans)
+		b.localGet(loc)
+		b.op(wasmOpI32WrapI64)
+		b.i32Const(1)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.memOp(wasmOpI32Load8U, 0, off)
+	}
+	// aStart pushes the access's first byte offset within its page.
+	aStart := func() {
+		b.localGet(wasmLocA)
+		b.op(wasmOpI32WrapI64)
+		b.i32Const(255)
+		b.op(wasmOpI32And)
+	}
+
 	// pageDirty emits the probes for the page in the given local, branching
-	// to $DIRTY (relative depth from the emission point) on a hit.
-	pageDirty := func(loc uint32, dirtyDepth uint32) {
-		// Low bitmap: page < CodePageBitmapLen && bitmap[page] != 0. The
-		// bounds check gates the byte load (an if frame, so the branch
-		// depth inside is one deeper).
+	// to $DIRTY (relative depth from the emission point) on a hit. first
+	// distinguishes the access's first page from the straddle page: the
+	// access's byte extent within the page differs between them.
+	pageDirty := func(loc uint32, dirtyDepth uint32, first bool) {
+		// Low bitmap: page < CodePageBitmapLen && bitmap[page] != 0 && the
+		// accessed bytes overlap the page's compiled-code span [min, max].
+		// The span term lets a store into data that merely shares the page
+		// with compiled code continue with no exit at all; only writes into
+		// the code extent itself go dirty. The bounds check gates the loads
+		// (an if frame, so the branch depth inside is one deeper).
 		b.localGet(loc)
 		b.localGet(wasmLocCpbLen)
 		b.op(wasmOpI64LtU)
@@ -713,9 +741,45 @@ func (e *wasmBlockEmitter) smcProbe(n uint32) {
 		b.op(wasmOpI32WrapI64)
 		b.op(wasmOpI32Add)
 		b.memOp(wasmOpI32Load8U, 0, 0)
+		// accessEnd >= min, accessEnd clamped to the page.
+		if first {
+			aStart()
+			if n > 1 {
+				b.i32Const(int32(n - 1))
+				b.op(wasmOpI32Add)
+				b.localSet(wasmLocS0)
+				b.i32Const(255)
+				b.localGet(wasmLocS0)
+				b.localGet(wasmLocS0)
+				b.i32Const(255)
+				b.op(wasmOpI32GtU)
+				b.op(wasmOpSelect)
+			}
+		} else {
+			// Straddle page: the access covers its first bytes, so the last
+			// accessed offset is (A+n-1) mod 256.
+			b.localGet(wasmLocA)
+			b.i64Const(int64(n - 1))
+			b.op(wasmOpI64Add)
+			b.op(wasmOpI32WrapI64)
+			b.i32Const(255)
+			b.op(wasmOpI32And)
+		}
+		spanLoad(loc, 0)
+		b.op(wasmOpI32GeU)
+		b.op(wasmOpI32And)
+		if first {
+			// accessStart <= max. On the straddle page the access starts at
+			// offset 0, which never exceeds max, so the term is elided there.
+			aStart()
+			spanLoad(loc, 1)
+			b.op(wasmOpI32LeU)
+			b.op(wasmOpI32And)
+		}
 		b.brIf(dirtyDepth + 1)
 		b.end()
-		// High range: CodeHighEndPage != 0 && HS <= page <= HE.
+		// High range: CodeHighEndPage != 0 && HS <= page <= HE. No spans are
+		// maintained for the high range; stay conservative.
 		b.localGet(wasmLocHighE)
 		b.i64Const(0)
 		b.op(wasmOpI64Ne)
@@ -732,11 +796,20 @@ func (e *wasmBlockEmitter) smcProbe(n uint32) {
 
 	b.block() // $CLEAN
 	b.block() // $DIRTY
-	pageDirty(wasmLocP0, 0)
+	pageDirty(wasmLocP0, 0, true)
 	if n > 1 {
-		// Second page probe; harmless duplicate when the access does not
-		// straddle a page boundary.
-		pageDirty(wasmLocP1, 0)
+		// Second page probe, gated on a genuine straddle: the straddle
+		// variant assumes the access starts at the page's offset 0 and omits
+		// the start-vs-max term, so running it against the FIRST page would
+		// false-fire on any access ending at or after the page's span. (The
+		// pre-span probe emitted it unconditionally as a harmless duplicate;
+		// with spans it is no longer harmless.)
+		b.localGet(wasmLocP0)
+		b.localGet(wasmLocP1)
+		b.op(wasmOpI64Ne)
+		b.ifVoid()
+		pageDirty(wasmLocP1, 1, false)
+		b.end()
 	}
 	b.br(1) // no hit -> $CLEAN
 	b.end() // $DIRTY

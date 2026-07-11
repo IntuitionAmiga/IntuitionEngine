@@ -1409,7 +1409,24 @@ func compositorBlendSpanScalar(dst, src []byte) {
 	if len(dst) < n {
 		n = len(dst)
 	}
-	for x := 0; x+BYTES_PER_PIXEL <= n; x += BYTES_PER_PIXEL {
+	x := 0
+	// Two pixels per iteration: when both alpha bytes are already set the
+	// pair is written through unchanged, which is the common case for
+	// opaque content. Mixed pairs fall back to the per-pixel rules.
+	for ; x+8 <= n; x += 8 {
+		v := *(*uint64)(unsafe.Pointer(&src[x]))
+		if v&0x00000000FF000000 != 0 && v&0xFF00000000000000 != 0 {
+			*(*uint64)(unsafe.Pointer(&dst[x])) = v
+			continue
+		}
+		if pixel, ok := compositorOpaquePixel(uint32(v)); ok {
+			*(*uint32)(unsafe.Pointer(&dst[x])) = pixel
+		}
+		if pixel, ok := compositorOpaquePixel(uint32(v >> 32)); ok {
+			*(*uint32)(unsafe.Pointer(&dst[x+4])) = pixel
+		}
+	}
+	for ; x+BYTES_PER_PIXEL <= n; x += BYTES_PER_PIXEL {
 		srcPixel := *(*uint32)(unsafe.Pointer(&src[x]))
 		if pixel, ok := compositorOpaquePixel(srcPixel); ok {
 			*(*uint32)(unsafe.Pointer(&dst[x])) = pixel
@@ -1425,7 +1442,12 @@ func compositorOpaqueCopySpanScalar(dst, src []byte) {
 	if len(dst) < n {
 		n = len(dst)
 	}
-	for x := 0; x+BYTES_PER_PIXEL <= n; x += BYTES_PER_PIXEL {
+	x := 0
+	for ; x+8 <= n; x += 8 {
+		v := *(*uint64)(unsafe.Pointer(&src[x]))
+		*(*uint64)(unsafe.Pointer(&dst[x])) = v | 0xFF000000FF000000
+	}
+	for ; x+BYTES_PER_PIXEL <= n; x += BYTES_PER_PIXEL {
 		srcPixel := *(*uint32)(unsafe.Pointer(&src[x]))
 		*(*uint32)(unsafe.Pointer(&dst[x])) = srcPixel | 0xFF000000
 	}
