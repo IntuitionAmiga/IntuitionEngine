@@ -168,7 +168,7 @@ func TestWasmJIT_Node_StaleCompileNotInstalled(t *testing.T) {
 		t.Fatal("runtime unavailable")
 	}
 	rt.enqueueCompile(PROG_START)
-	if !rt.inFlight[PROG_START] {
+	if _, ok := rt.inFlight[PROG_START]; !ok {
 		t.Fatal("compile not submitted")
 	}
 	rt.invalidateAll()
@@ -179,8 +179,197 @@ func TestWasmJIT_Node_StaleCompileNotInstalled(t *testing.T) {
 		t.Fatalf("stale install leaked: compiles=%d blocks=%d", rt.compiles, len(rt.blocks))
 	}
 	// The PC is not blacklisted and not stuck in flight: it can re-tier.
-	if rt.blacklist[PROG_START] || rt.inFlight[PROG_START] {
+	if _, ok := rt.inFlight[PROG_START]; ok || rt.blacklist[PROG_START] {
 		t.Fatal("PC cannot re-tier after a dropped stale compile")
+	}
+}
+
+func TestWasmJIT_Node_StaleInFlightRangeInvalidation(t *testing.T) {
+	// A store overlapping a compile still in flight must stop that compile
+	// installing even when no installed block overlaps the store: the module
+	// was built from the pre-store bytes. The pending range's pages are
+	// marked at enqueue so the generated-store probe fires for them, and
+	// invalidateRange checks pending ranges alongside installed blocks.
+	program := wasmNodeProgram(10)
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	rt.enqueueCompile(PROG_START)
+	if cpu.jitCodePageBitmap[PROG_START>>8] == 0 {
+		t.Fatal("pending compile's pages not marked at enqueue")
+	}
+	rt.invalidateRange(PROG_START+8, 4) // overlaps only the pending range
+	if waitForInstall(rt, PROG_START) {
+		t.Fatal("stale in-flight compile installed after an overlapping write")
+	}
+	// The dropped compile's callback has resolved (waitForInstall parked the
+	// goroutine); its pending-only page marks must be gone, or stores to
+	// this page would take false-share exits for ever.
+	if len(rt.inFlight) != 0 {
+		t.Fatal("in-flight entry survived its callback")
+	}
+	if cpu.jitCodePageBitmap[PROG_START>>8] != 0 {
+		t.Fatal("pending-only page mark leaked after the stale compile was dropped")
+	}
+
+	// Control: a same-page write past the pending range is a false share and
+	// must not kill the innocent compile.
+	cpu2 := newWasmNodeMachine(t, program)
+	rt2 := newWasmJITRuntime(cpu2)
+	if rt2 == nil {
+		t.Fatal("runtime unavailable")
+	}
+	rt2.enqueueCompile(PROG_START)
+	pending, ok := rt2.inFlight[PROG_START]
+	if !ok {
+		t.Fatal("compile not submitted")
+	}
+	rt2.invalidateRange(pending.endPC+0x40, 8)
+	if !waitForInstall(rt2, PROG_START) {
+		t.Fatal("false-share write killed an innocent in-flight compile")
+	}
+}
+
+func TestWasmJIT_Node_SupersededCallbackLosesOwnership(t *testing.T) {
+	// invalidateAll while a compile is pending, followed by a re-tier of the
+	// same PC, leaves TWO callbacks outstanding for that PC. The older one
+	// must not retire the newer pending entry or rebuild away its page
+	// protection; ownership is decided by the token, not the PC.
+	program := wasmNodeProgram(10)
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	rt.enqueueCompile(PROG_START)
+	oldTok := rt.inFlight[PROG_START].token
+	rt.invalidateAll() // orphans the first compile's callbacks
+	rt.enqueueCompile(PROG_START)
+	if rt.inFlight[PROG_START].token == oldTok {
+		t.Fatal("superseding compile reused the ownership token")
+	}
+
+	// The orphaned callback's claim fails and leaves the newer entry and its
+	// enqueue-time page marks untouched.
+	if rt.claimInFlight(PROG_START, oldTok) {
+		t.Fatal("stale callback claimed a superseded in-flight entry")
+	}
+	if _, ok := rt.inFlight[PROG_START]; !ok {
+		t.Fatal("stale claim removed the newer pending entry")
+	}
+	if cpu.jitCodePageBitmap[PROG_START>>8] == 0 {
+		t.Fatal("newer pending range lost its page mark")
+	}
+
+	// The newer compile installs; both real callbacks have resolved by then
+	// (the orphan as a no-op), leaving exactly one block and a clean queue.
+	if !waitForInstall(rt, PROG_START) {
+		t.Fatal("superseding compile failed to install")
+	}
+	if len(rt.blocks) != 1 || len(rt.inFlight) != 0 {
+		t.Fatalf("post-resolution state wrong: blocks=%d inFlight=%d",
+			len(rt.blocks), len(rt.inFlight))
+	}
+}
+
+func TestWasmJIT_Node_RangeInvalidation(t *testing.T) {
+	// invalidateRange drops only blocks overlapping the written bytes. A
+	// false share (data in the same 256-byte page as compiled code, which
+	// the EhBASIC image contains) must keep every block; the old full flush
+	// here caused a permanent recompile storm under RUN AOT.
+	program := wasmNodeProgram(10)
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	for i := 0; i < wasmJITHotThreshold; i++ {
+		rt.noteHot(PROG_START)
+	}
+	if !waitForInstall(rt, PROG_START) {
+		t.Fatal("block never installed")
+	}
+	blk := rt.blocks[PROG_START]
+	genBefore := rt.gen
+
+	// False share: same page, past the compiled range.
+	rt.invalidateRange(blk.endPC+0x40, 8)
+	if _, ok := rt.blocks[PROG_START]; !ok {
+		t.Fatal("false-share invalidation dropped a non-overlapping block")
+	}
+	if rt.gen != genBefore {
+		t.Fatalf("false-share invalidation bumped the generation: %d -> %d", genBefore, rt.gen)
+	}
+	if cpu.jitCodePageBitmap[PROG_START>>8] == 0 {
+		t.Fatal("false-share invalidation unmarked a live code page")
+	}
+
+	// Real overlap: the block goes, the generation moves, the page unmarks.
+	rt.invalidateRange(PROG_START+8, 4)
+	if _, ok := rt.blocks[PROG_START]; ok {
+		t.Fatal("overlapping invalidation kept the block")
+	}
+	if rt.gen == genBefore {
+		t.Fatal("overlapping invalidation did not bump the generation")
+	}
+	if cpu.jitCodePageBitmap[PROG_START>>8] != 0 {
+		t.Fatal("code-page bitmap not rebuilt after the drop")
+	}
+
+	// Degraded report (size 0): full flush.
+	rt.invalidateRange(0, 0)
+	if len(rt.blocks) != 0 {
+		t.Fatal("size-0 invalidation must flush everything")
+	}
+}
+
+func TestWasmJIT_Node_FalseShareStoreLoop(t *testing.T) {
+	// End-to-end: a hot loop whose STORE writes data in the same 256-byte
+	// page as its own code. Every store trips the probe; none may flush the
+	// block cache, and the loop must finish with the JIT engaged.
+	//
+	//	1000: MOVE  R3, #0x10C0    ; data slot, same page as the code
+	//	1008: MOVE  R1, #0
+	//	1010: MOVEQ R2, #iters
+	//	1018: ADD   R1, R1, #3
+	//	1020: STORE.Q R1, (R3)     ; false-share SMC hit once pages mark
+	//	1028: SUB   R2, R2, #1
+	//	1030: BNE   R2, R0, -0x18  ; back to 1018
+	//	1038: HALT
+	const iters = 20_000
+	program := bytes.Join([][]byte{
+		ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 1, 0, 0, PROG_START+0xC0),
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0),
+		ie64Instr(OP_MOVEQ, 2, 0, 0, 0, 0, iters),
+		ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 3),
+		ie64Instr(OP_STORE, 1, IE64_SIZE_Q, 0, 3, 0, 0),
+		ie64Instr(OP_SUB, 2, IE64_SIZE_Q, 1, 2, 0, 1),
+		ie64Instr(OP_BNE, 0, 0, 0, 2, 0, 0xFFFFFFE8),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	}, nil)
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	cpu.wasmJITDispatch(rt)
+
+	if want := uint64(iters) * 3; cpu.regs[1] != want {
+		t.Fatalf("R1 = %d, want %d", cpu.regs[1], want)
+	}
+	if got := binary.LittleEndian.Uint64(cpu.memory[PROG_START+0xC0:]); got != uint64(iters)*3 {
+		t.Fatalf("stored value = %d, want %d", got, uint64(iters)*3)
+	}
+	if rt.compiles == 0 || rt.blockRuns == 0 {
+		t.Fatalf("JIT never engaged: compiles=%d blockRuns=%d", rt.compiles, rt.blockRuns)
+	}
+	if rt.gen != 0 {
+		t.Fatalf("false-share stores flushed the cache %d times", rt.gen)
+	}
+	if len(rt.blocks) == 0 {
+		t.Fatal("no blocks survived the run")
 	}
 }
 

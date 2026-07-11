@@ -787,9 +787,11 @@ func TestWasmJIT_HelperExit_StoreMMIOAndBounds(t *testing.T) {
 
 func TestWasmJIT_SMC_StoreProbe(t *testing.T) {
 	// Plant a code-page bitmap covering the store target and check the
-	// generated STORE reports the self-modifying write: first hit sets
-	// NeedInval/InvalAddr/InvalSize, a second hit degrades InvalSize to 0
-	// (full invalidation), and a store to a clean page reports nothing.
+	// generated STORE reports the self-modifying write: the dirty store
+	// commits, publishes its exact NeedInval/InvalAddr/InvalSize range and
+	// ends the block immediately (so one block reports at most one range,
+	// and no further instructions run from a possibly rewritten image).
+	// A store to a clean page reports nothing.
 	target := uint64(0x50000)
 	bitmapLen := uint32((target >> 8) + 16)
 	const smcBitmapOff = 0x30000 // spare room between bitmap and guest RAM
@@ -806,12 +808,13 @@ func TestWasmJIT_SMC_StoreProbe(t *testing.T) {
 		}
 	}
 
-	// Clean-page store first, then two dirty-page stores.
+	// Clean-page store, a dirty store, then a third store that must never
+	// run: the dirty store ends the block.
 	init := map[int]uint64{2: target, 3: 0x11, 4: target + 0x1000}
 	program := bytes.Join([][]byte{
 		ie64Instr(OP_STORE, 3, IE64_SIZE_L, 0, 4, 0, 0),  // clean page
-		ie64Instr(OP_STORE, 3, IE64_SIZE_L, 0, 2, 0, 0),  // dirty: sets NeedInval
-		ie64Instr(OP_STORE, 3, IE64_SIZE_B, 0, 2, 0, 64), // dirty again: InvalSize -> 0
+		ie64Instr(OP_STORE, 3, IE64_SIZE_L, 0, 2, 0, 0),  // dirty: reports and exits
+		ie64Instr(OP_STORE, 3, IE64_SIZE_B, 0, 2, 0, 64), // must not execute
 	}, nil)
 	res := runWasmDiffBlock(t, program, init, plant)
 	if res.needHelper != 0 {
@@ -820,11 +823,19 @@ func TestWasmJIT_SMC_StoreProbe(t *testing.T) {
 	if res.needInval != 1 {
 		t.Fatalf("NeedInval = %d, want 1", res.needInval)
 	}
-	if res.invalSize != 0 {
-		t.Errorf("InvalSize = %d, want 0 after second dirty store", res.invalSize)
+	if res.invalAddr != target || res.invalSize != 4 {
+		t.Errorf("InvalAddr/Size = %#x/%d, want %#x/4 (exact first-hit range)",
+			res.invalAddr, res.invalSize, target)
 	}
-	if res.retCount != 3 {
-		t.Errorf("RetCount = %d, want 3 (SMC does not abort the block)", res.retCount)
+	if res.retCount != 2 {
+		t.Errorf("RetCount = %d, want 2 (dirty store retires, then the block exits)", res.retCount)
+	}
+	if want := PROG_START + 16; res.retPC != uint64(want) {
+		t.Errorf("RetPC = %#x, want %#x (instruction after the dirty store)", res.retPC, want)
+	}
+	if res.guestRAM[target+64] != 0 {
+		t.Errorf("instruction after the dirty store executed: [target+64] = %#x, want 0",
+			res.guestRAM[target+64])
 	}
 
 	// Single dirty store: exact range reported.

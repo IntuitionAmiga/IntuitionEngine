@@ -431,6 +431,8 @@ func (e *wasmBlockEmitter) emitPush(ins *JITInstr, idx uint32, instrPC uint64) {
 	b.localGet(wasmLocRegs)
 	b.localGet(wasmLocT0)
 	b.i64Store(3, 31*8)
+	// SP is committed above, so the dirty exit resumes cleanly at PC+8.
+	e.smcExitIfDirty(instrPC, idx)
 }
 
 // emitPop: val = [SP]; rd (if not R0) = val; SP += 8.
@@ -655,13 +657,33 @@ func (e *wasmBlockEmitter) emitStore(ins *JITInstr, idx uint32, instrPC uint64) 
 		b.i64Store(0, 0)
 	}
 	e.smcProbe(n)
+	e.smcExitIfDirty(instrPC, idx)
+}
+
+// smcExitIfDirty ends the block straight after a store whose probe reported
+// a dirty code page. The store retired, so RetPC is the next instruction and
+// RetCount includes it. Exiting immediately keeps InvalAddr/InvalSize exact
+// (a second dirty store in the same block would otherwise degrade the report
+// to a full flush, and full flushes on the page-granular false shares in the
+// EhBASIC image caused a permanent recompile storm) and stops the block from
+// running on past a write that may have hit its own instructions.
+func (e *wasmBlockEmitter) smcExitIfDirty(instrPC uint64, idx uint32) {
+	b := e.b
+	b.localGet(wasmLocCtx)
+	b.i32Load(2, jitCtxOffNeedInval)
+	b.ifVoid()
+	e.exit(instrPC+8, idx+1)
+	b.op(wasmOpReturn)
+	b.end()
 }
 
 // smcProbe reports a committed store into a compiled code page, matching the
-// native emitters: first dirty store publishes the exact range, further ones
-// degrade InvalSize to 0 (full invalidation). The block is NOT aborted; the
-// dispatcher acts on NeedInval at the block boundary, and any in-wasm
-// chaining must check it before dispatching another block.
+// native emitters: the first dirty store publishes the exact range (callers
+// follow the probe with smcExitIfDirty, so in practice each block reports at
+// most one); a probe that finds NeedInval already set degrades InvalSize to 0
+// (full invalidation) as a defensive fallback. The dispatcher acts on
+// NeedInval at the block boundary, and the in-wasm chain driver checks it
+// before dispatching another block.
 func (e *wasmBlockEmitter) smcProbe(n uint32) {
 	b := e.b
 	// T0 = first page, T1 = last page of the access.
@@ -1521,6 +1543,7 @@ func (e *wasmBlockEmitter) emitDStore(ins *JITInstr, idx uint32, instrPC uint64)
 	b.localGet(wasmLocB)
 	b.i64Store(0, 0)
 	e.smcProbe(8)
+	e.smcExitIfDirty(instrPC, idx)
 }
 
 // ---------------------------------------------------------------------------

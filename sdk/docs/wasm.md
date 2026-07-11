@@ -11,10 +11,16 @@ selected purely by `GOOS=js GOARCH=wasm` and build constraints.
 
 ```bash
 make wasm              # build intuitionengine.com/demo/ie.wasm (+ wasm_exec.js)
+make wasm-deploy       # build, then netlify deploy --prod on success
 make wasm-profile      # profiling build: keeps symbol names for devtools; do not deploy
 make test-wasm-build   # build gate: package compiles and links for js/wasm
 make web-demos         # restage the assets disk volume and its MANIFEST
 ```
+
+`make x64-live` also rebuilds the wasm demo, so a live-image build never
+ships the site a stale `ie.wasm`. Deploying stays a separate, explicit step
+(`wasm-deploy`): demo iteration rebuilds constantly and none of those builds
+should touch production.
 
 `make wasm` builds with `-tags embed_basic` and `-ldflags "-s -w"`, copies
 `wasm_exec.js` from the Go toolchain, and runs `wasm-opt -Oz` when Binaryen is
@@ -72,8 +78,12 @@ compile, and DevTools' "Disable cache" defeats it entirely.
   shared function table (about 5.3 times interpreter speed on the node
   hot-loop benchmark). While the MMU is enabled, blocks are neither
   compiled nor entered. Stores into compiled code pages are detected in
-  generated code and flush the block cache. The backend is on by default and `IE64_WASM_JIT=0` (or
-  `/demo/?jit=0`) disables it. Runtime-generated modules are small and are
+  generated code; the runtime drops only the blocks whose bytes were
+  actually written (a store into data that merely shares a 256-byte page
+  with compiled code drops nothing). The backend is on by default and `IE64_WASM_JIT=0` (or
+  `/demo/?jit=0`) disables it, and `IE64_WASM_JIT_DIAG=1` (or
+  `/demo/?jitdiag=1`) publishes dispatcher counters to `__ieJITDiag` and
+  logs livelock signatures to the console. Runtime-generated modules are small and are
   never cached by the browser; only the main `ie.wasm` participates in the
   compiled-wasm code cache. The heavy pixel work in the showcase demos
   (blitter, copper, Mode 7) is compiled Go and runs at full speed

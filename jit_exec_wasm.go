@@ -17,6 +17,11 @@ License: GPLv3 or later
 
 package main
 
+import (
+	"fmt"
+	"syscall/js"
+)
+
 // wasmJITSupported marks the presence of the IE64 wasm bytecode backend for
 // shared wiring; the counterpart in jit_wasm_supported_other.go is false.
 const wasmJITSupported = true
@@ -68,6 +73,13 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 			// moment the JIT tiered up. hostCooperativeYield self-throttles
 			// by wall time, so the tighter check costs one time read.
 			hostCooperativeYield()
+			if rt.diag {
+				js.Global().Set("__ieJITDiag", fmt.Sprintf(
+					"pc=%#x gen=%d compiles=%d blockRuns=%d chainRuns=%d ic=%d blacklist=%d blocks=%d fall=%d smcNoDrop=%d helpers=%v",
+					cpu.PC, rt.gen, rt.compiles, rt.blockRuns, rt.chainRuns,
+					cpu.InstructionCount, len(rt.blacklist), len(rt.blocks),
+					rt.fallSteps, rt.smcNoDrop, rt.helperCnt))
+			}
 		}
 
 		// Interrupt delivery at the instruction boundary, before compiled
@@ -90,6 +102,7 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 		}
 		rt.noteHot(cpu.PC)
 
+		rt.fallSteps++
 		if cpu.StepOne() == 0 {
 			return
 		}

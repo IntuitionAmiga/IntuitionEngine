@@ -335,7 +335,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile test-wasm-build test-wasm test-wasm-node x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare
+.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -460,7 +460,7 @@ x64-live-embed-assets: sdk-build emutos-release-rom aros-ie-live-inputs intuitio
 	@echo "x64 live embedded binary inputs are ready."
 
 .PHONY: x64-live
-x64-live: x86-64-v3 x64-live-demos
+x64-live: x86-64-v3 x64-live-demos wasm
 	@echo "Building IE x64 live USB image..."
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh
 
@@ -707,6 +707,14 @@ wasm-profile: setup aot-runtime-blob
 	$(WASM_GOENV) $(GO) build -tags "$(WASM_TAGS)" -o $(WASM_BINARY) .
 	@cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_DEMO_DIR)/wasm_exec.js
 	@ls -lh $(WASM_BINARY) | awk '{print "  wasm size:", $$5, "(profiling build - do not deploy)"}'
+
+# Deploy the website, including a freshly built wasm demo, to Netlify
+# production. Deliberately a separate target rather than a side effect of
+# 'wasm': demo iteration rebuilds constantly, and none of those builds should
+# touch production. Deploy only happens when the wasm build succeeded.
+wasm-deploy: wasm
+	@echo "Deploying intuitionengine.com to Netlify (production)..."
+	@cd intuitionengine.com && netlify deploy --prod
 
 # Layer B: the package must compile and link for js/wasm, both with Vulkan
 # excluded by construction (plain) and via the interim -tags novulkan.
@@ -2590,6 +2598,7 @@ help:
 	@echo "  headless-novulkan - Fully portable CGO_ENABLED=0 build"
 	@echo "  wasm             - Build the browser demo (js/wasm, interpreter-only IE64 BASIC)"
 	@echo "  wasm-profile     - Browser demo build with symbols for devtools profiling (do not deploy)"
+	@echo "  wasm-deploy      - Build the browser demo, then netlify deploy --prod on success"
 	@echo "  test-wasm-build  - Verify the package compiles and links for js/wasm"
 	@echo "  web-demos        - Mirror the IESHARE demos into the website assets disk volume"
 	@echo "  ie32asm          - Build only the IE32 assembler"

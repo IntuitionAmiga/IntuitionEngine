@@ -38,6 +38,7 @@ type wasmJITBlock struct {
 	fn     js.Value // exported "block" function
 	endPC  uint64   // first byte after the compiled range
 	module js.Value // keeps the instance alive explicitly
+	slot   int      // chain-driver table slot
 	execs  uint64   // per-block execution counter (tests, stats)
 }
 
@@ -50,12 +51,27 @@ type wasmJITRuntime struct {
 
 	blocks    map[uint64]*wasmJITBlock
 	hot       map[uint64]uint32
-	blacklist map[uint64]bool // PCs whose blocks the translator rejected
-	inFlight  map[uint64]bool // compiles submitted, not yet installed
+	blacklist map[uint64]bool               // PCs whose blocks the translator rejected
+	inFlight  map[uint64]wasmPendingCompile // compiles submitted, not yet installed
+	// compileSeq issues the ownership token carried by each pending compile.
+	// A callback may only retire the pc's entry (and touch the bitmap) when
+	// its token still matches: after an invalidateAll clears the map and the
+	// PC re-tiers, the OLD compile's callback must not delete the NEW
+	// compile's entry or rebuild away its page protection.
+	compileSeq uint64
 
 	compiles  uint64 // completed installs (tests, stats)
 	blockRuns uint64 // dispatcher entries into compiled code (tests, stats)
 	chainRuns uint64 // entries that went through the in-wasm chain driver
+
+	// diag (IE64_WASM_JIT_DIAG=1, ?jitdiag=1 on the demo page) publishes
+	// dispatcher state to globalThis.__ieJITDiag and logs throttled
+	// zero-progress exits, the signature of a dispatch livelock.
+	diag      bool
+	zeroProg  uint64
+	helperCnt [16]uint64 // per-helper exit counts (diag)
+	smcNoDrop uint64     // false-share SMC exits (diag)
+	fallSteps uint64     // interpreter fallback steps (diag)
 
 	// In-wasm chaining: a shared funcref table holds every installed block,
 	// and pcCache is a direct-mapped {pc, slot+1} table in linear memory the
@@ -66,11 +82,35 @@ type wasmJITRuntime struct {
 	pcCache  []byte
 	nextSlot int
 
+	// pageBlocks maps a 256-byte guest page to the PCs of installed blocks
+	// touching it: the SMC overlap lookup in invalidateRange.
+	pageBlocks map[uint64][]uint64
+
 	// gen is the invalidation generation. Compiles capture it at submission
 	// and their async install callbacks compare it on resolution: a compile
 	// submitted before an SMC invalidation must not install afterwards, or
 	// stale guest code would run.
 	gen uint64
+}
+
+// wasmPendingCompile is an inFlight entry: the pending block's end and the
+// ownership token its callbacks must present to retire it.
+type wasmPendingCompile struct {
+	endPC uint64
+	token uint64
+}
+
+// claimInFlight retires pc's pending entry if the caller still owns it and
+// reports whether it did. A stale callback (entry cleared or superseded by a
+// newer compile for the same PC) gets false and must leave all shared state,
+// including the code-page bitmap, untouched.
+func (rt *wasmJITRuntime) claimInFlight(pc uint64, token uint64) bool {
+	cur, ok := rt.inFlight[pc]
+	if !ok || cur.token != token {
+		return false
+	}
+	delete(rt.inFlight, pc)
+	return true
 }
 
 // wasmConsoleLog writes through the JS console. Safe inside js.FuncOf
@@ -107,24 +147,27 @@ func newWasmJITRuntime(cpu *CPU64) *wasmJITRuntime {
 	tblDesc.Set("element", "anyfunc")
 	tblDesc.Set("initial", wasmJITTableInitial)
 	rt := &wasmJITRuntime{
-		cpu:       cpu,
-		ctx:       ctx,
-		ctxPtr:    int(uintptr(unsafe.Pointer(ctx))),
-		memObj:    mem,
-		blocks:    map[uint64]*wasmJITBlock{},
-		hot:       map[uint64]uint32{},
-		blacklist: map[uint64]bool{},
-		inFlight:  map[uint64]bool{},
-		table:     global.Get("WebAssembly").Get("Table").New(tblDesc),
-		pcCache:   make([]byte, wasmJITCacheEntries*16),
+		cpu:        cpu,
+		ctx:        ctx,
+		ctxPtr:     int(uintptr(unsafe.Pointer(ctx))),
+		memObj:     mem,
+		blocks:     map[uint64]*wasmJITBlock{},
+		hot:        map[uint64]uint32{},
+		blacklist:  map[uint64]bool{},
+		inFlight:   map[uint64]wasmPendingCompile{},
+		table:      global.Get("WebAssembly").Get("Table").New(tblDesc),
+		pcCache:    make([]byte, wasmJITCacheEntries*16),
+		pageBlocks: map[uint64][]uint64{},
+		diag:       os.Getenv("IE64_WASM_JIT_DIAG") == "1",
 	}
 	rt.instantiateDriver()
 	return rt
 }
 
 const (
-	wasmJITCacheEntries = 4096 // power of two; 16 bytes per entry
-	wasmJITTableInitial = 256
+	wasmJITCacheEntries  = 4096 // power of two; 16 bytes per entry
+	wasmJITTableInitial  = 256
+	wasmJITTableMaxSlots = 4096 // full flush compacts leaked slots past this
 )
 
 // instantiateDriver compiles the chain driver asynchronously. Until it
@@ -191,7 +234,10 @@ func (rt *wasmJITRuntime) noteHot(pc uint64) {
 	if rt.cpu.mmuEnabled {
 		return
 	}
-	if rt.blacklist[pc] || rt.inFlight[pc] {
+	if rt.blacklist[pc] {
+		return
+	}
+	if _, ok := rt.inFlight[pc]; ok {
 		return
 	}
 	if _, ok := rt.blocks[pc]; ok {
@@ -249,7 +295,14 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 	imports := global.Get("Object").New()
 	imports.Set("env", env)
 
-	rt.inFlight[pc] = true
+	rt.compileSeq++
+	myToken := rt.compileSeq
+	rt.inFlight[pc] = wasmPendingCompile{endPC: endPC, token: myToken}
+	// Mark the pending range's pages now, not at install: a guest store into
+	// bytes being compiled must trip the generated-store probe even when no
+	// installed block shares the page, or the asynchronous install would
+	// bring up a module built from the pre-store bytes.
+	rt.markCodePages(pc, endPC)
 	myGen := rt.gen
 	var onOK, onErr js.Func
 	release := func() {
@@ -258,29 +311,46 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 	}
 	onOK = js.FuncOf(func(this js.Value, args []js.Value) any {
 		defer release()
-		delete(rt.inFlight, pc)
+		if !rt.claimInFlight(pc, myToken) {
+			// Ownership lost: the entry was cleared and a newer compile for
+			// this PC may be pending. This module is stale by construction;
+			// touch nothing, especially not the bitmap.
+			return nil
+		}
 		if rt.gen != myGen {
 			// Invalidated while compiling: the module was built from
 			// instruction bytes that may have been overwritten. Drop it; the
-			// PC re-tiers from scratch if it stays hot.
+			// PC re-tiers from scratch if it stays hot. The pending range's
+			// enqueue-time page marks must not outlive it, or stores to
+			// those pages would take false-share exits for ever.
+			rt.rebuildCodePageBitmap()
 			return nil
 		}
 		instance := args[0].Get("instance")
 		fn := instance.Get("exports").Get("block")
-		rt.blocks[pc] = &wasmJITBlock{
-			fn:     fn,
-			endPC:  endPC,
-			module: instance,
+		// Range invalidations leak table slots (dropped blocks keep theirs
+		// until a full flush); compact by flushing when the table would grow
+		// past its cap. This install proceeds afterwards: the generation
+		// check above already vouched for its bytes.
+		if rt.nextSlot >= wasmJITTableMaxSlots {
+			rt.invalidateAll()
 		}
 		// Publish to the chain driver: table slot + pc cache entry.
 		slot := rt.nextSlot
 		rt.nextSlot++
+		rt.blocks[pc] = &wasmJITBlock{
+			fn:     fn,
+			endPC:  endPC,
+			module: instance,
+			slot:   slot,
+		}
 		if lenNow := rt.table.Get("length").Int(); slot >= lenNow {
 			rt.table.Call("grow", wasmJITTableInitial)
 		}
 		rt.table.Call("set", slot, fn)
 		rt.cacheStore(pc, slot)
 		rt.markCodePages(pc, endPC)
+		rt.indexBlock(pc, endPC)
 		rt.compiles++
 		if rt.compiles == 1 {
 			// One-shot diagnostic; the browser e2e harness greps for it.
@@ -293,8 +363,13 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 	})
 	onErr = js.FuncOf(func(this js.Value, args []js.Value) any {
 		defer release()
-		delete(rt.inFlight, pc)
+		if !rt.claimInFlight(pc, myToken) {
+			return nil
+		}
 		rt.blacklist[pc] = true
+		// A failed compile never becomes an installed block; drop its
+		// enqueue-time page marks.
+		rt.rebuildCodePageBitmap()
 		wasmConsoleLog(fmt.Sprintf("IE64 wasm JIT: compile failed at %#x: %s", pc, args[0].Call("toString").String()))
 		return nil
 	})
@@ -312,14 +387,127 @@ func (rt *wasmJITRuntime) markCodePages(startPC, endPC uint64) {
 	}
 }
 
-// invalidateAll drops every compiled block and clears the code-page bitmap.
-// The wasm backend always performs full invalidation on an SMC report: block
-// count in browser workloads is modest and correctness beats bookkeeping.
+// invalidateRange handles an SMC report from generated code: a committed
+// store hit a marked 256-byte code page. The probe is page-granular, so the
+// hit may be a false share (data living in the same page as compiled code,
+// which EhBASIC's image does). Only blocks whose compiled range genuinely
+// overlaps the written bytes are dropped; a hit that drops nothing keeps
+// every block, avoiding the full-flush recompile storm that made sustained
+// workloads (RUN AOT) hundreds of times slower than the interpreter.
+// size 0 is the emitter's degraded report (several dirty stores in one
+// block, exact range lost) and forces the full flush.
+func (rt *wasmJITRuntime) invalidateRange(addr uint64, size uint32) {
+	if size == 0 {
+		rt.invalidateAll()
+		return
+	}
+	// Overlap lookup goes through the page index, never a scan of the whole
+	// block map: EhBASIC's assembler stores into a false-shared page a few
+	// thousand times a second, and a full-map scan per exit throttled the
+	// entire machine to interpreter-fraction speed.
+	end := addr + uint64(size)
+	// Collect first: unindexBlock swap-removes inside the very slices being
+	// walked, so drops must not happen mid-iteration.
+	var drops []uint64
+	for page := addr >> 8; page <= (end-1)>>8; page++ {
+		for _, pc := range rt.pageBlocks[page] {
+			if blk, ok := rt.blocks[pc]; ok && pc < end && blk.endPC > addr {
+				drops = append(drops, pc)
+			}
+		}
+	}
+	for _, pc := range drops {
+		blk := rt.blocks[pc]
+		if blk == nil {
+			continue // straddling block collected via both pages
+		}
+		delete(rt.blocks, pc)
+		rt.cacheDrop(pc)
+		rt.unindexBlock(pc, blk.endPC)
+	}
+	// In-flight compiles were scanned from the pre-store bytes. One whose
+	// range the store overlaps would install stale guest code from its
+	// asynchronous callback; the map is at most a handful of entries.
+	staleInFlight := false
+	for pc, pending := range rt.inFlight {
+		if pc < end && pending.endPC > addr {
+			staleInFlight = true
+			break
+		}
+	}
+	if len(drops) == 0 && !staleInFlight {
+		// False share: the page keeps its mark (it still holds compiled
+		// code), so stores here keep exiting, but nothing recompiles.
+		rt.smcNoDrop++
+		return
+	}
+	// The generation bump makes every pending install callback drop its
+	// module; hot PCs re-tier from the current bytes.
+	rt.gen++
+	if len(drops) > 0 {
+		rt.rebuildCodePageBitmap()
+	}
+}
+
+// indexBlock records the block in the page index used by invalidateRange.
+func (rt *wasmJITRuntime) indexBlock(pc, endPC uint64) {
+	for page := pc >> 8; page <= (endPC-1)>>8; page++ {
+		rt.pageBlocks[page] = append(rt.pageBlocks[page], pc)
+	}
+}
+
+// unindexBlock removes the block from the page index.
+func (rt *wasmJITRuntime) unindexBlock(pc, endPC uint64) {
+	for page := pc >> 8; page <= (endPC-1)>>8; page++ {
+		list := rt.pageBlocks[page]
+		for i, p := range list {
+			if p == pc {
+				list[i] = list[len(list)-1]
+				list = list[:len(list)-1]
+				break
+			}
+		}
+		if len(list) == 0 {
+			delete(rt.pageBlocks, page)
+		} else {
+			rt.pageBlocks[page] = list
+		}
+	}
+}
+
+// cacheDrop clears pc's chain-driver cache entry, if it is the current
+// occupant of its direct-mapped slot.
+func (rt *wasmJITRuntime) cacheDrop(pc uint64) {
+	idx := (pc >> 3) & (wasmJITCacheEntries - 1)
+	e := rt.pcCache[idx*16 : idx*16+16]
+	if *(*uint64)(unsafe.Pointer(&e[0])) == pc {
+		clear(e)
+	}
+}
+
+// rebuildCodePageBitmap re-derives the page marks from the live block set
+// after a range invalidation, so pages owned only by dropped blocks stop
+// tripping the store probes.
+func (rt *wasmJITRuntime) rebuildCodePageBitmap() {
+	clear(rt.cpu.jitCodePageBitmap)
+	for pc, blk := range rt.blocks {
+		rt.markCodePages(pc, blk.endPC)
+	}
+	// Pending compiles keep their marks too: a store into a range still
+	// being compiled must go on tripping the probe.
+	for pc, pending := range rt.inFlight {
+		rt.markCodePages(pc, pending.endPC)
+	}
+}
+
+// invalidateAll drops every compiled block and clears the code-page bitmap:
+// the degraded (size-lost) SMC path and the table-slot compaction path.
 func (rt *wasmJITRuntime) invalidateAll() {
 	rt.gen++
 	rt.blocks = map[uint64]*wasmJITBlock{}
 	rt.hot = map[uint64]uint32{}
-	rt.inFlight = map[uint64]bool{}
+	rt.inFlight = map[uint64]wasmPendingCompile{}
+	rt.pageBlocks = map[uint64][]uint64{}
 	clear(rt.pcCache) // the driver sees only misses until blocks re-tier
 	rt.nextSlot = 0   // table slots are reused by the next generation
 	// The blacklist survives: rejection reasons (unsupported opcodes) do not
@@ -343,6 +531,13 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 	ctx.MMUEnabled = 0
 
 	if rt.driver.Truthy() {
+		// Re-seat this block's pc cache entry: the cache is direct-mapped,
+		// so a later install whose PC collides on the same index evicts it.
+		// Without this the driver misses on its very first lookup, returns
+		// with nothing retired and an unchanged PC, and the dispatcher
+		// re-enters the same way forever (livelock observed on EhBASIC RUN
+		// AOT, whose arena PCs collide with interpreter-core PCs).
+		rt.cacheStore(cpu.PC, blk.slot)
 		ctx.RetPC = cpu.PC
 		ctx.ChainBudget = ie64ChainBudget
 		rt.driver.Invoke(rt.ctxPtr)
@@ -353,24 +548,39 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 	blk.execs++
 	rt.blockRuns++
 
+	entryPC := cpu.PC
 	cpu.PC = ctx.RetPC
 	executed := uint64(ctx.RetCount) + uint64(ctx.ChainCount)
+	if rt.diag && executed == 0 && ctx.RetPC == entryPC && ctx.NeedHelper == 0 && ctx.NeedInval == 0 {
+		rt.zeroProg++
+		if rt.zeroProg&0xFFFF == 1 {
+			wasmConsoleLog(fmt.Sprintf("IE64 wasm JIT diag: zero-progress exit #%d at pc=%#x", rt.zeroProg, entryPC))
+		}
+	}
 	cpu.regs[0] = 0
 	ctx.RetPC = 0
 	ctx.RetCount = 0
 	ctx.ChainCount = 0
 
 	if ctx.NeedHelper != 0 {
+		if ctx.NeedHelper < 16 {
+			rt.helperCnt[ctx.NeedHelper]++
+			if rt.diag && rt.helperCnt[ctx.NeedHelper]&0x3FFFF == 1 {
+				wasmConsoleLog(fmt.Sprintf("IE64 wasm JIT diag: helper %d #%d pc=%#x addr=%#x",
+					ctx.NeedHelper, rt.helperCnt[ctx.NeedHelper], ctx.HelperPC, ctx.HelperAddr))
+			}
+		}
 		if rt.handleHelper() {
 			executed++
 		}
 		ctx.NeedHelper = 0
 	}
 	if ctx.NeedInval != 0 {
+		addr, size := ctx.InvalAddr, ctx.InvalSize
 		ctx.NeedInval = 0
 		ctx.InvalAddr = 0
 		ctx.InvalSize = 0
-		rt.invalidateAll()
+		rt.invalidateRange(addr, size)
 	}
 	cpu.InstructionCount += executed
 }

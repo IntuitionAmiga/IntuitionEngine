@@ -122,6 +122,9 @@
           if (params.get('jit') === '0') {
             go.env.IE64_WASM_JIT = '0';
           }
+          if (params.get('jitdiag') === '1') {
+            go.env.IE64_WASM_JIT_DIAG = '1';
+          }
           // The main site warms the HTTP cache for ie.wasm near its launch
           // button, so this fetch is usually a cheap revalidation. The
           // Response must reach instantiateStreaming untouched AND come from

@@ -570,8 +570,13 @@ shape and reuses its shared front end:
   under node.
 - **Self-modifying code.** Generated STOREs (including PUSH/JSR return
   address writes) probe the code-page bitmap exactly like the native
-  emitters and set `NeedInval`; the runtime then drops every compiled block
-  and clears the bitmap (full invalidation only, no range bookkeeping).
+  emitters; a dirty store commits, publishes its exact address range and
+  ends the block. The runtime resolves the range against a page-to-blocks
+  index and drops only the blocks whose compiled bytes were actually
+  written. A probe hit that overlaps no block is a false share (data
+  sharing a 256-byte page with compiled code, which the EhBASIC image
+  contains) and drops nothing; treating false shares as full flushes put
+  RUN AOT into a permanent recompile storm.
 - **Tiering.** The dispatcher (`jit_exec_wasm.go`) interprets through
   `StepOne` and counts visits to block-start PCs; at the hot threshold a
   compile is submitted through `WebAssembly.instantiate`, which is
