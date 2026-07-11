@@ -400,5 +400,6 @@
 | IEMon | io view | `LIVE_DATA ($F0BF4) = $00 [0] WO` | `debug_ioview.go` `LIVE_DATA` descriptor |
 | IEMon | io view | `LIVE_STATUS ($F0BF5) = $01 [1] RO` | `debug_ioview.go` `LIVE_STATUS` descriptor |
 | IEMon | io view | `midilive` | `debug_ioview.go` `ioDevices` key |
+| IEMon | monitor contract | `Entering the monitor freezes every guest CPU and the audio clock; leaving restores the pre-entry audio state unless fa or ta was issued during the session.` | `debug_monitor.go` `freezeMediaOnEntry`/`resumeMediaOnExit`, `debug_commands.go` `cmdFreezeAudio`/`cmdThawAudio` |
 | IEMon | region divergence row | `6502 \| Page-1 stack, 0xF000-0xF0FF direct MMIO, VGA at 0xD700-0xD70D, and ULA at 0xD800-0xD817` | `cpu_six5go2.go` stack/MMIO mapping, `vga_constants.go` `C6502_VGA_*`, `ula_constants.go` `C6502_ULA_BASE` |
 | IEMon | region divergence row | `Z80 \| 0xF000-0xF0FF direct MMIO window and 0xA0-0xAD VGA port range` | `cpu_z80_runner.go` MMIO translation, `vga_constants.go` `Z80_VGA_PORT_*` |

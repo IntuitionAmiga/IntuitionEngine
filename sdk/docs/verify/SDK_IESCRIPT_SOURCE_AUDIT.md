@@ -15,6 +15,7 @@
 | IEScript | api contract | `dbg.history_config([opts]) returns delta_interval, delta_mib, checkpoints, and snapshots` | `script_engine.go` `luaDbgHistoryConfig` return table fields |
 | IEScript | api contract | `dbg.history_horizon() returns snapshots, checkpoints, deltas, capacity, delta_bytes, checkpoint_interval, checkpoint_mib, retained_checkpoints, and devices` | `script_engine.go` `luaDbgHistoryHorizon` table fields |
 | IEScript | api contract | `dbg.mmio_stats() returns rows with start, end, name, reads, and writes` | `script_engine.go` `luaDbgMMIOStats`, `mmio_stats.go` `MMIOStatsSnapshot` |
+| IEScript | api contract | `dbg.open() freezes every CPU and the audio clock; final dbg.close() restores the pre-entry audio state unless fa or ta changed it during the session` | `script_engine.go` `luaDbgOpen`/`luaDbgClose`, `debug_monitor.go` media-freeze entry/exit contract |
 | IEScript | api contract | `media.type() returns sid, psg, ted, ahx, pokey, mod, wav, midi, or none` | `script_engine.go` `mediaTypeToString`, `media_loader.go` MIDI extension detection |
 | IEScript | api contract | `mem.fill(addr, len, value) fills bytes, returns nothing, and requires len >= 0` | `script_engine.go` `luaMemFill` length check and write loop |
 | IEScript | api contract | `mem.read16(addr) returns number and truncates addr to uint32` | `script_engine.go` `luaMemRead16` `uint32(L.CheckInt(1))` |
@@ -25,6 +26,8 @@
 | IEScript | api contract | `mem.write32(addr, value) returns nothing and truncates addr to uint32` | `script_engine.go` `luaMemWrite32` `uint32(L.CheckInt(1))` |
 | IEScript | api contract | `mem.write8(addr, value) returns nothing and truncates addr to uint32` | `script_engine.go` `luaMemWrite8` `uint32(L.CheckInt(1))` |
 | IEScript | api contract | `mem.write_block(addr, bytes) writes a raw byte string and returns nothing` | `script_engine.go` `luaMemWriteBlock` byte loop |
+| IEScript | api contract | `rec.start() and rec.start_screen() follow wall-clock time; after an encoder stall they discard missed video-frame debt and matching oldest buffered audio instead of producing an unbounded catch-up burst` | `video_recorder.go` `loop`/`audioPump`/`sampleRing.discard`, `video_recorder_test.go` discard and cursor-protocol coverage |
+| IEScript | api contract | `rec.start() and rec.start_screen() pump video and audio independently; frozen or unchanged video is held, and audio starvation beyond 500 ms produces silence instead of stalling` | `video_recorder.go` wall-clock `loop`, independent `audioPump`, and `recorderAudioGraceTicks`; `video_recorder_test.go` audio-starvation coverage |
 | IEScript | api contract | `sys.perf_report() returns a string subsystem performance report; it is empty when IE_PERF_ACCT is off or no subsystem counters have recorded work` | `script_engine.go` `luaSysPerfReport`, `perf_accounting_subsys.go` `Report` |
 | IEScript | api contract | `sys.perf_reset() resets subsystem performance counters and returns nothing` | `script_engine.go` `luaSysPerfReset`, `perf_accounting_subsys.go` `Reset` |
 | IEScript | binding | `audio.ahx_is_playing` | `script_engine.go` `registerModules` binding |

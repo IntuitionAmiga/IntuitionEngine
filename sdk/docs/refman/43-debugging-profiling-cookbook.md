@@ -2,6 +2,8 @@
 title: "Debugging and Profiling Cookbook"
 sources:
   - debug_commands.go
+  - debug_monitor.go
+  - debug_monitor_media_freeze_test.go
   - debug_access.go
   - debug_ioview.go
   - debug_ioview_read.go
@@ -102,7 +104,26 @@ Use I/O views after a setup routine and before running the next part of
 the programme. They answer the basic question: did the hardware receive
 the state I meant to write?
 
-## 43.5 Symbols
+## 43.5 Listen While CPUs Are Stopped
+
+Entering IE Mon freezes both the CPUs and the audio clock. Inspect the
+held state first, then use `ta` when you need to hear what the stopped
+programme configured:
+
+```text
+(ie64)> io audio
+(ie64)> ta
+(ie64)> fa
+(ie64)> io audio
+```
+
+While thawed, players and sound engines advance even though the CPUs
+remain stopped. `fa` holds them again for a stable second inspection.
+An explicit `fa` or `ta` becomes the state that remains after monitor
+exit. Finish with `ta` before `x` when sound should continue, or with
+`fa` when it should remain frozen.
+
+## 43.6 Symbols
 
 Symbols let the monitor use names in address expressions:
 
@@ -123,7 +144,7 @@ For PRG-style work, `sym add` is usually enough. The monitor also knows
 how to load label and ELF symbol files, but the reader path in this
 guide does not require those files.
 
-## 43.6 Reverse Step
+## 43.7 Reverse Step
 
 `bs` or `rs` steps backwards through the CPU-local timeline. Use
 `history horizon` when you want to inspect the whole-machine reverse
@@ -140,7 +161,7 @@ Reverse history is a debugging aid. Do not use it as a timing device.
 If the bug depends on an interrupt or a VBlank edge, record the device
 status registers as well as the CPU registers.
 
-## 43.7 Automate A Repro With IE Script
+## 43.8 Automate A Repro With IE Script
 
 This script types a short BASIC programme, waits for output, then asks
 the video module for a frame hash.
@@ -159,7 +180,7 @@ Use this pattern when a bug needs the same setup every time. The script
 does not replace the programme. It presses the keys, waits for the
 machine, and records the observation.
 
-## 43.8 Capture Output
+## 43.9 Capture Output
 
 For terminal repros:
 
@@ -181,7 +202,7 @@ rec.screenshot('frame.png')
 
 The hash is the quick comparison. The screenshot is the human check.
 
-## 43.9 Use Performance Reports Carefully
+## 43.10 Use Performance Reports Carefully
 
 `sys.perf_reset()` and `sys.perf_report()` measure instrumented
 subsystems when performance accounting is active:
@@ -198,7 +219,7 @@ instrumented path ran during the measured span. A non-empty report is a
 guide to where time went. It is not a promise that the same programme
 will take the same time on every machine.
 
-## 43.10 A Practical Debug Order
+## 43.11 A Practical Debug Order
 
 When a programme misbehaves, use this order:
 

@@ -1,6 +1,6 @@
 # IEScript Lua Automation Manual
 
-*Last modified: 2026-07-09*
+*Last modified: 2026-07-11*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
@@ -885,7 +885,7 @@ Monitor/debugger integration. The Machine Monitor is always built into the engin
 
 ### Core
 
-`dbg.open()` - Activate the monitor. Activation freezes the whole machine: every CPU stops and the audio clock freezes with them (deactivation restores the pre-entry audio state). The first nested `dbg.open()` / `dbg.freeze()` held by the script also increments the freeze counter. Further nested opens only increase the script debugger-open count. This is the standard way to enter a debug session from a script. Returns: nothing.
+`dbg.open()` - Activate the monitor. `dbg.open()` freezes every CPU and the audio clock; final `dbg.close()` restores the pre-entry audio state unless `fa` or `ta` changed it during the session. The first nested `dbg.open()` / `dbg.freeze()` held by the script also increments the freeze counter. Further nested opens only increase the script debugger-open count. This is the standard way to enter a debug session from a script. Returns: nothing.
 
 `dbg.close()` - Release one script debugger open. The monitor is deactivated and the script-owned debugger freeze is released only when the nested debugger-open count reaches zero. Extra closes beyond zero are harmless. Returns: nothing.
 
@@ -1424,6 +1424,12 @@ Notes:
 - FFmpeg must be available in `PATH`.
 - Recording uses compositor dimensions/refresh settings.
 - Audio is captured via a sample tap on the sound chip - no double-ticking occurs.
+- `rec.start()` and `rec.start_screen()` pump video and audio independently;
+  frozen or unchanged video is held, and audio starvation beyond 500 ms
+  produces silence instead of stalling.
+- `rec.start()` and `rec.start_screen()` follow wall-clock time; after an encoder
+  stall they discard missed video-frame debt and matching oldest buffered audio
+  instead of producing an unbounded catch-up burst.
 - Resolution is locked for the duration of a recording session.
 - Recording works in headless builds; use the normal `-script render.ies` option on a binary built with the `headless` tag.
 

@@ -212,7 +212,9 @@ inspection:
 
 | Function group | Purpose |
 |----------------|---------|
-| `dbg.open()`, `dbg.close()`, `dbg.is_open()` | Control monitor visibility. |
+| `dbg.open()`, `dbg.close()`, `dbg.is_open()` | Enter, leave, or test the monitor session. |
+| `dbg.freeze()`, `dbg.resume()` | Aliases for `dbg.open()` and `dbg.close()`. |
+| `dbg.freeze_audio()`, `dbg.thaw_audio()` | Change the audio gate during the current script state. |
 | `dbg.step()`, `dbg.continue()`, `dbg.run_until(addr)` | Execution control. |
 | `dbg.set_bp(addr)`, `dbg.clear_bp(addr)`, `dbg.list_bp()` | Breakpoints. |
 | `dbg.set_wp(addr)`, `dbg.clear_wp(addr)`, `dbg.list_wp()` | Watchpoints. |
@@ -234,6 +236,18 @@ inspection:
 
 Fault callbacks receive a table with `cpu_id`, `pc`, `addr`,
 `kind`, and `info` fields.
+
+The first `dbg.open()` or `dbg.freeze()` enters IE Mon, stops every
+guest CPU, and freezes the audio clock. Further nested opens only add
+to the script's open count. Each `dbg.close()` or `dbg.resume()` removes
+one open; the final matching close leaves IE Mon, resumes the CPUs that
+were running, and restores the audio state that existed before entry.
+
+`dbg.freeze_audio()` and `dbg.thaw_audio()` change the audio gate
+directly, but the final close still performs that pre-entry restoration.
+When a script deliberately wants its audio choice to survive monitor
+exit, use `dbg.command("fa")` or `dbg.command("ta")`. Those are explicit
+IE Mon commands and become the new intended state.
 
 The debug module mirrors the monitor where scripts need repeatable
 inspection. `dbg.io_devices()` returns the monitor's named I/O register

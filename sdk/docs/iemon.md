@@ -1,6 +1,6 @@
 # Intuition Engine Machine Monitor
 
-*Last modified: 2026-07-09*
+*Last modified: 2026-07-11*
 
 ## Overview
 
@@ -8,6 +8,8 @@ The Machine Monitor is a built-in hardware-level debugger inspired by the Commod
 
 The monitor works with all six CPU types (IE64, IE32, M68K, Z80, 6502, X86) and handles multi-CPU scenarios, including coprocessors.
 It is also exposed to IEScript Lua via the `dbg.*` API for scripted debugging workflows. See [iescript.md](iescript.md) for the full `dbg.*` module reference.
+
+Entering the monitor freezes every guest CPU and the audio clock; leaving restores the pre-entry audio state unless `fa` or `ta` was issued during the session.
 
 **Availability:** The monitor is part of the engine - no command-line flag is required. The F9 overlay is available when a video backend attaches the monitor; headless builds still use the same monitor core for tests and scripted debugging. If an IEScript Lua REPL is also bound (F8), the monitor takes priority while it is active and F8 is suppressed.
 

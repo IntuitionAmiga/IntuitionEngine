@@ -11,13 +11,12 @@ timeline, save and restore of memory ranges, and a small handful
 of more specialised tools.
 
 You enter the monitor from BASIC by typing `MON` at the prompt
-and leave it by typing `x`. Entering freezes the whole machine:
-every CPU stops and the audio clock stops with them, so the music
-halts mid-note and song positions hold. Leaving resumes what was
-running and returns the audio clock to its pre-entry state. Inside
-the monitor, each line is a command followed by space-separated
-arguments. Numeric arguments default to hexadecimal; prefix them
-with `#` for decimal.
+and leave it by typing `x`. Entering freezes every guest CPU and the
+audio clock, so music halts mid-note and player positions hold. Leaving
+resumes the CPUs that were running and restores the audio clock to its
+pre-entry state. Inside the monitor, each line is a command followed by
+space-separated arguments. Numeric arguments default to hexadecimal;
+prefix them with `#` for decimal.
 
 ## 33.1 General conventions
 
@@ -144,10 +143,11 @@ by the program appear in the first few columns of the first row.
 The `w` line enters bytes. The `d` line proves those bytes decode
 as the intended instructions. The breakpoint stops execution before
 the final self-loop, and the memory dump proves the POKEY frequency
-and control bytes were written. The breakpoint has re-entered the
-monitor, which freezes the audio clock, so type `ta` to hear the
-tone the program set up. If the disassembly does not match the
-chapter transcript, fix the byte listing before running it.
+and control bytes were written. The breakpoint has re-entered IE Mon,
+which freezes the audio clock. Type `ta` to hear the tone that the
+programme configured while the CPUs remain stopped. If the disassembly
+does not match the chapter transcript, fix the byte listing before
+running it.
 
 ### 33.4.2 IE64 assemble workflow
 
@@ -355,12 +355,12 @@ exiting the monitor.
 `fa` and `ta` are **audio-only** controls, not freeze-all aliases.
 To freeze every CPU at once, use `freeze *`.
 
-Entering the monitor freezes the audio clock automatically, so `ta`
-is the command that matters in practice: it lets the machine sound
-while frozen, playing whatever the hardware was last programmed to
-play. Exit restores the pre-entry audio state unless you issued an
-explicit `fa` or `ta` during the session, in which case your command
-stands.
+Entering IE Mon freezes the audio clock automatically. Use `ta` when
+you need to hear the sound hardware while the CPUs remain stopped, and
+`fa` to hold the audio clock again. Leaving the monitor normally
+restores the audio state that existed before entry. If you issue an
+explicit `fa` or `ta` during the session, that command becomes the new
+intended state and remains in effect after exit.
 
 ## 33.10 Save and restore
 

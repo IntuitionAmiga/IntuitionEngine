@@ -108,8 +108,8 @@ var britishEnglishAmericanisms = map[string]string{
 var sdkAuditLastModifiedDates = map[string]string{
 	"sdk/docs/IE64_ISA.md":     "2026-07-09",
 	"sdk/docs/IE32_ISA.md":     "2026-07-09",
-	"sdk/docs/iemon.md":        "2026-07-09",
-	"sdk/docs/iescript.md":     "2026-07-09",
+	"sdk/docs/iemon.md":        "2026-07-11",
+	"sdk/docs/iescript.md":     "2026-07-11",
 	"sdk/docs/architecture.md": "2026-07-11",
 }
 

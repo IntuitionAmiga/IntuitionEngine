@@ -32,7 +32,7 @@ func TestSDKArchitectureSourceInventoryGoldenMatchesSource(t *testing.T) {
 func TestSDKIEMonManualCoverageMatchesSourceInventory(t *testing.T) {
 	doc := readAuditFile(t, "sdk/docs/iemon.md")
 	for _, fact := range sdkIEMonFactsFromSource(t) {
-		if fact.Kind != "command" && fact.Kind != "dispatch alias" && fact.Kind != "command syntax" && fact.Kind != "region divergence row" && fact.Kind != "io view" {
+		if fact.Kind != "command" && fact.Kind != "dispatch alias" && fact.Kind != "command syntax" && fact.Kind != "region divergence row" && fact.Kind != "io view" && fact.Kind != "monitor contract" {
 			continue
 		}
 		if !manualMentionsCodeToken(doc, fact.Name) && !normalizedContains(doc, fact.Name) {
@@ -239,6 +239,22 @@ func sdkIEMonFactsFromSource(t *testing.T) []sdkSourceFact {
 			Evidence: row.evidence,
 		})
 	}
+	monitor := readAuditFile(t, "debug_monitor.go")
+	for _, needle := range []string{
+		"m.audioWasFrozen = m.soundChip.audioFrozen.Swap(true)",
+		"if m.audioCmdInSession",
+		"m.soundChip.audioFrozen.Store(m.audioWasFrozen)",
+	} {
+		if !strings.Contains(monitor, needle) {
+			t.Fatalf("debug_monitor.go media-freeze contract changed; review iemon.md: %s", needle)
+		}
+	}
+	facts = append(facts, sdkSourceFact{
+		Surface:  "IEMon",
+		Kind:     "monitor contract",
+		Name:     "Entering the monitor freezes every guest CPU and the audio clock; leaving restores the pre-entry audio state unless fa or ta was issued during the session.",
+		Evidence: "`debug_monitor.go` `freezeMediaOnEntry`/`resumeMediaOnExit`, `debug_commands.go` `cmdFreezeAudio`/`cmdThawAudio`",
+	})
 	sortSDKSourceFacts(facts)
 	return facts
 }
@@ -317,6 +333,9 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"dbg.history_config([opts]) returns delta_interval, delta_mib, checkpoints, and snapshots", "`script_engine.go` `luaDbgHistoryConfig` return table fields"},
 		{"dbg.mmio_stats() returns rows with start, end, name, reads, and writes", "`script_engine.go` `luaDbgMMIOStats`, `mmio_stats.go` `MMIOStatsSnapshot`"},
 		{"media.type() returns sid, psg, ted, ahx, pokey, mod, wav, midi, or none", "`script_engine.go` `mediaTypeToString`, `media_loader.go` MIDI extension detection"},
+		{"dbg.open() freezes every CPU and the audio clock; final dbg.close() restores the pre-entry audio state unless fa or ta changed it during the session", "`script_engine.go` `luaDbgOpen`/`luaDbgClose`, `debug_monitor.go` media-freeze entry/exit contract"},
+		{"rec.start() and rec.start_screen() follow wall-clock time; after an encoder stall they discard missed video-frame debt and matching oldest buffered audio instead of producing an unbounded catch-up burst", "`video_recorder.go` `loop`/`audioPump`/`sampleRing.discard`, `video_recorder_test.go` discard and cursor-protocol coverage"},
+		{"rec.start() and rec.start_screen() pump video and audio independently; frozen or unchanged video is held, and audio starvation beyond 500 ms produces silence instead of stalling", "`video_recorder.go` wall-clock `loop`, independent `audioPump`, and `recorderAudioGraceTicks`; `video_recorder_test.go` audio-starvation coverage"},
 	} {
 		facts = append(facts, sdkSourceFact{
 			Surface:  "IEScript",
@@ -520,6 +539,8 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"Voodoo texture slots retain immutable uploaded textures by slot identifier; VOODOO_TEX_BIND selects a resident texture for subsequently submitted triangles without another guest-memory transfer, and SYSINFO advertises the slot contract.", "`video_voodoo.go` `VOODOO_TEX_SLOT`/`VOODOO_TEX_UPLOAD`/`VOODOO_TEX_BIND`, `voodoo_constants.go` slot registers, and `sysinfo_mmio.go` `SYSINFO_FEATURE_VOODOO_TEX_SLOTS`"},
 		{"Browser builds use an IE64 WebAssembly bytecode JIT for supported MMU-off integer and FP64 blocks, with interpreter fallback and IE64_WASM_JIT=0 as the runtime disable switch.", "`jit_exec_wasm.go` dispatcher gate, `jit_wasm_runtime.go` `wasmJITEnabled`, and `jit_wasm_ie64_emit.go` opcode translation"},
 		{"Browser FileIO and Bootstrap HostFS use in-memory volumes seeded from web assets, with file contents fetched lazily on first read.", "`file_io_select_wasm.go` asset manifest registration, `file_io_mem.go` lazy fetch path, and `hostfs_select_wasm.go`/`bootstrap_hostfs_mem.go` in-memory HostFS"},
+		{"Recording follows wall-clock time; after an encoder stall the recorder discards missed video-frame debt and matching oldest buffered audio while preserving the newest output batch.", "`video_recorder.go` `loop`/`audioPump`/`sampleRing.discard`, `video_recorder_test.go` discard and cursor-protocol coverage"},
+		{"Video and audio recording pumps are independent; frozen or unchanged video is held, and audio starvation beyond 500 ms produces silence instead of stalling.", "`video_recorder.go` wall-clock `loop`, independent `audioPump`, and `recorderAudioGraceTicks`; `video_recorder_test.go` audio-starvation coverage"},
 		{"CPU wait writes park until the next VBlank edge or a latched RTC_MONO_USEC deadline, capped by a 50 ms safety timeout; reads return 0.", "`cpu_wait_mmio.go` `HandleWrite`/`HandleRead` and `cpuWaitSafetyTimeout`"},
 		{"IE_PERF_ACCT=1 enables per-CPU JIT/interpreter time, instruction, subsystem, and deopt counters; disabled accounting avoids atomic hot-path updates.", "`perf_accounting.go` `PerfAcct`, `perf_accounting_subsys.go` subsystem counters, and `jit_deopt_reasons.go` `DeoptStats`"},
 		{"Deopt reasons are unsupported, helper, mmio, smc, interrupt, cache_pressure, and debug.", "`jit_deopt_reasons.go` `deoptReasonNames`"},

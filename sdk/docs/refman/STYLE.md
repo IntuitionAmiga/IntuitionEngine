@@ -1436,6 +1436,58 @@ Current controlled polish pass:
      targeted PRG checks, strict publication, and PDF generation only
      after the canonical source tree is consistent.
 
+- Execute the post-`b5b368fd` IE Mon media-freeze pass. This pass is
+  limited to the reader-visible monitor and IE Script debugging
+  contract. Do not mention recording implementation, media pumps,
+  encoder settings, sample-ring concurrency, diagnostic memory
+  overrides, websites, host delivery, or other material that is not
+  part of programming and debugging Intuition Engine.
+
+  Canonical sources to check before writing:
+
+  - `debug_monitor.go` for normal activation, breakpoint entry,
+    deactivation, overlay exit, pre-entry audio-state restoration, and
+    explicit in-session audio-command persistence.
+  - `debug_commands.go` for `fa` and `ta` marking an explicit session
+    choice.
+  - `debug_overlay.go` for the shared Escape and command-exit path.
+  - `script_engine.go` for `dbg.open()` and `dbg.freeze()` activation,
+    nested open/close behaviour, and the `dbg.freeze_audio()` and
+    `dbg.thaw_audio()` command paths.
+  - `debug_monitor_media_freeze_test.go` for the executable contract
+    across activation, breakpoint entry, restoration, explicit `fa` or
+    `ta`, and overlay exit.
+
+  Execute this pass in book order:
+
+  1. Chapter 33: state that entering IE Mon freezes all guest CPUs and
+     the audio clock, holding player positions and silencing output.
+     Correct the byte-entry audio workflow so a breakpoint re-entry
+     requires `ta` before the programmed tone can be heard. Explain
+     pre-entry restoration and the persistence of an explicit `fa` or
+     `ta` issued during the session. Keep `freeze *` described as a CPU
+     command, not as another whole-machine monitor entry.
+  2. Chapter 34: state that the first `dbg.open()` or its `dbg.freeze()`
+     alias activates the same monitor freeze. Nested opens do not create
+     additional machine transitions; the final matching close restores
+     the pre-entry audio state. `dbg.freeze_audio()` and
+     `dbg.thaw_audio()` alter the gate during the session but do not
+     override that final restoration. Only monitor `fa` or `ta`, including
+     `dbg.command("fa")` or `dbg.command("ta")`, establishes an audio
+     state that survives monitor exit.
+  3. Chapter 43: add a compact task-first recipe for listening to sound
+     hardware while CPUs remain stopped, using `ta` to run the audio
+     clock and `fa` to hold it again.
+  4. Appendix L: add lookup routes for monitor audio freeze, `fa`, `ta`,
+     `dbg.open`, `dbg.freeze_audio`, and `dbg.thaw_audio`.
+  5. Claim ledger: record the canonical files, reader workflow, expected
+     state transitions, and targeted tests. Supersede the direct edit to
+     `sdk/docs/refman.publish/33-iemon.md` by editing the canonical
+     source and publishing normally.
+  6. Run targeted monitor tests, chapter scans, forbidden-topic and dash
+     scans, strict publication, source/publish comparison, and PDF
+     generation only after the canonical source tree is consistent.
+
 ## Reader Contract
 
 The book is for developing **on Intuition Engine for Intuition Engine**.

@@ -1481,6 +1481,17 @@ an above-4GiB IE64 RAM or CPU-virtual-address API. It supports an F8 REPL for
 interactive debugging, video recording, and direct chip register manipulation.
 Scripts use the `.ies` extension and are loaded via the IE Script Engine.
 
+### Recording Pipeline
+
+Video recording sends compositor frames and 44.1 kHz mono audio to FFmpeg on
+separate pipes. The audio tap observes the mixed output without advancing the
+sound engines a second time. Recording follows wall-clock time; after an encoder
+stall the recorder discards missed video-frame debt and matching oldest buffered
+audio while preserving the newest output batch. This prevents a blocked encoder
+from replaying stale media in an unbounded catch-up burst after it resumes.
+Video and audio recording pumps are independent; frozen or unchanged video is
+held, and audio starvation beyond 500 ms produces silence instead of stalling.
+
 ### IEMon Reverse-Debug Snapshot Contract
 
 IEMon whole-machine snapshots enumerate the monitor CPU registry by stable CPU id and label, so profiles with omitted CPUs or multiple coprocessors restore by identity rather than by CPU type. Shared bus RAM and IE64 backing memory are stored as sparse 4 KiB pages. The reverse-history chain keeps full sparse checkpoints plus page deltas anchored to retained checkpoints; the monitor materialises deltas before `rg` or `rt` applies a restore.

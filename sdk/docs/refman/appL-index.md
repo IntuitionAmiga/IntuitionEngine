@@ -88,10 +88,13 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | DEF / TROFF token collision | Chapter 2, Appendix A |
+| dbg.freeze_audio | Chapter 34 |
 | dbg.history_horizon | Chapter 34 |
 | dbg.io | Chapter 34 |
 | dbg.io_devices | Chapter 34 |
+| dbg.open | Chapter 34 |
 | dbg.save_state | Chapter 34 |
+| dbg.thaw_audio | Chapter 34 |
 | dbg.tracering_show | Chapter 34 |
 | Disk I/O | Chapter 35 |
 | Demo programming | Chapters 45-55 |
@@ -120,6 +123,7 @@ symbols, and Appendix J gives the full memory map.
 | FILE_READ_MAX | Chapter 35, Appendix D, Appendix H |
 | FILE TOO LARGE | Chapter 35, Appendix I |
 | FBZ_MODE | Chapter 9 |
+| fa command | Chapter 33, Chapter 43 |
 | Fixed-point maths | Chapter 4, Chapter 9, Appendix F |
 | Frame loop | Chapter 45 |
 | Frequency tables | Appendix E |
@@ -178,6 +182,7 @@ symbols, and Appendix J gives the full memory map.
 | M68K | Chapter 29, Chapter 31, Chapter 56, Appendix G, Appendix H |
 | M68K flat images | Chapter 29, Appendix H |
 | Machine-code byte entry | Chapters 25-30, Chapter 33 |
+| Monitor audio freeze | Chapter 33, Chapter 34, Chapter 43 |
 | Monitor assemble command | Chapter 25, Chapter 33, Appendix G |
 | Media loader | Chapter 11, Appendix D |
 | MEDIA_TYPE_MIDI | Chapter 21, Chapter 23, Appendix D |
@@ -272,6 +277,7 @@ symbols, and Appendix J gives the full memory map.
 | TED frequency register | Chapter 16, Appendix E |
 | TED_V_RASTER_STATUS | Chapter 6, Appendix D |
 | TED video | Chapter 6, Chapter 30, Appendix D |
+| ta command | Chapter 33, Chapter 43 |
 | TERM_IO_BANK | Chapter 24, Chapter 27, Chapter 28, Appendix H |
 | TERM_SENTINEL | Chapter 38, Appendix D |
 | Texture upload | Chapter 9, Chapter 59 |
