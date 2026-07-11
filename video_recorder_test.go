@@ -257,3 +257,87 @@ func TestVideoRecorder_AudioStarvationDoesNotStallRecording(t *testing.T) {
 	<-pumpDone
 	_ = audioW.Close()
 }
+
+func TestSampleRingDiscardDropsOldestSamples(t *testing.T) {
+	ring := newSampleRing(8)
+	for i := 0; i < 6; i++ {
+		ring.push(float32(i))
+	}
+
+	ring.discard(4, 0)
+
+	if got := ring.available(); got != 2 {
+		t.Fatalf("available after discard = %d, want 2", got)
+	}
+	for _, want := range []float32{4, 5} {
+		got, ok := ring.pop()
+		if !ok || got != want {
+			t.Fatalf("pop after discard = (%v, %v), want (%v, true)", got, ok, want)
+		}
+	}
+}
+
+func TestSampleRingDiscardPreservesNewestBatch(t *testing.T) {
+	ring := newSampleRing(8)
+	for i := 0; i < 8; i++ {
+		ring.push(float32(i))
+	}
+
+	ring.discard(100, 3)
+
+	if got := ring.available(); got != 3 {
+		t.Fatalf("available after oversized discard = %d, want 3", got)
+	}
+	for _, want := range []float32{5, 6, 7} {
+		got, ok := ring.pop()
+		if !ok || got != want {
+			t.Fatalf("pop after oversized discard = (%v, %v), want (%v, true)", got, ok, want)
+		}
+	}
+}
+
+// TestSampleRingCursorProtocolUnderContention pins the read-cursor CAS
+// protocol: the producer's overflow drop, the consumer's pop and the
+// consumer's discard all move the same cursor, and an unconditional store
+// from a stale load can rewind it, resurrecting slots the producer is about
+// to overwrite. The test hammers a full ring from both sides and checks the
+// arithmetic invariants that a rewound cursor breaks; run with -race it
+// also catches any non-atomic access.
+func TestSampleRingCursorProtocolUnderContention(t *testing.T) {
+	ring := newSampleRing(64)
+	capacity := uint32(len(ring.buf))
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		for i := 0; i < 200_000; i++ {
+			ring.push(float32(i))
+		}
+	}()
+
+	violations := 0
+	for alive := true; alive; {
+		select {
+		case <-done:
+			alive = false
+		default:
+		}
+		ring.pop()
+		ring.discard(3, 8)
+		// Consistent snapshot: the invariant only holds for a write cursor
+		// sampled while the read cursor is stable, since the producer moves
+		// both. A cursor pair straddling a concurrent advance is not
+		// evidence of a rewind.
+		rd1 := ring.read.Load()
+		w := ring.writ.Load()
+		rd2 := ring.read.Load()
+		if rd1 == rd2 {
+			if avail := w - rd1; avail > capacity {
+				violations++
+			}
+		}
+	}
+	if violations > 0 {
+		t.Fatalf("read cursor rewound behind the producer %d time(s): available exceeded capacity", violations)
+	}
+}

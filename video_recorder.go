@@ -28,7 +28,11 @@ const (
 )
 
 type sampleRing struct {
-	buf  []float32
+	// Slots hold float32 bits behind atomics: on wraparound the producer
+	// overwrites the slot the consumer may be reading, so the element
+	// access itself must be race-free. A reader that loses that race gets
+	// a coherent neighbouring sample rather than a torn value.
+	buf  []atomic.Uint32
 	mask uint32
 	read atomic.Uint32
 	writ atomic.Uint32
@@ -39,35 +43,66 @@ func newSampleRing(capacity int) *sampleRing {
 	for n < capacity {
 		n <<= 1
 	}
-	return &sampleRing{buf: make([]float32, n), mask: uint32(n - 1)}
+	return &sampleRing{buf: make([]atomic.Uint32, n), mask: uint32(n - 1)}
 }
+
+// The read cursor is shared by three movers: the producer's overflow drop
+// in push, the consumer's pop and the consumer's discard. Every advance
+// therefore goes through compare-and-swap; an unconditional store from a
+// stale load can rewind the cursor past a concurrent advance, resurrecting
+// slots the producer is about to overwrite.
 
 func (r *sampleRing) push(v float32) {
 	w := r.writ.Load()
-	rd := r.read.Load()
-	next := w + 1
-	if next-rd > uint32(len(r.buf)) {
-		r.read.Store(rd + 1)
+	for {
+		rd := r.read.Load()
+		if w-rd < uint32(len(r.buf)) {
+			break
+		}
+		// Full: drop the oldest sample. A failed swap means a concurrent
+		// pop or discard moved the cursor, which also makes space, so
+		// recheck rather than retry blindly.
+		r.read.CompareAndSwap(rd, rd+1)
 	}
-	r.buf[w&r.mask] = v
-	r.writ.Store(next)
+	r.buf[w&r.mask].Store(math.Float32bits(v))
+	r.writ.Store(w + 1)
 }
 
 func (r *sampleRing) pop() (float32, bool) {
-	rd := r.read.Load()
-	w := r.writ.Load()
-	if rd == w {
-		return 0, false
+	for {
+		rd := r.read.Load()
+		if rd == r.writ.Load() {
+			return 0, false
+		}
+		v := math.Float32frombits(r.buf[rd&r.mask].Load())
+		if r.read.CompareAndSwap(rd, rd+1) {
+			return v, true
+		}
 	}
-	v := r.buf[rd&r.mask]
-	r.read.Store(rd + 1)
-	return v, true
 }
 
 func (r *sampleRing) available() uint32 {
 	w := r.writ.Load()
 	rd := r.read.Load()
 	return w - rd
+}
+
+func (r *sampleRing) discard(count uint64, preserve uint32) {
+	for count > 0 {
+		rd := r.read.Load()
+		available := r.writ.Load() - rd
+		if available <= preserve {
+			return
+		}
+		discardable := available - preserve
+		toDiscard := uint32(count)
+		if count >= uint64(discardable) {
+			toDiscard = discardable
+		}
+		if r.read.CompareAndSwap(rd, rd+toDiscard) {
+			return
+		}
+	}
 }
 
 // VideoRecorder captures compositor frames and sound samples to FFmpeg.
@@ -340,26 +375,22 @@ func (r *VideoRecorder) loop(stopCh <-chan struct{}, frameCh <-chan struct{}, sc
 		if !r.running.Load() {
 			return
 		}
-		owed := int64(time.Since(start).Seconds()*float64(fps)) - written
+		target := int64(time.Since(start).Seconds() * float64(fps))
+		owed := target - written
 		if owed <= 0 {
 			continue
 		}
-		// After a long stall (blocked encoder), catch up at most one
-		// second per tick rather than bursting unboundedly.
-		if owed > int64(fps) {
-			owed = int64(fps)
+		// Emit only the current frame. If the encoder blocked, discard the
+		// missed-frame debt so subsequent ticks return to real-time pacing.
+		if useScreen {
+			r.writeFrameData(r.screenBufs[r.screenReadIdx])
+		} else {
+			r.writeFrame()
 		}
-		for i := int64(0); i < owed; i++ {
-			if useScreen {
-				r.writeFrameData(r.screenBufs[r.screenReadIdx])
-			} else {
-				r.writeFrame()
-			}
-			if !r.running.Load() {
-				return
-			}
+		if !r.running.Load() {
+			return
 		}
-		written += owed
+		written = target
 	}
 }
 
@@ -428,9 +459,19 @@ func (r *VideoRecorder) audioPump(stopCh <-chan struct{}, audioW *os.File, ring 
 		if !r.running.Load() {
 			return
 		}
-		owed := int64(time.Since(start).Seconds()*recorderAudioRate) - written
+		target := int64(time.Since(start).Seconds() * recorderAudioRate)
+		owed := target - written
 		if owed <= 0 {
 			continue
+		}
+		// Bound allocation and pipe writes to one pump interval. Any older
+		// samples are dropped below by advancing written to the wall-clock
+		// target, preventing a blocked encoder from creating catch-up debt.
+		maxBatch := int64(recorderAudioRate * recorderAudioPumpTick / time.Second)
+		abandoned := int64(0)
+		if owed > maxBatch {
+			abandoned = owed - maxBatch
+			owed = maxBatch
 		}
 		if haveSound && ring.available() < uint32(owed) {
 			if shortTicks < recorderAudioGraceTicks {
@@ -439,6 +480,13 @@ func (r *VideoRecorder) audioPump(stopCh <-chan struct{}, audioW *os.File, ring 
 			}
 		} else {
 			shortTicks = 0
+		}
+		// Keep audio aligned with the wall-clock timeline: the video pump
+		// drops frames missed during a blocked write, so discard the matching
+		// oldest buffered samples before emitting this current batch. Preserve
+		// the newest batch even when the abandoned interval exceeds ring capacity.
+		if abandoned > 0 {
+			ring.discard(uint64(abandoned), uint32(owed))
 		}
 		buf := make([]byte, owed*2)
 		for i := int64(0); i < owed; i++ {
@@ -464,7 +512,7 @@ func (r *VideoRecorder) audioPump(stopCh <-chan struct{}, audioW *os.File, ring 
 			}
 			return
 		}
-		written += owed
+		written = target
 	}
 }
 
