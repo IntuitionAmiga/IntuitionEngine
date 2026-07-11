@@ -293,9 +293,12 @@ symbols, and Appendix J gives the full memory map.
 | Voodoo state binding | Chapter 9, Appendix D |
 | Voodoo status bits | Chapter 9, Appendix D |
 | Voodoo swap pipeline | Chapter 9, Appendix D |
+| Voodoo texture slots | Chapter 9, Chapter 24, Chapter 59, Chapter 63, Appendix D, Appendix H |
 | VOODOO_CMD_COUNT | Chapter 9, Appendix D, Appendix H |
 | VOODOO_CMD_PTR | Chapter 9, Appendix D, Appendix H |
 | VOODOO_CMD_SUBMIT | Chapter 9, Appendix D, Appendix H |
+| VOODOO_TEX_BIND | Chapter 9, Appendix D, Appendix H |
+| VOODOO_TEX_SLOT | Chapter 9, Appendix D, Appendix H |
 | VRAM | Chapter 3, Chapter 4, Chapter 24, Appendix J |
 
 ## W

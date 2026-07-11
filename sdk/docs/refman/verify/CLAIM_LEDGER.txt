@@ -1024,3 +1024,12 @@ Entry format:
   Expected result: `TERM_KEY_STATUS` reports the raw key queue, `TERM_KEY_IN` consumes one raw key byte, `ANTIC_NMIST` clears after any write, and the TnL case study points to an IE64 coprocessor worker without implying a Voodoo TnL unit.
   Author verification workflow: updated STYLE.md before reader-facing edits, checked the code paths named above, corrected source chapters and Appendix L, then regenerated the publish tree and PDFs after scans.
   Result: the correction pass keeps the PRG aligned with code on disk and expands the index for the newly added chapters without adding non-PRG material.
+
+- Area: Voodoo retained texture slots, Chapters 9, 24, 59, and 63; Appendices D, H, and L.
+  Claim: `VOODOO_TEX_SLOT` at `$F8350` selects an identifier from `0` through `65535` that the next valid upload retains; `$FFFFFFFF` disables retention. `VOODOO_TEX_BIND` at `$F8354` makes an existing retained texture current without another texel transfer. Invalid selections and empty binds preserve prior state, submitted triangles keep their bound texture, and bit `3` of `SYSINFO_FEATURES` advertises the contract.
+  Canonical sources checked: voodoo_constants.go, video_voodoo.go, registers.go, sysinfo_mmio.go, sdk/include/ie64.inc, sdk/include/ie32.inc, sdk/include/ie65.inc, sdk/include/ie80.inc, sdk/include/ie68.inc, sdk/include/ie86.inc, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_mmio.h.
+  Reader workflow: check `PEEK32(&H000F2410) AND 8`, select a slot with `POKE32 &H000F8350,id`, upload the texture normally, and later switch with `POKE32 &H000F8354,id`.
+  Runnable example: Chapter 9, "Retaining and binding two textures", uploads red and green one-texel textures into slots `0` and `1`, binds each slot, and draws one visible triangle with each retained texture.
+  Expected result: a red triangle appears on the left and a green triangle appears on the right; the bind operations do not rewrite texture memory or issue another upload.
+  Author verification workflow: checked register addresses and feature bits against source-owned constants and handlers; checked copy, range, replacement, empty-bind, and triangle-binding behaviour in `video_voodoo.go`; checked the case-study generation and fallback path in `ie_gfx_voodoo.c`; added matching symbols in every public CPU include file.
+  Result: the PRG and all six assembly include surfaces now expose the same retained-texture contract without documenting host or backend internals.

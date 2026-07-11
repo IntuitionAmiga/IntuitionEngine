@@ -1737,10 +1737,11 @@ gtia_setpf3       macro   color
 ;   move.l  #0,VOODOO_SWAP_BUFFER_CMD     ; Present frame
 
 ; SysInfo and CPU wait MMIO constants
-SYSINFO_FEATURES      equ $F2410            ; Feature bitmap: bit0 wait, bit1 Voodoo CMD, bit2 MMIO stats
+SYSINFO_FEATURES      equ $F2410            ; Feature bitmap: bit0 wait, bit1 Voodoo CMD, bit2 MMIO stats, bit3 Voodoo texture slots
 SYSINFO_FEATURE_WAIT  equ $00000001
 SYSINFO_FEATURE_VOODOO_CMD_STREAM equ $00000002
 SYSINFO_FEATURE_MMIO_STATS equ $00000004
+SYSINFO_FEATURE_VOODOO_TEX_SLOTS equ $00000008
 CPU_WAIT_VBLANK       equ $F2580            ; Park until next VBlank rising edge
 CPU_WAIT_UNTIL_LO     equ $F2584            ; Low 32 bits of RTC_MONO_USEC deadline
 CPU_WAIT_UNTIL_HI     equ $F2588            ; High 32 bits of RTC_MONO_USEC deadline
@@ -1816,6 +1817,9 @@ VOODOO_CMD_COUNT      equ $F8340            ; Command stream addr/value pair cou
 VOODOO_CMD_SUBMIT     equ $F8344            ; Write 1 to replay command stream
 VOODOO_TEX_SRC_PTR    equ $F8348            ; Guest RAM texture upload pointer
 VOODOO_TEX_SRC_BYTES  equ $F834C            ; Guest RAM texture upload byte count
+VOODOO_TEX_SLOT       equ $F8350            ; Slot retained by the next texture upload
+VOODOO_TEX_BIND       equ $F8354            ; Bind a retained texture slot
+VOODOO_TEX_SLOT_NONE  equ $FFFFFFFF         ; Disable slot retention for later uploads
 VOODOO_TEXMEM_BASE    equ $D0000            ; Texture memory base (64KB)
 VOODOO_TEXMEM_SIZE    equ $10000            ; Texture memory size
 VOODOO_PALETTE_BASE   equ $F8400            ; Texture palette base

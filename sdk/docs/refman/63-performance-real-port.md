@@ -50,7 +50,9 @@ paths, audio shadowing, and coprocessor batching visible.
 
 Several optimisations preserve the same visible behaviour:
 
-- Keep texture copies in high RAM and stream them when selected.
+- Keep texture copies in high RAM, retain uploaded generations in
+  Voodoo slots, and bind unchanged generations by identifier;
+  retransmit them when slots are not available.
 - Submit Voodoo register writes through a command stream.
 - Avoid rewriting unchanged audio voice fields.
 - Batch transform and lighting work.

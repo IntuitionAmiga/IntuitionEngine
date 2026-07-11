@@ -105,11 +105,21 @@ var britishEnglishAmericanisms = map[string]string{
 	"organized":      "organised",
 }
 
-const sdkAuditLastModifiedDate = "2026-07-09"
+var sdkAuditLastModifiedDates = map[string]string{
+	"sdk/docs/IE64_ISA.md":     "2026-07-09",
+	"sdk/docs/IE32_ISA.md":     "2026-07-09",
+	"sdk/docs/iemon.md":        "2026-07-09",
+	"sdk/docs/iescript.md":     "2026-07-09",
+	"sdk/docs/architecture.md": "2026-07-11",
+}
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
-	needle := "*Last modified: " + sdkAuditLastModifiedDate + "*"
 	for _, path := range sdkAuditDocs {
+		expectedDate, ok := sdkAuditLastModifiedDates[path]
+		if !ok {
+			t.Fatalf("%s has no expected last-modified date", path)
+		}
+		needle := "*Last modified: " + expectedDate + "*"
 		text := readAuditFile(t, path)
 		lines := strings.Split(text, "\n")
 		limit := min(12, len(lines))
@@ -3315,7 +3325,8 @@ func TestSDKCompanionDocs_ArchitectureVoodooStateBindingMatchesSource(t *testing
 		"case VOODOO_FBZ_MODE, VOODOO_ALPHA_MODE, VOODOO_FBZCOLOR_PATH,",
 		"VOODOO_TEXTURE_MODE, VOODOO_FOG_MODE, VOODOO_FOG_COLOR,",
 		"VOODOO_CHROMA_KEY, VOODOO_CHROMA_RANGE, VOODOO_STIPPLE,",
-		"VOODOO_CLIP_LEFT_RIGHT, VOODOO_CLIP_LOW_Y_HIGH, VOODOO_TEX_UPLOAD:",
+		"VOODOO_CLIP_LEFT_RIGHT, VOODOO_CLIP_LOW_Y_HIGH, VOODOO_TEX_UPLOAD,",
+		"VOODOO_TEX_BIND:",
 		"return addr >= VOODOO_DRDX && addr <= VOODOO_DWDY",
 		"func (v *VoodooEngine) captureRasterStateLocked() *VoodooRasterState",
 		"Texture:          v.currentTexture,",

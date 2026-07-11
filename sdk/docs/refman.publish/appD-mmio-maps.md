@@ -425,7 +425,7 @@ Extended monitor block (`$F23B0`-`$F23BF`):
 | `+$04` | `SYSINFO_TOTAL_RAM_HI`. |
 | `+$08` | `SYSINFO_ACTIVE_RAM_LO`. |
 | `+$0C` | `SYSINFO_ACTIVE_RAM_HI`. |
-| `+$10` | `SYSINFO_FEATURES`: bit `0` CPU Wait, bit `1` Voodoo command stream, bit `2` MMIO stats enabled. |
+| `+$10` | `SYSINFO_FEATURES`: bit `0` CPU Wait, bit `1` Voodoo command stream, bit `2` MMIO stats enabled, bit `3` Voodoo texture slots. |
 | `+$14` | `SYSINFO_LOW_WINDOW_LO`. |
 | `+$18` | `SYSINFO_LOW_WINDOW_HI`. |
 
@@ -484,3 +484,16 @@ big-endian 32-bit values. Replay uses the same register path as
 ordinary Voodoo writes. Misaligned addresses, out-of-range addresses,
 and writes back to the command-stream control registers are skipped.
 The maximum count is `65536` pairs.
+
+Retained texture-slot registers:
+
+| Address | Register |
+|---------|----------|
+| `$F8350` | `VOODOO_TEX_SLOT`, identifier retained by the next texture upload. |
+| `$F8354` | `VOODOO_TEX_BIND`, make a retained texture current without another texel transfer. |
+
+Slot identifiers `0` through `65535` are valid. Writing `$FFFFFFFF` to
+`VOODOO_TEX_SLOT` disables retention for later uploads. An invalid slot
+selection or a bind to an empty slot leaves the previous selection or
+current texture unchanged. Test bit `3` of `SYSINFO_FEATURES` before
+using this extension.

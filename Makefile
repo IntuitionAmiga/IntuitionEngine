@@ -634,11 +634,10 @@ headless-novulkan: setup aot-runtime-blob
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM (headless-novulkan) build complete"
 
-# --- WebAssembly demo (interpreter-only IE64 BASIC in the browser) ----------
-# The js/wasm target has no JIT (jitAvailable is false) and no Vulkan (the
-# Vulkan files carry a !js constraint, so the software Voodoo rasteriser is
-# used); every CPU runs its interpreter. GOEXPERIMENT=none because the simd
-# experiment is amd64 only. See sdk/docs/wasm.md.
+# --- WebAssembly demo (IE64 BASIC in the browser) ----------------------------
+# The js/wasm target uses the IE64 WebAssembly bytecode JIT with interpreter
+# fallback and the software Voodoo rasteriser. GOEXPERIMENT=none because the
+# simd experiment is amd64 only.
 WASM_DEMO_DIR := intuitionengine.com/demo
 WASM_BINARY   := $(WASM_DEMO_DIR)/ie.wasm
 WASM_TAGS     := embed_basic
@@ -676,7 +675,7 @@ web-demos:
 	@echo "  $$(grep -vc '^$$' intuitionengine.com/assets/MANIFEST 2>/dev/null || echo 0) file(s) in the assets disk volume"
 
 wasm: setup aot-runtime-blob web-demos
-	@echo "Building WebAssembly demo (interpreter-only IE64 BASIC)..."
+	@echo "Building WebAssembly demo (IE64 BASIC with wasm JIT)..."
 	@mkdir -p $(WASM_DEMO_DIR)
 	$(WASM_GOENV) $(GO) build -ldflags "-s -w" -tags "$(WASM_TAGS)" -o $(WASM_BINARY) .
 	@cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_DEMO_DIR)/wasm_exec.js

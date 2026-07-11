@@ -15,6 +15,9 @@ sources:
   - cpu_z80_runner.go
   - cpu_m68k.go
   - cpu_x86.go
+  - voodoo_constants.go
+  - registers.go
+  - sysinfo_mmio.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -150,6 +153,8 @@ mechanism described in Chapters 27 and 28.
 | `$F2320`  | RUN loader block. |
 | `$F2340`  | Coprocessor. |
 | `$F2400`  | SysInfo. |
+| `$F2410` | `SYSINFO_FEATURES`; bit `3`, `SYSINFO_FEATURE_VOODOO_TEX_SLOTS`, reports retained Voodoo texture slots. |
 | `$F2414`/`$F2418` | `SYSINFO_LOW_WINDOW_LO` / `SYSINFO_LOW_WINDOW_HI`, dense low-RAM window size. |
 | `$F8000`  | Voodoo 3D. |
 | `$F833C`/`$F8340`/`$F8344` | `VOODOO_CMD_PTR` / `VOODOO_CMD_COUNT` / `VOODOO_CMD_SUBMIT`, Voodoo command-stream replay. |
+| `$F8350`/`$F8354` | `VOODOO_TEX_SLOT` / `VOODOO_TEX_BIND`, retain an upload by identifier and bind it again. `VOODOO_TEX_SLOT_NONE` is `$FFFFFFFF`. |

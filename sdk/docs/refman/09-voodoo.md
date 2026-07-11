@@ -3,6 +3,8 @@ title: "Voodoo 3D Rasteriser"
 sources:
   - voodoo_constants.go
   - video_voodoo.go
+  - registers.go
+  - sysinfo_mmio.go
   - voodoo_software.go
   - sdk/include/ehbasic_hw_voodoo.inc
 ---
@@ -388,6 +390,8 @@ stipple word lets every pixel through.
 | `$F8338`  | `TEX_UPLOAD`      | Commit texture memory to the sampler. |
 | `$F8348`  | `TEX_SRC_PTR`     | Guest RAM bulk texture source. |
 | `$F834C`  | `TEX_SRC_BYTES`   | Bulk texture source byte count. |
+| `$F8350`  | `TEX_SLOT`        | Select the slot retained by the next upload. |
+| `$F8354`  | `TEX_BIND`        | Make a retained slot the current texture. |
 | `$F8400` to `$F87FF` | `PALETTE_BASE` | 256 texture palette entries. |
 
 `TEXTURE_MODE` bits:
@@ -438,6 +442,27 @@ exceeds `64` KB.
 submissions. A triangle samples the texture that was current when
 `TRIANGLE_CMD` queued it. Uploading a different texture afterwards does
 not change triangles already in the queue.
+
+Texture slots avoid uploading the same texture every time a programme
+switches back to it. First check bit `3` of `SYSINFO_FEATURES` at
+`$F2410`. When that bit is set:
+
+1. Write a slot identifier from `0` through `65535` to `TEX_SLOT`.
+2. Fill texture memory or set up a bulk source as usual.
+3. Write `TEX_UPLOAD`. Voodoo makes a private retained copy under the
+   selected identifier and also makes it the current texture.
+4. Write `$FFFFFFFF` to `TEX_SLOT` when later uploads should not replace
+   a retained slot.
+5. Write an identifier to `TEX_BIND` to make that retained texture
+   current again without transferring its texels.
+
+The slot selection remains in force until it is changed. A later upload
+with the same identifier replaces that slot. Writing an identifier
+greater than `65535`, except for `$FFFFFFFF`, leaves the selection
+unchanged. Binding an empty or out-of-range slot leaves the current
+texture unchanged. There is no completion flag because retaining and
+binding happen as part of the register write. A triangle already queued
+keeps the texture that was current when it was submitted.
 
 ## 9.8 Colour pipeline
 
@@ -570,7 +595,66 @@ a triangle.
 T. The texture words are written as little-endian RGBA texels. Expected
 result: the triangle samples red, green, blue, and white texels.
 
-### 9.9.4 Linear aperture inspection
+### 9.9.4 Retaining and binding two textures
+
+This example uploads one red texel into slot `0` and one green texel
+into slot `1`. It then binds each retained texture before submitting a
+triangle. The second switch does not rewrite texture memory and does not
+issue another `TEXTURE UPLOAD`.
+
+```basic
+10 REM VOODOO TEXTURE SLOTS
+20 F=PEEK32(&H000F2410)
+30 IF (F AND 8)=0 THEN 420
+40 VOODOO ON
+50 VOODOO DIM 640,480
+60 POKE32 &H000F8110,&H00008200
+70 VOODOO CLEAR &HFF080808
+80 TEXTURE DIM 1,1
+90 TEXTURE MODE &H0A61
+100 POKE32 &H000F8350,0
+110 POKE32 &H000D0000,&HFF0000FF
+120 TEXTURE UPLOAD
+130 POKE32 &H000F8350,1
+140 POKE32 &H000D0000,&HFF00FF00
+150 TEXTURE UPLOAD
+160 POKE32 &H000F8350,&HFFFFFFFF
+170 TEXTURE ON
+180 VOODOO COMBINE 1
+190 POKE32 &H000F8354,0
+200 VERTEX A 70,100
+210 VERTEX B 300,100
+220 VERTEX C 185,400
+230 POKE32 &H000F8088,0
+240 VOODOO TRIUV 0,0,0,0,0,0
+250 POKE32 &H000F8088,1
+260 VOODOO TRIUV 0,0,0,0,0,0
+270 POKE32 &H000F8088,2
+280 VOODOO TRIUV 0,0,0,0,0,0
+290 TRIANGLE
+300 POKE32 &H000F8354,1
+310 VERTEX A 340,100
+320 VERTEX B 570,100
+330 VERTEX C 455,400
+340 POKE32 &H000F8088,0
+350 VOODOO TRIUV 0,0,0,0,0,0
+360 POKE32 &H000F8088,1
+370 VOODOO TRIUV 0,0,0,0,0,0
+380 POKE32 &H000F8088,2
+390 VOODOO TRIUV 0,0,0,0,0,0
+400 TRIANGLE
+410 VOODOO SWAP:GOTO 430
+420 PRINT "TEXTURE SLOTS REQUIRED"
+430 REM DONE
+```
+
+Lines `100` through `150` create the two retained textures. Line `160`
+prevents an unrelated later upload from replacing slot `1`. Lines `190`
+and `300` perform the texture switches. Expected result: a solid red
+triangle appears on the left and a solid green triangle appears on the
+right.
+
+### 9.9.5 Linear aperture inspection
 
 `VOODOO PIXEL` writes a 32-bit word into the texture/LFB aperture. It
 is useful for building texture memory and for checking address maths.
@@ -586,7 +670,7 @@ is useful for building texture memory and for checking address maths.
 The printed value is `42`, because `(5 * 320 + 10) * 4` is `6440`,
 and `$D0000 + 6440` is `$D1928`.
 
-### 9.9.5 Alpha, fog, chroma key, and dither
+### 9.9.6 Alpha, fog, chroma key, and dither
 
 This draws translucent fogged colour over a green keyed triangle. The
 green triangle is discarded by the chroma key; the magenta triangle is
@@ -640,6 +724,8 @@ Voodoo has these programming boundaries:
 | `SWAP_BUFFER_CMD` bit `1` | Clears the drawing buffer after the swap using current `COLOR0`. |
 | `POKE8` to registers | Updates the shadow byte immediately, but command side effects run only when byte `3` of the word is written. |
 | Texture upload | Copies `w * h * 4` bytes from `$D0000` if the size fits in `64` KB. |
+| Texture slot store | A selected identifier from `0` through `65535` retains a private copy when `TEX_UPLOAD` is written. `$FFFFFFFF` disables retention. |
+| Texture slot bind | Makes an existing retained texture current without another texel transfer. An empty or out-of-range identifier leaves the current texture unchanged. |
 | Command stream | Replays up to `65536` big-endian address/value pairs from guest RAM through the normal Voodoo register path. |
 | Texture sampling | Uses point sampling, with wrap by default and clamp when `CLAMP_S` or `CLAMP_T` is set. |
 | Chroma key | Discards a final pixel colour that matches the key or keyed range. |

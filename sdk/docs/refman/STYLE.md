@@ -1382,6 +1382,60 @@ Current controlled polish pass:
   6. Run forbidden-topic scans, dash scans, source/publish consistency
      checks, then publish and print PDFs.
 
+- Execute the post-`771fad88` Voodoo texture-slot pass. This pass is
+  limited to the guest-visible texture residency contract and its
+  discoverable SysInfo feature bit. Do not mention browser execution,
+  host SIMD, frame publication internals, backend caches, diagnostic
+  environment variables, websites, deployment, or other material that
+  is not part of programming Intuition Engine.
+
+  Canonical sources to check before writing:
+
+  - `voodoo_constants.go` for `VOODOO_TEX_SLOT` at `$F8350` and
+    `VOODOO_TEX_BIND` at `$F8354`.
+  - `video_voodoo.go` for slot selection, the `0` through `65535`
+    identifier range, `$FFFFFFFF` no-slot selection, upload-time
+    immutable texture retention, bind behaviour, empty-slot behaviour,
+    and triangle state binding.
+  - `registers.go` and `sysinfo_mmio.go` for
+    `SYSINFO_FEATURE_VOODOO_TEX_SLOTS` at bit `3` of
+    `SYSINFO_FEATURES`.
+  - `../mk64-ie/ie/ie_gfx_voodoo.c` and
+    `../mk64-ie/ie/ie_mmio.h` only for the Part VIII case-study use of
+    feature detection, generation-aware upload, and bind-by-identifier.
+  - `sdk/include/ie64.inc`, `sdk/include/ie32.inc`,
+    `sdk/include/ie65.inc`, `sdk/include/ie80.inc`,
+    `sdk/include/ie68.inc`, and `sdk/include/ie86.inc` for the public
+    assembly symbols. Add the feature bit, both register symbols, and
+    the no-slot value in each assembler's native notation. Preserve the
+    6502 include's bank-page convention and provide explicit low-byte
+    offsets for the two registers.
+
+  Execute this pass in book order after the shared include symbols are
+  verified:
+
+  1. Chapter 9: add the two texture-slot registers, feature detection,
+     setup order, lifetime and state-binding rules, invalid and empty
+     slot behaviour, limits, and an explained IE-native BASIC example
+     that stores and rebinds visible textures without a second upload.
+  2. Chapter 24: add `SYSINFO_FEATURES` to the system-information table
+     and define bits `0` through `3`; correct the prose count so it
+     matches the seven implemented read-only words.
+  3. Chapter 59: describe the case-study's generation-aware first
+     upload, later bind, and feature-bit fallback without introducing a
+     repository or host-tool reader path.
+  4. Chapter 63: describe texture-slot residency as a measured traffic
+     reduction, while retaining retransmission as the fallback.
+  5. Appendices D, H, and L: add the compact SysInfo, register, symbol,
+     and lookup entries. Appendix J needs no new row because the Voodoo
+     register range is unchanged.
+  6. Claim ledger: record the canonical implementation files, the
+     include-symbol verification, the reader workflow, and the exact
+     example used.
+  7. Run include consistency checks, forbidden-topic and dash scans,
+     targeted PRG checks, strict publication, and PDF generation only
+     after the canonical source tree is consistent.
+
 ## Reader Contract
 
 The book is for developing **on Intuition Engine for Intuition Engine**.

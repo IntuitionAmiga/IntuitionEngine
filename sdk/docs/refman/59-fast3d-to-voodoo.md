@@ -61,14 +61,19 @@ IE 3D card receiving work through its register path.
 ## 59.3 Texture Upload
 
 The port keeps CPU-side copies of textures in a high-RAM texture store.
-When a texture is needed by Voodoo, the adapter streams it into the
-Voodoo texture window. The checked engine also exposes a bulk texture
-upload extension, so a whole ARGB8888 image can be copied from guest RAM
-instead of being written one word at a time.
+It checks `SYSINFO_FEATURES` before using retained Voodoo texture slots.
+The first use of a texture generation selects a slot and uploads the
+ARGB8888 image. A later switch back to the same unchanged generation
+writes its identifier to `VOODOO_TEX_BIND`; the texels do not cross the
+bus again. Changing the texture creates a new generation and causes a
+fresh upload into that slot.
 
-That optimisation keeps the same visible contract. Texture pixels still
-belong to the guest. Voodoo still consumes its texture window. Only the
-transfer path changes.
+The bulk texture-upload extension lets the first upload copy the whole
+image from guest RAM instead of writing one word at a time. If retained
+slots are unavailable, the adapter falls back to uploading the selected
+texture again. These optimisations preserve the same visible contract:
+texture pixels belong to the guest, and each submitted triangle binds
+the texture that is current at submission time.
 
 ## 59.4 Command Streams
 

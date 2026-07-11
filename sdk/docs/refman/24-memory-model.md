@@ -297,8 +297,8 @@ detail. Chapter 38 covers the serial interface that overlays
 
 ## 24.5 The system-information block
 
-`$F2400`-`$F24FF`. Six read-only words let a program discover
-how much memory it has to play with:
+`$F2400`-`$F24FF`. Seven read-only words let a programme discover
+available memory and optional machine features:
 
 | Address    | Name                  | Description                       |
 |------------|-----------------------|-----------------------------------|
@@ -306,6 +306,7 @@ how much memory it has to play with:
 | `$F2404`  | `SYSINFO_TOTAL_RAM_HI`| High `32` bits of total RAM       |
 | `$F2408`  | `SYSINFO_ACTIVE_RAM_LO`| Low `32` bits of RAM visible to the active CPU |
 | `$F240C`  | `SYSINFO_ACTIVE_RAM_HI`| High `32` bits of CPU-visible RAM |
+| `$F2410`  | `SYSINFO_FEATURES`     | Guest-visible feature bitmap |
 | `$F2414`  | `SYSINFO_LOW_WINDOW_LO`| Low `32` bits of the dense low RAM window |
 | `$F2418`  | `SYSINFO_LOW_WINDOW_HI`| High `32` bits of the dense low RAM window |
 
@@ -316,6 +317,18 @@ The low-window value is different again. It tells software how much
 contiguous low RAM is backed by the ordinary low address path. Use it
 when a buffer must be reachable by a `32`-bit image, a compatibility
 CPU, or a device register that stores a low-window pointer.
+
+`SYSINFO_FEATURES` bits:
+
+| Bit | Value | Feature |
+|-----|-------|---------|
+| `0` | `$00000001` | CPU Wait registers. |
+| `1` | `$00000002` | Voodoo command streams. |
+| `2` | `$00000004` | MMIO statistics are enabled. |
+| `3` | `$00000008` | Voodoo retained texture slots. |
+
+Test a feature bit before using its optional register contract. Chapter
+9 shows this check before retaining and binding Voodoo textures.
 
 Type this to print both low words. On machines with more than 4 GB, the
 high words at lines 30 and 50 are non-zero.

@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-09*
+*Last modified: 2026-07-11*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -744,12 +744,18 @@ build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
 | `novulkan` | `-tags novulkan` | Voodoo uses the software backend and does not require the Vulkan SDK. Guest Voodoo registers remain mapped. |
 | `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
 | `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
-| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | Interpreter-only build for the website demo. Ebiten renders to a WebGL canvas and Oto plays through WebAudio. No JIT (the browser provides no executable memory), Vulkan is excluded by `!js` build constraints, and guest RAM is a fixed 256 MiB heap backing. The FileIO and HostFS devices run against an in-memory volume seeded from the web server's assets folder over HTTP, with file contents fetched lazily on first read, so `DIR`, `LOAD`, `SAVE`, `BLOAD`, `SOUND PLAY` and `RUN "file.ie64"` work as on native. CPU interpreter loops call a cooperative yield every 4096 instructions so the browser event loop keeps running on the single wasm thread. See `wasm.md`. |
+| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE64 uses a WebAssembly bytecode JIT for supported MMU-off integer and FP64 blocks, with interpreter fallback for unsupported instructions; the other CPU cores interpret. `IE64_WASM_JIT=0` disables the browser JIT. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
 
 Headless stubs should be treated as backend substitutes, not as a different
 machine model. A test can still write video or audio MMIO and inspect guest
 state, but there is no host window, host audio device, or GUI overlay to observe
 the result directly.
+
+Browser builds use an IE64 WebAssembly bytecode JIT for supported MMU-off
+integer and FP64 blocks, with interpreter fallback and `IE64_WASM_JIT=0` as the
+runtime disable switch. Browser FileIO and Bootstrap HostFS use in-memory
+volumes seeded from web assets, with file contents fetched lazily on first
+read.
 
 ## 3. CPU Subsystem
 
@@ -1026,6 +1032,8 @@ band writes through bus memory aggregate backing invalidation per row.
 ### Voodoo 3D State Binding
 
 Voodoo triangle submission is state-machine driven. A write that commits `VOODOO_TRIANGLE_CMD` binds the current Voodoo raster state to that triangle: `VOODOO_FBZ_MODE`, `VOODOO_ALPHA_MODE`, `VOODOO_FBZCOLOR_PATH`, `VOODOO_TEXTURE_MODE`, fog state, chroma key, stipple, clip rectangle, slope registers, and the currently uploaded texture. Later register writes or texture uploads do not affect already submitted triangles. `VOODOO_SWAP_BUFFER_CMD` may flush the queued batch later, but the batch is rasterised in triangle submission order using each triangle's bound state.
+
+Voodoo texture slots retain immutable uploaded textures by slot identifier; `VOODOO_TEX_BIND` selects a resident texture for subsequently submitted triangles without another guest-memory transfer, and SYSINFO advertises the slot contract. Write the slot identifier to `VOODOO_TEX_SLOT` before `VOODOO_TEX_UPLOAD` to retain that upload. Binding an empty or out-of-range slot leaves the current texture unchanged. The `SYSINFO_FEATURE_VOODOO_TEX_SLOTS` bit identifies machines that implement these registers.
 
 Consecutive triangles may share an internal state snapshot until a raster-state register or texture upload changes; that sharing is not guest-visible. Fog-table and palette raster lookups remain compatibility-pending. The software backend is the conformance reference; it rasterises each flush from per-flush copies of the bound snapshots under a framebuffer lock, so live raster-state register writes are never blocked by an in-flight raster. Vulkan renders multi-state frames natively by binding each snapshot's pipeline, scissor, push constants, and texture per state group inside one command buffer, and is the only render path in windowed builds: the software rasteriser is the headless build's renderer and the conformance reference, never a runtime fallback. Flushes that arrive without a guest clear render standalone under the clear pass by default; an experimental load-op render pass variant (IE_VOODOO_LOAD_PASS=1) composites them over the previous GPU frame. Pipeline or descriptor creation failures drop the frame and log the error rather than silently downgrading.
 
