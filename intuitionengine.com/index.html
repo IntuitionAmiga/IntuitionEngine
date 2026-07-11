@@ -826,7 +826,8 @@
         <h1>Intuition Engine</h1>
         <p class="tagline">Six rival home computers on one bus.</p>
         <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit machines from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, with a touch of SNES-style Mode 7 affine texturing and a 3DFX Voodoo thrown in, rebuilt on a single shared bus.</p>
-        <p class="lead">A 6502 can play a SID tune while an x86 draws Atari ANTIC graphics or a 68020 drives a copper down PC VGA modes; all six architectures live on the same bus at once, in combinations no silicon ever shipped. Which chips your demo runs on is your call. The whole machine is free and open source.</p>
+        <p class="lead">A 6502 can play a SID tune while an x86 draws Atari ANTIC graphics or a 68020 drives a copper down PC VGA modes; all six architectures live on the same bus at once, in combinations no silicon ever shipped. The whole machine is free and open source.</p>
+        <p class="lead">It is two things at once: a demoscene platform built on hardware combinations that never existed on any real board, and a home computer waiting for its first generation of programmers, where you learn game and demo programming from scratch, on the machine, for the machine. I have been building it since 1992, for the people who still write a rotozoomer by hand and for the people about to write their first.</p>
         <div class="actions">
           <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
           <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
@@ -1084,6 +1085,27 @@ SOUND PLAY "SONG.MID"</code></pre>
           <h3>The manual that comes in the box</h3>
           <p>The 8-bit Commodore under the Christmas tree in 1988 came with a manual that assumed an eleven-year-old could learn to program the machine, and it was right. This guide is written in that spirit: for kids starting from nothing, for sceners who want every register, and for anyone who wants to learn game and demo programming from scratch, on the machine, for the machine.</p>
         </article>
+
+        <div class="grid two" style="margin-bottom: 1rem">
+          <article class="card">
+            <span class="kicker">Never programmed before</span>
+            <h3>Five milestones, not sixty-five chapters</h3>
+            <p>You do not read the whole book first. You climb it, one finished thing at a time:</p>
+            <ol>
+              <li>First command: Chapter 1 starts you at the Ready prompt.</li>
+              <li>First picture on screen: Chapters 3 and 4.</li>
+              <li>First moving effect: Chapter 45, Your First Frame Loop.</li>
+              <li>First effect locked to music: Chapter 52.</li>
+              <li>First complete intro: Chapter 54.</li>
+            </ol>
+            <p>Everything between the milestones is there for the day you want it, not a prerequisite.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">Need every register</span>
+            <h3>The full reference underneath</h3>
+            <p>The same book documents the whole machine: all six CPUs with their opcodes, every video and sound chip, the memory model and MMIO maps, timing and traps, coprocessors, IE Mon and IEScript, and the Part VIII game-port case study. Twelve appendices hold the tables you will keep open while you code.</p>
+          </article>
+        </div>
 
         <div class="table-wrap">
           <table>
@@ -1650,9 +1672,9 @@ rc trust .iemonrc
 macro frame d pc 8; r</code></pre>
           </article>
           <article class="card">
-            <span class="kicker">Diagnostics</span>
-            <h3>Performance accounting</h3>
-            <p><code>IE_PERF_ACCT=1</code> turns on CPU timing, retired-instruction counts, subsystem buckets and JIT deopt-reason accounting. With the flag off, the hot path exits before any atomic work.</p>
+            <span class="kicker">Always one key away</span>
+            <h3>Press F9</h3>
+            <p>The monitor is built into the machine, not a separate tool. Press <code>F9</code> at any moment, mid-demo, mid-game, mid-boot, and every CPU freezes under your cursor, in the tradition of the Action Replay cartridge. Press <code>Esc</code> and everything carries on as if nothing happened.</p>
           </article>
           <article class="card">
             <span class="kicker">Symbols and source</span>
@@ -1683,7 +1705,7 @@ macro frame d pc 8; r</code></pre>
           <article class="card">
             <span class="kicker">Visual checks</span>
             <h3>Frames, hashes, recordings</h3>
-            <p>Scripts wait on compositor frames, pixels, settled frame hashes, or custom visual predicates, so a demo can be automated and then verified pixel-for-pixel across runs. The recording module captures dependency-free screenshots and MP4 video with audio, for demo clips and visual regressions.</p>
+            <p>Scripts wait on compositor frames, pixels, settled frame hashes, or custom visual predicates, so a demo can be automated and then verified pixel-for-pixel across runs. The recording module captures screenshots in pure Go with no external dependencies, and MP4 video with audio when FFmpeg is on the PATH, for demo clips and visual regressions.</p>
             <pre class="code-panel"><code>sys.wait_frames(2)
 video.wait_stable(3, 120)
 hash = video.frame_hash()
