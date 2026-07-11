@@ -966,7 +966,7 @@
         <article class="card" style="margin-top: 1rem">
           <span class="kicker">JIT</span>
           <h3>Five CPUs compiled to native code</h3>
-          <p>On x86-64 hosts, five of the six CPUs, IE64, M68K, x86, Z80 and 6502, compile guest code to native machine code as it runs; only IE32 stays interpreted. IE64 also runs JIT-compiled on ARM64. The compilers carry per-CPU floating-point paths, including the M68K 68881 and the x86 x87, detect self-modifying code and recompile the affected blocks, and drop back to interpreter-equivalent helpers when a block cannot stay native, resuming only when the architectural state still matches.</p>
+          <p>On x86-64 hosts, five of the six CPUs, IE64, M68K, x86, Z80 and 6502, compile guest code to native machine code as it runs; only IE32 stays interpreted. IE64 also runs JIT-compiled on ARM64, and in the browser build it tiers to WebAssembly through the browser's own engine. The compilers carry per-CPU floating-point paths, including the M68K 68881 and the x86 x87, detect self-modifying code and recompile the affected blocks, and drop back to interpreter-equivalent helpers when a block cannot stay native, resuming only when the architectural state still matches.</p>
           <p>Even with the paged MMU enabled, IE64 code stays JIT-compiled: the dispatcher keys native blocks by translation state, and data, stack, floating-point and control-flow accesses that need address translation take a helper exit and resume in native code instead of bailing the whole block.</p>
         </article>
       </div>
@@ -1745,7 +1745,7 @@ SOUND PLAY "SONG.MID"</code></pre>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
         </div>
         <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">Your first ninety seconds: launch the browser demo, and at the Ready prompt type <code>DIR "Demos"</code>, then <code>RUN "iedoom.ie68"</code> or any file that catches your eye. <code>LOAD</code> a BASIC demo and <code>LIST</code> it to see how it is made.</p>
-        <p style="margin-top: 0.5rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC, interpreter only, with a disk volume of demos. The live image bundles worked examples in BASIC, assembly and C. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
+        <p style="margin-top: 0.5rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos, and a JIT that hands your hot IE64 code to the browser's own engine, so <code>RUN AOT</code> is fast in the tab too; the other five CPUs run at interpreter speed there. The live image bundles worked examples in BASIC, assembly and C. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
       </div>
     </section>
 
