@@ -1367,6 +1367,37 @@ func TestCoprocWorkerM68KStartStop(t *testing.T) {
 	}
 }
 
+// TestCoprocWorkerM68KStackPush verifies a worker service can push to its
+// own stack. createM68KWorker points A7 at the top of the worker region;
+// without re-tuning the stack bounds (NewM68KCPU pins them around the
+// reset-vector SP) the first JSR bus-faults and the worker halts.
+func TestCoprocWorkerM68KStackPush(t *testing.T) {
+	bus := NewMachineBus()
+
+	// movea.l #$2FFF00,sp ; jsr $28000C ; (at $28000C) bra.s -2
+	code := []byte{
+		0x2E, 0x7C, 0x00, 0x2F, 0xFF, 0x00, // movea.l #$2FFF00,a7
+		0x4E, 0xB9, 0x00, 0x28, 0x00, 0x0C, // jsr $28000C
+		0x60, 0xFE, // bra.s -2
+	}
+
+	worker, err := createM68KWorker(bus, code)
+	if err != nil {
+		t.Fatalf("createM68KWorker: %v", err)
+	}
+	defer func() {
+		worker.stop()
+		<-worker.done
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-worker.done:
+		t.Fatal("M68K worker halted on stack push (JSR)")
+	default:
+	}
+}
+
 // TestCoprocWorkerX86StartStop tests x86 worker lifecycle.
 func TestCoprocWorkerX86StartStop(t *testing.T) {
 	bus := NewMachineBus()
@@ -1604,6 +1635,39 @@ func TestCoprocEndToEnd_M68K(t *testing.T) {
 
 	// M68K uses 32-bit addressing - reqPtr/respPtr are bus addresses directly
 	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_M68K, 0x400000, 0x400100, 0x400000, 0x400100)
+}
+
+// TestCoprocEndToEnd_M68K_JITHot drives enough sequential requests through
+// the M68K worker that its ring-service loop gets JIT-compiled. Inlined JIT
+// loads/stores byte-swap unconditionally; without routing the mailbox pages
+// through the interpreter helpers (which honour isCoprocSharedAddr) the
+// compiled path writes swapped response descriptors and every post-warmup
+// request times out.
+func TestCoprocEndToEnd_M68K_JITHot(t *testing.T) {
+	data := assembleService(t, []string{
+		"/opt/amiga/bin/vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-I", "sdk/include", "-o", "OUTPUT",
+	}, "sdk/examples/asm/coproc_service_68k.asm")
+
+	bus := NewMachineBus()
+	mgr := NewCoprocessorManager(bus, t.TempDir())
+	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+
+	worker, err := createM68KWorker(bus, data)
+	if err != nil {
+		t.Fatalf("createM68KWorker: %v", err)
+	}
+	defer func() {
+		worker.stop()
+		<-worker.done
+	}()
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_M68K] = worker
+	mgr.mu.Unlock()
+
+	for i := 0; i < 64; i++ {
+		coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_M68K, 0x400000, 0x400100, 0x400000, 0x400100)
+	}
 }
 
 func TestCoprocEndToEnd_6502(t *testing.T) {

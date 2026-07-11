@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"sync"
 	"strings"
 )
 
@@ -309,8 +310,12 @@ func m68kInstrNeedsCCRMaterialization(ji *M68KJITInstr) bool {
 
 // m68kCurrentCS is the compile state for the currently-compiling block.
 // Set by m68kCompileBlockWithMem; read by emitCCR_Arithmetic/Logic and m68kCondToJcc.
-// Safe: M68K JIT compilation is single-threaded.
+// Compilation was single-threaded until M68K coprocessor workers gained the
+// JIT: a main-CPU compile and a worker compile can now run concurrently, so
+// m68kCompileMu serialises the two top-level compile entry points (observed
+// nil-deref via the shared m68kCurrentCS without it).
 var m68kCurrentCS *m68kCompileState
+var m68kCompileMu sync.Mutex
 
 func m68kInstrMaySetGenericIOFallback(ji *M68KJITInstr) bool {
 	opcode := ji.opcode
@@ -11304,6 +11309,8 @@ func m68kJitDiagDisableLoopOptEnabled() bool { return m68kJitDiagDisableLoopOpt 
 
 // m68kCompileBlockWithMem compiles with access to memory for reading branch displacements.
 func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *ExecMem, memory []byte) (*JITBlock, error) {
+	m68kCompileMu.Lock()
+	defer m68kCompileMu.Unlock()
 	cb := NewCodeBuffer(m68kCodeBufferCapacity(len(instrs)))
 
 	br := m68kAnalyzeBlockRegs(instrs)
@@ -11539,6 +11546,8 @@ func m68kCompileRegion(region *m68kRegion, execMem *ExecMem, memory []byte) (*JI
 	if region == nil || len(region.blocks) < 2 {
 		return nil, errors.New("m68kCompileRegion: region has fewer than 2 blocks")
 	}
+	m68kCompileMu.Lock()
+	defer m68kCompileMu.Unlock()
 
 	// Concatenate instructions for whole-region register analysis.
 	var allInstrs []M68KJITInstr

@@ -493,6 +493,20 @@ func (cpu *M68KCPU) initM68KJIT() error {
 			}
 		}
 	}
+	if cpu.CoprocMode {
+		// Coprocessor shared regions (mailbox + user data window) skip the
+		// BE byte-swap in the interpreter (isCoprocSharedAddr). Inlined JIT
+		// loads/stores always swap, so route these pages through the
+		// interpreter helpers by marking them as I/O.
+		if cpu.m68kJitIOPageBitmap == nil {
+			cpu.m68kJitIOPageBitmap = make([]bool, (uint32(len(cpu.memory))+255)>>8)
+		}
+		for page := uint32(0x400000 >> 8); page < uint32(0x800000>>8); page++ {
+			if page < uint32(len(cpu.m68kJitIOPageBitmap)) {
+				cpu.m68kJitIOPageBitmap[page] = true
+			}
+		}
+	}
 	pageCount := (uint32(len(cpu.memory)) + 4095) >> 12
 	cpu.m68kJitCodeBitmap = make([]byte, pageCount)
 	cpu.m68kJitCodePageMin = make([]uint16, pageCount)

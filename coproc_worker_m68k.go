@@ -23,6 +23,14 @@ func createM68KWorker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 	cpu.CoprocMode = true // Skip byte-swap for shared data regions (mailbox + user data)
 	cpu.PC = WORKER_M68K_BASE
 	cpu.AddrRegs[7] = WORKER_M68K_END - 0xFF // Stack at top of worker region
+	cpu.SSP = cpu.AddrRegs[7]
+	cpu.USP = cpu.SSP
+	// NewM68KCPU tuned the stack bounds around the reset-vector SP; re-tune
+	// them for the worker stack or every push (JSR, exception frame) faults.
+	cpu.tuneStackBounds(cpu.AddrRegs[7])
+	// Only NewM68KRunner arms the JIT; a worker CPU has no runner, so arm it
+	// here or the service executes interpreted (~7x slower measured).
+	cpu.m68kJitEnabled = m68kJitAvailable
 
 	done := make(chan struct{})
 	stopFn := func() { cpu.SetRunning(false) }
