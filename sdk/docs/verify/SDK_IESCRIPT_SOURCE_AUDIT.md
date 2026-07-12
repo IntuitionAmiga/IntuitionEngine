@@ -11,6 +11,8 @@
 | IEScript | api contract | `bit32.replace(x, v, field[, width]) raises an error for field < 0, width <= 0, or field + width > 32` | `script_engine.go` `registerBit32` `replace` range check |
 | IEScript | api contract | `bit32.rrotate(x, disp) masks disp to 0..31 and returns number` | `script_engine.go` `registerBit32` `rrotate` |
 | IEScript | api contract | `bit32.rshift(x, disp) masks disp to 0..31 and returns number` | `script_engine.go` `registerBit32` `rshift` |
+| IEScript | api contract | `coproc.start(), coproc.stop(), and coproc.enqueue() always select instance 0` | `script_engine.go` Lua coprocessor helpers write `COPROC_INSTANCE` 0 |
+| IEScript | api contract | `coproc.workers() returns cpu_type, instance, and is_running for every active default worker and M68K instance 1` | `script_engine.go` `luaCoprocWorkers`, `coprocessor_manager.go` worker-state bit 7 |
 | IEScript | api contract | `dbg.history_config([opts]) accepts delta_interval, delta_mib, checkpoints, and snapshots as positive table fields` | `script_engine.go` `luaDbgHistoryConfig` option fields and positive-value check |
 | IEScript | api contract | `dbg.history_config([opts]) returns delta_interval, delta_mib, checkpoints, and snapshots` | `script_engine.go` `luaDbgHistoryConfig` return table fields |
 | IEScript | api contract | `dbg.history_horizon() returns snapshots, checkpoints, deltas, capacity, delta_bytes, checkpoint_interval, checkpoint_mib, retained_checkpoints, and devices` | `script_engine.go` `luaDbgHistoryHorizon` table fields |

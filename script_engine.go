@@ -6749,6 +6749,7 @@ func (se *ScriptEngine) luaCoprocStart() lua.LGFunction {
 			return 0
 		}
 		se.bus.Write32(COPROC_CPU_TYPE, cpuType)
+		se.bus.Write32(COPROC_INSTANCE, 0)
 		se.bus.Write32(COPROC_NAME_PTR, namePtr)
 		status, code := se.coprocRunCommand(COPROC_CMD_START)
 		if status != COPROC_STATUS_OK {
@@ -6766,6 +6767,7 @@ func (se *ScriptEngine) luaCoprocStop() lua.LGFunction {
 			return 0
 		}
 		se.bus.Write32(COPROC_CPU_TYPE, cpuType)
+		se.bus.Write32(COPROC_INSTANCE, 0)
 		status, code := se.coprocRunCommand(COPROC_CMD_STOP)
 		if status != COPROC_STATUS_OK {
 			L.RaiseError("coproc.stop failed (%d)", code)
@@ -6798,6 +6800,7 @@ func (se *ScriptEngine) luaCoprocEnqueue() lua.LGFunction {
 		}
 
 		se.bus.Write32(COPROC_CPU_TYPE, cpuType)
+		se.bus.Write32(COPROC_INSTANCE, 0)
 		se.bus.Write32(COPROC_OP, op)
 		se.bus.Write32(COPROC_REQ_PTR, reqPtr)
 		se.bus.Write32(COPROC_REQ_LEN, uint32(len(req)))
@@ -6867,9 +6870,17 @@ func (se *ScriptEngine) luaCoprocWorkers() lua.LGFunction {
 			}
 			entry := L.NewTable()
 			entry.RawSetString("cpu_type", lua.LString(coprocCPUTypeToString(cpuType)))
+			entry.RawSetString("instance", lua.LNumber(0))
 			entry.RawSetString("is_running", lua.LBool(true))
 			tbl.RawSetInt(idx, entry)
 			idx++
+		}
+		if mask&(1<<7) != 0 {
+			entry := L.NewTable()
+			entry.RawSetString("cpu_type", lua.LString("m68k"))
+			entry.RawSetString("instance", lua.LNumber(1))
+			entry.RawSetString("is_running", lua.LBool(true))
+			tbl.RawSetInt(idx, entry)
 		}
 		L.Push(tbl)
 		return 1

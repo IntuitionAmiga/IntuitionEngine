@@ -1164,6 +1164,56 @@ func TestScriptEngine_CoprocWorkers(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_CoprocWorkersReportsSecondM68KInstance(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	regs := map[uint32]uint32{COPROC_WORKER_STATE: 1<<EXEC_TYPE_M68K | 1<<7}
+	bus.MapIO(COPROC_BASE, COPROC_END,
+		func(addr uint32) uint32 { return regs[addr] },
+		func(addr uint32, value uint32) { regs[addr] = value })
+
+	script := `
+		local w = coproc.workers()
+		if #w ~= 2 then error("expected two M68K workers") end
+		if w[1].cpu_type ~= "m68k" or w[1].instance ~= 0 then error("bad instance 0") end
+		if w[2].cpu_type ~= "m68k" or w[2].instance ~= 1 then error("bad instance 1") end
+	`
+	if err := se.RunString(script, "coproc_workers_instances"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_CoprocTypeOperationsSelectDefaultInstance(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	regs := map[uint32]uint32{COPROC_INSTANCE: 1}
+	var commandInstance uint32
+	bus.MapIO(COPROC_BASE, COPROC_END,
+		func(addr uint32) uint32 { return regs[addr] },
+		func(addr uint32, value uint32) {
+			regs[addr] = value
+			if addr == COPROC_CMD {
+				commandInstance = regs[COPROC_INSTANCE]
+				regs[COPROC_CMD_STATUS] = COPROC_STATUS_OK
+			}
+		})
+
+	if err := se.RunString(`coproc.stop("m68k")`, "coproc_default_instance"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if commandInstance != 0 {
+		t.Fatalf("coproc.stop used instance %d, want default instance 0", commandInstance)
+	}
+}
+
 func TestScriptEngine_CoprocStartMissingFile(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()

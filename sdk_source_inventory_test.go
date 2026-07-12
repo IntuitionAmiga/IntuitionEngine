@@ -255,6 +255,12 @@ func sdkIEMonFactsFromSource(t *testing.T) []sdkSourceFact {
 		Name:     "Entering the monitor freezes every guest CPU and the audio clock; leaving restores the pre-entry audio state unless fa or ta was issued during the session.",
 		Evidence: "`debug_monitor.go` `freezeMediaOnEntry`/`resumeMediaOnExit`, `debug_commands.go` `cmdFreezeAudio`/`cmdThawAudio`",
 	})
+	facts = append(facts, sdkSourceFact{
+		Surface:  "IEMon",
+		Kind:     "monitor contract",
+		Name:     "M68K instance 1 is labelled coproc:M68K#1 and receives a separate monitor CPU ID.",
+		Evidence: "`coprocessor_manager.go` `coprocInstanceLabel`/`RegisterCPU` and `WorkerInventory`",
+	})
 	sortSDKSourceFacts(facts)
 	return facts
 }
@@ -334,6 +340,8 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"dbg.mmio_stats() returns rows with start, end, name, reads, and writes", "`script_engine.go` `luaDbgMMIOStats`, `mmio_stats.go` `MMIOStatsSnapshot`"},
 		{"media.type() returns sid, psg, ted, ahx, pokey, mod, wav, midi, or none", "`script_engine.go` `mediaTypeToString`, `media_loader.go` MIDI extension detection"},
 		{"dbg.open() freezes every CPU and the audio clock; final dbg.close() restores the pre-entry audio state unless fa or ta changed it during the session", "`script_engine.go` `luaDbgOpen`/`luaDbgClose`, `debug_monitor.go` media-freeze entry/exit contract"},
+		{"coproc.start(), coproc.stop(), and coproc.enqueue() always select instance 0", "`script_engine.go` Lua coprocessor helpers write `COPROC_INSTANCE` 0"},
+		{"coproc.workers() returns cpu_type, instance, and is_running for every active default worker and M68K instance 1", "`script_engine.go` `luaCoprocWorkers`, `coprocessor_manager.go` worker-state bit 7"},
 		{"rec.start() and rec.start_screen() follow wall-clock time; after an encoder stall they discard missed video-frame debt and matching oldest buffered audio instead of producing an unbounded catch-up burst", "`video_recorder.go` `loop`/`audioPump`/`sampleRing.discard`, `video_recorder_test.go` discard and cursor-protocol coverage"},
 		{"rec.start() and rec.start_screen() pump video and audio independently; frozen or unchanged video is held, and audio starvation beyond 500 ms produces silence instead of stalling", "`video_recorder.go` wall-clock `loop`, independent `audioPump`, and `recorderAudioGraceTicks`; `video_recorder_test.go` audio-starvation coverage"},
 	} {
@@ -437,6 +445,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{sdkHexRange(VOODOO_FOG_TABLE_BASE, VOODOO_FOG_TABLE_END-1), "`voodoo_constants.go` fog-table constants"},
 		{sdkHexRange(WORKER_IE32_BASE, WORKER_IE32_END), "`coprocessor_constants.go` IE32 worker-memory constants"},
 		{sdkHexRange(WORKER_M68K_BASE, WORKER_M68K_END), "`coprocessor_constants.go` M68K worker-memory constants"},
+		{sdkHexRange(WORKER_M68K2_BASE, WORKER_M68K2_END), "`coprocessor_constants.go` second M68K worker-memory constants"},
 		{sdkHexRange(WORKER_6502_BASE, WORKER_6502_END), "`coprocessor_constants.go` 6502 worker-memory constants"},
 		{sdkHexRange(WORKER_Z80_BASE, WORKER_Z80_END), "`coprocessor_constants.go` Z80 worker-memory constants"},
 		{sdkHexRange(WORKER_X86_BASE, WORKER_X86_END), "`coprocessor_constants.go` x86 worker-memory constants"},
@@ -524,6 +533,9 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"The AROS host socket block at 0xF2500-0xF257F uses 96-byte big-endian request descriptors, strict guest-memory helper copies, 64 KiB send/recv caps, 128-byte sockaddr caps, guest-visible descriptor handles, WaitSelect fd_set translation, Release/ReleaseCopy/Obtain transfer keys, and ENOSYS fail-closed behaviour when disabled.", "`aros_host_socket_constants.go` command/register constants, `aros_host_socket.go` dispatch/copy limits, `aros_host_socket_unix.go` descriptor table, WaitSelect, Release, ReleaseCopy, and Obtain implementations, `main.go` socket MMIO registration"},
 		{"A hard reset restages the configured coprocessor service after coprocessor reset and before CPU restart, so the service name pointer and worker-start path remain available across reset.", "`machine_lifecycle.go` `ResetDevicesBeforeLoad`/`StartAfterReset`, `main.go` `StageConfiguredCoprocService`, and `coprocessor_cli_test.go` hard-reset restage coverage"},
 		{"Each ring has 16 descriptor slots but uses one slot to distinguish full from empty, so it can hold 15 queued requests at once.", "`coprocessor_constants.go` ring constants and coprocessor queue implementation"},
+		{"M68K supports instances 0 and 1; every other worker type supports instance 0 only.", "`coprocessor_constants.go` `coprocInstanceLimit`, `coprocessor_manager.go` instance-scoped worker table"},
+		{"M68K instance 1 uses shared RAM 0x420000-0x49FFFF, mailbox ring 6 at 0x791300, and COPROC_WORKER_STATE bit 7.", "`coprocessor_constants.go` `WORKER_M68K2_*`/`COPROC_RING6_BASE`, `coprocessor_manager.go` `computeWorkerState`"},
+		{"When IE_SWAP_HASH=1, each presented VOODOO_SWAP_BUFFER_CMD receives a deterministic sequence number and a 32-bit FNV-1a frame hash captured immediately after readback.", "`video_voodoo.go` swap worker hash capture and `voodoo_constants.go` swap-hash registers"},
 		{"EXEC_CTRL operation values: 1=Execute, 2=EmuTOS, 3=AROS, 4=IntuitionOS IExec, 5=Hard reset", "`program_executor_constants.go` `EXEC_OP_*`, `program_executor.go` `HandleWrite` dispatch, `program_executor_test.go` operation-value pins"},
 		{"mem.* helpers are raw 32-bit bus helpers, not an above-4GiB IE64 RAM or CPU-virtual-address API.", "`script_engine.go` mem helpers cast addresses to `uint32`"},
 		{"Mutable devices join the snapshot contract through MachineMonitor.RegisterSnapshotDevice.", "`debug_monitor.go` `RegisterSnapshotDevice`, `main.go` registrations"},

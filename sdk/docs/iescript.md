@@ -1,6 +1,6 @@
 # IEScript Lua Automation Manual
 
-*Last modified: 2026-07-11*
+*Last modified: 2026-07-12*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
@@ -1304,7 +1304,16 @@ Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`, `"ie64"`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `cpu_type` | string | CPU type name |
+| `instance` | number | Worker instance number: 0 for default workers, 1 for the second M68K worker |
 | `is_running` | boolean | Whether the worker is active |
+
+`coproc.workers()` returns `cpu_type`, `instance`, and `is_running` for every
+active default worker and M68K instance 1.
+
+`coproc.start()`, `coproc.stop()`, and `coproc.enqueue()` always select instance
+0. A second M68K worker can coexist and is reported by
+`coproc.workers()`, but its lifecycle and queue are controlled through the
+low-level `COPROC_INSTANCE` MMIO contract or IEMon.
 
 Per-CPU monitor registers such as ring depth and uptime are selected by writing `COPROC_CPU_TYPE` before reading the register. `COPROC_BUSY_PCT` is aggregate across workers. For 6502 and Z80 workers, the mailbox CPU window is `0x2000` through `0x37FF`; `0x3800` through `0x3FFF` remains worker RAM.
 

@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-11*
+*Last modified: 2026-07-12*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -1035,6 +1035,14 @@ Voodoo triangle submission is state-machine driven. A write that commits `VOODOO
 
 Voodoo texture slots retain immutable uploaded textures by slot identifier; `VOODOO_TEX_BIND` selects a resident texture for subsequently submitted triangles without another guest-memory transfer, and SYSINFO advertises the slot contract. Write the slot identifier to `VOODOO_TEX_SLOT` before `VOODOO_TEX_UPLOAD` to retain that upload. Binding an empty or out-of-range slot leaves the current texture unchanged. The `SYSINFO_FEATURE_VOODOO_TEX_SLOTS` bit identifies machines that implement these registers.
 
+When `IE_SWAP_HASH=1`, each presented `VOODOO_SWAP_BUFFER_CMD` receives a
+deterministic sequence number and a 32-bit FNV-1a frame hash captured immediately
+after readback. `VOODOO_SWAP_HASH_SEQ` (`0xF8358`) returns the latest sequence;
+write a sequence to `VOODOO_SWAP_HASH_QUERY` (`0xF835C`) and read
+`VOODOO_SWAP_HASH_VALUE` (`0xF8360`) to retrieve it. The 64-entry history returns
+zero for unknown or evicted sequences. Hashing is disabled by default, but swap
+sequence numbering still advances when readback produces no frame.
+
 Consecutive triangles may share an internal state snapshot until a raster-state register or texture upload changes; that sharing is not guest-visible. Fog-table and palette raster lookups remain compatibility-pending. The software backend is the conformance reference; it rasterises each flush from per-flush copies of the bound snapshots under a framebuffer lock, so live raster-state register writes are never blocked by an in-flight raster. Vulkan renders multi-state frames natively by binding each snapshot's pipeline, scissor, push constants, and texture per state group inside one command buffer, and is the only render path in windowed builds: the software rasteriser is the headless build's renderer and the conformance reference, never a runtime fallback. Flushes that arrive without a guest clear render standalone under the clear pass by default; an experimental load-op render pass variant (IE_VOODOO_LOAD_PASS=1) composites them over the previous GPU frame. Pipeline or descriptor creation failures drop the frame and log the error rather than silently downgrading.
 
 Voodoo swap jobs run asynchronously; oversized triangle batches render mid-frame without presentation or swap callbacks, and STATUS exposes busy and SWAPBUF while a presented swap is pending. `VOODOO_SWAP_BUFFER_CMD` hands the current batch to the swap worker, and `VOODOO_STATUS` reports framebuffer and SST busy plus `SWAPBUF` while that presented swap is active. A later swap waits only when the swap pipeline is full (two jobs in flight), giving up to two frames of run-ahead. If a frame exceeds `VOODOO_MAX_BATCH_TRIANGLES`, the full batch is rendered into the draw buffer as a mid-frame render-only flush, without presenting the frame or firing swap callbacks, and triangle submission continues into a fresh batch. This preserves oversized tiled frames instead of dropping triangles.
@@ -1405,6 +1413,7 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0x310000-0x31FFFF` | 64KB | Shared RAM | Z80 worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
 | `0x320000-0x39FFFF` | 512KB | Shared RAM | x86 worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
 | `0x3A0000-0x41FFFF` | 512KB | Shared RAM | IE64 worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
+| `0x420000-0x49FFFF` | 512KB | Shared RAM | M68K worker instance 1 area | All CPU cores | Coprocessor convention | Second M68K worker RAM; ordinary big-endian worker memory inside the graphics-visible shared-memory range. |
 | `0x790000-0x7917FF` | 6KB | Shared RAM | Coprocessor mailbox ring buffers | All CPU cores | Coprocessor subsystem | Shared request/completion rings; outside the main graphics-visible range. |
 | `0x800000-0x80FFFF` | 64KB | Shared RAM | Media-loader staging buffer | All CPU cores | Media-loader subsystem | Reservation at the base of the AROS fast-memory range when that profile is active. |
 | `0x800000-0x1DFFFFF` | 22MB | Shared RAM | AROS fast memory | All CPU cores | AROS profile | Profile-owned allocation range, not a distinct per-core map. |
@@ -1471,6 +1480,22 @@ does not need to know about the extension.
 ### Coprocessor Worker Dispatch
 
 The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x790000`. Each worker type has a dedicated shared-memory reservation in the unified physical map (see memory map above), not a private per-core address space. The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. Each ring has 16 descriptor slots but uses one slot to distinguish full from empty, so it can hold 15 queued requests at once. When `COPROC_IRQ_CTRL` bit 0 is set and an M68K IRQ target plus completion watcher have been configured, the coprocessor asserts M68K interrupt level 6 on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`. Non-M68K modes should observe completion through `POLL` or `WAIT`.
+
+`COPROC_INSTANCE` selects a worker instance together with `COPROC_CPU_TYPE`.
+M68K supports instances 0 and 1; every other worker type supports instance 0
+only. M68K instance 1 uses shared RAM `0x420000-0x49FFFF`, mailbox ring 6 at
+`0x791300`, and `COPROC_WORKER_STATE` bit 7. Ring 6 is not at the nominal
+stride-derived address: the original rings occupy `0x308` bytes despite their
+`0x300` stride, so the `0x1300` offset prevents ring 5 slot 15 from overwriting
+ring 6's header. Start, stop, enqueue, ring depth, uptime, and ticket ownership
+are scoped to the selected instance.
+
+M68K workers initialise their own stack bounds and supervisor/user stack
+pointers and arm the M68K JIT. Coprocessor shared-window pages route through
+memory helpers so their byte-swap rules match interpreted execution; the second
+M68K worker RAM window is excluded from that shared-window treatment and remains
+ordinary big-endian worker RAM. M68K block compilation is serialised across the
+main CPU and worker instances.
 
 ### Lua Scripting
 

@@ -1,6 +1,6 @@
 # Intuition Engine Machine Monitor
 
-*Last modified: 2026-07-11*
+*Last modified: 2026-07-12*
 
 ## Overview
 
@@ -764,6 +764,11 @@ List all registered CPUs with their ID, label, status, and program counter. When
 ```
 
 Offline rows are worker slots only. They are not general CPU hot-plug targets and do not include the primary boot CPU.
+
+M68K exposes two coprocessor slots. M68K instance 1 is labelled
+`coproc:M68K#1` and receives a separate monitor CPU ID. Instance 0 keeps the
+label `coproc:M68K`. The suffix is part of the label accepted by focus and
+offline commands.
 
 #### `cpu <id|label>` - Switch Focus
 
