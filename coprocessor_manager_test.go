@@ -1347,7 +1347,7 @@ func TestCoprocWorkerM68KStartStop(t *testing.T) {
 	// LE uint16 read gives 0xFE60, ReverseBytes16 produces 0x60FE (BRA.S -2).
 	code := []byte{0x60, 0xFE}
 
-	worker, err := createM68KWorker(bus, code)
+	worker, err := createM68KWorker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createM68KWorker: %v", err)
 	}
@@ -1381,7 +1381,7 @@ func TestCoprocWorkerM68KStackPush(t *testing.T) {
 		0x60, 0xFE, // bra.s -2
 	}
 
-	worker, err := createM68KWorker(bus, code)
+	worker, err := createM68KWorker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createM68KWorker: %v", err)
 	}
@@ -1619,7 +1619,7 @@ func TestCoprocEndToEnd_M68K(t *testing.T) {
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 
 	// Create M68K worker
-	worker, err := createM68KWorker(bus, data)
+	worker, err := createM68KWorker(bus, data, 0)
 	if err != nil {
 		t.Fatalf("createM68KWorker: %v", err)
 	}
@@ -1652,7 +1652,7 @@ func TestCoprocEndToEnd_M68K_JITHot(t *testing.T) {
 	mgr := NewCoprocessorManager(bus, t.TempDir())
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 
-	worker, err := createM68KWorker(bus, data)
+	worker, err := createM68KWorker(bus, data, 0)
 	if err != nil {
 		t.Fatalf("createM68KWorker: %v", err)
 	}

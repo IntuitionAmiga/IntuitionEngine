@@ -2,27 +2,39 @@ package main
 
 import "fmt"
 
-func createM68KWorker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
-	if len(data) > int(WORKER_M68K_SIZE) {
-		return nil, fmt.Errorf("M68K service binary too large: %d > %d", len(data), WORKER_M68K_SIZE)
+func createM68KWorker(bus *MachineBus, data []byte, instance uint32) (*CoprocWorker, error) {
+	// Instance 0 owns the default M68K window, instance 1 the second window
+	// (ring 6). Higher instances are rejected by the manager before this.
+	base := uint32(WORKER_M68K_BASE)
+	end := uint32(WORKER_M68K_END)
+	size := uint32(WORKER_M68K_SIZE)
+	if instance == 1 {
+		base = WORKER_M68K2_BASE
+		end = WORKER_M68K2_END
+		size = WORKER_M68K2_SIZE
+	} else if instance != 0 {
+		return nil, fmt.Errorf("M68K worker instance out of range: %d", instance)
+	}
+	if len(data) > int(size) {
+		return nil, fmt.Errorf("M68K service binary too large: %d > %d", len(data), size)
 	}
 
 	// Zero the worker's dedicated memory region
 	mem := bus.GetMemory()
-	for i := range uint32(WORKER_M68K_SIZE) {
-		mem[WORKER_M68K_BASE+i] = 0
+	for i := range size {
+		mem[base+i] = 0
 	}
-	invalidateM68KJITForGuestWrite(bus, uint64(WORKER_M68K_BASE), uint64(WORKER_M68K_SIZE))
+	invalidateM68KJITForGuestWrite(bus, uint64(base), uint64(size))
 
 	// Copy service binary to worker region (raw bytes - M68K fetch handles byte ordering)
-	copy(mem[WORKER_M68K_BASE:], data)
-	invalidateM68KJITForGuestWrite(bus, uint64(WORKER_M68K_BASE), uint64(len(data)))
+	copy(mem[base:], data)
+	invalidateM68KJITForGuestWrite(bus, uint64(base), uint64(len(data)))
 
 	// Create M68K CPU using the shared bus (M68K uses 32-bit addressing directly)
 	cpu := NewM68KCPU(bus)
 	cpu.CoprocMode = true // Skip byte-swap for shared data regions (mailbox + user data)
-	cpu.PC = WORKER_M68K_BASE
-	cpu.AddrRegs[7] = WORKER_M68K_END - 0xFF // Stack at top of worker region
+	cpu.PC = base
+	cpu.AddrRegs[7] = end - 0xFF // Stack at top of worker region
 	cpu.SSP = cpu.AddrRegs[7]
 	cpu.USP = cpu.SSP
 	// NewM68KCPU tuned the stack bounds around the reset-vector SP; re-tune
@@ -47,8 +59,8 @@ func createM68KWorker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 		stopCPU:   stopFn,
 		execCPU:   execFn,
 		done:      done,
-		loadBase:  WORKER_M68K_BASE,
-		loadEnd:   WORKER_M68K_END,
+		loadBase:  base,
+		loadEnd:   end,
 		debugCPU:  adapter,
 	}
 

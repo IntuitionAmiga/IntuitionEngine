@@ -25,6 +25,7 @@ const (
 	COPROC_IRQ_CTRL          = COPROC_BASE + 0x40 // IRQ enable/disable (write bit 0), status (read)
 	COPROC_DISPATCH_OVERHEAD = COPROC_BASE + 0x44 // Calibrated overhead in nanoseconds (read-only)
 	COPROC_COMPLETED_TICKET  = COPROC_BASE + 0x48 // Last completed ticket ID (read-only)
+	COPROC_INSTANCE          = COPROC_BASE + 0x4C // Worker instance selector (0 = default; pairs with COPROC_CPU_TYPE)
 
 	COPROC_END = COPROC_BASE + 0x4F
 
@@ -98,6 +99,19 @@ const (
 	RING_CAPACITY = 16    // Max entries per ring
 	RING_STRIDE   = 0x300 // 768 bytes per CPU ring
 
+	// Rings 0-5 are the per-CPU-type default rings (cpuTypeToIndex).
+	// Ring 6 serves the second M68K worker instance.
+	//
+	// LAYOUT CAVEAT: a ring's content is RING_RESPONSES_OFFSET +
+	// RING_CAPACITY*RESP_DESC_SIZE = 0x308 bytes - 8 bytes MORE than
+	// RING_STRIDE. Slot 15's response therefore overflows into the next
+	// ring's header bytes. Rings 0-5 predate this discovery and their
+	// bases cannot move (baked into guest images); ring 6 is placed at
+	// +0x1300 instead of +0x1200 so ring 5's overflow lands in the gap,
+	// and ring 6's own overflow (0x791600-0x791607) is unused spare.
+	COPROC_RING_COUNT = 7
+	COPROC_RING6_BASE = MAILBOX_BASE + 0x1300
+
 	// Offsets within a ring
 	RING_HEAD_OFFSET      = 0x00  // uint8: next write slot (producer)
 	RING_TAIL_OFFSET      = 0x01  // uint8: next read slot (consumer)
@@ -135,6 +149,13 @@ const (
 	WORKER_M68K_BASE = 0x280000
 	WORKER_M68K_END  = 0x2FFFFF
 	WORKER_M68K_SIZE = WORKER_M68K_END - WORKER_M68K_BASE + 1
+
+	// Second M68K worker instance. Placed directly after the IE64 worker
+	// window; like every worker window it sits inside the legacy VRAM
+	// aperture, which programs using coprocessors leave to the workers.
+	WORKER_M68K2_BASE = 0x420000
+	WORKER_M68K2_END  = 0x49FFFF
+	WORKER_M68K2_SIZE = WORKER_M68K2_END - WORKER_M68K2_BASE + 1
 
 	WORKER_6502_BASE = 0x300000
 	WORKER_6502_END  = 0x30FFFF
@@ -175,8 +196,38 @@ func cpuTypeToIndex(cpuType uint32) int {
 }
 
 // ringBaseAddr returns the bus address of the ring buffer for the given CPU index.
+// Ring 6 sits at +0x1300, clear of ring 5's slot-15 response overflow (see
+// the layout caveat at COPROC_RING6_BASE).
 func ringBaseAddr(cpuIdx int) uint32 {
+	if cpuIdx == 6 {
+		return COPROC_RING6_BASE
+	}
 	return MAILBOX_BASE + uint32(cpuIdx)*RING_STRIDE
+}
+
+// coprocInstanceLimit returns how many worker instances a CPU type supports.
+// Instances beyond the first need their own ring and RAM window; today only
+// M68K has a second window (WORKER_M68K2) and ring (index 6).
+func coprocInstanceLimit(cpuType uint32) uint32 {
+	if cpuType == EXEC_TYPE_M68K {
+		return 2
+	}
+	if cpuTypeToIndex(cpuType) < 0 {
+		return 0
+	}
+	return 1
+}
+
+// coprocRingIndex maps (cpuType, instance) to a mailbox ring index, or -1.
+// Instance 0 uses the type's default ring; (M68K, 1) uses ring 6.
+func coprocRingIndex(cpuType, instance uint32) int {
+	if instance >= coprocInstanceLimit(cpuType) {
+		return -1
+	}
+	if instance == 0 {
+		return cpuTypeToIndex(cpuType)
+	}
+	return 6
 }
 
 // Maximum completions tracked and eviction parameters

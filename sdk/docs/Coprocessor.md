@@ -29,6 +29,7 @@ Primary registers are at `COPROC_BASE = 0xF2340` through `COPROC_END = 0xF238F`.
 | `COPROC_IRQ_CTRL` | `0x40` | RW | Bit 0 enables completion IRQs. |
 | `COPROC_DISPATCH_OVERHEAD` | `0x44` | R | Calibrated dispatch overhead in nanoseconds. |
 | `COPROC_COMPLETED_TICKET` | `0x48` | R | Most recent completed ticket. |
+| `COPROC_INSTANCE` | `0x4C` | RW | Worker instance selector, default `0`. Pairs with `COPROC_CPU_TYPE` for `START`, `START_MEM`, `STOP`, `ENQUEUE`, and the monitor registers. |
 
 Monitor registers are at `COPROC_EXT_BASE = 0xF23B0` through `COPROC_EXT_END = 0xF23BF`.
 
@@ -43,7 +44,7 @@ Write `COPROC_CPU_TYPE` before reading `COPROC_RING_DEPTH` or `COPROC_WORKER_UPT
 
 ## Worker Visibility Window
 
-`COPROC_WORKER_STATE` reports a bit per live worker (bit `n` = `EXEC_TYPE_n` worker exists). The current `EXEC_TYPE_*` values are the bit positions; if a new execution type is added, code must not assume the ring index is the same as the worker-state bit. `computeWorkerState` reaps dead workers *before* reporting, so the bit is only set while the worker goroutine is still scheduled. A worker binary that halts on entry (for example `OP_HALT64` as the first instruction) may be reaped before any subsequent poll observes it: there is no "ever-existed" latch.
+`COPROC_WORKER_STATE` reports a bit per live worker (bit `n` = `EXEC_TYPE_n` worker exists, instance 0). Second-instance workers report above the per-type bits: bit `7` is the second M68K worker. The current `EXEC_TYPE_*` values are the bit positions; if a new execution type is added, code must not assume the ring index is the same as the worker-state bit. `computeWorkerState` reaps dead workers *before* reporting, so the bit is only set while the worker goroutine is still scheduled. A worker binary that halts on entry (for example `OP_HALT64` as the first instruction) may be reaped before any subsequent poll observes it: there is no "ever-existed" latch.
 
 To probe creation, load a worker that stays alive long enough for the poll - a single-instruction self-loop (`OP_BRA` with displacement `0`, since IE64 BRA displacements are relative to the current instruction PC) or a busy-wait on a host-set MMIO flag is sufficient. Tests asserting "worker visible after creation" must use a non-halting binary.
 
@@ -81,7 +82,7 @@ Absolute paths and paths containing `..` are rejected by the coprocessor manager
 
 ## Ring Layout
 
-Mailbox RAM starts at `MAILBOX_BASE = 0x790000` and has `MAILBOX_SIZE = 0x1800` bytes. There are six rings, one per supported worker CPU type, each with `RING_CAPACITY = 16` and `RING_STRIDE = 0x300`. Ring order is `IE32`, `6502`, `M68K`, `Z80`, `x86`, `IE64` as defined by `cpuTypeToIndex`; this is documented separately from `EXEC_TYPE_*` numeric values. The ring uses the conventional `nextHead == tail` full test, so at most 15 descriptors are usable at once; one slot is reserved to distinguish full from empty.
+Mailbox RAM starts at `MAILBOX_BASE = 0x790000` and has `MAILBOX_SIZE = 0x1800` bytes. There are `COPROC_RING_COUNT = 7` rings, each with `RING_CAPACITY = 16` and `RING_STRIDE = 0x300`. Rings 0-5 are the per-CPU-type default rings in order `IE32`, `6502`, `M68K`, `Z80`, `x86`, `IE64` as defined by `cpuTypeToIndex`; this is documented separately from `EXEC_TYPE_*` numeric values. Ring 6 serves the second M68K worker instance (`coprocRingIndex`) and sits at `0x791300`, not `0x791200`: a ring's content is actually `0x308` bytes (slot 15's response overflows `RING_STRIDE` by 8 bytes into the next ring's header), so ring 6 is placed clear of ring 5's overflow and its own overflow lands in unused mailbox spare. The ring uses the conventional `nextHead == tail` full test, so at most 15 descriptors are usable at once; one slot is reserved to distinguish full from empty.
 
 Each ring contains:
 
@@ -108,6 +109,14 @@ Request descriptors are 32 bytes:
 
 Response descriptors are 16 bytes: ticket, status, result code, and response length.
 
+## Worker Instances
+
+`coprocInstanceLimit` defines how many workers of each CPU type may run at once; today M68K supports two, every other type one. Instance 0 keeps the historical behaviour and default ring. A second instance needs its own ring and RAM window, so adding one to another CPU type means allocating both and extending `coprocRingIndex`.
+
+Select an instance by writing `COPROC_INSTANCE` before the command; the register keeps its value until rewritten, so reset it to `0` when returning to default workers. Each instance has an independent lifecycle: start, stop, tickets, ring, uptime, and image path are all per (type, instance). In the monitor a second instance is labelled with a `#<instance>` suffix, for example `coproc:M68K#1`.
+
+The `WORKER_M68K2` window falls inside the coprocessor shared user-data range (`0x400000`-`0x7FFFFF`), so it is carved out of the byte-swap skip (`isCoprocSharedAddr`) and out of the JIT I/O page marking: it behaves as normal big-endian worker RAM, exactly like the first M68K window.
+
 ## Worker Memory
 
 Workers run from dedicated memory regions:
@@ -117,6 +126,7 @@ Workers run from dedicated memory regions:
 | IE32 | `WORKER_IE32_BASE` through `WORKER_IE32_END` |
 | 6502 | `WORKER_6502_BASE` through `WORKER_6502_END` |
 | M68K | `WORKER_M68K_BASE` through `WORKER_M68K_END` |
+| M68K#1 | `WORKER_M68K2_BASE` through `WORKER_M68K2_END` |
 | Z80 | `WORKER_Z80_BASE` through `WORKER_Z80_END` |
 | x86 | `WORKER_X86_BASE` through `WORKER_X86_END` |
 | IE64 | `WORKER_IE64_BASE` through `WORKER_IE64_END` |

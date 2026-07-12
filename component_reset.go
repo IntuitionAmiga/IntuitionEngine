@@ -711,6 +711,7 @@ func (m *CoprocessorManager) Reset() {
 	m.respCap = 0
 	m.timeout = 0
 	m.namePtr = 0
+	m.instance = 0
 	m.workerState = 0
 	m.opsDispatched = 0
 	m.bytesProcessed = 0
@@ -718,6 +719,9 @@ func (m *CoprocessorManager) Reset() {
 	m.completedTicket.Store(0)
 	m.dispatchOverheadNs.Store(0)
 	m.workerStartTime = [7]time.Time{}
+	m.workerImagePath = [7]string{}
+	m.workerStartTimeAlt = [7]time.Time{}
+	m.workerImagePathAlt = [7]string{}
 	m.busyBuckets = [10]busyBucket{}
 	m.busyBucketIdx = 0
 	m.busyRotateCounter = 0

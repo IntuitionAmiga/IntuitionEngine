@@ -32,6 +32,7 @@ type CoprocWorker struct {
 type CoprocCompletion struct {
 	ticket     uint32
 	cpuType    uint32 // stored at enqueue time for worker-down checks
+	instance   uint32 // worker instance the ticket was enqueued to
 	status     uint32
 	resultCode uint32
 	respLen    uint32
@@ -92,7 +93,8 @@ type CoprocessorManager struct {
 	monitor *MachineMonitor
 
 	mu                   sync.Mutex
-	workers              [7]*CoprocWorker // indexed by cpuType (1-6)
+	workers              [7]*CoprocWorker // instance 0, indexed by cpuType (1-6)
+	workersAlt           [7]*CoprocWorker // instance 1 (only types with coprocInstanceLimit > 1)
 	nextTicket           uint32
 	completions          map[uint32]*CoprocCompletion
 	pendingMonitorUnregs []reapedMonitor
@@ -111,6 +113,7 @@ type CoprocessorManager struct {
 	respCap      uint32
 	timeout      uint32
 	namePtr      uint32
+	instance     uint32
 	workerState  uint32
 
 	// Stats tracking
@@ -129,9 +132,11 @@ type CoprocessorManager struct {
 	// Adaptive threshold calibration
 	dispatchOverheadNs atomic.Uint64
 
-	// Worker start time for uptime tracking
-	workerStartTime [7]time.Time
-	workerImagePath [7]string
+	// Worker start time for uptime tracking (per instance)
+	workerStartTime    [7]time.Time
+	workerImagePath    [7]string
+	workerStartTimeAlt [7]time.Time
+	workerImagePathAlt [7]string
 
 	// Rolling busy% tracking (10x100ms buckets = 1 second window)
 	busyBuckets       [10]busyBucket
@@ -161,7 +166,7 @@ func NewCoprocessorManager(bus *MachineBus, baseDir string) *CoprocessorManager 
 // initRings clears mailbox descriptors and initializes all ring headers.
 // Caller may hold m.mu; bus writes do not re-enter the manager lock.
 func (m *CoprocessorManager) initRings() {
-	for i := range 6 {
+	for i := range COPROC_RING_COUNT {
 		base := ringBaseAddr(i)
 		for off := uint32(RING_ENTRIES_OFFSET); off < RING_RESPONSES_OFFSET+uint32(RING_CAPACITY)*RESP_DESC_SIZE; off++ {
 			m.bus.Write8(base+off, 0)
@@ -170,6 +175,52 @@ func (m *CoprocessorManager) initRings() {
 		m.bus.Write8(base+RING_TAIL_OFFSET, 0)
 		m.bus.Write8(base+RING_CAPACITY_OFFSET, RING_CAPACITY)
 	}
+}
+
+// workerSlotLocked returns the worker slot for (cpuType, instance), or nil
+// if the combination is unsupported. Caller holds m.mu.
+func (m *CoprocessorManager) workerSlotLocked(cpuType, instance uint32) **CoprocWorker {
+	if cpuType < 1 || cpuType > 6 || instance >= coprocInstanceLimit(cpuType) {
+		return nil
+	}
+	if instance == 0 {
+		return &m.workers[cpuType]
+	}
+	return &m.workersAlt[cpuType]
+}
+
+func (m *CoprocessorManager) workerAtLocked(cpuType, instance uint32) *CoprocWorker {
+	slot := m.workerSlotLocked(cpuType, instance)
+	if slot == nil {
+		return nil
+	}
+	return *slot
+}
+
+// forEachWorkerSlotLocked visits every (cpuType, instance) worker slot.
+func (m *CoprocessorManager) forEachWorkerSlotLocked(fn func(cpuType, instance uint32, slot **CoprocWorker)) {
+	for cpuType := uint32(1); cpuType <= 6; cpuType++ {
+		for inst := uint32(0); inst < coprocInstanceLimit(cpuType); inst++ {
+			fn(cpuType, inst, m.workerSlotLocked(cpuType, inst))
+		}
+	}
+}
+
+func (m *CoprocessorManager) setWorkerMetaLocked(cpuType, instance uint32, start time.Time, path string) {
+	if instance == 0 {
+		m.workerStartTime[cpuType] = start
+		m.workerImagePath[cpuType] = path
+	} else {
+		m.workerStartTimeAlt[cpuType] = start
+		m.workerImagePathAlt[cpuType] = path
+	}
+}
+
+func (m *CoprocessorManager) workerStartTimeAt(cpuType, instance uint32) time.Time {
+	if instance == 0 {
+		return m.workerStartTime[cpuType]
+	}
+	return m.workerStartTimeAlt[cpuType]
 }
 
 // SetIRQTarget sets the M68K CPU that receives completion interrupts.
@@ -219,7 +270,7 @@ func (m *CoprocessorManager) handleCompletionStatusWrite(addr, value uint32) {
 }
 
 func isCoprocResponseStatusAddr(addr uint32) bool {
-	for i := range 6 {
+	for i := range COPROC_RING_COUNT {
 		base := ringBaseAddr(i) + RING_RESPONSES_OFFSET
 		if addr < base+RESP_STATUS_OFF {
 			continue
@@ -328,10 +379,10 @@ func (m *CoprocessorManager) accrueBusyTimeLocked(until time.Time) {
 }
 
 func (m *CoprocessorManager) reapDeadWorkersLocked() {
-	for i := uint32(1); i <= 6; i++ {
-		w := m.workers[i]
+	m.forEachWorkerSlotLocked(func(cpuType, instance uint32, slot **CoprocWorker) {
+		w := *slot
 		if w == nil || w.done == nil {
-			continue
+			return
 		}
 		select {
 		case <-w.done:
@@ -339,11 +390,11 @@ func (m *CoprocessorManager) reapDeadWorkersLocked() {
 			frozen := w.frozen
 			w.mu.Unlock()
 			if frozen {
-				continue
+				return
 			}
-			m.workers[i] = nil
-			m.workerStartTime[i] = time.Time{}
-			m.markWorkerDownCompletionsLocked(i)
+			*slot = nil
+			m.setWorkerMetaLocked(cpuType, instance, time.Time{}, "")
+			m.markWorkerDownCompletionsLocked(cpuType, instance)
 			if m.monitor != nil && w.monitorID >= 0 {
 				m.pendingMonitorUnregs = append(m.pendingMonitorUnregs, reapedMonitor{
 					monitor: m.monitor,
@@ -352,12 +403,12 @@ func (m *CoprocessorManager) reapDeadWorkersLocked() {
 			}
 		default:
 		}
-	}
+	})
 }
 
-func (m *CoprocessorManager) markWorkerDownCompletionsLocked(cpuType uint32) {
+func (m *CoprocessorManager) markWorkerDownCompletionsLocked(cpuType, instance uint32) {
 	for _, comp := range m.completions {
-		if comp.cpuType != cpuType {
+		if comp.cpuType != cpuType || comp.instance != instance {
 			continue
 		}
 		if comp.status == COPROC_TICKET_PENDING || comp.status == COPROC_TICKET_RUNNING {
@@ -436,6 +487,8 @@ func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
 		return m.timeout
 	case COPROC_NAME_PTR:
 		return m.namePtr
+	case COPROC_INSTANCE:
+		return m.instance
 	case COPROC_WORKER_STATE:
 		return m.computeWorkerState()
 	case COPROC_STATS_OPS:
@@ -452,9 +505,15 @@ func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
 	case COPROC_COMPLETED_TICKET:
 		return m.completedTicket.Load()
 	case COPROC_RING_DEPTH:
-		idx, _ := m.selectedMonitorCPUIndexLocked()
+		idx, cpuType := m.selectedMonitorCPUIndexLocked()
 		if idx < 0 {
 			return 0
+		}
+		if m.instance != 0 {
+			idx = coprocRingIndex(cpuType, m.instance)
+			if idx < 0 {
+				return 0
+			}
 		}
 		ringBase := ringBaseAddr(idx)
 		head := uint32(m.bus.Read8(ringBase + RING_HEAD_OFFSET))
@@ -466,8 +525,11 @@ func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
 		return (head - tail + cap) % cap
 	case COPROC_WORKER_UPTIME:
 		_, cpuType := m.selectedMonitorCPUIndexLocked()
-		start := m.workerStartTime[cpuType]
-		if cpuType >= 1 && cpuType <= 6 && m.workers[cpuType] != nil && !start.IsZero() {
+		if cpuType < 1 || cpuType > 6 {
+			return 0
+		}
+		start := m.workerStartTimeAt(cpuType, m.instance)
+		if m.workerAtLocked(cpuType, m.instance) != nil && !start.IsZero() {
 			return uint32(time.Since(start).Seconds())
 		}
 		return 0
@@ -515,6 +577,8 @@ func (m *CoprocessorManager) writeReg(regBase, val uint32) {
 		m.timeout = val
 	case COPROC_NAME_PTR:
 		m.namePtr = val
+	case COPROC_INSTANCE:
+		m.instance = val
 	case COPROC_IRQ_CTRL:
 		m.completionIRQEnabled.Store(val&1 != 0)
 	case COPROC_STATS_RESET:
@@ -603,7 +667,7 @@ func (m *CoprocessorManager) dispatchCmd() {
 func (m *CoprocessorManager) cmdStart() {
 	cpuType := m.cpuType
 	filename := m.readFileName(m.namePtr)
-	err := m.startWorkerLocked(cpuType, filename, true)
+	err := m.startWorkerLocked(cpuType, m.instance, filename, true)
 	m.setCmdResultFromLifecycleErr(err)
 
 	// Auto-calibrate dispatch overhead on first IE64 worker start
@@ -629,7 +693,7 @@ func (m *CoprocessorManager) cmdStartMem() {
 	}
 	data := make([]byte, blobLen)
 	copy(data, mem[blobPtr:end])
-	err := m.startWorkerFromDataLocked(cpuType, "guest-ram", data, true)
+	err := m.startWorkerFromDataLocked(cpuType, m.instance, "guest-ram", data, true)
 	m.setCmdResultFromLifecycleErr(err)
 
 	if err == nil && cpuType == EXEC_TYPE_IE64 && m.dispatchOverheadNs.Load() == 0 {
@@ -646,11 +710,22 @@ func (m *CoprocessorManager) calibrateDispatchOverhead() {
 
 	start := time.Now()
 
-	// Enqueue NOP under lock, then immediately release — no shadow register
-	// save/restore needed. We only touch shadow regs briefly for the enqueue,
-	// and poll the ticket directly via scanTicketStatus (lock-free ring scan).
+	// Enqueue NOP under lock, then immediately release. The shadow registers
+	// are guest-visible command state: a guest staging its own command (or a
+	// non-default COPROC_INSTANCE selection) while this async calibration
+	// runs must not have it redirected, so save and restore everything the
+	// enqueue mutates before dropping the lock. The ticket is polled via
+	// scanTicketStatus afterwards (lock-free ring scan).
 	m.mu.Lock()
+	saved := struct {
+		cpuType, instance, op, reqPtr, reqLen, respPtr, respCap uint32
+		ticket, cmdStatus, cmdError                             uint32
+	}{
+		m.cpuType, m.instance, m.op, m.reqPtr, m.reqLen, m.respPtr, m.respCap,
+		m.ticket, m.cmdStatus, m.cmdError,
+	}
 	m.cpuType = EXEC_TYPE_IE64
+	m.instance = 0
 	m.op = 0 // NOP
 	m.reqPtr = 0
 	m.reqLen = 0
@@ -659,6 +734,9 @@ func (m *CoprocessorManager) calibrateDispatchOverhead() {
 	m.cmdEnqueue()
 	ticket := m.ticket
 	ok := m.cmdStatus == COPROC_STATUS_OK
+	m.cpuType, m.instance, m.op, m.reqPtr, m.reqLen, m.respPtr, m.respCap =
+		saved.cpuType, saved.instance, saved.op, saved.reqPtr, saved.reqLen, saved.respPtr, saved.respCap
+	m.ticket, m.cmdStatus, m.cmdError = saved.ticket, saved.cmdStatus, saved.cmdError
 	m.mu.Unlock()
 
 	if !ok || ticket == 0 {
@@ -684,12 +762,12 @@ func (m *CoprocessorManager) calibrateDispatchOverhead() {
 }
 
 func (m *CoprocessorManager) cmdStop() {
-	m.setCmdResultFromLifecycleErr(m.stopWorkerLocked(m.cpuType))
+	m.setCmdResultFromLifecycleErr(m.stopWorkerLocked(m.cpuType, m.instance))
 }
 
 func (m *CoprocessorManager) cmdEnqueue() {
 	m.reapDeadWorkersLocked()
-	cpuIdx := cpuTypeToIndex(m.cpuType)
+	cpuIdx := coprocRingIndex(m.cpuType, m.instance)
 	if cpuIdx < 0 {
 		m.ticket = 0
 		m.cmdStatus = COPROC_STATUS_ERROR
@@ -697,7 +775,7 @@ func (m *CoprocessorManager) cmdEnqueue() {
 		return
 	}
 
-	worker := m.workers[m.cpuType]
+	worker := m.workerAtLocked(m.cpuType, m.instance)
 	if worker == nil {
 		m.ticket = 0
 		m.cmdStatus = COPROC_STATUS_ERROR
@@ -760,10 +838,11 @@ func (m *CoprocessorManager) cmdEnqueue() {
 
 	// Track completion
 	m.completions[ticket] = &CoprocCompletion{
-		ticket:  ticket,
-		cpuType: m.cpuType,
-		status:  COPROC_TICKET_PENDING,
-		created: time.Now(),
+		ticket:   ticket,
+		cpuType:  m.cpuType,
+		instance: m.instance,
+		status:   COPROC_TICKET_PENDING,
+		created:  time.Now(),
 	}
 
 	// Track stats
@@ -812,7 +891,7 @@ func (m *CoprocessorManager) cmdPoll() {
 		if status == COPROC_TICKET_PENDING || status == COPROC_TICKET_RUNNING {
 			// Still non-terminal - check if worker is down
 			ct := comp.cpuType
-			if ct >= 1 && ct <= 6 && m.workers[ct] == nil {
+			if ct >= 1 && ct <= 6 && m.workerAtLocked(ct, comp.instance) == nil {
 				status = COPROC_TICKET_WORKER_DOWN
 			}
 		}
@@ -882,7 +961,7 @@ func (m *CoprocessorManager) cmdWait() {
 		m.reapDeadWorkersLocked()
 		down := false
 		if comp.cpuType >= 1 && comp.cpuType <= 6 {
-			down = m.workers[comp.cpuType] == nil
+			down = m.workerAtLocked(comp.cpuType, comp.instance) == nil
 		}
 		drained := m.drainPendingUnregsLocked()
 		m.mu.Unlock()
@@ -908,7 +987,7 @@ func (m *CoprocessorManager) cmdWait() {
 
 // scanTicketStatus scans all ring response slots to find the status for a ticket.
 func (m *CoprocessorManager) scanTicketStatus(ticket uint32) uint32 {
-	for i := range 6 {
+	for i := range COPROC_RING_COUNT {
 		ringBase := ringBaseAddr(i)
 		for slot := range uint32(RING_CAPACITY) {
 			respAddr := ringBase + RING_RESPONSES_OFFSET + slot*RESP_DESC_SIZE
@@ -939,6 +1018,11 @@ func (m *CoprocessorManager) computeWorkerState() uint32 {
 		if m.workers[i] != nil {
 			state |= 1 << i
 		}
+	}
+	// Second-instance workers report above the per-type bits: bit 7 is the
+	// second M68K worker (ring 6).
+	if m.workersAlt[EXEC_TYPE_M68K] != nil {
+		state |= 1 << 7
 	}
 	return state
 }
@@ -1038,7 +1122,7 @@ func (m *CoprocessorManager) StagedServicePath() string {
 func (m *CoprocessorManager) StartWorkerFromStaged(cpuType uint32, replace bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.startWorkerLocked(cpuType, m.stagedServicePathLocked(), replace)
+	return m.startWorkerLocked(cpuType, 0, m.stagedServicePathLocked(), replace)
 }
 
 // StartWorkerFromImage starts a coprocessor worker from an explicit relative
@@ -1056,12 +1140,12 @@ func (m *CoprocessorManager) StartWorkerFromImage(cpuType uint32, path string, r
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return cpuType, m.startWorkerLocked(cpuType, path, replace)
+	return cpuType, m.startWorkerLocked(cpuType, 0, path, replace)
 }
 
-func (m *CoprocessorManager) startWorkerLocked(cpuType uint32, filename string, replace bool) error {
-	if cpuTypeToIndex(cpuType) < 0 {
-		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "invalid coprocessor CPU type: %d", cpuType)
+func (m *CoprocessorManager) startWorkerLocked(cpuType, instance uint32, filename string, replace bool) error {
+	if coprocRingIndex(cpuType, instance) < 0 {
+		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "invalid coprocessor CPU type %d instance %d", cpuType, instance)
 	}
 	filename = strings.TrimSpace(filename)
 	if filename == "" {
@@ -1078,7 +1162,7 @@ func (m *CoprocessorManager) startWorkerLocked(cpuType uint32, filename string, 
 	if err != nil {
 		return coprocLifecycleErr(COPROC_ERR_NOT_FOUND, "coprocessor service %q is not readable: %w", filename, err)
 	}
-	return m.startWorkerFromDataLocked(cpuType, filename, data, replace)
+	return m.startWorkerFromDataLocked(cpuType, instance, filename, data, replace)
 }
 
 // startWorkerFromDataLocked runs the shared worker lifecycle for a
@@ -1086,29 +1170,32 @@ func (m *CoprocessorManager) startWorkerLocked(cpuType uint32, filename string, 
 // over directly from guest RAM (COPROC_CMD_START_MEM), which is how a
 // self-contained program image starts its embedded services without
 // any host filesystem.
-func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType uint32, label string, data []byte, replace bool) error {
+func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType, instance uint32, label string, data []byte, replace bool) error {
 	filename := label
+	slot := m.workerSlotLocked(cpuType, instance)
+	if slot == nil {
+		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "invalid coprocessor CPU type %d instance %d", cpuType, instance)
+	}
 
-	if existing := m.workers[cpuType]; existing != nil {
+	if existing := *slot; existing != nil {
 		if !replace {
-			return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%s coprocessor worker is already online", coprocCPUTypeToString(cpuType))
+			return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%s coprocessor worker is already online", coprocInstanceLabel(cpuType, instance))
 		}
-		m.workers[cpuType] = nil
-		m.workerStartTime[cpuType] = time.Time{}
-		m.workerImagePath[cpuType] = ""
+		*slot = nil
+		m.setWorkerMetaLocked(cpuType, instance, time.Time{}, "")
 		m.mu.Unlock()
 		m.stopWorkerAndUnregister(cpuType, existing)
 		m.mu.Lock()
 	}
 
 	m.mu.Unlock()
-	worker, err := m.createWorker(cpuType, data)
+	worker, err := m.createWorker(cpuType, instance, data)
 	m.mu.Lock()
 	if err != nil {
 		return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%w", err)
 	}
 
-	if m.workers[cpuType] != nil {
+	if *slot != nil {
 		m.mu.Unlock()
 		worker.stopCPU()
 		select {
@@ -1116,20 +1203,19 @@ func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType uint32, label str
 		case <-time.After(2 * time.Second):
 		}
 		m.mu.Lock()
-		return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%s coprocessor worker was started concurrently", coprocCPUTypeToString(cpuType))
+		return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%s coprocessor worker was started concurrently", coprocInstanceLabel(cpuType, instance))
 	}
-	m.workers[cpuType] = worker
-	m.workerStartTime[cpuType] = time.Now()
-	m.workerImagePath[cpuType] = filename
+	*slot = worker
+	m.setWorkerMetaLocked(cpuType, instance, time.Now(), filename)
 	mon := m.monitor
 
 	m.mu.Unlock()
 	newID := -1
 	if mon != nil && worker.debugCPU != nil {
-		newID = mon.RegisterCPU(coprocLabel(cpuType), worker.debugCPU)
+		newID = mon.RegisterCPU(coprocInstanceLabel(cpuType, instance), worker.debugCPU)
 	}
 	m.mu.Lock()
-	if m.workers[cpuType] == worker {
+	if *slot == worker {
 		worker.monitorID = newID
 	} else if mon != nil && newID >= 0 {
 		m.mu.Unlock()
@@ -1154,21 +1240,21 @@ func (m *CoprocessorManager) watchWorkerDone(worker *CoprocWorker) {
 func (m *CoprocessorManager) StopWorker(cpuType uint32) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.stopWorkerLocked(cpuType)
+	return m.stopWorkerLocked(cpuType, 0)
 }
 
-func (m *CoprocessorManager) stopWorkerLocked(cpuType uint32) error {
-	if cpuTypeToIndex(cpuType) < 0 {
-		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "invalid coprocessor CPU type: %d", cpuType)
+func (m *CoprocessorManager) stopWorkerLocked(cpuType, instance uint32) error {
+	slot := m.workerSlotLocked(cpuType, instance)
+	if slot == nil {
+		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "invalid coprocessor CPU type %d instance %d", cpuType, instance)
 	}
-	worker := m.workers[cpuType]
+	worker := *slot
 	if worker == nil {
-		return coprocLifecycleErr(COPROC_ERR_NO_WORKER, "%s coprocessor worker is not online", coprocCPUTypeToString(cpuType))
+		return coprocLifecycleErr(COPROC_ERR_NO_WORKER, "%s coprocessor worker is not online", coprocInstanceLabel(cpuType, instance))
 	}
-	m.workers[cpuType] = nil
-	m.workerStartTime[cpuType] = time.Time{}
-	m.workerImagePath[cpuType] = ""
-	m.markWorkerDownCompletionsLocked(cpuType)
+	*slot = nil
+	m.setWorkerMetaLocked(cpuType, instance, time.Time{}, "")
+	m.markWorkerDownCompletionsLocked(cpuType, instance)
 	m.mu.Unlock()
 	m.stopWorkerAndUnregister(cpuType, worker)
 	m.mu.Lock()
@@ -1199,14 +1285,17 @@ func (m *CoprocessorManager) pruneCompletions() {
 	}
 }
 
-func (m *CoprocessorManager) createWorker(cpuType uint32, data []byte) (*CoprocWorker, error) {
+func (m *CoprocessorManager) createWorker(cpuType, instance uint32, data []byte) (*CoprocWorker, error) {
+	if instance != 0 && cpuType != EXEC_TYPE_M68K {
+		return nil, fmt.Errorf("CPU type %d does not support worker instance %d", cpuType, instance)
+	}
 	switch cpuType {
 	case EXEC_TYPE_IE32:
 		return createIE32Worker(m.bus, data)
 	case EXEC_TYPE_6502:
 		return create6502Worker(m.bus, data)
 	case EXEC_TYPE_M68K:
-		return createM68KWorker(m.bus, data)
+		return createM68KWorker(m.bus, data, instance)
 	case EXEC_TYPE_Z80:
 		return createZ80Worker(m.bus, data)
 	case EXEC_TYPE_X86:
@@ -1221,7 +1310,7 @@ func (m *CoprocessorManager) createWorker(cpuType uint32, data []byte) (*CoprocW
 // createWorkerAndRegister creates a worker and registers it with the monitor.
 // Caller must NOT hold m.mu.
 func (m *CoprocessorManager) createWorkerAndRegister(cpuType uint32, data []byte) (*CoprocWorker, error) {
-	worker, err := m.createWorker(cpuType, data)
+	worker, err := m.createWorker(cpuType, 0, data)
 	if err != nil {
 		return nil, err
 	}
@@ -1300,6 +1389,15 @@ func coprocLabel(cpuType uint32) string {
 	}
 }
 
+// coprocInstanceLabel is coprocLabel with a "#<instance>" suffix for
+// second and later worker instances.
+func coprocInstanceLabel(cpuType, instance uint32) string {
+	if instance == 0 {
+		return coprocLabel(cpuType)
+	}
+	return fmt.Sprintf("%s#%d", coprocLabel(cpuType), instance)
+}
+
 // CoprocDebugInfo holds a coprocessor's debug adapter and type label.
 type CoprocDebugInfo struct {
 	CPUType uint32
@@ -1314,16 +1412,16 @@ func (m *CoprocessorManager) GetActiveWorkers() []CoprocDebugInfo {
 	m.reapDeadWorkersLocked()
 
 	var result []CoprocDebugInfo
-	for i := uint32(1); i <= 6; i++ {
-		w := m.workers[i]
+	m.forEachWorkerSlotLocked(func(cpuType, instance uint32, slot **CoprocWorker) {
+		w := *slot
 		if w != nil && w.debugCPU != nil {
 			result = append(result, CoprocDebugInfo{
-				CPUType: i,
-				Label:   coprocLabel(i),
+				CPUType: cpuType,
+				Label:   coprocInstanceLabel(cpuType, instance),
 				CPU:     w.debugCPU,
 			})
 		}
-	}
+	})
 	drained := m.drainPendingUnregsLocked()
 	m.mu.Unlock()
 	m.flushReaped(drained)
@@ -1335,20 +1433,26 @@ func (m *CoprocessorManager) WorkerInventory() []CoprocWorkerSlot {
 	m.mu.Lock()
 	m.reapDeadWorkersLocked()
 
-	result := make([]CoprocWorkerSlot, 0, 6)
+	result := make([]CoprocWorkerSlot, 0, 7)
 	for _, cpuType := range []uint32{EXEC_TYPE_IE32, EXEC_TYPE_IE64, EXEC_TYPE_M68K, EXEC_TYPE_Z80, EXEC_TYPE_6502, EXEC_TYPE_X86} {
-		slot := CoprocWorkerSlot{
-			CPUType:   cpuType,
-			Label:     coprocLabel(cpuType),
-			MonitorID: -1,
-			Path:      m.workerImagePath[cpuType],
+		for inst := uint32(0); inst < coprocInstanceLimit(cpuType); inst++ {
+			slot := CoprocWorkerSlot{
+				CPUType:   cpuType,
+				Label:     coprocInstanceLabel(cpuType, inst),
+				MonitorID: -1,
+			}
+			if inst == 0 {
+				slot.Path = m.workerImagePath[cpuType]
+			} else {
+				slot.Path = m.workerImagePathAlt[cpuType]
+			}
+			if w := m.workerAtLocked(cpuType, inst); w != nil {
+				slot.Online = true
+				slot.MonitorID = w.monitorID
+				slot.CPU = w.debugCPU
+			}
+			result = append(result, slot)
 		}
-		if w := m.workers[cpuType]; w != nil {
-			slot.Online = true
-			slot.MonitorID = w.monitorID
-			slot.CPU = w.debugCPU
-		}
-		result = append(result, slot)
 	}
 	drained := m.drainPendingUnregsLocked()
 	m.mu.Unlock()
@@ -1365,16 +1469,16 @@ func (m *CoprocessorManager) StopAll() {
 		cpuType uint32
 		worker  *CoprocWorker
 	}
-	for i := uint32(1); i <= 6; i++ {
-		if w := m.workers[i]; w != nil {
+	m.forEachWorkerSlotLocked(func(cpuType, instance uint32, slot **CoprocWorker) {
+		if w := *slot; w != nil {
 			toStop = append(toStop, struct {
 				cpuType uint32
 				worker  *CoprocWorker
-			}{i, w})
-			m.workers[i] = nil
-			m.workerStartTime[i] = time.Time{}
+			}{cpuType, w})
+			*slot = nil
+			m.setWorkerMetaLocked(cpuType, instance, time.Time{}, "")
 		}
-	}
+	})
 	drained := m.drainPendingUnregsLocked()
 	m.mu.Unlock()
 	m.flushReaped(drained)

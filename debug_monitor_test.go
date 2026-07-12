@@ -2239,7 +2239,7 @@ func TestCoprocWorkerFreezeResumeM68K(t *testing.T) {
 	bus := NewMachineBus()
 	// M68K BRA.S -2: store as 0xFE60 (byte-swapped)
 	code := []byte{0xFE, 0x60}
-	worker, err := createM68KWorker(bus, code)
+	worker, err := createM68KWorker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createM68KWorker: %v", err)
 	}
