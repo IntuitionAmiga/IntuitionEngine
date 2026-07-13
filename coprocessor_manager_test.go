@@ -144,6 +144,10 @@ func buildIE32ServiceBinary(ringBase uint32) []byte {
 	// For now, just create a binary that spins (NOP loop + halt on stop)
 	// and have the test directly manipulate mailbox memory to simulate the worker.
 
+	// Version-gate handshake: echo the layout version into the ring header so
+	// the manager routes work to this (simulated) worker under the gate.
+	appendInstr(ie32_LOAD, 0, ie32_ADDR_IMM, COPROC_LAYOUT_VERSION)
+	appendInstr(ie32_STORE, 0, ie32_ADDR_DIRECT, ringBase+RING_ACK_VERSION_OFFSET)
 	appendInstr(ie32_NOP, 0, ie32_ADDR_IMM, 0)
 	appendInstr(ie32_JMP, 0, ie32_ADDR_IMM, base)
 
@@ -156,6 +160,9 @@ func newTestBusAndManager(t *testing.T) (*MachineBus, *CoprocessorManager) {
 	t.Helper()
 	bus := NewMachineBus()
 	mgr := NewCoprocessorManager(bus, t.TempDir())
+	// Raw spin-loop test images do not perform the version-gate ack; the gate
+	// is exercised explicitly by the Phase-1b TestVersionGate_* tests.
+	mgr.versionGateEnabled = false
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 	return bus, mgr
 }
@@ -197,7 +204,7 @@ func TestCmdWait_WorkerDown_ReturnsWorkerDown(t *testing.T) {
 	ticket := uint32(0xCAFE)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][0] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
 	mgr.completions[ticket] = &CoprocCompletion{
 		ticket:  ticket,
 		cpuType: EXEC_TYPE_IE64,
@@ -229,7 +236,7 @@ func TestLiveness_GoroutineSelfExit_DetectedByPoll(t *testing.T) {
 	}
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][0] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
 	mgr.completions[ticket] = &CoprocCompletion{
 		ticket:  ticket,
 		cpuType: EXEC_TYPE_IE64,
@@ -250,7 +257,7 @@ func TestLiveness_GoroutineSelfExit_RejectsEnqueue(t *testing.T) {
 	bus, mgr := newTestBusAndManager(t)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][0] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
 	mgr.mu.Unlock()
 
 	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
@@ -265,7 +272,7 @@ func TestLiveness_WorkerStateBitClearsAfterSelfExit(t *testing.T) {
 	bus, mgr := newTestBusAndManager(t)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][0] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
 	mgr.mu.Unlock()
 
 	if got := bus.Read32(COPROC_WORKER_STATE); got&(1<<EXEC_TYPE_IE64) != 0 {
@@ -278,7 +285,7 @@ func TestLiveness_ReapedWorkerMarksOldTicketsWorkerDown(t *testing.T) {
 	ticket := uint32(0xBEEF)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][0] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
 	mgr.completions[ticket] = &CoprocCompletion{
 		ticket:  ticket,
 		cpuType: EXEC_TYPE_IE64,
@@ -286,7 +293,7 @@ func TestLiveness_ReapedWorkerMarksOldTicketsWorkerDown(t *testing.T) {
 		created: time.Now(),
 	}
 	mgr.reapDeadWorkersLocked()
-	mgr.workers[EXEC_TYPE_IE64] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][0] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
 	mgr.mu.Unlock()
 
 	bus.Write32(COPROC_TICKET, ticket)
@@ -323,7 +330,7 @@ func TestCompletionWatcher_IdleNoScans(t *testing.T) {
 func TestCompletionWake_ObservedWithoutFastTicker(t *testing.T) {
 	bus, mgr := newTestBusAndManager(t)
 	ticket := uint32(0xC001)
-	respAddr := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64)) + RING_RESPONSES_OFFSET
+	respAddr := ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE64, 0)) + RING_RESPONSES_OFFSET
 
 	mgr.mu.Lock()
 	mgr.completions[ticket] = &CoprocCompletion{
@@ -348,7 +355,7 @@ func TestCompletionWake_ObservedWithoutFastTicker(t *testing.T) {
 func TestCompletionWake_FaultingWriteObservedWithoutFastTicker(t *testing.T) {
 	bus, mgr := newTestBusAndManager(t)
 	ticket := uint32(0xC002)
-	respAddr := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_M68K)) + RING_RESPONSES_OFFSET
+	respAddr := ringBaseAddr(coprocRingIndex(EXEC_TYPE_M68K, 0)) + RING_RESPONSES_OFFSET
 
 	mgr.mu.Lock()
 	mgr.completions[ticket] = &CoprocCompletion{
@@ -381,7 +388,7 @@ func TestWorkerDeath_ObservedWithoutFastTicker(t *testing.T) {
 	worker := &CoprocWorker{cpuType: EXEC_TYPE_IE64, done: done}
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = worker
+	mgr.workers[EXEC_TYPE_IE64][0] = worker
 	mgr.completions[ticket] = &CoprocCompletion{
 		ticket:  ticket,
 		cpuType: EXEC_TYPE_IE64,
@@ -406,12 +413,12 @@ func TestWorkerDeath_ObservedWithoutFastTicker(t *testing.T) {
 func TestLiveness_ReapedWorkerPreservesCompletedPollStatus(t *testing.T) {
 	bus, mgr := newTestBusAndManager(t)
 	ticket := uint32(0xBEE0)
-	respAddr := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64)) + RING_RESPONSES_OFFSET
+	respAddr := ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE64, 0)) + RING_RESPONSES_OFFSET
 	bus.Write32(respAddr+RESP_TICKET_OFF, ticket)
 	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][0] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
 	mgr.completions[ticket] = &CoprocCompletion{
 		ticket:  ticket,
 		cpuType: EXEC_TYPE_IE64,
@@ -431,12 +438,12 @@ func TestLiveness_ReapedWorkerPreservesCompletedPollStatus(t *testing.T) {
 func TestLiveness_ReapedWorkerPreservesCompletedWaitStatus(t *testing.T) {
 	bus, mgr := newTestBusAndManager(t)
 	ticket := uint32(0xBEE1)
-	respAddr := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64)) + RING_RESPONSES_OFFSET
+	respAddr := ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE64, 0)) + RING_RESPONSES_OFFSET
 	bus.Write32(respAddr+RESP_TICKET_OFF, ticket)
 	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_ERROR)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][0] = newClosedSyntheticWorker(EXEC_TYPE_IE64)
 	mgr.completions[ticket] = &CoprocCompletion{
 		ticket:  ticket,
 		cpuType: EXEC_TYPE_IE64,
@@ -459,7 +466,7 @@ func TestLiveness_FrozenWorkerIsNotReaped(t *testing.T) {
 	worker.frozen = true
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = worker
+	mgr.workers[EXEC_TYPE_IE64][0] = worker
 	mgr.mu.Unlock()
 
 	if !mgr.IsWorkerRunning(EXEC_TYPE_IE64) {
@@ -474,7 +481,7 @@ func TestNextTicket_SkipsZeroOnWrap(t *testing.T) {
 	bus, mgr := newTestBusAndManager(t)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][0] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
 	mgr.nextTicket = 0xFFFFFFFE
 	mgr.mu.Unlock()
 
@@ -502,7 +509,7 @@ func TestReset_ClearsBusyState(t *testing.T) {
 	mgr.busyBucketIdx = 3
 	mgr.busyRotateCounter = 99
 	mgr.busyBucketStart = time.Now().Add(-time.Second)
-	mgr.workerStartTime[EXEC_TYPE_IE64] = time.Now()
+	mgr.workerStartTime[EXEC_TYPE_IE64][0] = time.Now()
 	mgr.mu.Unlock()
 
 	mgr.Reset()
@@ -518,9 +525,11 @@ func TestReset_ClearsBusyState(t *testing.T) {
 			t.Fatalf("busy bucket %d not cleared: %+v", i, b)
 		}
 	}
-	for i, start := range mgr.workerStartTime {
-		if !start.IsZero() {
-			t.Fatalf("workerStartTime[%d] not cleared", i)
+	for i, starts := range mgr.workerStartTime {
+		for inst, start := range starts {
+			if !start.IsZero() {
+				t.Fatalf("workerStartTime[%d][%d] not cleared", i, inst)
+			}
 		}
 	}
 }
@@ -763,8 +772,8 @@ func TestCoprocessorWorkerState(t *testing.T) {
 	}
 
 	// Simulate workers
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{cpuType: EXEC_TYPE_IE32}
-	mgr.workers[EXEC_TYPE_Z80] = &CoprocWorker{cpuType: EXEC_TYPE_Z80}
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{cpuType: EXEC_TYPE_IE32}
+	mgr.workers[EXEC_TYPE_Z80][0] = &CoprocWorker{cpuType: EXEC_TYPE_Z80}
 	state = mgr.computeWorkerState()
 	expected := uint32(1<<EXEC_TYPE_IE32 | 1<<EXEC_TYPE_Z80)
 	if state != expected {
@@ -817,9 +826,9 @@ func TestCoprocWorkerIE32StartStop(t *testing.T) {
 	bus := NewMachineBus()
 
 	// Create a simple IE32 binary: NOP + JMP to self
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 
-	worker, err := createIE32Worker(bus, code)
+	worker, err := createIE32Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createIE32Worker: %v", err)
 	}
@@ -849,8 +858,8 @@ func TestCoprocWorkerIE32MemoryIsolation(t *testing.T) {
 	// Write a marker in IE64 code space
 	bus.Write32(PROG_START, 0xDEADBEEF)
 
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
-	worker, err := createIE32Worker(bus, code)
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
+	worker, err := createIE32Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createIE32Worker: %v", err)
 	}
@@ -938,12 +947,12 @@ func TestMailbox_6502_BoundsClamp(t *testing.T) {
 	}
 
 	mem[MAILBOX_END+1] = 0x55
-	cb.Write8(0x3FFF, 0xA5)
+	cb.Write8(0x5FFF, 0xA5)
 
 	if mem[MAILBOX_END+1] != 0x55 {
 		t.Fatalf("6502 mailbox write spilled past MAILBOX_END")
 	}
-	if mem[WORKER_6502_BASE+0x3FFF] != 0xA5 {
+	if mem[WORKER_6502_BASE+0x5FFF] != 0xA5 {
 		t.Fatalf("6502 write above mailbox window did not route to worker RAM")
 	}
 }
@@ -1000,12 +1009,12 @@ func TestMailbox_Z80_BoundsClamp(t *testing.T) {
 	}
 
 	mem[MAILBOX_END+1] = 0x66
-	zb.Write(0x3FFF, 0xA6)
+	zb.Write(0x5FFF, 0xA6)
 
 	if mem[MAILBOX_END+1] != 0x66 {
 		t.Fatalf("Z80 mailbox write spilled past MAILBOX_END")
 	}
-	if mem[WORKER_Z80_BASE+0x3FFF] != 0xA6 {
+	if mem[WORKER_Z80_BASE+0x5FFF] != 0xA6 {
 		t.Fatalf("Z80 write above mailbox window did not route to worker RAM")
 	}
 }
@@ -1018,7 +1027,7 @@ func TestCoprocessorEnqueueAndRingLayout(t *testing.T) {
 
 	// Create a dummy worker so enqueue doesn't fail with NO_WORKER
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -1081,7 +1090,7 @@ func TestCoprocessorQueueFull(t *testing.T) {
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -1128,7 +1137,7 @@ func TestCoprocessorWaitTimeout(t *testing.T) {
 
 	// Create a dummy worker (won't actually process requests)
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -1172,7 +1181,7 @@ func TestCoprocessorSimulatedEndToEnd(t *testing.T) {
 
 	// Create dummy worker
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -1245,7 +1254,7 @@ func TestCoprocessorDoubleStart(t *testing.T) {
 
 	done1 := make(chan struct{})
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    done1,
 		stop:    func() { close(done1) },
@@ -1255,7 +1264,7 @@ func TestCoprocessorDoubleStart(t *testing.T) {
 	// Starting another IE32 worker should stop the first
 	done2 := make(chan struct{})
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    done2,
 		stop:    func() {},
@@ -1290,7 +1299,7 @@ func TestCoprocWorkerZ80StartStop(t *testing.T) {
 	// Create a minimal Z80 binary: JR -2 (infinite loop: 0x18 0xFE)
 	code := []byte{0x18, 0xFE}
 
-	worker, err := createZ80Worker(bus, code)
+	worker, err := createZ80Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createZ80Worker: %v", err)
 	}
@@ -1318,7 +1327,7 @@ func TestCoprocWorker6502StartStop(t *testing.T) {
 	// JMP absolute: 0x4C low high
 	code := []byte{0x4C, 0x00, 0x00}
 
-	worker, err := create6502Worker(bus, code)
+	worker, err := create6502Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("create6502Worker: %v", err)
 	}
@@ -1405,7 +1414,7 @@ func TestCoprocWorkerX86StartStop(t *testing.T) {
 	// x86 JMP short -2 (infinite loop): EB FE
 	code := []byte{0xEB, 0xFE}
 
-	worker, err := createX86Worker(bus, code)
+	worker, err := createX86Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createX86Worker: %v", err)
 	}
@@ -1556,7 +1565,7 @@ func TestCoprocEndToEnd_X86(t *testing.T) {
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 
 	// Create x86 worker
-	worker, err := createX86Worker(bus, data)
+	worker, err := createX86Worker(bus, data, 0)
 	if err != nil {
 		t.Fatalf("createX86Worker: %v", err)
 	}
@@ -1567,10 +1576,41 @@ func TestCoprocEndToEnd_X86(t *testing.T) {
 
 	// Register worker with manager
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_X86] = worker
+	mgr.workers[EXEC_TYPE_X86][0] = worker
 	mgr.mu.Unlock()
 
 	// x86 uses 32-bit addressing - reqPtr/respPtr are bus addresses directly
+	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_X86, 0x400000, 0x400100, 0x400000, 0x400100)
+}
+
+// TestCoprocEndToEnd_X86_Instance1 proves the P1 bootstrap-seed fix: the SAME
+// shipped fixed-ring x86 service image, started as instance 1, answers on the
+// instance-1 ring (ring 9) because createX86Worker seeds EBP with the assigned
+// ring base. Without the seed the image would ack/poll ring 8 and time out.
+func TestCoprocEndToEnd_X86_Instance1(t *testing.T) {
+	data := assembleService(t, []string{
+		"nasm", "-f", "bin", "-I", "sdk/include/", "-o", "OUTPUT",
+	}, "sdk/examples/asm/coproc_service_x86.asm")
+
+	bus := NewMachineBus()
+	mgr := NewCoprocessorManager(bus, t.TempDir())
+	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+
+	worker, err := createX86Worker(bus, data, 1)
+	if err != nil {
+		t.Fatalf("createX86Worker instance 1: %v", err)
+	}
+	defer func() {
+		worker.stop()
+		<-worker.done
+	}()
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_X86][1] = worker
+	mgr.mu.Unlock()
+
+	// Drive the request against instance 1.
+	mgr.instance = 1
 	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_X86, 0x400000, 0x400100, 0x400000, 0x400100)
 }
 
@@ -1585,7 +1625,7 @@ func TestCoprocEndToEnd_Z80(t *testing.T) {
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 
 	// Create Z80 worker
-	worker, err := createZ80Worker(bus, data)
+	worker, err := createZ80Worker(bus, data, 0)
 	if err != nil {
 		t.Fatalf("createZ80Worker: %v", err)
 	}
@@ -1596,22 +1636,22 @@ func TestCoprocEndToEnd_Z80(t *testing.T) {
 
 	// Register worker with manager
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_Z80] = worker
+	mgr.workers[EXEC_TYPE_Z80][0] = worker
 	mgr.mu.Unlock()
 
-	// Z80 uses 16-bit addressing via CoprocZ80Bus:
-	//   CPU addr 0x4000-0xFFFF → bus addr 0x314000-0x31FFFF
-	// So reqPtr=0x4000 maps to bus addr 0x314000
+	// Z80 uses 16-bit addressing via CoprocZ80Bus. Data buffers sit above the
+	// $2000..$5000 mailbox window (MAILBOX_SIZE now $3000):
+	//   CPU addr 0x5000-0xFFFF → bus addr 0x315000-0x31FFFF
 	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_Z80,
-		0x314000, 0x314100, // bus addresses for data
-		0x4000, 0x4100, // CPU-visible addresses for ring entry
+		0x315000, 0x315100, // bus addresses for data
+		0x5000, 0x5100, // CPU-visible addresses for ring entry
 	)
 }
 
 func TestCoprocEndToEnd_M68K(t *testing.T) {
 	// Assemble M68K service binary with vasmm68k_mot
 	data := assembleService(t, []string{
-		"/opt/amiga/bin/vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-I", "sdk/include", "-o", "OUTPUT",
+		"vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-I", "sdk/include", "-o", "OUTPUT",
 	}, "sdk/examples/asm/coproc_service_68k.asm")
 
 	bus := NewMachineBus()
@@ -1630,10 +1670,41 @@ func TestCoprocEndToEnd_M68K(t *testing.T) {
 
 	// Register worker with manager
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_M68K] = worker
+	mgr.workers[EXEC_TYPE_M68K][0] = worker
 	mgr.mu.Unlock()
 
 	// M68K uses 32-bit addressing - reqPtr/respPtr are bus addresses directly
+	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_M68K, 0x400000, 0x400100, 0x400000, 0x400100)
+}
+
+// TestCoprocEndToEnd_M68K_Instance1 proves the P1 bootstrap-seed fix for M68K:
+// the SAME shipped fixed-ring service image, started as instance 1, answers on
+// the instance-1 ring (ring 5) because createM68KWorker seeds A4 with the
+// assigned ring base. Without the seed the image would ack/poll ring 4.
+func TestCoprocEndToEnd_M68K_Instance1(t *testing.T) {
+	data := assembleService(t, []string{
+		"vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-I", "sdk/include", "-o", "OUTPUT",
+	}, "sdk/examples/asm/coproc_service_68k.asm")
+
+	bus := NewMachineBus()
+	mgr := NewCoprocessorManager(bus, t.TempDir())
+	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+
+	worker, err := createM68KWorker(bus, data, 1)
+	if err != nil {
+		t.Fatalf("createM68KWorker instance 1: %v", err)
+	}
+	defer func() {
+		worker.stop()
+		<-worker.done
+	}()
+
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_M68K][1] = worker
+	mgr.mu.Unlock()
+
+	// Drive the request against instance 1 (ring 5).
+	mgr.instance = 1
 	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_M68K, 0x400000, 0x400100, 0x400000, 0x400100)
 }
 
@@ -1645,7 +1716,7 @@ func TestCoprocEndToEnd_M68K(t *testing.T) {
 // request times out.
 func TestCoprocEndToEnd_M68K_JITHot(t *testing.T) {
 	data := assembleService(t, []string{
-		"/opt/amiga/bin/vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-I", "sdk/include", "-o", "OUTPUT",
+		"vasmm68k_mot", "-Fbin", "-m68020", "-devpac", "-I", "sdk/include", "-o", "OUTPUT",
 	}, "sdk/examples/asm/coproc_service_68k.asm")
 
 	bus := NewMachineBus()
@@ -1662,7 +1733,7 @@ func TestCoprocEndToEnd_M68K_JITHot(t *testing.T) {
 	}()
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_M68K] = worker
+	mgr.workers[EXEC_TYPE_M68K][0] = worker
 	mgr.mu.Unlock()
 
 	for i := 0; i < 64; i++ {
@@ -1679,7 +1750,7 @@ func TestCoprocEndToEnd_6502(t *testing.T) {
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 
 	// Create 6502 worker
-	worker, err := create6502Worker(bus, data)
+	worker, err := create6502Worker(bus, data, 0)
 	if err != nil {
 		t.Fatalf("create6502Worker: %v", err)
 	}
@@ -1690,14 +1761,15 @@ func TestCoprocEndToEnd_6502(t *testing.T) {
 
 	// Register worker with manager
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_6502] = worker
+	mgr.workers[EXEC_TYPE_6502][0] = worker
 	mgr.mu.Unlock()
 
-	// 6502 uses 16-bit addressing via CoprocBus32:
-	//   CPU addr 0x4000-0xFFFF → bus addr 0x304000-0x30FFFF
+	// 6502 uses 16-bit addressing via CoprocBus32. Data buffers sit above the
+	// $2000..$5000 mailbox window (MAILBOX_SIZE now $3000):
+	//   CPU addr 0x5000-0xFFFF → bus addr 0x305000-0x30FFFF
 	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_6502,
-		0x304000, 0x304100, // bus addresses for data
-		0x4000, 0x4100, // CPU-visible addresses for ring entry
+		0x305000, 0x305100, // bus addresses for data
+		0x5000, 0x5100, // CPU-visible addresses for ring entry
 	)
 }
 
@@ -1806,7 +1878,7 @@ func TestCoprocMMIO_ByteLevelEnqueueFlow(t *testing.T) {
 
 	// Create dummy worker
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -1875,7 +1947,7 @@ func TestCoprocessorEnqueueFailReturnsZeroTicket(t *testing.T) {
 
 	// Register a dummy worker and enqueue one successful request to set m.ticket=1
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -1900,7 +1972,7 @@ func TestCoprocessorEnqueueFailReturnsZeroTicket(t *testing.T) {
 
 	// Now remove the worker and enqueue again - should fail
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = nil
+	mgr.workers[EXEC_TYPE_IE32][0] = nil
 	mgr.mu.Unlock()
 
 	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE32)
@@ -1926,7 +1998,7 @@ func TestCoprocessorCachedStatusSurvivesRingReuse(t *testing.T) {
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -1983,7 +2055,7 @@ func TestCoprocessorWorkerDownUsesStoredCPUType(t *testing.T) {
 
 	// Register worker, enqueue, then remove worker
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_Z80] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_Z80][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_Z80,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -2002,7 +2074,7 @@ func TestCoprocessorWorkerDownUsesStoredCPUType(t *testing.T) {
 
 	// Remove the worker (simulating crash)
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_Z80] = nil
+	mgr.workers[EXEC_TYPE_Z80][0] = nil
 	mgr.mu.Unlock()
 
 	// POLL should detect worker-down via stored cpuType, not panic
@@ -2012,5 +2084,49 @@ func TestCoprocessorWorkerDownUsesStoredCPUType(t *testing.T) {
 	status := bus.Read32(COPROC_TICKET_STATUS)
 	if status != COPROC_TICKET_WORKER_DOWN {
 		t.Fatalf("expected WORKER_DOWN (5), got %d", status)
+	}
+}
+
+// TestCoprocSnapshot_PreservesInstanceSelectors pins that whole-machine
+// snapshot/restore preserves the instance selector and per-completion instance,
+// so second-instance workers are not redirected to instance 0 on restore.
+func TestCoprocSnapshot_PreservesInstanceSelectors(t *testing.T) {
+	_, mgr := newTestBusAndManager(t)
+	defer mgr.StopAll()
+
+	mgr.mu.Lock()
+	mgr.cpuType = EXEC_TYPE_M68K
+	mgr.instance = 1
+	mgr.completions[7] = &CoprocCompletion{
+		ticket: 7, cpuType: EXEC_TYPE_M68K, instance: 1, status: COPROC_TICKET_RUNNING,
+	}
+	mgr.mu.Unlock()
+
+	ver, blob, err := mgr.DebugSnapshot()
+	if err != nil {
+		t.Fatalf("DebugSnapshot: %v", err)
+	}
+
+	_, mgr2 := newTestBusAndManager(t)
+	defer mgr2.StopAll()
+	if err := mgr2.DebugRestoreSnapshot(ver, blob); err != nil {
+		t.Fatalf("DebugRestoreSnapshot: %v", err)
+	}
+
+	mgr2.mu.Lock()
+	gotInstance := mgr2.instance
+	comp := mgr2.completions[7]
+	mgr2.mu.Unlock()
+
+	if gotInstance != 1 {
+		t.Errorf("instance selector = %d after restore, want 1", gotInstance)
+	}
+	if comp == nil || comp.instance != 1 {
+		t.Errorf("completion instance not preserved: %+v", comp)
+	}
+
+	// A version-1 blob (pre-instance) must still restore, defaulting to 0.
+	if err := mgr2.DebugRestoreSnapshot(1, blob); err != nil {
+		t.Errorf("restore should accept legacy version 1: %v", err)
 	}
 }

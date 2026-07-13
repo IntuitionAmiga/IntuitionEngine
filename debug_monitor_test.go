@@ -1569,7 +1569,7 @@ func TestCoprocessorDiscovery(t *testing.T) {
 	cpu.PC = WORKER_IE32_BASE
 
 	// Manually install a worker with debugCPU
-	coprocMgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	coprocMgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType:  EXEC_TYPE_IE32,
 		stop:     func() {},
 		done:     make(chan struct{}),
@@ -2057,8 +2057,8 @@ func TestMonitorTaCommand(t *testing.T) {
 
 func TestCoprocWorkerPauseUnpause(t *testing.T) {
 	bus := NewMachineBus()
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
-	worker, err := createIE32Worker(bus, code)
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
+	worker, err := createIE32Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createIE32Worker: %v", err)
 	}
@@ -2140,7 +2140,7 @@ func TestCoprocWorkerPauseTimeout(t *testing.T) {
 func TestCoprocWorkerFreezeViaAdapterZ80(t *testing.T) {
 	bus := NewMachineBus()
 	code := []byte{0x18, 0xFE} // JR -2 (infinite loop)
-	worker, err := createZ80Worker(bus, code)
+	worker, err := createZ80Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createZ80Worker: %v", err)
 	}
@@ -2162,7 +2162,7 @@ func TestCoprocWorkerFreezeViaAdapterZ80(t *testing.T) {
 func TestCoprocWorkerResumeViaAdapterZ80(t *testing.T) {
 	bus := NewMachineBus()
 	code := []byte{0x18, 0xFE} // JR -2 (infinite loop)
-	worker, err := createZ80Worker(bus, code)
+	worker, err := createZ80Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createZ80Worker: %v", err)
 	}
@@ -2202,7 +2202,7 @@ func TestCoprocWorkerResumeViaAdapterZ80(t *testing.T) {
 func TestCoprocWorkerFreezeResume6502(t *testing.T) {
 	bus := NewMachineBus()
 	code := []byte{0x4C, 0x00, 0x00} // JMP $0000
-	worker, err := create6502Worker(bus, code)
+	worker, err := create6502Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("create6502Worker: %v", err)
 	}
@@ -2275,7 +2275,7 @@ func TestCoprocWorkerFreezeResumeM68K(t *testing.T) {
 func TestCoprocWorkerFreezeResumeX86(t *testing.T) {
 	bus := NewMachineBus()
 	code := []byte{0xEB, 0xFE} // JMP short -2
-	worker, err := createX86Worker(bus, code)
+	worker, err := createX86Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createX86Worker: %v", err)
 	}
@@ -2310,8 +2310,8 @@ func TestCoprocWorkerFreezeResumeX86(t *testing.T) {
 
 func TestCoprocWorkerFreezeResumeIE32(t *testing.T) {
 	bus := NewMachineBus()
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
-	worker, err := createIE32Worker(bus, code)
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
+	worker, err := createIE32Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createIE32Worker: %v", err)
 	}
@@ -2346,8 +2346,8 @@ func TestCoprocWorkerFreezeResumeIE32(t *testing.T) {
 
 func TestCoprocWorkerMonitorIDInitNegOne(t *testing.T) {
 	bus := NewMachineBus()
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
-	worker, err := createIE32Worker(bus, code)
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
+	worker, err := createIE32Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createIE32Worker: %v", err)
 	}
@@ -2371,7 +2371,7 @@ func TestCoprocWorkerRegistersOnStart(t *testing.T) {
 	mgr := NewCoprocessorManager(bus, ".")
 	mgr.monitor = mon
 
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 	worker, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
 	if err != nil {
 		t.Fatalf("createWorkerAndRegister: %v", err)
@@ -2403,13 +2403,13 @@ func TestCoprocWorkerUnregistersOnStop(t *testing.T) {
 	mgr := NewCoprocessorManager(bus, ".")
 	mgr.monitor = mon
 
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 	worker, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
 	if err != nil {
 		t.Fatalf("createWorkerAndRegister: %v", err)
 	}
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = worker
+	mgr.workers[EXEC_TYPE_IE32][0] = worker
 	mgr.mu.Unlock()
 
 	monID := worker.monitorID
@@ -2435,13 +2435,13 @@ func TestCoprocWorkerReplaceUnregisters(t *testing.T) {
 	mgr := NewCoprocessorManager(bus, ".")
 	mgr.monitor = mon
 
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 	w1, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
 	if err != nil {
 		t.Fatalf("first createWorkerAndRegister: %v", err)
 	}
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = w1
+	mgr.workers[EXEC_TYPE_IE32][0] = w1
 	mgr.mu.Unlock()
 	oldID := w1.monitorID
 
@@ -2454,7 +2454,7 @@ func TestCoprocWorkerReplaceUnregisters(t *testing.T) {
 	// Stop old worker
 	mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, w1)
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = w2
+	mgr.workers[EXEC_TYPE_IE32][0] = w2
 	mgr.mu.Unlock()
 
 	// Old monitor entry should be gone
@@ -2476,8 +2476,8 @@ func TestCoprocWorkerReplaceUnregisters(t *testing.T) {
 
 func TestCoprocMonitorIDInitNegOne2(t *testing.T) {
 	bus := NewMachineBus()
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
-	worker, err := createIE32Worker(bus, code)
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
+	worker, err := createIE32Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createIE32Worker: %v", err)
 	}
@@ -2496,8 +2496,8 @@ func TestCoprocUnregisterGuardNegOne(t *testing.T) {
 	mgr := NewCoprocessorManager(bus, ".")
 	mgr.monitor = mon
 
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
-	worker, err := createIE32Worker(bus, code)
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
+	worker, err := createIE32Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createIE32Worker: %v", err)
 	}
@@ -2512,13 +2512,13 @@ func TestCoprocStopAllUnregisters(t *testing.T) {
 	mgr := NewCoprocessorManager(bus, ".")
 	mgr.monitor = mon
 
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 	w1, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
 	if err != nil {
 		t.Fatalf("createWorkerAndRegister: %v", err)
 	}
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = w1
+	mgr.workers[EXEC_TYPE_IE32][0] = w1
 	mgr.mu.Unlock()
 
 	monID := w1.monitorID
@@ -2580,7 +2580,7 @@ func TestCoprocWorkerTrapLoopWhileFrozen(t *testing.T) {
 	// Create a Z80 worker with a tight loop (JR -2 = 0x18 0xFE)
 	bus := NewMachineBus()
 	code := []byte{0x18, 0xFE} // JR -2
-	worker, err := createZ80Worker(bus, code)
+	worker, err := createZ80Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createZ80Worker: %v", err)
 	}
@@ -2646,7 +2646,7 @@ func TestCoprocWorkerStopDuringTrapLoop(t *testing.T) {
 	// Create a Z80 worker with a tight loop
 	bus := NewMachineBus()
 	code := []byte{0x18, 0xFE} // JR -2
-	worker, err := createZ80Worker(bus, code)
+	worker, err := createZ80Worker(bus, code, 0)
 	if err != nil {
 		t.Fatalf("createZ80Worker: %v", err)
 	}
@@ -2697,13 +2697,13 @@ func TestCoprocMonitorIDWriteUnderMu(t *testing.T) {
 	mgr := NewCoprocessorManager(bus, ".")
 	mgr.monitor = mon
 
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 	worker, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
 	if err != nil {
 		t.Fatalf("createWorkerAndRegister: %v", err)
 	}
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = worker
+	mgr.workers[EXEC_TYPE_IE32][0] = worker
 	mgr.mu.Unlock()
 	defer func() {
 		mgr.StopAll()
@@ -2741,7 +2741,7 @@ func TestCoprocRegistrationRace(t *testing.T) {
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 
 	// Write a valid IE32 service binary to a temp file
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 	binPath := filepath.Join(t.TempDir(), "worker.bin")
 	if err := os.WriteFile(binPath, code, 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -2775,7 +2775,7 @@ func TestCoprocRegistrationRace(t *testing.T) {
 
 	// After all concurrent starts, exactly one worker should be active
 	mgr.mu.Lock()
-	worker := mgr.workers[EXEC_TYPE_IE32]
+	worker := mgr.workers[EXEC_TYPE_IE32][0]
 	mgr.mu.Unlock()
 	if worker == nil {
 		t.Fatal("Expected one active IE32 worker after concurrent starts")
@@ -2825,7 +2825,7 @@ func TestCoprocNoDeadlock(t *testing.T) {
 	mon.state = MonitorActive
 	mon.mu.Unlock()
 
-	code := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	code := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 
 	done := make(chan struct{})
 	go func() {
@@ -2837,7 +2837,7 @@ func TestCoprocNoDeadlock(t *testing.T) {
 				continue
 			}
 			mgr.mu.Lock()
-			mgr.workers[EXEC_TYPE_IE32] = w
+			mgr.workers[EXEC_TYPE_IE32][0] = w
 			mgr.mu.Unlock()
 
 			// Small delay to let things settle
@@ -2845,7 +2845,7 @@ func TestCoprocNoDeadlock(t *testing.T) {
 
 			mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, w)
 			mgr.mu.Lock()
-			mgr.workers[EXEC_TYPE_IE32] = nil
+			mgr.workers[EXEC_TYPE_IE32][0] = nil
 			mgr.mu.Unlock()
 		}
 	}()
@@ -2898,7 +2898,7 @@ func TestCoprocStopAllTimeout(t *testing.T) {
 	mgr.monitor = mon
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = worker
+	mgr.workers[EXEC_TYPE_IE32][0] = worker
 	mgr.mu.Unlock()
 
 	// StopAll should return within reasonable time (2s timeout per worker + margin)

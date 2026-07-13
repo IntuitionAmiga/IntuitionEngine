@@ -37,7 +37,22 @@ work.
 The port should look like it belongs to IE when it reaches the machine
 boundary.
 
-## 65.4 Measure Before Rewriting
+## 65.4 Build Pipelines With Ownership
+
+A worker is useful when it owns a complete stage. In the case study the
+main M68K owns game state, one M68K worker owns graphics translation,
+IE64 owns batched vertex mathematics, another M68K worker owns sequence
+processing, and Voodoo owns rasterisation.
+
+Each boundary has one producer, one consumer, stable shared buffers, and
+a bounded amount of work in flight. That is why the four processors can
+overlap without sharing every mutable structure.
+
+Keep a local path for an optional service. It gives startup a controlled
+failure mode and gives testing a reference implementation of the same
+contract.
+
+## 65.5 Measure Before Rewriting
 
 Before replacing a subsystem, count what it costs. A slow frame might be
 triangle submission, texture streaming, audio writes, file activity,
@@ -46,16 +61,16 @@ matrix work, or something else entirely.
 Use counters and frame groups to decide. Then change one contract at a
 time and measure again.
 
-## 65.5 Keep The Legal Boundary Clean
+## 65.6 Keep The Legal Boundary Clean
 
 Do not mix generated commercial data into the guide, the source
 contract, or the reader path. A clean port can still be a serious IE
 case study when it documents architecture, protocol, and engineering
 decisions rather than copied assets.
 
-## 65.6 The General IE Lesson
+## 65.7 The General IE Lesson
 
 Porting to IE is not preservation for its own sake. It is translation.
-Keep the behaviour that matters, choose the IE devices that express it
-well, measure the result, and leave the next programmer a clear machine
-contract.
+Keep the behaviour that matters, choose the IE devices and processors
+that express it well, give every pipeline stage one clear owner, measure
+the result, and leave the next programmer a clear machine contract.

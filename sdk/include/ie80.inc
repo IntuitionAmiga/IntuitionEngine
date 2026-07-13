@@ -2945,6 +2945,11 @@
 ; ============================================================================
 ; COPROCESSOR REGISTERS (via gateway 0xF200-0xF24F → bus 0xF2340)
 ; ============================================================================
+;
+; NOTE: The capability/version discovery block (COPROC_EXT2, bus 0xF25A0-
+; 0xF25BF) lies OUTSIDE this gateway range, so the Z80 cannot read it. A Z80
+; coprocessor service learns the mailbox layout version from its ring header
+; (RING_ACK at ring base + 4), not from an MMIO register. See coproc_service_z80.asm.
 
 ; Gateway register addresses (Z80 address space)
 .set COPROC_CMD,0xF200                   ; Command register (W triggers)

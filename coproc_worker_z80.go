@@ -41,26 +41,30 @@ func (b *CoprocZ80Bus) Tick(cycles int) {
 	// No cycle-accurate timing for coprocessor workers
 }
 
-func createZ80Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
-	if len(data) > int(WORKER_Z80_SIZE) {
-		return nil, fmt.Errorf("Z80 service binary too large: %d > %d", len(data), WORKER_Z80_SIZE)
+func createZ80Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWorker, error) {
+	base, end, size, ok := workerWindow(EXEC_TYPE_Z80, instance)
+	if !ok {
+		return nil, fmt.Errorf("Z80 worker instance out of range: %d", instance)
+	}
+	if len(data) > int(size) {
+		return nil, fmt.Errorf("Z80 service binary too large: %d > %d", len(data), size)
 	}
 
 	// Zero the worker's dedicated memory region
 	mem := bus.GetMemory()
-	for i := range uint32(WORKER_Z80_SIZE) {
-		mem[WORKER_Z80_BASE+i] = 0
+	for i := range size {
+		mem[base+i] = 0
 	}
 
 	// Copy service binary to worker region
-	copy(mem[WORKER_Z80_BASE:], data)
+	copy(mem[base:], data)
 
 	// Create coproc Z80 bus adapter with mailbox window at Z80 addr
 	// $2000 through $2000+MAILBOX_SIZE-1.
 	coprocBus := &CoprocZ80Bus{
 		bus:          bus,
 		mem:          mem,
-		bankBase:     WORKER_Z80_BASE,
+		bankBase:     base,
 		mailboxBase:  MAILBOX_BASE,
 		mailboxStart: 0x2000,
 		mailboxEnd:   0x2000 + uint16(MAILBOX_SIZE),
@@ -85,8 +89,8 @@ func createZ80Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 		stopCPU:   stopFn,
 		execCPU:   execFn,
 		done:      done,
-		loadBase:  WORKER_Z80_BASE,
-		loadEnd:   WORKER_Z80_END,
+		loadBase:  base,
+		loadEnd:   end,
 		debugCPU:  adapter,
 	}
 

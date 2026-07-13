@@ -10,6 +10,8 @@ sources:
   - ../mk64-ie/ie/ie_platform_asset.c
   - ../mk64-ie/ie/ie_platform_log.c
   - ../mk64-ie/ie/ie_platform_time.c
+  - ../mk64-ie/ie/pack_ie68.py
+  - ../mk64-ie/ie/coproc/coproc_layout.h
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -33,7 +35,11 @@ texture storage.
 |--------|---------|
 | `$00001000` | Initial M68K image entry and low loader space |
 | Below `$000A0000` | Low RAM before the first device aperture |
+| `$00280000` to `$002FFFFF` | M68K graphics-worker window |
+| `$003A0000` to `$0041FFFF` | IE64 transform-worker window |
+| `$00420000` to `$0049FFFF` | M68K audio-worker window |
 | `$00600000` | Asset staging and pack header area |
+| `$00790000` to `$00792FFF` | Coprocessor mailbox |
 | `$01000000` upward | Packed data window in the self-contained image |
 | `$08000000` upward | Voodoo texture store used by the port |
 | `$10000000` upward | High-linked game image |
@@ -54,6 +60,7 @@ The game runtime then performs the normal bare-machine duties:
 - Clear BSS.
 - Preserve initialised data.
 - Install graphics, audio, input, time, asset, save, and log services.
+- Locate and start the packed graphics, audio, and transform services.
 - Publish simple boot-status words for smoke checks.
 - Enter the game loop.
 
@@ -63,16 +70,19 @@ RAM, prints a terminal message, and halts the M68K CPU.
 ## 58.3 File And Pack Access
 
 The pack format exists so the programme can be self-contained. A table
-of contents names each asset and gives its offset and size. Multi-byte
+of contents names each asset and gives its offset and size. It also names
+the IE64 transform service and the two M68K service images. Multi-byte
 pack fields are big-endian, matching the M68K side of the port.
 
 If the pack is present, assets are served from RAM. If it is not
 present, the same asset contract can read through the File I/O device.
-The game core sees the same service either way.
+The game core sees the same asset service either way. If an optional
+worker service cannot start, its owning contract remains available on
+the main M68K through the local path.
 
 ## 58.4 The General IE Lesson
 
 A serious IE programme needs a runtime contract before it needs clever
-effects. Decide where code, data, stack, assets, textures, status words,
-and MMIO live. Then make the rest of the programme use that layout
-through named services.
+effects. Decide where code, worker windows, mailbox rings, data, stack,
+assets, textures, status words, and MMIO live. Then make the rest of the
+programme use that layout through named services.

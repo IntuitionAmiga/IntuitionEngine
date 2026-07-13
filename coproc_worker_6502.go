@@ -61,26 +61,30 @@ func (b *CoprocBus32) GetMemory() []byte {
 	return b.mem[b.bankBase : b.bankBase+0x10000]
 }
 
-func create6502Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
-	if len(data) > int(WORKER_6502_SIZE) {
-		return nil, fmt.Errorf("6502 service binary too large: %d > %d", len(data), WORKER_6502_SIZE)
+func create6502Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWorker, error) {
+	base, end, size, ok := workerWindow(EXEC_TYPE_6502, instance)
+	if !ok {
+		return nil, fmt.Errorf("6502 worker instance out of range: %d", instance)
+	}
+	if len(data) > int(size) {
+		return nil, fmt.Errorf("6502 service binary too large: %d > %d", len(data), size)
 	}
 
 	// Zero the worker's dedicated memory region
 	mem := bus.GetMemory()
-	for i := range uint32(WORKER_6502_SIZE) {
-		mem[WORKER_6502_BASE+i] = 0
+	for i := range size {
+		mem[base+i] = 0
 	}
 
 	// Copy service binary to worker region at offset 0 (CPU addr $0000)
-	copy(mem[WORKER_6502_BASE:], data)
+	copy(mem[base:], data)
 
 	// Create coproc bus adapter with mailbox window at CPU addr
 	// $2000 through $2000+MAILBOX_SIZE-1.
 	coprocBus := &CoprocBus32{
 		bus:          bus,
 		mem:          mem,
-		bankBase:     WORKER_6502_BASE,
+		bankBase:     base,
 		mailboxBase:  MAILBOX_BASE,
 		mailboxStart: 0x2000,
 		mailboxEnd:   0x2000 + uint16(MAILBOX_SIZE),
@@ -111,8 +115,8 @@ func create6502Worker(bus *MachineBus, data []byte) (*CoprocWorker, error) {
 		stopCPU:   stopFn,
 		execCPU:   execFn,
 		done:      done,
-		loadBase:  WORKER_6502_BASE,
-		loadEnd:   WORKER_6502_END,
+		loadBase:  base,
+		loadEnd:   end,
 		debugCPU:  adapter,
 	}
 

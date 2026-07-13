@@ -7093,6 +7093,9 @@ func TestREPL_AOT_RejectsDirectOnlyRoots(t *testing.T) {
 		{"costop", "10 COSTOP 2", "?COMPILE ERROR IN 10: COSTOP cannot be compiled"},
 		{"cowait", "10 COWAIT 1", "?COMPILE ERROR IN 10: COWAIT cannot be compiled"},
 		{"cocall", "10 COCALL(2,0,0,0,0,0)", "?COMPILE ERROR IN 10: COCALL cannot be compiled"},
+		{"cocall-7arg", "10 COCALL(4,1,0,0,0,0,0)", "?COMPILE ERROR IN 10: COCALL cannot be compiled"},
+		{"costart-instance", `10 COSTART 4,1,"svc"`, "?COMPILE ERROR IN 10: COSTART cannot be compiled"},
+		{"costop-instance", "10 COSTOP 4,1", "?COMPILE ERROR IN 10: COSTOP cannot be compiled"},
 		{"costatus", "10 COSTATUS(1)", "?COMPILE ERROR IN 10: COSTATUS cannot be compiled"},
 		{"compile", `10 COMPILE "x"`, "?COMPILE ERROR IN 10: COMPILE is direct-only"},
 		{"type", `10 TYPE "readme.txt"`, "?COMPILE ERROR IN 10: TYPE is direct-only"},
@@ -7214,6 +7217,9 @@ func TestREPL_AOT_RejectsCoprocFunctionsInExpressions(t *testing.T) {
 		{"nested-cocall", "10 Y=1+COCALL(2,0,0,0,0,0)*3", "?COMPILE ERROR IN 10: COCALL cannot be compiled"},
 		{"after-colon", "10 X=1:Z=COSTATUS(1)", "?COMPILE ERROR IN 10: COSTATUS cannot be compiled"},
 		{"in-if", "10 IF COSTATUS(1) THEN PRINT 1", "?COMPILE ERROR IN 10: COSTATUS cannot be compiled"},
+		{"assign-cocaps", "10 X=COCAPS(4)", "?COMPILE ERROR IN 10: COCAPS cannot be compiled"},
+		{"print-coinstance", "10 PRINT COINSTANCE()", "?COMPILE ERROR IN 10: COINSTANCE cannot be compiled"},
+		{"assign-coselstate", "10 X=COSELSTATE()", "?COMPILE ERROR IN 10: COSELSTATE cannot be compiled"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -12,8 +12,11 @@ import (
 
 func writeZ80LoopService(t *testing.T, dir, name string) {
 	t.Helper()
-	// JP $0000 keeps the worker alive until the manager stops it.
-	if err := os.WriteFile(filepath.Join(dir, name), []byte{0xC3, 0x00, 0x00}, 0644); err != nil {
+	// Version-gate handshake then spin: LD A,ver / LD ($3804),A (Z80 ring 6 ack
+	// via the $2000 mailbox window) / JP $0000 keeps the worker alive and acking
+	// until the manager stops it.
+	img := []byte{0x3E, COPROC_LAYOUT_VERSION, 0x32, 0x04, 0x38, 0xC3, 0x00, 0x00}
+	if err := os.WriteFile(filepath.Join(dir, name), img, 0644); err != nil {
 		t.Fatal(err)
 	}
 }

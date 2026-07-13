@@ -86,12 +86,16 @@
 ; 16 entry descriptors (32 bytes each) and 16 response descriptors
 ; (16 bytes each).
 
-RING_HEAD   = $2300
-RING_TAIL   = $2301
-ENTRIES_LO  = $08          ; low byte of entries offset from ring base ($2308)
-ENTRIES_HI  = $23          ; high byte
-RESP_LO     = $08          ; low byte of responses offset ($2508)
-RESP_HI     = $25          ; high byte
+; 6502 is ring index 2 (cpuTypeIndex 1 * 2 + instance 0) at the uniform $400
+; stride: CPU offset 2 * $400 = $800 from the $2000 mapping, so ring base $2800.
+RING_HEAD   = $2800
+RING_TAIL   = $2801
+RING_ACK    = $2804        ; version-gate ack byte
+ENTRIES_LO  = $08          ; low byte of entries offset from ring base ($2808)
+ENTRIES_HI  = $28          ; high byte
+RESP_LO     = $08          ; low byte of responses offset ($2A08)
+RESP_HI     = $2A          ; high byte
+LAYOUT_VER  = $01          ; COPROC_LAYOUT_VERSION
 
 ; ============================================================================
 ; ZERO PAGE SCRATCH - Pointer Storage
@@ -127,6 +131,11 @@ ZP_TICKH    = $0F
 ; against the current head value. This is a classic producer-consumer
 ; pattern where head is written by the producer (caller) and tail is
 ; written by the consumer (us).
+
+    ; Version-gate handshake: echo the mailbox layout version so the host
+    ; routes work to this service.
+    LDA #LAYOUT_VER
+    STA RING_ACK
 
 main_loop:
     ; Read tail

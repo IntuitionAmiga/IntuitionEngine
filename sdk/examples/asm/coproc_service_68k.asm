@@ -57,12 +57,13 @@
 ; instructions than the other ports.
 ;
 ; === MEMORY MAP ===
-; $280000          Code entry point (WORKER_M68K_BASE)
+; $280000          Code entry point (WORKER_M68K_BASE, instance 0)
 ; $790000          Mailbox base (MAILBOX_BASE)
-; $790600          Ring 2 head pointer (M68K is ring index 2)
-; $790601          Ring 2 tail pointer
-; $790608+tail*32  Request entry descriptors (32 bytes each)
-; $790808+tail*16  Response descriptors (16 bytes each)
+; $791000          Ring 4 head pointer (M68K is ring index 4, instance 0)
+; $791001          Ring 4 tail pointer
+; $791008+tail*32  Request entry descriptors (32 bytes each)
+; $791208+tail*16  Response descriptors (16 bytes each)
+; A4 = assigned ring base, seeded by the host (serves either instance ring)
 ;
 ; === BUILD AND RUN ===
 ; vasmm68k_mot -Fbin -m68020 -devpac -o coproc_service_68k.ie68 coproc_service_68k.asm
@@ -79,14 +80,18 @@
 ; CONSTANTS - Ring Buffer Addresses
 ; ============================================================================
 ;
-; The M68K is assigned ring index 2, so its ring lives at mailbox base
-; + 2 * $300 = $790600. Each ring has 16 entry slots (32 bytes each)
-; starting at offset +8, and 16 response slots (16 bytes each) starting
-; at offset +$208.
+; The M68K is assigned ring index 4 (instance 0), so its ring lives at
+; mailbox base + 4 * $400 = $791000. Each ring has 16 entry slots (32 bytes
+; each) starting at offset +8, and 16 response slots (16 bytes each) starting
+; at offset +$208. The running code addresses the ring through the seeded A4.
 
-RING_BASE   equ $790600
+; M68K is ring index 4 (cpuTypeIndex 2 * 2 + instance 0) at the uniform $400
+; stride: MAILBOX_BASE + 4 * $400 = $791000.
+RING_BASE   equ $791000
 ENTRIES     equ RING_BASE+8
 RESPONSES   equ RING_BASE+$208
+RING_ACK    equ RING_BASE+4     ; version-gate ack byte
+LAYOUT_VER  equ 1               ; COPROC_LAYOUT_VERSION
 
 ; ============================================================================
 ; MAIN POLL LOOP - Wait for Requests
@@ -108,13 +113,22 @@ RESPONSES   equ RING_BASE+$208
 ;   A2 = response data pointer (respPtr)
 ;   A3 = response descriptor pointer
 
+    ; A4 = assigned ring base, seeded by the host at worker entry so the same
+    ; image serves whichever instance ring the manager selected (RING_BASE is
+    ; only the instance-0 default, kept for documentation). All ring accesses
+    ; below are A4-relative.
+
+    ; Version-gate handshake: echo the mailbox layout version so the host
+    ; routes work to this service.
+    move.b  #LAYOUT_VER,4(a4)   ; RING_ACK = ring base + 4
+
 main_loop:
     ; Read tail (byte)
-    move.b  (RING_BASE+1),d0
+    move.b  1(a4),d0            ; ring base + 1
     andi.l  #$FF,d0             ; D0 = tail
 
     ; Read head (byte)
-    move.b  (RING_BASE),d1
+    move.b  (a4),d1             ; ring base + 0
     andi.l  #$FF,d1             ; D1 = head
 
     ; Compare: if tail == head, ring empty
@@ -133,7 +147,7 @@ main_loop:
     ; Compute entry address: ENTRIES + tail*32
     move.l  d0,d2
     lsl.l   #5,d2               ; D2 = tail*32
-    lea     ENTRIES,a0
+    lea     8(a4),a0           ; ENTRIES = ring base + 8
     adda.l  d2,a0               ; A0 = entry address
 
 ; ============================================================================
@@ -182,7 +196,7 @@ main_loop:
     ; Compute response address: RESPONSES + tail*16
     move.l  d0,d2
     lsl.l   #4,d2               ; D2 = tail*16
-    lea     RESPONSES,a3
+    lea     $208(a4),a3        ; RESPONSES = ring base + $208
     adda.l  d2,a3               ; A3 = response address
 
     ; Write response descriptor
@@ -202,7 +216,7 @@ main_loop:
     move.l  d0,d2
     addq.l  #1,d2
     andi.l  #$0F,d2
-    move.b  d2,(RING_BASE+1)
+    move.b  d2,1(a4)            ; advance tail
 
     bra     main_loop
 
@@ -219,7 +233,7 @@ error_resp:
     ; Compute response address
     move.l  d0,d2
     lsl.l   #4,d2
-    lea     RESPONSES,a3
+    lea     $208(a4),a3        ; RESPONSES = ring base + $208
     adda.l  d2,a3
 
     ; Write error response
@@ -233,6 +247,6 @@ error_resp:
     move.l  d0,d2
     addq.l  #1,d2
     andi.l  #$0F,d2
-    move.b  d2,(RING_BASE+1)
+    move.b  d2,1(a4)            ; advance tail (ring base + 1)
 
     bra     main_loop

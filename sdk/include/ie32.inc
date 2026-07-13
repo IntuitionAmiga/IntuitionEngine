@@ -1532,6 +1532,20 @@
 .equ COPROC_STATS_RESET,    0xF23B8             ; Write 1 to zero stats (W)
 .equ COPROC_BUSY_PCT,       0xF23BC             ; Worker busy % 0-100 (R)
 
+; Capability / version / selected-instance discovery block (0xF25A0-0xF25BF)
+.equ COPROC_INSTANCE_LIMIT,  0xF25A0            ; Instance count for COPROC_CPU_TYPE (R)
+.equ COPROC_SELECTED_STATE,  0xF25A4            ; State of selected (type,instance) (R)
+.equ COPROC_MAILBOX_VERSION, 0xF25A8            ; Mailbox layout version (R)
+.equ COPROC_WORKER_BASE,     0xF25AC            ; Selected worker window base (R)
+.equ COPROC_WORKER_END,      0xF25B0            ; Selected worker window end (R)
+.equ COPROC_WORKER_RING,     0xF25B4            ; Selected worker ring base addr (R)
+.equ COPROC_INSTANCE_STATE,  0xF25B8            ; Per-(cpuType,instance) running bitmask (R)
+.equ COPROC_LAYOUT_VERSION,  1                  ; Mailbox layout version
+
+; Coprocessor error codes (read from COPROC_CMD_ERROR)
+.equ COPROC_ERR_INVALID_INSTANCE, 8            ; Valid CPU type, instance beyond limit
+.equ COPROC_ERR_STALE_WORKER,     9            ; Worker failed the layout-version handshake
+
 ; Command values
 .equ COPROC_CMD_START      1             ; Start worker from file
 .equ COPROC_CMD_STOP       2             ; Stop worker

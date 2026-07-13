@@ -20,8 +20,9 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$043000`-`$06FFFF`    | 180 KB | IE64 BASIC standalone runtime blob area and legacy program-text fallback. |
 | `$600000`-`$6EFFFF`  | 960 KB | IE64 BASIC reserved low32 string export window. |
 | `$700000`-`$77FFFF`  | 512 KB | IE64 BASIC public `MEMALLOC` range 2. |
-| `$780000`-`$791FFF`  | 72 KB | IE64 BASIC AOT-owned low32 scratch gap, excluded from `MEMALLOC`. |
-| `$792000`-`$7FFFFF`  | 440 KB | IE64 BASIC public `MEMALLOC` range 1. |
+| `$780000`-`$78FFFF`  | 64 KB | IE64 BASIC AOT-owned low32 scratch gap, excluded from `MEMALLOC`. |
+| `$790000`-`$792FFF`  | 12 KB | Coprocessor mailbox: twelve ring slots at a `$400` stride. |
+| `$793000`-`$7FFFFF`  | 436 KB | IE64 BASIC public `MEMALLOC` range 1 (raised from `$792000` for the grown mailbox). |
 | `$820000`-`$FFFFFF`  | 8064 KB | IE64 BASIC public `MEMALLOC` range 0. |
 | `$1000000`-`$10003FF` | 1 KB  | IE64 BASIC-owned line/input scratch in the normal low32 fallback layout. |
 | `$1000400` upward     | dynamic | IE64 BASIC internal arena for programme text, variables, strings, file bridge, and pinned owner records in the low32 fallback layout. |
@@ -81,6 +82,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$F23C0`-`$F23DF`       | 32 B   | IRQ diagnostics. |
 | `$F23E0`-`$F23FF`       | 32 B   | Bootstrap loader. |
 | `$F2400`-`$F24FF`       | 256 B  | SysInfo (RAM-size ABI). |
+| `$F25A0`-`$F25BF`       | 32 B   | Coprocessor capability/version discovery (`COPROC_EXT2`). |
 | `$F2600`-`$F29FF`       | 1 KB   | SFX trigger extended window, channels `0`-`31`. |
 | `$F8000`-`$F87FF`       | 2 KB   | Voodoo 3D registers. |
 | `$FA000`-`$FBAFF`       | 6912 B | ULA VRAM aperture. |
@@ -90,6 +92,23 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | Range                       | Size  | Purpose |
 |-----------------------------|-------|---------|
 | `$100000`-`$5FFFFF`       | 5 MB  | Main VRAM aperture for VideoChip framebuffers; large modes may point `VIDEO_FB_BASE` into ordinary RAM. |
+
+The same backed aperture contains the dedicated coprocessor worker
+windows below. Starting a worker clears and claims its selected window,
+so a programme must not use that range as video or scratch data at the
+same time.
+
+| Range | Worker |
+|-------|--------|
+| `$200000`-`$27FFFF` | IE32 instance 0. |
+| `$280000`-`$2FFFFF` | M68K instance 0. |
+| `$300000`-`$30FFFF` | 6502 instance 0. |
+| `$310000`-`$31FFFF` | Z80 instance 0. |
+| `$320000`-`$39FFFF` | x86 instance 0. |
+| `$3A0000`-`$41FFFF` | IE64 instance 0. |
+| `$420000`-`$49FFFF` | M68K instance 1. |
+| `$4A0000`-`$51FFFF` | x86 instance 1. |
+| `$520000`-`$59FFFF` | IE64 instance 1. |
 
 ## J.6 Low-window RAM and reserved aliases
 

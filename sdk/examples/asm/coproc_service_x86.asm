@@ -53,17 +53,17 @@
 ; is exactly what we need for reading the 8-bit head and tail pointers
 ; into 32-bit registers for comparison and arithmetic.
 ;
-; EBX is used to preserve the tail value across the processing path,
-; since EAX is frequently clobbered by address computations. ESI holds
-; the entry pointer and EBP holds the response data pointer (respPtr).
+; EBX preserves the tail value across the processing path. ESI holds the
+; entry pointer. EBP holds the assigned ring base, seeded by the host at
+; worker entry so one image can serve either instance ring.
 ;
 ; === MEMORY MAP ===
 ; $320000          Code entry point (WORKER_X86_BASE)
 ; $790000          Mailbox base (MAILBOX_BASE)
-; $790C00          Ring 4 head pointer (x86 is ring index 4)
-; $790C01          Ring 4 tail pointer
-; $790C08+tail*32  Request entry descriptors (32 bytes each)
-; $790E08+tail*16  Response descriptors (16 bytes each)
+; $792000          Ring 8 head pointer (x86 is ring index 8, instance 0)
+; $792001          Ring 8 tail pointer
+; $792008+tail*32  Request entry descriptors (32 bytes each)
+; $792208+tail*16  Response descriptors (16 bytes each)
 ;
 ; === BUILD AND RUN ===
 ; sdk/bin/ie32asm sdk/examples/asm/coproc_service_x86.asm
@@ -81,14 +81,16 @@
 ; CONSTANTS - Ring Buffer Addresses
 ; ============================================================================
 ;
-; The x86 is assigned ring index 4, so its ring lives at mailbox base
-; + 4 * $300 = $790C00. Each ring has 16 entry slots (32 bytes each)
-; starting at offset +8, and 16 response slots (16 bytes each) starting
-; at offset +$208.
+; The x86 is assigned ring index 8 (cpuTypeIndex 4 * 2 + instance 0) at the
+; uniform $400 stride, so its ring lives at mailbox base + 8 * $400 = $792000.
+; Each ring has 16 entry slots (32 bytes each) starting at offset +8, and 16
+; response slots (16 bytes each) starting at offset +$208.
 
-RING_BASE   equ 0x790C00
+RING_BASE   equ 0x792000
 ENTRIES     equ RING_BASE + 0x08
 RESPONSES   equ RING_BASE + 0x208
+RING_ACK    equ RING_BASE + 0x04    ; version-gate ack byte
+LAYOUT_VER  equ 1                   ; COPROC_LAYOUT_VERSION
 
 ; ============================================================================
 ; MAIN POLL LOOP - Wait for Requests
@@ -106,14 +108,24 @@ RESPONSES   equ RING_BASE + 0x208
 ;   EDX = op field
 ;   ESI = entry descriptor pointer
 ;   EDI = request data pointer (reqPtr)
-;   EBP = response data pointer (respPtr)
+;   EBP = assigned ring base (seeded by host)
+
+    ; EBP = assigned ring base, seeded by the host at worker entry so the same
+    ; image serves whichever instance ring the manager selected (bootstrap
+    ; patch). RING_BASE below is only the instance-0 default, kept for
+    ; documentation; the running code uses EBP-relative addressing.
+
+    ; Version-gate handshake: echo the mailbox layout version so the host
+    ; routes work to this service. A stale image built for the old layout
+    ; never reaches this address and is refused at START.
+    mov     byte [ebp+4], LAYOUT_VER    ; RING_ACK = ring base + 4
 
 main_loop:
     ; Read tail (byte)
-    movzx   eax, byte [RING_BASE+1]     ; EAX = tail
+    movzx   eax, byte [ebp+1]           ; EAX = tail
 
     ; Read head (byte)
-    movzx   ecx, byte [RING_BASE]       ; ECX = head
+    movzx   ecx, byte [ebp]             ; ECX = head
 
     ; Compare: if tail == head, ring empty
     cmp     eax, ecx
@@ -132,10 +144,9 @@ main_loop:
     ; Save tail in EBX
     mov     ebx, eax
 
-    ; Compute entry address: ENTRIES + tail*32
+    ; Compute entry address: ring base + 8 (ENTRIES) + tail*32
     shl     eax, 5                      ; EAX = tail*32
-    add     eax, ENTRIES                ; EAX = entry address
-    mov     esi, eax                    ; ESI = entry address
+    lea     esi, [ebp+eax+8]            ; ESI = entry address
 
 ; ============================================================================
 ; OPCODE DISPATCH - Check Which Operation Was Requested
@@ -160,16 +171,15 @@ main_loop:
     ; Read reqPtr at entry+16
     mov     edi, [esi+16]              ; EDI = reqPtr
 
-    ; Read respPtr at entry+24
-    mov     ebp, [esi+24]             ; EBP = respPtr
-
     ; Read ticket at entry+0
     mov     ecx, [esi]                 ; ECX = ticket
 
     ; Op=1: add two uint32
     mov     eax, [edi]                 ; EAX = val1
     add     eax, [edi+4]              ; EAX = val1 + val2
-    mov     [ebp], eax                ; write result
+    ; EBP is the ring base, so respPtr is re-read into EDI (reqPtr is done).
+    mov     edi, [esi+24]             ; EDI = respPtr
+    mov     [edi], eax                ; write result
 
 ; ============================================================================
 ; WRITE RESPONSE DESCRIPTOR - Signal Completion to the Caller
@@ -183,7 +193,7 @@ main_loop:
     ; Compute response address: RESPONSES + tail*16
     mov     eax, ebx                   ; EAX = tail
     shl     eax, 4                     ; EAX = tail*16
-    add     eax, RESPONSES             ; EAX = response address
+    lea     eax, [ebp+eax+0x208]       ; ring base + $208 (RESPONSES) + tail*16
 
     ; Write response descriptor
     mov     [eax], ecx                 ; ticket
@@ -203,7 +213,7 @@ main_loop:
     mov     eax, ebx
     inc     eax
     and     eax, 0x0F
-    mov     byte [RING_BASE+1], al
+    mov     byte [ebp+1], al
 
     jmp     main_loop
 
@@ -220,7 +230,7 @@ error_resp:
     ; Compute response address
     mov     eax, ebx
     shl     eax, 4
-    add     eax, RESPONSES
+    lea     eax, [ebp+eax+0x208]
 
     ; Write error response
     mov     ecx, [esi]                 ; ticket
@@ -233,6 +243,6 @@ error_resp:
     mov     eax, ebx
     inc     eax
     and     eax, 0x0F
-    mov     byte [RING_BASE+1], al
+    mov     byte [ebp+1], al
 
     jmp     main_loop

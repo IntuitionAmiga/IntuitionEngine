@@ -10,9 +10,9 @@ program running on IE64 can submit work to a 6502 service, and
 another CPU can poll for the answer later.
 
 The mechanism is the **coprocessor system**. It consists of MMIO
-registers, one ring buffer per worker CPU, completion records, and
-five BASIC entry points: `COSTART`, `COSTOP`, `COCALL`,
-`COSTATUS`, and `COWAIT`.
+registers, one ring buffer per worker instance, completion records, and
+eight BASIC forms and functions: `COSTART`, `COSTOP`, `COCALL`,
+`COSTATUS`, `COWAIT`, `COCAPS`, `COINSTANCE`, and `COSELSTATE`.
 
 The reader path in this chapter is BASIC first, then direct
 `POKE` and `PEEK` of the same registers. The runnable example
@@ -40,7 +40,13 @@ Worker state is reported through `COPROC_WORKER_STATE`:
 | State bit | Meaning |
 |-----------|---------|
 | Clear     | No worker is running for that CPU type. |
-| Set       | A worker for that CPU type is running. |
+| Set       | At least one instance of that CPU type is running. |
+
+`COPROC_WORKER_STATE` aggregates instances: the bit is set when any
+instance of that type is running. To test a specific instance, select it
+with `COPROC_CPU_TYPE` and `COPROC_INSTANCE`, then read
+`COPROC_SELECTED_STATE`. M68K, x86, and IE64 support
+instances 0 and 1; IE32, 6502, and Z80 support instance 0 only.
 
 Failures are always visible through `COPROC_CMD_STATUS` and
 `COPROC_CMD_ERROR`. `COCALL` also returns ticket `0` when enqueue
@@ -50,14 +56,14 @@ fails, so a BASIC programme can reject the request immediately.
 
 These are the CPU type values used by BASIC and MMIO:
 
-| CPU type | Code | Service suffix | Worker RAM |
-|----------|------|----------------|------------|
-| IE32     | `1`  | `.IE32`        | `$200000` to `$27FFFF` |
-| IE64     | `2`  | `.IE64`        | `$3A0000` to `$41FFFF` |
-| 6502     | `3`  | `.IE65`        | `$300000` to `$30FFFF` |
-| M68K     | `4`  | `.IE68`        | `$280000` to `$2FFFFF` |
-| Z80      | `5`  | `.IE80`        | `$310000` to `$31FFFF` |
-| x86      | `6`  | `.IE86`        | `$320000` to `$39FFFF` |
+| CPU type | Code | Service suffix | Instances | Worker RAM |
+|----------|------|----------------|-----------|------------|
+| IE32 | `1` | `.IE32` | `0` | `$200000` to `$27FFFF` |
+| IE64 | `2` | `.IE64` | `0`, `1` | `$3A0000` to `$41FFFF`; `$520000` to `$59FFFF` |
+| 6502 | `3` | `.IE65` | `0` | `$300000` to `$30FFFF` |
+| M68K | `4` | `.IE68` | `0`, `1` | `$280000` to `$2FFFFF`; `$420000` to `$49FFFF` |
+| Z80 | `5` | `.IE80` | `0` | `$310000` to `$31FFFF` |
+| x86 | `6` | `.IE86` | `0`, `1` | `$320000` to `$39FFFF`; `$4A0000` to `$51FFFF` |
 
 `COSTART` checks that the service suffix matches the requested
 CPU type. A mismatch reports an error rather than starting the
@@ -69,31 +75,38 @@ wrong worker.
 
 ```basic
 COSTART cpuType, "serviceName"
+COSTART cpuType, instance, "serviceName"
 ```
 
 Starts the named service on the selected CPU. The service must be
-available in IE storage and must match the CPU type. The command
-records success or failure in `COPROC_CMD_STATUS` and
+available in IE storage and must match the CPU type. The optional
+`instance` selects a worker instance (default `0`); M68K, x86, and
+IE64 accept `0` or `1`, while the others accept only `0`. The
+command records success or failure in `COPROC_CMD_STATUS` and
 `COPROC_CMD_ERROR`.
 
 ### 32.3.2 COSTOP
 
 ```basic
 COSTOP cpuType
+COSTOP cpuType, instance
 ```
 
-Stops the worker for `cpuType`. Requests that have not completed
-are marked `COPROC_TICKET_WORKER_DOWN`.
+Stops the worker for `cpuType` and optional `instance` (default `0`).
+Requests that have not completed are marked `COPROC_TICKET_WORKER_DOWN`.
 
 ### 32.3.3 COCALL
 
 ```basic
 ticket = COCALL(cpuType, op, reqPtr, reqLen, respPtr, respCap)
+ticket = COCALL(cpuType, instance, op, reqPtr, reqLen, respPtr, respCap)
 ```
 
-Enqueues a request. The request is `reqLen` bytes starting at
-`reqPtr`; the response can use up to `respCap` bytes at `respPtr`.
-The `op` value is a service-defined operation code.
+Enqueues a request. The seven-argument form selects a worker
+`instance` (default `0` in the six-argument form). The request is
+`reqLen` bytes starting at `reqPtr`; the response can use up to
+`respCap` bytes at `respPtr`. The `op` value is a service-defined
+operation code. A malformed argument count raises `?FC ERROR`.
 
 For any non-zero `reqLen` or `respCap`, the corresponding pointer must
 be a public low32 span allocated by `MEMALLOC`. Invalid raw pointers
@@ -136,6 +149,24 @@ Waits for a ticket to finish or for the timeout to expire. If the
 timeout is omitted, BASIC uses `1000` milliseconds. `COWAIT` is a
 statement, not a function; call `COSTATUS(ticket)` afterwards to
 read the final ticket status.
+
+### 32.3.6 COCAPS, COINSTANCE, COSELSTATE
+
+```basic
+limit  = COCAPS(cpuType)
+inst   = COINSTANCE()
+state  = COSELSTATE()
+```
+
+`COCAPS(cpuType)` returns the number of worker instances a CPU type
+supports: `2` for M68K, x86, and IE64, `1` for the others. `COCAPS`
+also selects `cpuType` for the following `COSELSTATE` read.
+`COINSTANCE()` returns the currently selected worker instance.
+`COSELSTATE()` returns the running state of the selected
+`(cpuType, instance)` worker: `1` if online, `0` otherwise. These three
+functions work in direct mode and stored interpreted programmes, like
+`COCALL` and `COSTATUS`; they cannot be used in an AOT-compiled
+programme.
 
 ## 32.4 Runnable Status Example
 
@@ -180,7 +211,8 @@ and live worker mask in the MMIO block.
 ## 32.5 MMIO Register Block
 
 The coprocessor block occupies `$F2340` to `$F238F`. The extended
-status block occupies `$F23B0` to `$F23BF`.
+status block occupies `$F23B0` to `$F23BF`, and the capability and
+version-discovery block occupies `$F25A0` to `$F25BF`.
 
 | Address  | Name                       | Access | Purpose                                   |
 |----------|----------------------------|--------|-------------------------------------------|
@@ -197,20 +229,33 @@ status block occupies `$F23B0` to `$F23BF`.
 | `$F2368` | `COPROC_RESP_CAP`          | W      | Response buffer capacity                  |
 | `$F236C` | `COPROC_TIMEOUT`           | W      | Timeout in milliseconds                   |
 | `$F2370` | `COPROC_NAME_PTR`          | W      | Pointer to service-name string            |
-| `$F2374` | `COPROC_WORKER_STATE`      | R      | Bitmask of running workers                |
+| `$F2374` | `COPROC_WORKER_STATE`      | R      | Per-type bitmask: any instance running    |
 | `$F2378` | `COPROC_STATS_OPS`         | R      | Total operations dispatched               |
 | `$F237C` | `COPROC_STATS_BYTES`       | R      | Total bytes processed                     |
 | `$F2380` | `COPROC_IRQ_CTRL`          | R/W    | bit `0` enables IRQ on completion         |
 | `$F2384` | `COPROC_DISPATCH_OVERHEAD` | R      | Last dispatch overhead, nanoseconds       |
 | `$F2388` | `COPROC_COMPLETED_TICKET`  | R      | Last completed ticket ID                  |
+| `$F238C` | `COPROC_INSTANCE`          | R/W    | Worker instance selector (0 = default)    |
 | `$F23B0` | `COPROC_RING_DEPTH`        | R      | Selected CPU ring occupancy               |
 | `$F23B4` | `COPROC_WORKER_UPTIME`     | R      | Selected worker uptime, seconds           |
 | `$F23B8` | `COPROC_STATS_RESET`       | W      | Write `1` to clear statistics             |
 | `$F23BC` | `COPROC_BUSY_PCT`          | R      | Rolling worker busy percentage            |
+| `$F25A0` | `COPROC_INSTANCE_LIMIT`    | R      | Instance count for `COPROC_CPU_TYPE`      |
+| `$F25A4` | `COPROC_SELECTED_STATE`    | R      | Selected `(type, instance)` running state |
+| `$F25A8` | `COPROC_MAILBOX_VERSION`   | R      | Mailbox layout version                    |
+| `$F25AC` | `COPROC_WORKER_BASE`       | R      | Selected worker window base address       |
+| `$F25B0` | `COPROC_WORKER_END`        | R      | Selected worker window end address        |
+| `$F25B4` | `COPROC_WORKER_RING`       | R      | Selected worker ring base address         |
+| `$F25B8` | `COPROC_INSTANCE_STATE`    | R      | Per-`(cpuType, instance)` running bitmask  |
+
+The capability block (`$F25A0` and above) is reachable by the 32-bit
+addressing CPUs and the main-CPU BASIC runtime, not by the 6502 or Z80
+`$F200` gateway. A coprocessor service running on those cores learns the
+mailbox layout version from its ring header rather than this block.
 
 Read `COPROC_RING_DEPTH` and `COPROC_WORKER_UPTIME` only after
-writing `COPROC_CPU_TYPE`; the selected CPU type chooses which
-worker is queried.
+writing both `COPROC_CPU_TYPE` and `COPROC_INSTANCE`; together the
+selectors choose which worker is queried.
 
 `COPROC_BUSY_PCT` is calculated over the recent coprocessor activity
 window, about one second. Writing `1` to `COPROC_STATS_RESET` clears
@@ -259,18 +304,38 @@ worker files.
 | `5`  | `COPROC_ERR_QUEUE_FULL`   | Worker's ring buffer has no free slots       |
 | `6`  | `COPROC_ERR_NO_WORKER`    | No worker is running for this CPU type       |
 | `7`  | `COPROC_ERR_STALE_TICKET` | Ticket has already been reaped               |
+| `8`  | `COPROC_ERR_INVALID_INSTANCE` | CPU type is valid but the instance is beyond its limit |
+| `9`  | `COPROC_ERR_STALE_WORKER` | Worker did not acknowledge the mailbox layout version |
 
 ## 32.8 Ring Buffer Layout
 
-Each worker has a `16`-slot ring in shared RAM:
+Each worker has a `16`-entry ring in shared RAM. The mailbox holds twelve
+ring slots at a uniform `$400` stride starting at `MAILBOX_BASE`
+(`$790000`), ending at `$792FFF`. The ring index is
+`cpuTypeIndex * 2 + instance`: instance 0 of each type uses the even
+ring, instance 1 the following odd ring. The three single-instance types
+(IE32, 6502, Z80) leave their odd rings reserved but unused. Byte offset
+`$04` of each ring header holds the worker's echoed layout version; a
+conforming worker copies the layout byte at `+$03` to `+$04` at startup
+or the manager refuses to route it work.
 
 | Item | Address or size |
 |------|-----------------|
 | Mailbox base | `$790000` |
-| Ring base | `$790000 + cpuIndex * $300` |
-| Ring header | `head`, `tail`, `capacity` bytes |
+| Ring base | `$790000 + (cpuTypeIndex * 2 + instance) * $400` |
+| Ring header | head at `+$00`, tail at `+$01`, capacity at `+$02` |
+| Version gate | layout version at `+$03`, worker acknowledgement at `+$04` |
 | Request area | `16` request descriptors, `32` bytes each |
 | Response area | `16` response descriptors, `16` bytes each |
+
+The CPU type indices are IE32 `0`, 6502 `1`, M68K `2`, Z80 `3`, x86
+`4`, and IE64 `5`. A worker must copy byte `+$03` to `+$04` during
+startup. If it does not acknowledge the current layout within the start
+gate, the command fails with error `9` and no requests are routed to it.
+
+M68K receives its assigned ring base in `A4`, x86 in `EBP`, and IE64
+in `R30`. This lets either instance use the same service image. IE32,
+6502, and Z80 have one fixed ring each.
 
 Request descriptor words:
 

@@ -124,6 +124,97 @@ The current editorial pass is driven by the final review:
   status meanings, and opcode summaries. If an appendix simplifies, it
   must not rename, shorten, or contradict the main chapter.
 
+## Current Coprocessor ABI Editorial Pass
+
+This pass documents the final multi-instance coprocessor contract after
+the implementation itself is complete and verified. The instance limits
+are deliberately asymmetric:
+
+- M68K, x86, and IE64 support worker instances `0` and `1`.
+- IE32, 6502, and Z80 support worker instance `0` only.
+- `COPROC_INSTANCE_LIMIT` and BASIC `COCAPS(cpuType)` are the canonical
+  discovery paths. Do not describe the limits as a temporary JIT detail
+  or imply that every CPU type has two workers.
+
+The reader-facing contract includes the uniform twelve-slot mailbox,
+the `$400` ring stride, the `(cpuTypeIndex * 2) + instance` ring rule,
+the capability and selected-instance register block, the layout-version
+handshake, instance-aware BASIC and IE Script forms, monitor labels, and
+the final worker windows. A service-writing section must explain both
+ring-header version bytes and the assigned-ring bootstrap convention
+used by M68K, x86, and IE64 workers.
+
+Execute this pass in ascending order over Chapters 2, 24, 32, 33, 34,
+41, and 42, then Appendices A, D, H, I, J, and L in letter order. Check
+all intervening published files for stale coprocessor addresses,
+instance rules, errors, BASIC syntax, and cross-references even when no
+edit is expected.
+
+Chapter 42 remains a positive, IE-native 6502 example. Its entered
+worker must acknowledge the mailbox layout version before polling the
+ring, and its bytes, disassembly, allocation length, DATA statements,
+mailbox addresses, expected result, and explanatory prose must agree.
+
+Part VIII, Chapters 56 through 65, follows the checked porting tree and
+must be revised after that tree has migrated to this ABI. The current
+case-study architecture is:
+
+- the main M68020+FPU owns game state, simulation, input, display-list
+  production, and audio command production;
+- M68K worker instance `0` owns Fast3D display-list translation, Voodoo
+  submission, and frame pacing;
+- M68K worker instance `1` owns sequence processing, envelopes, pitch,
+  note allocation, and native IE voice control;
+- IE64 worker instance `0` owns batched vertex transformation and
+  lighting; and
+- Voodoo owns triangle rasterisation, texturing, blending, and the
+  framebuffer.
+
+The self-contained pack carries the three service images used by those
+workers. Each optional service has a checked local fallback. Explain the
+division of labour and the shared-memory pipeline without exposing host
+build commands, diagnostic environment switches, internal bring-up
+traces, or obsolete ring layouts. The current Intuition Engine code owns
+mailbox facts; the current `../mk64-ie` clients and services own the port's
+division of labour. Older engineering prose is evidence only where it
+still agrees with those implementations.
+
+Execute the Part VIII migration in ascending order from Chapter 56
+through Chapter 65, then replace the matching claim-ledger entries in the
+same order. Preserve the fixed opening boundary and each chapter's
+`The General IE Lesson` ending. This is an architecture case study, not a
+host build guide or a source-file tour.
+
+Author verification for this pass must use the code and include files
+on disk as canonical truth, targeted coprocessor and BASIC tests, the
+checked port's service and pack tests, the PRG example harness for
+affected runnable chapters, strict publication, and PDF generation only
+after the canonical source pass is complete.
+
+Before this pass is complete, perform a final consistency repair in
+ascending reader order:
+
+- Chapter 32 must describe the version gate as a worker copying its
+  assigned ring's layout byte at `+$03` to the acknowledgement byte at
+  `+$04`. `COPROC_MAILBOX_VERSION` is the main-CPU discovery register,
+  not the value a worker reads through its ring.
+- Chapter 56 must keep quantities in its teaching prose consistent with
+  the numbered rules that follow.
+- Appendix E author provenance must name the implementation files that
+  exist on disk. Provenance paths are evidence, not approximate module
+  names.
+- Appendix K must show a pool of worker instances rather than implying
+  one worker per CPU type. It must state the asymmetric instance limits,
+  the twelve reserved ring slots, the uniform `$400` stride, and the
+  per-instance request and response path without turning the diagram
+  into a duplicate register table.
+
+Do not add the optional per-swap diagnostic hash controls to the guide.
+They are host-enabled verification instrumentation rather than part of
+the IE-native reader workflow. Internal worker JIT repairs likewise do
+not require reader-facing prose unless they change a documented
+programming contract.
+
 Current controlled polish pass:
 
 - Add the full game port case-study course as Part VIII, chapters `56`
@@ -153,7 +244,7 @@ Current controlled polish pass:
 
   Canonical sources to check before and while writing:
 
-  - The checked `../mk64-ie` tree, especially `README.md`,
+  - The checked `../mk64-ie` tree, especially `IE-PORT-NOTES.md`,
     `src/platform/platform.h`, `src/gfx/gfx_pc.c`,
     `src/gfx/gfx_fast3d.c`, `src/audio/audio_api.h`,
     `ie/ie_runtime.c`, `ie/game.ld`, `ie/loader_main.c`,
@@ -161,7 +252,10 @@ Current controlled polish pass:
     `ie/ie_platform_asset.c`, `ie/ie_platform_audio.c`,
     `ie/ie_platform_input.c`, `ie/ie_platform_log.c`,
     `ie/ie_platform_save.c`, `ie/ie_platform_time.c`,
-    `ie/ie_gfx_voodoo.c`, `ie/coproc/ie_coproc.c`,
+    `ie/ie_gfx_voodoo.c`, `ie/ie_gfx_svc_client.c`,
+    `ie/ie_audio_svc_client.c`, `ie/coproc/gfx_svc_main.c`,
+    `ie/coproc/audio_svc_main.c`, `ie/coproc/coproc_layout.h`,
+    `ie/coproc/ie_coproc.c`,
     `ie/coproc/ie_coproc.h`, `ie/coproc/tnl_proto.h`,
     `ie/coproc/tnl_service_ie64.asm`, and the matching tests.
   - Intuition Engine's PRG chapters for Voodoo, coprocessor calls,

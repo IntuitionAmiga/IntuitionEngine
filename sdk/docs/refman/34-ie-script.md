@@ -134,7 +134,29 @@ If a raw RAM read or write is attempted while the CPU is not
 frozen, the script raises an error. Use `cpu.freeze()` before the
 access and `cpu.resume()` afterwards.
 
-## 34.6 Terminal Module
+## 34.6 Coprocessor Module
+
+`coproc` starts workers and exchanges request strings through the same
+mailbox used by BASIC and raw MMIO:
+
+| Function | Purpose |
+|----------|---------|
+| `coproc.start(cpu_type, filename [, instance])` | Start a service; instance defaults to `0`. |
+| `coproc.stop(cpu_type [, instance])` | Stop a service; instance defaults to `0`. |
+| `coproc.enqueue(cpu_type, op, request [, instance])` | Submit request bytes and return a ticket. |
+| `coproc.poll(ticket)` | Return the ticket status name. |
+| `coproc.wait(ticket, timeout_ms)` | Wait and return status plus response bytes. |
+| `coproc.response(ticket)` | Return available response bytes. |
+| `coproc.stats()` | Return operation, byte, overhead, and completion counters. |
+| `coproc.workers()` | Return all live worker type and instance pairs. |
+
+CPU type names are `ie32`, `ie64`, `6502`, `m68k`, `z80`, and `x86`.
+M68K, x86, and IE64 accept instances `0` and `1`; the other types
+accept only `0`. Invalid types, invalid instances, and failed commands
+raise a script error. `coproc.workers()` reads the per-instance state
+mask without changing the current raw MMIO selectors.
+
+## 34.7 Terminal Module
 
 `term` drives keyboard, mouse, and terminal text:
 
@@ -153,7 +175,7 @@ access and `cpu.resume()` afterwards.
 | `term.scancode(code)` | Inject a keyboard scancode. |
 | `term.key_press(code)` | Press and release a key. |
 
-## 34.7 Audio Module
+## 34.8 Audio Module
 
 `audio` controls the mixer and supported playback engines:
 
@@ -178,7 +200,7 @@ deliberately wants to drive it can use `audio.write_reg(0xF0BF4, byte)`
 for data bytes and `audio.write_reg(0xF0BF6, 1)` for reset, then use
 `dbg.io("midilive")` to inspect the port.
 
-## 34.8 Video Module
+## 34.9 Video Module
 
 `video` controls display chips, blitter operations, and frame
 inspection:
@@ -204,7 +226,7 @@ inspection:
 | `video.wait_stable(frames, timeout)` | Wait for a stable frame hash. |
 | `video.wait_condition(fn, timeout)` | Wait until callback `fn` returns true. |
 
-## 34.9 Recording Module
+## 34.10 Recording Module
 
 `rec` captures frames:
 
@@ -217,7 +239,7 @@ inspection:
 | `rec.is_recording()` | Return true while recording. |
 | `rec.frame_count()` | Number of recorded frames. |
 
-## 34.10 Debug Module
+## 34.11 Debug Module
 
 `dbg` drives IE Mon from a script:
 
@@ -283,7 +305,7 @@ they are CPU-local snapshots. They are not whole-machine save files and
 do not include other CPUs, device state, audio/video state, timers, DMA,
 or reverse-history retention.
 
-## 34.11 Symbols, Regions, and Bits
+## 34.12 Symbols, Regions, and Bits
 
 | Module | Useful functions |
 |--------|------------------|
@@ -291,7 +313,7 @@ or reverse-history retention.
 | `regions` | `list`, `lookup` |
 | `bit32` | `band`, `bor`, `bxor`, `bnot`, `lshift`, `rshift`, `arshift`, `lrotate`, `rrotate`, `btest`, `extract`, `replace` |
 
-## 34.12 Runnable Video Example
+## 34.13 Runnable Video Example
 
 Store this as `FIRST.IES`, then run `RUN "FIRST.IES"` from BASIC
 or `script FIRST.IES` from IE Mon:
@@ -317,7 +339,7 @@ the blitter status. The expected status is `BLT 2`, meaning DONE
 set and ERR clear. Try changing `65280` to `16711680` in the
 `video.blit_line` call; the diagonal changes from green to red.
 
-## 34.13 Runnable Audio Example
+## 34.14 Runnable Audio Example
 
 This companion script uses the same bus-facing style for sound. It
 programs SoundChip channel `0` through the flexible-channel
@@ -344,7 +366,7 @@ register uses 16.8 fixed-point hertz, so `262 * 256` means about
 selects a square wave, and control value `3` means enabled plus
 gate. The print should include `CH0 3`.
 
-## 34.14 Fault Callback Example
+## 34.15 Fault Callback Example
 
 This pattern records the program counter for any IE64 illegal
 instruction fault and then exits cleanly after a short wait:
@@ -361,7 +383,7 @@ sys.wait_ms(100)
 sys.quit()
 ```
 
-## 34.15 Limits and Error Behaviour
+## 34.16 Limits and Error Behaviour
 
 Scripts run cooperatively. A script that loops forever without
 calling a wait function cannot be cancelled promptly.
@@ -373,7 +395,7 @@ Raw RAM access through `mem` requires `cpu.freeze()`. MMIO access
 does not. If a script fails after freezing a CPU, audio, or the
 monitor, IE Script releases those holds before returning control.
 
-## 34.16 What Comes Next
+## 34.17 What Comes Next
 
 Part IV ends here. Part V covers persistent storage, machine
 control commands, input MMIO, and the serial interface.

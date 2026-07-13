@@ -95,10 +95,15 @@
 ; 16 entry slots (32 bytes each) starting at offset +8, and 16 response
 ; slots (16 bytes each) starting at offset +$208.
 
-.set RING_HEAD,    0x2900
-.set RING_TAIL,    0x2901
-.set ENTRIES_BASE, 0x2908
-.set RESP_BASE,    0x2B08
+; Z80 is ring index 6 (cpuTypeIndex 3 * 2 + instance 0) at the uniform $400
+; stride: CPU offset 6 * $400 = $1800 from the $2000 mailbox mapping, so the
+; ring base is $3800.
+.set RING_HEAD,    0x3800
+.set RING_TAIL,    0x3801
+.set RING_ACK,     0x3804
+.set ENTRIES_BASE, 0x3808
+.set RESP_BASE,    0x3A08
+.set LAYOUT_VER,   1        ; COPROC_LAYOUT_VERSION
 
 ; ============================================================================
 ; MAIN POLL LOOP - Wait for Requests
@@ -108,6 +113,11 @@
 ; comparison against A (head). CP B sets the zero flag if they match,
 ; and JR Z loops back to poll. This is the tightest possible poll loop
 ; on the Z80 -- just three instructions before the branch.
+
+    ; Version-gate handshake: echo the mailbox layout version so the host
+    ; routes work to this service.
+    LD A, LAYOUT_VER
+    LD (RING_ACK), A
 
 main_loop:
     ; Read tail

@@ -980,8 +980,8 @@
           <article id="mariokart" class="demo-card">
             <span class="kicker">Coprocessor case study</span>
             <h3>Mario Kart 64</h3>
-            <div class="runtime">M68K + IE64 worker</div>
-            <p>mk64-ie packs an M68K loader, the game payload, and <code>svc/tnl.ie64</code> into <code>mariokart64.ie68</code>. The M68K game code starts that service and sends vertex transform-and-lighting batches to an IE64 coprocessor worker: the shared-bus worker model doing real work behind a real port.</p>
+            <div class="runtime">4 CPUs + Voodoo</div>
+            <p>mk64-ie runs four processors at once inside a single <code>mariokart64.ie68</code>: a main 68020 building each display list, a second 68020 translating it into draw calls, a third 68020 running the audio sequencer, and an IE64 worker doing transform and lighting, with the geometry feeding a Voodoo. The two 68020 workers are the M68K type's two instances, real work behind a real port.</p>
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D028-SHOT" data-id="3f11zTtFd6s"><button type="button" class="lty-playbtn" aria-label="Play mariokart64.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
           </article>
           <article class="demo-card">
@@ -1177,7 +1177,7 @@ SOUND PLAY "SONG.MID"</code></pre>
           <article class="card">
             <span class="kicker">Concurrency</span>
             <h3>Many CPUs at once</h3>
-            <p>A profile boots the machine into one instruction set, then any CPU can bring the others online as workers, up to one of each of the six types, all running at the same time on the same bus. There is no central bus arbiter and no interrupt controller: each CPU carries its own interrupt lines, and peripherals signal whichever CPU is active.</p>
+            <p>A profile boots the machine into one instruction set, then any CPU can bring the others online as workers, up to nine at once across the six types, all running at the same time on the same bus. M68K, x86 and IE64 each run two worker instances; IE32, the 6502 and the Z80 run one each. There is no central bus arbiter and no interrupt controller: each CPU carries its own interrupt lines, and peripherals signal whichever CPU is active.</p>
             <p><a href="#coprocessors">Coprocessor model</a></p>
           </article>
           <article class="card">
@@ -1405,7 +1405,8 @@ Mode: 960 x 540 RGBA32, stride 3840</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>CPUs can be devices for another CPU</h2>
-          <p>All six CPU architectures can run at the same time on the one bus, sharing the same RAM and the same devices. There is no central bus arbiter and no interrupt controller: each CPU carries its own interrupt lines, and peripherals signal whichever CPU is active. A program on any CPU hands work to IE64, IE32, 6502, Z80, M68K or x86 workers, up to one of each type at once, and keeps running while they execute concurrently. A caller queues a request and polls or waits on a ticket; BASIC has named entry points, and assembly and C write to the coprocessor MMIO block and mailbox rings directly.</p>
+          <p>Type <code>COSTART</code> at the BASIC prompt and a second processor wakes up and starts working for you, while your own program carries on. That worker is a real 6502, Z80, 68020, x86, IE32 or IE64, not a library call: one CPU hands work to another across the bus, waits on a ticket, and reads the answer back. It is the whole machine made literal: six processors on one board, the classic silicon beside the engine's own cores, each able to serve the others, in combinations no real computer ever shipped.</p>
+          <p>There is no central bus arbiter and no interrupt controller. Every CPU carries its own interrupt lines and peripherals signal whichever core is active, so the processors cooperate as equals over shared RAM and the same devices rather than through a master. Any CPU can bring the others online: M68K, x86 and IE64 each run two worker instances and IE32, the 6502 and the Z80 run one, for up to nine workers at once, all executing concurrently. A caller queues a request and polls or waits on a ticket; BASIC drives it through named commands, while assembly and C write the coprocessor MMIO block and mailbox rings directly.</p>
         </div>
         <div class="card">
           <h3>Request flow</h3>
@@ -1416,11 +1417,12 @@ Mode: 960 x 540 RGBA32, stride 3840</code></pre>
             <span>Worker CPU</span>
             <span>Response or ticket</span>
           </div>
-          <pre class="code-panel"><code>COSTART cpuType, "serviceFile"
-ticket = COCALL(cpuType, op, reqPtr, reqLen, respPtr, respCap)
+          <pre class="code-panel"><code>COSTART cpuType, instance, "serviceFile"
+ticket = COCALL(cpuType, instance, op, reqPtr, reqLen, respPtr, respCap)
 COWAIT ticket, timeoutMs
 status = COSTATUS(ticket)
-COSTOP cpuType</code></pre>
+COSTOP cpuType, instance</code></pre>
+          <p>The <code>instance</code> argument selects worker 0 or 1 and defaults to 0, so the shorter forms without it still work. <code>COCAPS</code>, <code>COINSTANCE</code> and <code>COSELSTATE</code> report how many instances a type supports, which one is selected, and whether it is running.</p>
         </div>
         <div class="table-wrap" style="margin-top: 1rem">
           <table>
@@ -1428,23 +1430,29 @@ COSTOP cpuType</code></pre>
               <tr>
                 <th>Worker CPU</th>
                 <th>Service suffix</th>
-                <th>Ring role</th>
+                <th>Instances</th>
               </tr>
             </thead>
             <tbody>
-              <tr><td>IE32</td><td><code>.iex</code>, <code>.ie32</code></td><td>Ring-indexed service worker.</td></tr>
-              <tr><td>6502</td><td><code>.ie65</code></td><td>Ring-indexed service worker.</td></tr>
-              <tr><td>M68K</td><td><code>.ie68</code></td><td>Ring-indexed service worker.</td></tr>
-              <tr><td>Z80</td><td><code>.ie80</code></td><td>Ring-indexed service worker.</td></tr>
-              <tr><td>x86</td><td><code>.ie86</code></td><td>Ring-indexed service worker.</td></tr>
-              <tr><td>IE64</td><td><code>.ie64</code></td><td>Ring-indexed service worker.</td></tr>
+              <tr><td>IE32</td><td><code>.iex</code>, <code>.ie32</code></td><td>1</td></tr>
+              <tr><td>6502</td><td><code>.ie65</code></td><td>1</td></tr>
+              <tr><td>M68K</td><td><code>.ie68</code></td><td>2</td></tr>
+              <tr><td>Z80</td><td><code>.ie80</code></td><td>1</td></tr>
+              <tr><td>x86</td><td><code>.ie86</code></td><td>2</td></tr>
+              <tr><td>IE64</td><td><code>.ie64</code></td><td>2</td></tr>
             </tbody>
           </table>
         </div>
         <article class="card" style="margin-top: 1rem">
+          <span class="kicker">What it is for</span>
+          <h3>One job per processor</h3>
+          <p>Split a demo across real cores: a 6502 running a sound routine, a 68020 drawing while an x86 grinds a plasma, each on its own instruction set, all feeding one screen. The same service image runs on either instance of a dual-instance type, so you can fan out two 68020 or two IE64 workers over the same code. For a first programme it takes one line: <code>COSTART</code> wakes the worker, <code>COCALL</code> hands it a job, and your own program never stops to wait.</p>
+        </article>
+        <article class="card" style="margin-top: 1rem">
           <span class="kicker">Case study</span>
-          <h3>Mario Kart 64 IE: T&L on IE64</h3>
-          <p>In mk64-ie, <code>build/ie/tnl.ie64</code> is packed as <code>svc/tnl.ie64</code> inside <code>mariokart64.ie68</code>. M68K game code starts that service and sends transform-and-lighting batches through the IE64 worker mailbox. BASIC calls that worker through <code>COSTART</code> and <code>COCALL</code>.</p>
+          <h3>Mario Kart 64: four CPUs on one bus</h3>
+          <p>The IE port of Mario Kart 64 runs four processors at once. A main 68020 runs the game and builds each display list, a second 68020 worker translates that list into draw calls, a third 68020 worker runs the audio sequencer, and an IE64 worker handles transform and lighting; the geometry the IE64 and translation workers produce feeds a Voodoo that rasterises the frame. The two 68020 workers are the M68K type's two instances, live in the same title.</p>
+          <p>It maps the Nintendo 64 cleanly: the main 68020 stands in for the CPU, the IE64 and gfx workers for the RSP, the audio worker for its sound microcode, and the Voodoo for the RDP. The whole pipeline packs into one <code>mariokart64.ie68</code> and runs at the native N64 framerate.</p>
           <p><a href="#mariokart">Mario Kart 64 case study</a></p>
         </article>
       </div>

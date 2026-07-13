@@ -345,6 +345,23 @@ is **transfer memory**, not trace).
 These commands stop and resume execution of a specific CPU without
 exiting the monitor.
 
+The `cpu` command lists registered CPUs when used without an argument,
+or focusses a CPU by numeric ID or exact label. Coprocessor workers use
+labels such as `coproc:M68K`; a second M68K, x86, or IE64 instance is
+listed with a `#1` suffix and can be focussed by that label or its ID.
+
+| Command | Effect |
+|---------|--------|
+| `cpu` | List all registered CPUs and their IDs. |
+| `cpu id-or-label` | Focus the selected CPU. |
+| `cpu online [--replace] type [image]` | Start instance `0` of a coprocessor type. |
+| `cpu online [--replace] image` | Infer the type from the service suffix and start instance `0`. |
+| `cpu offline id-or-label-or-type` | Stop an instance `0` worker. |
+
+IE Mon's online and offline commands operate on instance `0`. Use
+BASIC, raw MMIO, or IE Script to control instance `1`. Once started,
+that worker appears in the normal `cpu` listing for inspection.
+
 | Command  | Argument(s)   | Effect                                          |
 |----------|---------------|-------------------------------------------------|
 | `freeze` | `cpuName | *` | Freeze one CPU, or `*` for all                 |
@@ -505,6 +522,7 @@ bl          breakpoint list          rt a        reverse-run-until
 ww/wr a     word watchpoint          tl          timeline
 wc [a|id]   watchpoint clear         x           exit
 wl          watchpoint list          cpu n       switch CPU
+cpu         list CPUs                cpu online  start worker 0
 freeze *    freeze all CPUs          thaw *      thaw all
 fa / ta     freeze / thaw audio      save a b n  save range
 ss / sl n   save / load CPU state    load n a    load range at a

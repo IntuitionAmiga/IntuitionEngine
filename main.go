@@ -1501,6 +1501,7 @@ func main() {
 	coprocMgr := NewCoprocessorManager(sysBus, runtimeBaseDir)
 	sysBus.MapIO(COPROC_BASE, COPROC_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	sysBus.MapIO(COPROC_EXT_BASE, COPROC_EXT_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
+	sysBus.MapIO(COPROC_EXT2_BASE, COPROC_EXT2_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	defer coprocMgr.StopAll()
 	runtimeStatus.setCoprocManager(coprocMgr)
 	stageConfiguredCoprocService := func() {

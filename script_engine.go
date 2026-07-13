@@ -6702,7 +6702,9 @@ func (se *ScriptEngine) coprocRunCommand(cmd uint32) (uint32, uint32) {
 }
 
 func (se *ScriptEngine) coprocFindResponse(ticket uint32) (uint32, uint32, uint32, bool) {
-	for i := range 6 {
+	// Scan every ring, not just the six instance-0 rings, so responses from
+	// second-instance workers (rings 5, 9, 11) are found.
+	for i := range COPROC_RING_COUNT {
 		ringBase := ringBaseAddr(i)
 		for slot := range uint32(RING_CAPACITY) {
 			reqAddr := ringBase + RING_ENTRIES_OFFSET + slot*REQ_DESC_SIZE
@@ -6736,6 +6738,21 @@ func (se *ScriptEngine) readRawBytes(addr uint32, n uint32) string {
 	return string(out)
 }
 
+// coprocLuaInstance reads an optional instance argument at argIdx (default 0)
+// and validates it against the CPU type's instance limit. Mirrors BASIC's
+// optional-instance rule: an absent argument selects instance 0 explicitly.
+func coprocLuaInstance(L *lua.LState, argIdx int, cpuType uint32) uint32 {
+	instance := uint32(0)
+	if L.GetTop() >= argIdx && L.Get(argIdx) != lua.LNil {
+		instance = uint32(L.CheckInt(argIdx))
+	}
+	if instance >= coprocInstanceLimit(cpuType) {
+		L.RaiseError("coproc: invalid instance %d for this cpu_type (limit %d)",
+			instance, coprocInstanceLimit(cpuType))
+	}
+	return instance
+}
+
 func (se *ScriptEngine) luaCoprocStart() lua.LGFunction {
 	return func(L *lua.LState) int {
 		cpuType := coprocCPUTypeFromString(L.CheckString(1))
@@ -6748,8 +6765,9 @@ func (se *ScriptEngine) luaCoprocStart() lua.LGFunction {
 			L.RaiseError("%v", err)
 			return 0
 		}
+		instance := coprocLuaInstance(L, 3, cpuType)
 		se.bus.Write32(COPROC_CPU_TYPE, cpuType)
-		se.bus.Write32(COPROC_INSTANCE, 0)
+		se.bus.Write32(COPROC_INSTANCE, instance)
 		se.bus.Write32(COPROC_NAME_PTR, namePtr)
 		status, code := se.coprocRunCommand(COPROC_CMD_START)
 		if status != COPROC_STATUS_OK {
@@ -6766,8 +6784,9 @@ func (se *ScriptEngine) luaCoprocStop() lua.LGFunction {
 			L.RaiseError("unsupported coprocessor cpu_type")
 			return 0
 		}
+		instance := coprocLuaInstance(L, 2, cpuType)
 		se.bus.Write32(COPROC_CPU_TYPE, cpuType)
-		se.bus.Write32(COPROC_INSTANCE, 0)
+		se.bus.Write32(COPROC_INSTANCE, instance)
 		status, code := se.coprocRunCommand(COPROC_CMD_STOP)
 		if status != COPROC_STATUS_OK {
 			L.RaiseError("coproc.stop failed (%d)", code)
@@ -6785,6 +6804,7 @@ func (se *ScriptEngine) luaCoprocEnqueue() lua.LGFunction {
 		}
 		op := uint32(L.CheckInt(2))
 		req := []byte(L.CheckString(3))
+		instance := coprocLuaInstance(L, 4, cpuType)
 
 		reqPtr, err := se.writeScratchBytes(req, false)
 		if err != nil {
@@ -6800,7 +6820,7 @@ func (se *ScriptEngine) luaCoprocEnqueue() lua.LGFunction {
 		}
 
 		se.bus.Write32(COPROC_CPU_TYPE, cpuType)
-		se.bus.Write32(COPROC_INSTANCE, 0)
+		se.bus.Write32(COPROC_INSTANCE, instance)
 		se.bus.Write32(COPROC_OP, op)
 		se.bus.Write32(COPROC_REQ_PTR, reqPtr)
 		se.bus.Write32(COPROC_REQ_LEN, uint32(len(req)))
@@ -6861,26 +6881,25 @@ func (se *ScriptEngine) luaCoprocWait() lua.LGFunction {
 
 func (se *ScriptEngine) luaCoprocWorkers() lua.LGFunction {
 	return func(L *lua.LState) int {
-		mask := se.bus.Read32(COPROC_WORKER_STATE)
 		tbl := L.NewTable()
 		idx := 1
+		// One atomic read of the per-instance liveness bitmask: bit
+		// (cpuType*2 + instance) is set when that worker is running. This needs
+		// no COPROC_CPU_TYPE / COPROC_INSTANCE selection, so listing workers
+		// never disturbs a concurrent raw coprocessor command's selectors.
+		mask := se.bus.Read32(COPROC_INSTANCE_STATE)
 		for cpuType := uint32(1); cpuType <= uint32(EXEC_TYPE_X86); cpuType++ {
-			if mask&(1<<cpuType) == 0 {
-				continue
+			for instance := uint32(0); instance <= 1; instance++ {
+				if mask&(1<<(cpuType*2+instance)) == 0 {
+					continue
+				}
+				entry := L.NewTable()
+				entry.RawSetString("cpu_type", lua.LString(coprocCPUTypeToString(cpuType)))
+				entry.RawSetString("instance", lua.LNumber(float64(instance)))
+				entry.RawSetString("is_running", lua.LBool(true))
+				tbl.RawSetInt(idx, entry)
+				idx++
 			}
-			entry := L.NewTable()
-			entry.RawSetString("cpu_type", lua.LString(coprocCPUTypeToString(cpuType)))
-			entry.RawSetString("instance", lua.LNumber(0))
-			entry.RawSetString("is_running", lua.LBool(true))
-			tbl.RawSetInt(idx, entry)
-			idx++
-		}
-		if mask&(1<<7) != 0 {
-			entry := L.NewTable()
-			entry.RawSetString("cpu_type", lua.LString("m68k"))
-			entry.RawSetString("instance", lua.LNumber(1))
-			entry.RawSetString("is_running", lua.LBool(true))
-			tbl.RawSetInt(idx, entry)
 		}
 		L.Push(tbl)
 		return 1

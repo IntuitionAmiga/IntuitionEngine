@@ -1,6 +1,6 @@
 # Intuition Engine Machine Monitor
 
-*Last modified: 2026-07-12*
+*Last modified: 2026-07-13*
 
 ## Overview
 
@@ -765,10 +765,17 @@ List all registered CPUs with their ID, label, status, and program counter. When
 
 Offline rows are worker slots only. They are not general CPU hot-plug targets and do not include the primary boot CPU.
 
-M68K exposes two coprocessor slots. M68K instance 1 is labelled
-`coproc:M68K#1` and receives a separate monitor CPU ID. Instance 0 keeps the
-label `coproc:M68K`. The suffix is part of the label accepted by focus and
-offline commands.
+The JIT-capable worker types (M68K, x86, IE64) each expose two coprocessor
+slots; IE32, 6502, and Z80 expose one. A second instance is labelled with a
+`#1` suffix (`coproc:M68K#1`, `coproc:x86#1`, `coproc:IE64#1`) and receives a
+separate monitor CPU ID; instance 0 keeps the bare label (`coproc:M68K`). The
+suffix is part of the label accepted by focus and offline commands.
+
+Second M68K, x86, and IE64 instances are labelled `coproc:M68K#1`,
+`coproc:X86#1`, and `coproc:IE64#1` and receive separate monitor CPU IDs;
+`cpu online` starts instance 0 only. A second instance started through the
+coprocessor MMIO or IE Script API appears in this list and can then be focussed
+or stopped by its ID or suffixed label.
 
 #### `cpu <id|label>` - Switch Focus
 

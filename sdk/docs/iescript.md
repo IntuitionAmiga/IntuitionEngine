@@ -1,6 +1,6 @@
 # IEScript Lua Automation Manual
 
-*Last modified: 2026-07-12*
+*Last modified: 2026-07-13*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
@@ -1281,19 +1281,19 @@ Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`, `"ie64"`.
 
 ### Ticket lifecycle
 
-1. `coproc.start(cpu_type, filename)` - launch a worker.
-2. `coproc.enqueue(cpu_type, op, request)` - submit work, get a ticket ID.
+1. `coproc.start(cpu_type, filename [, instance])` - launch a worker.
+2. `coproc.enqueue(cpu_type, op, request [, instance])` - submit work, get a ticket ID.
 3. `coproc.poll(ticket)` or `coproc.wait(ticket, timeout_ms)` - check/wait for completion.
 4. `coproc.response(ticket)` - retrieve the response data.
-5. `coproc.stop(cpu_type)` - tear down the worker when done.
+5. `coproc.stop(cpu_type [, instance])` - tear down the worker when done.
 
 ### Functions
 
-`coproc.start(cpu_type, filename)` - Start a coprocessor worker of the given `cpu_type`, loading the program from `filename`. `filename` is resolved by the coprocessor manager relative to its configured base directory; absolute paths and names containing `..` are rejected. Returns: nothing. Raises on error.
+`coproc.start(cpu_type, filename [, instance])` - Start a coprocessor worker of the given `cpu_type`, loading the program from `filename`. `filename` is resolved by the coprocessor manager relative to its configured base directory; absolute paths and names containing `..` are rejected. The optional `instance` (default 0) selects the worker instance; the JIT-capable types (`m68k`, `x86`, `ie64`) accept instance 0 or 1, the others only 0. An out-of-range instance raises. Returns: nothing. Raises on error.
 
-`coproc.stop(cpu_type)` - Stop the coprocessor worker for `cpu_type`. Returns: nothing. Raises on error.
+`coproc.stop(cpu_type [, instance])` - Stop the coprocessor worker for `cpu_type` and optional `instance` (default 0). Returns: nothing. Raises on error.
 
-`coproc.enqueue(cpu_type, op, request)` - Enqueue a work request. `op` is a numeric opcode; `request` is a raw byte string payload. Returns: number (ticket ID).
+`coproc.enqueue(cpu_type, op, request [, instance])` - Enqueue a work request to the given `cpu_type` and optional `instance` (default 0). `op` is a numeric opcode; `request` is a raw byte string payload. Returns: number (ticket ID).
 
 `coproc.poll(ticket)` - Check the status of a ticket without blocking. Returns: string - one of `"pending"`, `"running"`, `"ok"`, `"error"`, `"timeout"`, `"worker_down"`.
 
@@ -1304,18 +1304,25 @@ Supported CPU types: `"ie32"`, `"6502"`, `"m68k"`, `"z80"`, `"x86"`, `"ie64"`.
 | Field | Type | Description |
 |-------|------|-------------|
 | `cpu_type` | string | CPU type name |
-| `instance` | number | Worker instance number: 0 for default workers, 1 for the second M68K worker |
+| `instance` | number | Worker instance number: 0 for default workers, 1 for a second JIT-capable worker (`m68k`, `x86`, `ie64`) |
 | `is_running` | boolean | Whether the worker is active |
 
+`coproc.workers()` enumerates every `(cpu_type, instance)` and reports each live
+worker via the `COPROC_SELECTED_STATE` register, so second instances of `m68k`,
+`x86`, and `ie64` appear alongside the instance-0 workers.
+
+When the optional `instance` argument is omitted, `coproc.start()`,
+`coproc.stop()`, and `coproc.enqueue()` select instance 0. Pass `1` to drive the
+second instance of a JIT-capable type.
+
+`coproc.start(cpu_type, filename [, instance])`,
+`coproc.stop(cpu_type [, instance])`, and
+`coproc.enqueue(cpu_type, op, request [, instance])` default to instance 0;
+M68K, x86, and IE64 accept instance 1, while IE32, 6502, and Z80 reject it.
 `coproc.workers()` returns `cpu_type`, `instance`, and `is_running` for every
-active default worker and M68K instance 1.
+active instance without changing `COPROC_CPU_TYPE` or `COPROC_INSTANCE`.
 
-`coproc.start()`, `coproc.stop()`, and `coproc.enqueue()` always select instance
-0. A second M68K worker can coexist and is reported by
-`coproc.workers()`, but its lifecycle and queue are controlled through the
-low-level `COPROC_INSTANCE` MMIO contract or IEMon.
-
-Per-CPU monitor registers such as ring depth and uptime are selected by writing `COPROC_CPU_TYPE` before reading the register. `COPROC_BUSY_PCT` is aggregate across workers. For 6502 and Z80 workers, the mailbox CPU window is `0x2000` through `0x37FF`; `0x3800` through `0x3FFF` remains worker RAM.
+Per-CPU monitor registers such as ring depth and uptime are selected by writing `COPROC_CPU_TYPE` (and `COPROC_INSTANCE`) before reading the register. `COPROC_BUSY_PCT` is aggregate across workers. For 6502 and Z80 workers, the mailbox CPU window is `0x2000` through `0x4FFF`; `0x5000` and above remains worker RAM.
 
 `coproc.response(ticket)` - Retrieve the response data for a ticket. If the ticket completed successfully, returns the response bytes. If the ticket is not found in the response ring but was previously enqueued, returns the raw contents of the preallocated response buffer (which may contain stale or partial data). Returns empty string only if the ticket is entirely unknown. Returns: string (raw bytes).
 

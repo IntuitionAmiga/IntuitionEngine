@@ -406,6 +406,7 @@ command block:
 | `+$40` | `COPROC_IRQ_CTRL`. |
 | `+$44` | `COPROC_DISPATCH_OVERHEAD`. |
 | `+$48` | `COPROC_COMPLETED_TICKET`. |
+| `+$4C` | `COPROC_INSTANCE`. |
 
 Command values written to `COPROC_CMD`:
 
@@ -426,6 +427,29 @@ Extended monitor block (`$F23B0`-`$F23BF`):
 | `+$04` | `COPROC_WORKER_UPTIME`. |
 | `+$08` | `COPROC_STATS_RESET`, write `1` to clear operation and byte counters and restart busy accounting. |
 | `+$0C` | `COPROC_BUSY_PCT`, rolling worker busy percentage over about one second. |
+
+`COPROC_INSTANCE` selects the worker instance (0 = default) alongside
+`COPROC_CPU_TYPE`. M68K, x86, and IE64 accept instances 0 and 1; IE32,
+6502, and Z80 accept instance 0 only.
+
+Capability and version-discovery block (`$F25A0`-`$F25BF`), sited in the
+free gap between the CPU Wait block and the SFX extended aliases:
+
+| Offset | Register |
+|--------|----------|
+| `+$00` | `COPROC_INSTANCE_LIMIT`, instance count for the selected `COPROC_CPU_TYPE`. |
+| `+$04` | `COPROC_SELECTED_STATE`, running state of the selected `(type, instance)`. |
+| `+$08` | `COPROC_MAILBOX_VERSION`, mailbox layout version. |
+| `+$0C` | `COPROC_WORKER_BASE`, selected worker window base address. |
+| `+$10` | `COPROC_WORKER_END`, selected worker window end address. |
+| `+$14` | `COPROC_WORKER_RING`, selected worker ring base address. |
+| `+$18` | `COPROC_INSTANCE_STATE`, per-`(cpuType, instance)` running bitmask (bit `cpuType*2 + instance`). One atomic read; needs no selector write. |
+
+The coprocessor mailbox occupies `$790000`-`$792FFF`: twelve ring slots
+at a `$400` stride, ring index `cpuTypeIndex * 2 + instance`.
+Each ring stores head, tail, capacity, layout version, and worker
+acknowledgement at offsets `+$00` through `+$04`; requests begin at
+`+$08` and responses at `+$208`.
 
 ## D.19 IRQ diagnostics (`$F23C0`-`$F23DF`)
 

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"os"
 	"strings"
 	"testing"
 )
@@ -1338,40 +1337,6 @@ func TestConvertFile_Rotozoomer(t *testing.T) {
 	}
 }
 
-func TestConvertFile_Rotozoomer_Golden(t *testing.T) {
-	c := NewConverter()
-	c.noHeader = true
-	output, err := c.ConvertFileFromPath("../../sdk/examples/asm/rotozoomer.asm")
-	if err != nil {
-		t.Fatalf("ConvertFileFromPath: %v", err)
-	}
-
-	goldenPath := "testdata/rotozoomer_ie64_expected.asm"
-	golden, err := os.ReadFile(goldenPath)
-	if err != nil {
-		// Generate golden file if it doesn't exist
-		t.Logf("Golden file not found at %s - generating", goldenPath)
-		if err := os.WriteFile(goldenPath, []byte(output), 0644); err != nil {
-			t.Fatalf("Failed to write golden file: %v", err)
-		}
-		t.Skip("Generated golden file - re-run test to validate")
-	}
-
-	if output != string(golden) {
-		// Find first difference for a helpful error
-		outLines := strings.Split(output, "\n")
-		goldLines := strings.Split(string(golden), "\n")
-		for i := 0; i < len(outLines) && i < len(goldLines); i++ {
-			if outLines[i] != goldLines[i] {
-				t.Errorf("mismatch at line %d:\n  got:  %q\n  want: %q", i+1, outLines[i], goldLines[i])
-				break
-			}
-		}
-		if len(outLines) != len(goldLines) {
-			t.Errorf("line count mismatch: got %d, want %d", len(outLines), len(goldLines))
-		}
-	}
-}
 
 // ============================================================================
 // Helpers

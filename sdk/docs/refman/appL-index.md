@@ -77,9 +77,19 @@ symbols, and Appendix J gives the full memory map.
 | Compositor | Chapter 3, Appendix K |
 | Copper | Chapter 4, Chapter 53 |
 | Coprocessor | Chapter 32, Chapter 39, Chapter 42, Chapter 56, Chapter 60, Appendix I |
+| Coprocessor instance discovery | Chapter 32, Appendix D, Appendix H |
+| Coprocessor mailbox | Chapter 32, Chapter 42, Appendix D, Appendix J |
+| Coprocessor worker windows | Chapter 32, Chapter 41, Appendix J |
 | COPROC_CMD_ERROR | Chapter 32, Appendix D |
 | COPROC_CMD_START_MEM | Chapter 32, Chapter 42, Appendix D, Appendix I |
 | COCALL | Chapter 32 |
+| COCAPS | Chapter 2, Chapter 32 |
+| COINSTANCE | Chapter 2, Chapter 32 |
+| COSELSTATE | Chapter 2, Chapter 32 |
+| COSTART | Chapter 2, Chapter 32, Chapter 42 |
+| COSTATUS | Chapter 2, Chapter 32, Chapter 42 |
+| COSTOP | Chapter 2, Chapter 32, Chapter 42 |
+| COWAIT | Chapter 2, Chapter 32, Chapter 42 |
 | CPU-local snapshots | Chapter 33, Chapter 34 |
 | CR_RAM_SIZE_BYTES | Chapter 25, Appendix I |
 

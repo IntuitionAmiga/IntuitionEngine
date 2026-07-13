@@ -502,10 +502,10 @@ func (cpu *M68KCPU) initM68KJIT() error {
 			cpu.m68kJitIOPageBitmap = make([]bool, (uint32(len(cpu.memory))+255)>>8)
 		}
 		for page := uint32(0x400000 >> 8); page < uint32(0x800000>>8); page++ {
-			// The second M68K worker window is carved out of the shared
-			// range (isCoprocSharedAddr): it is normal BE worker RAM and
-			// must keep the inlined JIT fast path.
-			if page >= uint32(WORKER_M68K2_BASE>>8) && page <= uint32(WORKER_M68K2_END>>8) {
+			// M68K worker windows are carved out of the shared range
+			// (isCoprocSharedAddr): they are normal BE worker RAM and must
+			// keep the inlined JIT fast path.
+			if isWorkerCodeWindow(page << 8) {
 				continue
 			}
 			if page < uint32(len(cpu.m68kJitIOPageBitmap)) {

@@ -575,14 +575,14 @@ Entry format:
   Author verification workflow: checked memory map, sign-extended alias handling, VideoChip sizing, and TED video register constants.
   Result: App J wording repaired, stale 24-bit-looking upper-memory rows removed, and the TED audio/video row uses the current range.
 
-- Area: App K, block diagrams for bus and audio order.
-  Claim: the system bus diagram describes a 64-bit physical bus with 64-bit addresses and 8/16/32/64-bit transfers through CPU and device adapters; the audio diagram shows the global post-mix order as overdrive, filter, then reverb; the compositor diagram lists layers in the Chapter 3 and source-code order: VideoChip 0, VGA 10, TED video 12, ANTIC/GTIA 13, ULA 15, Voodoo 20.
-  Canonical sources checked: machine_bus.go, machine_bus_phys.go, cpu_ie64.go, profile_bounds.go, audio_chip.go, video_chip.go, video_vga.go, ted_video_constants.go, antic_constants.go, ula_constants.go, voodoo_constants.go.
+- Area: App K, block diagrams for bus, audio order, and coprocessor channels.
+  Claim: the system bus diagram describes a 64-bit physical bus with 64-bit addresses and 8/16/32/64-bit transfers through CPU and device adapters; the audio diagram shows the global post-mix order as overdrive, filter, then reverb; the compositor diagram lists layers in the Chapter 3 and source-code order: VideoChip 0, VGA 10, TED video 12, ANTIC/GTIA 13, ULA 15, Voodoo 20; the coprocessor diagram describes per-instance rings, asymmetric instance limits, twelve reserved ring slots, and the uniform $400 stride.
+  Canonical sources checked: machine_bus.go, machine_bus_phys.go, cpu_ie64.go, profile_bounds.go, audio_chip.go, video_chip.go, video_vga.go, ted_video_constants.go, antic_constants.go, ula_constants.go, voodoo_constants.go, coprocessor_constants.go, coprocessor_manager.go.
   Reader workflow: use the diagrams as lookup aids after reading Chapter 11 and Chapter 25.
   Runnable example: Ch 11 first audio setup and Ch 24 SysInfo listing.
-  Expected result: Appendix K agrees with Chapter 3, Chapter 11, Chapter 25, and source-owned bus/audio/video behaviour.
-  Author verification workflow: checked IE64 uint64 physical path, low-window device adapters, compatibility CPU profile notes, SoundChip post-mix processing order, and each video source layer against code.
-  Result: App K no longer describes the main system bus as 24-bit or 32-bit, no longer disagrees with the audio processing order, and shows the compositor layers in the same order as Chapter 3.
+  Expected result: Appendix K agrees with Chapter 3, Chapter 11, Chapter 25, Chapter 32, and source-owned bus/audio/video/coprocessor behaviour.
+  Author verification workflow: checked IE64 uint64 physical path, low-window device adapters, compatibility CPU profile notes, SoundChip post-mix processing order, each video source layer, worker instance limits, ring indexing, mailbox bounds, and ring stride against code.
+  Result: App K no longer describes the main system bus as 24-bit or 32-bit, no longer disagrees with the audio processing order, shows the compositor layers in the same order as Chapter 3, and presents the coprocessor path as per-instance rather than one worker per CPU type.
 
 - Area: Ch 24 / Ch 27 / Ch 28 / App H, 6502 and Z80 terminal aliases.
   Claim: 6502 and Z80 code cannot reach TERM_OUT directly through $F700 because that page is intercepted by bank-control registers; selecting TERM_IO_BANK into bank 1 exposes terminal, input, mouse, and RTC aliases at $2700-$27FF, with SET_TERMINAL_BANK as the include-file helper.
@@ -610,6 +610,15 @@ Entry format:
   Expected result: Appendix E agrees with Chapter 16 and the implementation formula; octave-up and octave-down rules transform the distance from 1024 rather than treating the register as a plain divider.
   Author verification workflow: recalculated C4-B4 register values from the source constants and checked the table wording against ted_engine.go.
   Result: TED pitch terminology now matches the implemented model.
+
+- Area: App E, author-source provenance.
+  Claim: the SN76489 note and divisor table is checked against the existing SN76489 implementation rather than a nonexistent approximate source name.
+  Canonical sources checked: sn76489_constants.go, sn76489_chip.go, Chapter 14 SN76489 formula.
+  Reader workflow: choose an SN76489 divisor from Appendix E and use the Chapter 14 BASIC or MMIO workflow.
+  Runnable example: Ch 14 first-sound and register examples.
+  Expected result: the appendix provenance names sn76489_chip.go and every listed source path exists on disk.
+  Author verification workflow: checked the appendix source list against tracked implementation filenames and the Chapter 14 claim ledger entry.
+  Result: the stale sn76489_engine.go provenance path is replaced by sn76489_chip.go.
 
 - Area: App L, register-level and IE64 assemble-mode index coverage.
   Claim: the index includes common register-level lookup terms raised by review, including AUDCTL, BLT_FLAGS, BLT_STATUS, COPROC_CMD_ERROR, FBZ_MODE, SID2, SID3, SoundChip flex channels, SYSINFO_ACTIVE_RAM_LO, SYSINFO_TOTAL_RAM_LO, TED frequency register, TED_V_RASTER_STATUS, TERM_SENTINEL, VIDEO_STATUS, Assemble mode, IE64 monitor assembler, Monitor assemble command, CPU-local snapshots, reverse history, trace mmio, TIMER_COUNT, TIMER_PERIOD, TLBINVAL, CR_RAM_SIZE_BYTES, and WAIT.
@@ -927,17 +936,17 @@ Entry format:
   Result: chapter closes Part VII by explaining when and why to move beyond BASIC.
 
 - Area: Ch 56, Why This Port Is Different.
-  Claim: the case study is an IE-native port design rather than whole-console emulation: M68K runs the game core, the checked TnL service is an IE64 coprocessor worker, Voodoo draws triangles, and native IE audio voices handle final playback.
-  Canonical sources checked: ../mk64-ie/README.md, ../mk64-ie/src/platform/platform.h, ../mk64-ie/ie/ie_runtime.c, ../mk64-ie/ie/game.ld, ../mk64-ie/ie/coproc/ie_coproc.c, ../mk64-ie/ie/coproc/ie_coproc.h, ../mk64-ie/ie/coproc/tnl_service_ie64.asm, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_platform_audio.c.
+  Claim: the case study is an IE-native port design rather than whole-console emulation. The main M68020+FPU owns game state, simulation, input, display-list production, and audio command production. M68K worker instance 0 owns Fast3D translation, Voodoo submission, and frame pacing. IE64 worker instance 0 owns batched transform and lighting. M68K worker instance 1 owns sequence processing and native IE voice control. Voodoo and the IE mixer finish the picture and sound.
+  Canonical sources checked: ../mk64-ie/IE-PORT-NOTES.md, ../mk64-ie/src/platform/platform.h, ../mk64-ie/ie/ie_game_main.c, ../mk64-ie/ie/coproc/ie_coproc.c, ../mk64-ie/ie/coproc/tnl_service_ie64.asm, ../mk64-ie/ie/ie_gfx_svc_client.c, ../mk64-ie/ie/ie_audio_svc_client.c, ../mk64-ie/ie/coproc/gfx_svc_main.c, ../mk64-ie/ie/coproc/audio_svc_main.c, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_platform_audio.c.
   Reader workflow: read the case study as architecture and design guidance only; no ROM assets, extraction path, host build path, or commercial-game asset instructions are part of the reader path.
   Runnable example: none. This is an advanced case-study orientation chapter.
   Expected result: readers understand the port as a native IE systems design.
-  Author verification workflow: checked the current coprocessor type and worker image against code on disk, correcting the proposal's x86 wording to the checked IE64 implementation.
+  Author verification workflow: checked the default service configuration, client startup paths, service loops, ownership comments, worker instances, and native graphics and audio backends against code on disk.
   Result: chapter establishes the Part VIII boundary and source-backed machine split.
 
 - Area: Ch 57, Separating Game Code From Platform Code.
-  Claim: the port uses small platform contracts for time, assets, saves, input, graphics, and audio so shared game code does not know IE MMIO details.
-  Canonical sources checked: ../mk64-ie/README.md, ../mk64-ie/src/platform/platform.h, ../mk64-ie/src/gfx/gfx_rendering_api.h, ../mk64-ie/src/gfx/gfx_window_manager_api.h, ../mk64-ie/src/audio/audio_api.h, ../mk64-ie/ie/ie_platform_asset.c, ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/ie/ie_platform_input.c, ../mk64-ie/ie/ie_platform_save.c, ../mk64-ie/ie/ie_platform_time.c.
+  Claim: the port uses small platform contracts for time, assets, saves, input, graphics, and audio so shared game code does not know IE MMIO details. Graphics translation and sequence processing can run on dedicated workers or through local fallback paths backed by the same underlying behaviour.
+  Canonical sources checked: ../mk64-ie/IE-PORT-NOTES.md, ../mk64-ie/src/platform/platform.h, ../mk64-ie/src/gfx/gfx_rendering_api.h, ../mk64-ie/src/gfx/gfx_window_manager_api.h, ../mk64-ie/src/audio/audio_api.h, ../mk64-ie/ie/ie_platform_asset.c, ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/ie/ie_platform_input.c, ../mk64-ie/ie/ie_platform_save.c, ../mk64-ie/ie/ie_platform_time.c, ../mk64-ie/ie/ie_gfx_svc_client.c, ../mk64-ie/ie/ie_audio_svc_client.c.
   Reader workflow: use the chapter as a design pattern for separating programme behaviour from IE machine services.
   Runnable example: none. This is a design case-study chapter.
   Expected result: readers see how to keep hardware access in one IE service layer.
@@ -945,8 +954,8 @@ Entry format:
   Result: chapter documents the contract boundary without exposing host build steps.
 
 - Area: Ch 58, The IE Runtime Layer.
-  Claim: the runtime starts at the M68K entry image, loads or copies the high-linked game image, clears runtime state, publishes status, and keeps loader, pack data, texture store, and game image regions separate.
-  Canonical sources checked: ../mk64-ie/ie/ie_runtime.c, ../mk64-ie/ie/game.ld, ../mk64-ie/ie/loader_main.c, ../mk64-ie/ie/ie_memory_layout.h, ../mk64-ie/ie/ie_pack.h, ../mk64-ie/ie/ie_mmio.h, ../mk64-ie/ie/ie_platform_asset.c, ../mk64-ie/ie/ie_platform_log.c, ../mk64-ie/ie/ie_platform_time.c.
+  Claim: the runtime starts at the M68K entry image, loads or copies the high-linked game image, clears runtime state, publishes status, and keeps loader, pack data, worker windows, mailbox, texture store, and game image regions separate. The self-contained pack names the IE64 TnL service and both M68K service images.
+  Canonical sources checked: ../mk64-ie/ie/ie_runtime.c, ../mk64-ie/ie/game.ld, ../mk64-ie/ie/loader_main.c, ../mk64-ie/ie/ie_memory_layout.h, ../mk64-ie/ie/ie_pack.h, ../mk64-ie/ie/pack_ie68.py, ../mk64-ie/ie/ie_mmio.h, ../mk64-ie/ie/ie_platform_asset.c, ../mk64-ie/ie/ie_platform_log.c, ../mk64-ie/ie/ie_platform_time.c, ../mk64-ie/ie/coproc/coproc_layout.h.
   Reader workflow: use the memory layout and runtime duties as a pattern, not as a command recipe.
   Runnable example: none. This is a runtime layout case-study chapter.
   Expected result: readers understand why a large IE programme needs a named memory and service layout.
@@ -954,8 +963,8 @@ Entry format:
   Result: chapter records the high-memory runtime shape without instructing a host build.
 
 - Area: Ch 59, Fast3D To Voodoo.
-  Claim: display-list style drawing work is translated to a Voodoo drawing contract, including vertices, textures, command streams, and bulk texture upload.
-  Canonical sources checked: ../mk64-ie/src/gfx/gfx_pc.c, ../mk64-ie/src/gfx/gfx_fast3d.c, ../mk64-ie/src/gfx/gfx_rendering_api.h, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_mmio.h, ../mk64-ie/tests/test_gfx_voodoo.c.
+  Claim: the main M68K submits a display list and per-frame state to M68K worker instance 0. That worker translates the list, delegates batched transform and lighting to IE64, submits Voodoo command streams and texture work, and owns frame pacing.
+  Canonical sources checked: ../mk64-ie/src/gfx/gfx_pc.c, ../mk64-ie/src/gfx/gfx_fast3d.c, ../mk64-ie/src/gfx/gfx_rendering_api.h, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_mmio.h, ../mk64-ie/ie/ie_gfx_svc_client.c, ../mk64-ie/ie/coproc/gfx_svc_main.c, ../mk64-ie/tests/test_gfx_voodoo.c.
   Reader workflow: understand graphics porting as translation to an IE display card.
   Runnable example: none. This is a graphics pipeline case-study chapter.
   Expected result: readers see how the old graphics intent becomes Voodoo register and command-stream work.
@@ -963,17 +972,17 @@ Entry format:
   Result: chapter explains the rendering path without reproducing source listings or asset data.
 
 - Area: Ch 60, Hardware TnL With The Coprocessor System.
-  Claim: M68K submits coarse transform and lighting batches through shared RAM to the checked IE64 TnL worker; the request header is 152 bytes and contains matrix, texture scale, vertex pointers, geometry mode, light state, and output pointer fields. In this chapter, "hardware TnL" means work moved onto another IE bus CPU through the coprocessor system, not a fixed-function TnL unit inside Voodoo.
-  Canonical sources checked: ../mk64-ie/ie/coproc/ie_coproc.c, ../mk64-ie/ie/coproc/ie_coproc.h, ../mk64-ie/ie/coproc/tnl_proto.h, ../mk64-ie/ie/coproc/tnl_service_ie64.asm, ../mk64-ie/src/gfx/gfx_fast3d.c, coprocessor_constants.go, coprocessor_manager.go.
+  Claim: the port uses two nested coarse boundaries. The main M68K submits a frame contract to M68K worker instance 0, which submits 152-byte transform and lighting batch headers to IE64 worker instance 0. The graphics worker uses ring 4, IE64 uses ring 10, both use the uniform `$400` stride and layout-version acknowledgement, and "hardware TnL" means work moved onto another IE bus CPU rather than a fixed-function Voodoo unit.
+  Canonical sources checked: ../mk64-ie/ie/coproc/ie_coproc.c, ../mk64-ie/ie/coproc/ie_coproc.h, ../mk64-ie/ie/coproc/tnl_proto.h, ../mk64-ie/ie/coproc/tnl_service_ie64.asm, ../mk64-ie/ie/coproc/coproc_layout.h, ../mk64-ie/ie/ie_gfx_svc_client.c, ../mk64-ie/ie/coproc/gfx_svc_main.c, ../mk64-ie/src/gfx/gfx_fast3d.c, coprocessor_constants.go, coprocessor_manager.go.
   Reader workflow: use coprocessors for coarse shared-memory jobs, not per-operation calls.
   Runnable example: none. This is a coprocessor case-study chapter.
   Expected result: readers understand what crosses the CPU boundary and what stays local.
-  Author verification workflow: checked `COPROC_TYPE 2`, ring 5, service name `tnl.ie64`, request offsets, and worker comments. The proposal's x86 wording is not used because it does not match the checked implementation.
+  Author verification workflow: checked CPU type 2, instance 0, ring 10, the assigned R30 ring base, layout acknowledgement, service name, request offsets, graphics ring 4, and both service loops.
   Result: chapter keeps the coprocessor lesson while matching current source truth.
 
 - Area: Ch 61, Native IE Audio Instead Of RSP-Style Mixing.
-  Claim: the case-study audio path keeps sequence, note, pitch, and envelope decisions in game code while mapping live notes onto native IE SFX voices and the IE mixer.
-  Canonical sources checked: ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/src/audio/audio_api.h, ../mk64-ie/ie/ie_mmio.h, ../mk64-ie/PERF-NOTES.md.
+  Claim: sequence, note, pitch, envelope, and live-note decisions remain in the game audio code but execute on M68K worker instance 1. The main M68K sends producer-index ranges from a 256-entry command ring, permits one pump in flight, and applies a high-water drain. The worker controls native IE SFX voices and the IE mixer performs final playback.
+  Canonical sources checked: ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/ie/ie_audio_svc_client.c, ../mk64-ie/ie/coproc/audio_svc_main.c, ../mk64-ie/ie/coproc/audio_svc_proto.h, ../mk64-ie/src/audio/audio_api.h, ../mk64-ie/ie/ie_mmio.h, ../mk64-ie/IE-PORT-NOTES.md.
   Reader workflow: preserve musical behaviour at the right level and use native IE audio for playback.
   Runnable example: none. This is an audio architecture case-study chapter.
   Expected result: readers understand why native audio is not the same as emulating the old audio processor.
@@ -981,8 +990,8 @@ Entry format:
   Result: chapter documents native audio design without adding asset or sample data.
 
 - Area: Ch 62, Assets, ROM Data, And Build Hygiene.
-  Claim: the guide must not teach ROM extraction; the useful IE lesson is named assets, pack table discipline, byte-order rules, region separation, and explicit size or range failure.
-  Canonical sources checked: ../mk64-ie/README.md, ../mk64-ie/ie/ie_pack.h, ../mk64-ie/ie/ie_memory_layout.h, ../mk64-ie/ie/ie_platform_asset.c, ../mk64-ie/tests/test_pack_ie68.py.
+  Claim: the guide must not teach ROM extraction; the useful IE lesson is named assets and worker services, pack table discipline, byte-order rules, worker/mailbox reservations, region separation, and explicit size or range failure.
+  Canonical sources checked: ../mk64-ie/IE-PORT-NOTES.md, ../mk64-ie/ie/ie_pack.h, ../mk64-ie/ie/ie_memory_layout.h, ../mk64-ie/ie/pack_ie68.py, ../mk64-ie/ie/ie_platform_asset.c, ../mk64-ie/ie/coproc/coproc_layout.h, ../mk64-ie/tests/test_pack_ie68.py.
   Reader workflow: study asset discipline without a ROM-dependent reader path.
   Runnable example: none. This is a hygiene and boundary chapter.
   Expected result: readers learn deterministic asset layout without commercial asset instructions.
@@ -990,8 +999,8 @@ Entry format:
   Result: chapter keeps the legal and operational boundary explicit.
 
 - Area: Ch 63, Performance Work On A Real Port.
-  Claim: the port measures frame work through counters for triangles, draw calls, MMIO writes, command-stream pairs, texture stream bytes, audio voice writes, clipped triangles, and related work.
-  Canonical sources checked: ../mk64-ie/PERF-NOTES.md, ../mk64-ie/ie/ie_perf_counters.h, ../mk64-ie/ie/ie_perf_counters.c, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/tests/test_perf_counters.c, ../mk64-ie/tests/test_gfx_voodoo.c.
+  Claim: the port measures triangles, draw calls, MMIO writes, command-stream pairs, texture bytes, audio voice writes, clipped triangles, worker frame and pump timing, and coprocessor drains so work can be attributed to the main CPU, graphics worker, IE64 TnL worker, audio worker, or Voodoo path.
+  Canonical sources checked: ../mk64-ie/IE-PORT-NOTES.md, ../mk64-ie/ie/ie_perf_counters.h, ../mk64-ie/ie/ie_perf_counters.c, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/ie/ie_gfx_svc_client.c, ../mk64-ie/ie/ie_audio_svc_client.c, ../mk64-ie/ie/coproc/gfx_svc_main.c, ../mk64-ie/ie/coproc/audio_svc_main.c, ../mk64-ie/tests/test_perf_counters.c, ../mk64-ie/tests/test_gfx_voodoo.c.
   Reader workflow: profile by counters and frame windows before rewriting subsystems.
   Runnable example: none. This is a profiling discipline case-study chapter.
   Expected result: readers learn to measure bus and device traffic rather than guess.
@@ -999,8 +1008,8 @@ Entry format:
   Result: chapter records the performance method without host profiling commands.
 
 - Area: Ch 64, Input, Save Data, And Player-Facing Polish.
-  Claim: the port maps keyboard FIFO events to one controller contract, uses whole-file File I/O with RAM shadows for `512` byte save records and `32768` byte ghost records, and publishes observable fatal markers.
-  Canonical sources checked: ../mk64-ie/ie/ie_platform_input.c, ../mk64-ie/ie/ie_platform_save.c, ../mk64-ie/ie/ie_platform_time.c, ../mk64-ie/ie/ie_platform_log.c, ../mk64-ie/src/platform/platform.h, ../mk64-ie/src/staff_ghosts.c.
+  Claim: the port maps keyboard FIFO events to one controller contract, uses whole-file File I/O with RAM shadows for `512` byte save records and `32768` byte ghost records, publishes observable fatal markers, and returns optional graphics or audio service work to a known local path when startup fails.
+  Canonical sources checked: ../mk64-ie/ie/ie_platform_input.c, ../mk64-ie/ie/ie_platform_save.c, ../mk64-ie/ie/ie_platform_time.c, ../mk64-ie/ie/ie_platform_log.c, ../mk64-ie/src/platform/platform.h, ../mk64-ie/src/staff_ghosts.c, ../mk64-ie/ie/ie_gfx_svc_client.c, ../mk64-ie/ie/ie_audio_svc_client.c.
   Reader workflow: treat input, saves, pacing, logging, and smoke checks as part of making a programme usable.
   Runnable example: none. This is a player-facing polish case-study chapter.
   Expected result: readers see the difference between rendering a frame and finishing a usable port.
@@ -1008,12 +1017,12 @@ Entry format:
   Result: chapter documents the last-mile services as IE system design.
 
 - Area: Ch 65, Lessons For Your Own IE Ports.
-  Claim: large IE ports should choose a main CPU deliberately, keep platform contracts small, use IE hardware at the right abstraction level, measure before rewriting, and keep legal asset boundaries clean.
-  Canonical sources checked: ../mk64-ie/README.md, ../mk64-ie/src/platform/platform.h, ../mk64-ie/ie/ie_memory_layout.h, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/ie/coproc/ie_coproc.c, ../mk64-ie/ie/coproc/tnl_proto.h, ../mk64-ie/PERF-NOTES.md.
+  Claim: large IE ports should choose a main CPU deliberately, keep platform contracts small, assign one owner to each pipeline stage, use coarse worker requests with bounded work in flight, preserve local fallbacks for optional services, use IE hardware at the right abstraction level, measure before rewriting, and keep legal asset boundaries clean.
+  Canonical sources checked: ../mk64-ie/IE-PORT-NOTES.md, ../mk64-ie/src/platform/platform.h, ../mk64-ie/ie/ie_memory_layout.h, ../mk64-ie/ie/ie_gfx_voodoo.c, ../mk64-ie/ie/ie_platform_audio.c, ../mk64-ie/ie/coproc/ie_coproc.c, ../mk64-ie/ie/coproc/tnl_proto.h, ../mk64-ie/ie/ie_gfx_svc_client.c, ../mk64-ie/ie/ie_audio_svc_client.c, ../mk64-ie/ie/coproc/gfx_svc_main.c, ../mk64-ie/ie/coproc/audio_svc_main.c.
   Reader workflow: generalise the case study into practical rules for native IE ports.
   Runnable example: none. This is the closing lesson chapter for Part VIII.
   Expected result: readers can apply the case-study architecture to their own IE programmes.
-  Author verification workflow: checked the preceding Part VIII evidence set and kept the chapter at the general pattern level.
+  Author verification workflow: checked the preceding Part VIII evidence set, the service fallbacks, the one-frame and one-pump flight limits, and the final mailbox contract, then kept the chapter at the general pattern level.
   Result: chapter closes the case study by returning to portable IE design rules.
 
 - Area: Source-backed full-manual correction pass, July 2026.
@@ -1042,3 +1051,12 @@ Entry format:
   Expected result: CPU state remains stopped throughout the monitor session; audio positions hold on entry, advance after `ta`, hold again after `fa`, and leave the session in the state selected by the last explicit monitor audio command.
   Author verification workflow: checked every monitor entry and exit path, the script open-count implementation, the direct script audio-gate helpers, and the monitor audio-command flag; ran the targeted monitor media-freeze regression tests before publication.
   Result: the canonical PRG now owns the monitor media-freeze contract, superseding the direct publish-tree edit and preserving the distinction between CPU `freeze *`, direct script audio gates, and explicit monitor `fa` or `ta`.
+
+- Area: Coprocessor instances, mailbox version gate, worker windows, and in-machine control surfaces; Chapters 2, 32, 33, 34, 41, and 42; Appendices A, D, H, I, J, and L.
+  Claim: M68K, x86, and IE64 support worker instances 0 and 1; IE32, 6502, and Z80 support instance 0 only. The mailbox contains twelve `$400`-byte ring slots from `$790000` to `$792FFF`, selected by `cpuTypeIndex * 2 + instance`. Every worker acknowledges the layout byte at ring offset `+$03` by copying it to `+$04` before the start gate succeeds. Dedicated worker windows are cleared and claimed on start. BASIC, IE Mon, and IE Script expose the documented instance-aware controls.
+  Canonical sources checked: coprocessor_constants.go, coprocessor_manager.go, component_reset.go, debug_commands.go, script_engine.go, sdk/include/ehbasic_hw_coproc.inc, sdk/examples/asm/coproc_service_65.asm, sdk/examples/asm/coproc_service_68k.asm, sdk/examples/asm/coproc_service_ie32.asm, sdk/examples/asm/coproc_service_x86.asm, sdk/examples/asm/coproc_service_z80.asm, sdk/examples/asm/iewarp_service.asm.
+  Reader workflow: select workers from BASIC, IE Mon, IE Script, or raw MMIO; discover limits and windows through `$F25A0` to `$F25B8`; use only supported instances; keep worker windows free while workers are active.
+  Runnable example: Chapter 42 enters a 70-byte 6502 service, acknowledges the mailbox layout, starts it with `COPROC_CMD_START_MEM`, submits operation 7, and reads result code 8.
+  Expected result: start status and error are both 0, the ticket is non-zero, ticket status is 2, and the descriptor result code is 8.
+  Author verification workflow: checked constants, handlers, BASIC parser and runtime, monitor commands, script bindings, worker startup code, focused coprocessor tests, and the chapter harness. Part VIII was then checked separately against the migrated porting tree and its live service clients.
+  Result: the reader-facing reference matches the final asymmetric instance contract and does not hide the mailbox-version handshake.

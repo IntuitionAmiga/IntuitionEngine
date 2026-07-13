@@ -718,10 +718,8 @@ func (m *CoprocessorManager) Reset() {
 	m.completionIRQEnabled.Store(false)
 	m.completedTicket.Store(0)
 	m.dispatchOverheadNs.Store(0)
-	m.workerStartTime = [7]time.Time{}
-	m.workerImagePath = [7]string{}
-	m.workerStartTimeAlt = [7]time.Time{}
-	m.workerImagePathAlt = [7]string{}
+	m.workerStartTime = [7][2]time.Time{}
+	m.workerImagePath = [7][2]string{}
 	m.busyBuckets = [10]busyBucket{}
 	m.busyBucketIdx = 0
 	m.busyRotateCounter = 0

@@ -3016,20 +3016,20 @@ func (cpu *M68KCPU) DumpRegisters() {
 }
 
 // isCoprocSharedAddr returns true if the address is in a coprocessor shared data
-// region where byte-swap should be skipped: mailbox (0x790000-0x791800) or user
-// data buffers (0x400000-0x7FFFFF). Worker code regions are NOT included - instruction
-// fetch must still byte-swap for correct BE opcode decoding. The second M68K
-// worker window (WORKER_M68K2) sits inside the user-data range and is carved
-// out for the same reason: it holds that worker's BE code, data, and stack.
+// region where byte-swap should be skipped: the mailbox or the user data
+// buffers (0x400000-0x7FFFFF). Worker code regions are NOT included -
+// instruction fetch must still byte-swap for correct BE opcode decoding. Both
+// M68K worker windows sit partly inside the user-data range and are carved out
+// for the same reason: they hold that worker's BE code, data, and stack.
 func (cpu *M68KCPU) isCoprocSharedAddr(addr uint32) bool {
 	if !cpu.CoprocMode {
 		return false
 	}
-	if addr >= WORKER_M68K2_BASE && addr <= WORKER_M68K2_END {
+	if isWorkerCodeWindow(addr) {
 		return false
 	}
 	return (addr >= 0x400000 && addr < 0x800000) ||
-		(addr >= 0x790000 && addr < 0x792000)
+		(addr >= MAILBOX_BASE && addr <= MAILBOX_END)
 }
 
 func isNativeNumericMMIOAddr(addr uint32) bool {

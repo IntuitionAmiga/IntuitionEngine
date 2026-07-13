@@ -126,6 +126,23 @@ Use this checklist for larger programmes:
 Do not place private data in an MMIO aperture. Reads and writes there
 go to devices.
 
+Coprocessor workers have dedicated windows. Starting a worker clears
+and claims its selected window, so that range must not also hold a
+framebuffer, texture, stack, or general scratch data.
+
+| Worker | Instance 0 | Instance 1 |
+|--------|------------|------------|
+| IE32 | `$200000` to `$27FFFF` | Not available |
+| 6502 | `$300000` to `$30FFFF` | Not available |
+| M68K | `$280000` to `$2FFFFF` | `$420000` to `$49FFFF` |
+| Z80 | `$310000` to `$31FFFF` | Not available |
+| x86 | `$320000` to `$39FFFF` | `$4A0000` to `$51FFFF` |
+| IE64 | `$3A0000` to `$41FFFF` | `$520000` to `$59FFFF` |
+
+The discovery registers at `$F25A0` to `$F25B8` report the selected
+worker's limit, state, window, ring, and mailbox version. Query them
+when a programme can do so instead of duplicating the table in code.
+
 ## 41.6 A Layout Probe
 
 This BASIC listing allocates three public buffers, writes a marker into

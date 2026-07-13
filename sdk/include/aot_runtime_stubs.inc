@@ -23,10 +23,17 @@
 ; real handler. The standalone delegation allowlist in ehbasic_aot.inc must keep
 ; these tokens off the delegation path; the per-statement tests guard that.
 
-; Coprocessor expression functions (COCALL/COSTATUS rejected at transpile).
+; Coprocessor expression functions (COCALL/COSTATUS/COCAPS/COINSTANCE/
+; COSELSTATE rejected at transpile).
 fn_cocall:
     rts
 fn_costatus:
+    rts
+fn_cocaps:
+    rts
+fn_coinstance:
+    rts
+fn_coselstate:
     rts
 
 ; Coprocessor / host / NEW statement handlers (rejected at transpile).

@@ -1054,7 +1054,7 @@ func TestREPL_MEMALLOC_PublicLow32Range(t *testing.T) {
 	const (
 		memallocBase0 = 0x00820000
 		memallocEnd0  = 0x01000000
-		memallocBase1 = 0x00792000
+		memallocBase1 = 0x00793000 // raised for the grown coprocessor mailbox
 		memallocBase2 = 0x00700000
 		stateCursor   = 0x042000 + 0x280
 		stateRange    = 0x042000 + 0x288
@@ -13402,10 +13402,10 @@ func TestRefmanCh32CoprocessorNoWorkerExample(t *testing.T) {
 func TestEhBASIC_CocallReturnsZeroOnFailure(t *testing.T) {
 	asmBin := buildAssembler(t)
 
-	// Write a minimal IE32 service binary (JMP-to-self loop) so COSTART succeeds
+	// Write a minimal IE32 service binary that performs the version-gate ack
+	// then spins, so COSTART clears the gate and succeeds.
 	svcDir := t.TempDir()
-	// IE32 JMP instruction: opcode=0x06, reg=0, addrMode=0(imm), operand=0x200000 (WORKER_IE32_BASE)
-	svcBin := []byte{0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20, 0x00}
+	svcBin := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 	if err := os.WriteFile(filepath.Join(svcDir, "svc.ie32"), svcBin, 0o644); err != nil {
 		t.Fatalf("write svc: %v", err)
 	}

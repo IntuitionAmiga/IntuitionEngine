@@ -3,16 +3,9 @@ package main
 import "fmt"
 
 func createM68KWorker(bus *MachineBus, data []byte, instance uint32) (*CoprocWorker, error) {
-	// Instance 0 owns the default M68K window, instance 1 the second window
-	// (ring 6). Higher instances are rejected by the manager before this.
-	base := uint32(WORKER_M68K_BASE)
-	end := uint32(WORKER_M68K_END)
-	size := uint32(WORKER_M68K_SIZE)
-	if instance == 1 {
-		base = WORKER_M68K2_BASE
-		end = WORKER_M68K2_END
-		size = WORKER_M68K2_SIZE
-	} else if instance != 0 {
+	// Each instance owns its own computed window (workerWindow).
+	base, end, size, ok := workerWindow(EXEC_TYPE_M68K, instance)
+	if !ok {
 		return nil, fmt.Errorf("M68K worker instance out of range: %d", instance)
 	}
 	if len(data) > int(size) {
@@ -34,6 +27,12 @@ func createM68KWorker(bus *MachineBus, data []byte, instance uint32) (*CoprocWor
 	cpu := NewM68KCPU(bus)
 	cpu.CoprocMode = true // Skip byte-swap for shared data regions (mailbox + user data)
 	cpu.PC = base
+	// Seed A4 with the assigned ring base so a fixed-ring service image serves
+	// whichever instance ring the manager selected (bootstrap patch); the
+	// shipped service reads its ring through A4, not a hard-coded constant.
+	if ring := coprocRingIndex(EXEC_TYPE_M68K, instance); ring >= 0 {
+		cpu.AddrRegs[4] = ringBaseAddr(ring)
+	}
 	cpu.AddrRegs[7] = end - 0xFF // Stack at top of worker region
 	cpu.SSP = cpu.AddrRegs[7]
 	cpu.USP = cpu.SSP

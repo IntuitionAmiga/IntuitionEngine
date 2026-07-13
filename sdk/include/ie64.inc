@@ -168,7 +168,10 @@ ST_PRIV_MEMALLOC_RANGE  equ 0x288           ; q: public MEMALLOC range index
 
 BASIC_MEMALLOC_BASE0 equ 0x00820000
 BASIC_MEMALLOC_END0  equ 0x01000000
-BASIC_MEMALLOC_BASE1 equ 0x00792000
+; Raised from 0x792000 to 0x793000 so the grown coprocessor mailbox
+; (MAILBOX_BASE 0x790000 + MAILBOX_SIZE 0x3000 = 0x793000) no longer overlaps
+; this heap. Costs BASIC ~4 KiB of BASE1 heap; END1 is unchanged.
+BASIC_MEMALLOC_BASE1 equ 0x00793000
 BASIC_MEMALLOC_END1  equ 0x00800000
 BASIC_MEMALLOC_BASE2 equ 0x00700000
 BASIC_MEMALLOC_END2  equ 0x00780000
@@ -2364,6 +2367,35 @@ COPROC_RING_DEPTH     equ 0xF23B0               ; IE64 ring occupancy (R)
 COPROC_WORKER_UPTIME  equ 0xF23B4               ; Seconds since IE64 worker started (R)
 COPROC_STATS_RESET    equ 0xF23B8               ; Write 1 to zero stats (W)
 COPROC_BUSY_PCT       equ 0xF23BC               ; Worker busy % 0-100 (R)
+
+; Worker instance selector (pairs with COPROC_CPU_TYPE; 0 = default instance)
+COPROC_INSTANCE       equ 0xF238C               ; Worker instance selector (W/R)
+
+; Capability / version / selected-instance discovery block (0xF25A0-0xF25BF).
+; Reachable by IE64 and the main-CPU BASIC runtime; not by the 6502/Z80 $F200
+; gateway. Workers learn the layout version from the ring header, not here.
+COPROC_INSTANCE_LIMIT  equ 0xF25A0              ; Instance count for COPROC_CPU_TYPE (R)
+COPROC_SELECTED_STATE  equ 0xF25A4              ; State of selected (type,instance) (R)
+COPROC_MAILBOX_VERSION equ 0xF25A8              ; Mailbox layout version (R)
+COPROC_WORKER_BASE     equ 0xF25AC              ; Selected worker window base (R)
+COPROC_WORKER_END      equ 0xF25B0              ; Selected worker window end (R)
+COPROC_WORKER_RING     equ 0xF25B4              ; Selected worker ring base addr (R)
+COPROC_INSTANCE_STATE  equ 0xF25B8              ; Per-(cpuType,instance) running bitmask (R)
+
+; Mailbox layout version echoed by conforming workers at startup.
+COPROC_LAYOUT_VERSION  equ 1
+
+; Coprocessor error codes (read from COPROC_CMD_ERROR)
+COPROC_ERR_NONE             equ 0
+COPROC_ERR_INVALID_CPU      equ 1
+COPROC_ERR_NOT_FOUND        equ 2
+COPROC_ERR_PATH_INVALID     equ 3
+COPROC_ERR_LOAD_FAILED      equ 4
+COPROC_ERR_QUEUE_FULL       equ 5
+COPROC_ERR_NO_WORKER        equ 6
+COPROC_ERR_STALE_TICKET     equ 7
+COPROC_ERR_INVALID_INSTANCE equ 8               ; Valid CPU type, instance beyond limit
+COPROC_ERR_STALE_WORKER     equ 9               ; Worker failed the layout-version handshake
 
 ; Coprocessor command values
 COPROC_CMD_START      equ 1                     ; Start worker from file

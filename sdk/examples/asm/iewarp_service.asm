@@ -38,13 +38,15 @@ include "ie64.inc"
 WORKER_IE64_BASE  equ 0x3A0000
 
 MAILBOX_BASE      equ 0x790000
-RING_STRIDE       equ 0x300
-RING_INDEX        equ 5                          ; IE64 is ring index 5
+RING_STRIDE       equ 0x400
+RING_INDEX        equ 10                         ; IE64: cpuTypeIndex 5 * 2 + instance 0
 RING_BASE         equ MAILBOX_BASE + (RING_INDEX * RING_STRIDE)
+LAYOUT_VER        equ 1                          ; COPROC_LAYOUT_VERSION
 
 ; Ring offsets
 RING_HEAD         equ 0x00
 RING_TAIL         equ 0x01
+RING_ACK          equ 0x04                       ; version-gate ack byte
 RING_ENTRIES      equ 0x08
 RING_RESPONSES    equ 0x208
 
@@ -131,8 +133,15 @@ CODEC_IMA_ADPCM   equ 1
 
     org WORKER_IE64_BASE
 
-    ; R30 = ring base address (constant)
-    la r30, RING_BASE
+    ; R30 = assigned ring base, seeded by the host at worker entry so the same
+    ; image serves whichever instance ring the manager selected (bootstrap
+    ; patch). RING_BASE below is only the instance-0 default, kept for
+    ; documentation; the running code uses r30, not the constant.
+
+    ; Version-gate handshake: echo the mailbox layout version so the host
+    ; routes work to this service. A stale image never reaches this address.
+    move.l r2, #LAYOUT_VER
+    store.b r2, RING_ACK(r30)
 
 ; ============================================================================
 ; Main poll loop — spin on head != tail

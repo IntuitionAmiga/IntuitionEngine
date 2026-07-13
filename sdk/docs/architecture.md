@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-12*
+*Last modified: 2026-07-13*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -67,7 +67,7 @@ flowchart LR
         VOOTEX["Voodoo texture memory<br/>0xD0000-0xDFFFF"]
         AROSMEM["AROS memory<br/>Fast RAM + video RAM"]
         COPMEM["Coprocessor memory slices<br/>IE32, IE64, M68K,<br/>Z80, 6502, x86"]
-        MAILBOX["Coprocessor mailboxes<br/>0x790000-0x7917FF"]
+        MAILBOX["Coprocessor mailboxes<br/>0x790000-0x792FFF"]
         STAGING["Media staging buffer<br/>0x800000-0x80FFFF"]
     end
 
@@ -1404,6 +1404,7 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0xF2400-0xF24FF` | 256B | MMIO | SYSINFO RAM-size discovery | All CPU cores | System information ABI | Reports total and active visible RAM. |
 | `0xF2500-0xF257F` | 128B | MMIO | AROS host socket bridge | AROS M68K profile | AROS profile | Host-backed `bsdsocket.library` command bridge. |
 | `0xF2580-0xF259F` | 32B | MMIO | CPU wait service | All CPU cores | Timing/wait ABI | CPU wait writes park until the next VBlank edge or a latched `RTC_MONO_USEC` deadline, capped by a 50 ms safety timeout; reads return 0. |
+| `0xF25A0-0xF25BF` | 32B | MMIO | Coprocessor instance discovery | 32-bit-addressing CPU cores and main-CPU BASIC | Coprocessor subsystem | Selected type's instance limit, selected-instance state, mailbox layout version, worker window and ring addresses, plus an atomic all-instance liveness mask. |
 | `0xF8000-0xF87FF` | 2KB | MMIO | Voodoo 3D registers and palette | All CPU cores | Voodoo subsystem | 3D control, state, and palette register block. |
 | `0xF8140-0xF823F` | 256B | MMIO | Voodoo fog table | All CPU cores | Voodoo subsystem | 64 entries x 4 bytes. |
 | `0x100000-0x5FFFFF` | 5MB | Shared RAM / VRAM-backed region | Main video framebuffer and graphics-visible memory | All CPU cores | Video subsystem plus guest convention | Subranges may be reserved for coprocessor worker buffers. |
@@ -1414,7 +1415,9 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0x320000-0x39FFFF` | 512KB | Shared RAM | x86 worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
 | `0x3A0000-0x41FFFF` | 512KB | Shared RAM | IE64 worker area | All CPU cores | Coprocessor convention | Lies inside the graphics-visible shared-memory range; not a separate address space. |
 | `0x420000-0x49FFFF` | 512KB | Shared RAM | M68K worker instance 1 area | All CPU cores | Coprocessor convention | Second M68K worker RAM; ordinary big-endian worker memory inside the graphics-visible shared-memory range. |
-| `0x790000-0x7917FF` | 6KB | Shared RAM | Coprocessor mailbox ring buffers | All CPU cores | Coprocessor subsystem | Shared request/completion rings; outside the main graphics-visible range. |
+| `0x4A0000-0x51FFFF` | 512KB | Shared RAM | x86 worker instance 1 area | All CPU cores | Coprocessor convention | Second x86 worker RAM inside the graphics-visible shared-memory range. |
+| `0x520000-0x59FFFF` | 512KB | Shared RAM | IE64 worker instance 1 area | All CPU cores | Coprocessor convention | Second IE64 worker RAM inside the graphics-visible shared-memory range. |
+| `0x790000-0x792FFF` | 12KB | Shared RAM | Coprocessor mailbox ring buffers | All CPU cores | Coprocessor subsystem | Twelve ring slots at a `0x400` stride; shared request/completion rings outside the main graphics-visible range. |
 | `0x800000-0x80FFFF` | 64KB | Shared RAM | Media-loader staging buffer | All CPU cores | Media-loader subsystem | Reservation at the base of the AROS fast-memory range when that profile is active. |
 | `0x800000-0x1DFFFFF` | 22MB | Shared RAM | AROS fast memory | All CPU cores | AROS profile | Profile-owned allocation range, not a distinct per-core map. |
 | `0x1E00000-0x5DFFFFF` | 64MB | Shared RAM / video-profile memory | AROS video RAM | All CPU cores | AROS profile / video subsystem | Profile-owned video allocation range within shared physical memory. |
@@ -1482,18 +1485,38 @@ does not need to know about the extension.
 The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x790000`. Each worker type has a dedicated shared-memory reservation in the unified physical map (see memory map above), not a private per-core address space. The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. Each ring has 16 descriptor slots but uses one slot to distinguish full from empty, so it can hold 15 queued requests at once. When `COPROC_IRQ_CTRL` bit 0 is set and an M68K IRQ target plus completion watcher have been configured, the coprocessor asserts M68K interrupt level 6 on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`. Non-M68K modes should observe completion through `POLL` or `WAIT`.
 
 `COPROC_INSTANCE` selects a worker instance together with `COPROC_CPU_TYPE`.
-M68K supports instances 0 and 1; every other worker type supports instance 0
-only. M68K instance 1 uses shared RAM `0x420000-0x49FFFF`, mailbox ring 6 at
-`0x791300`, and `COPROC_WORKER_STATE` bit 7. Ring 6 is not at the nominal
-stride-derived address: the original rings occupy `0x308` bytes despite their
-`0x300` stride, so the `0x1300` offset prevents ring 5 slot 15 from overwriting
-ring 6's header. Start, stop, enqueue, ring depth, uptime, and ticket ownership
-are scoped to the selected instance.
+The JIT-capable worker types (M68K, x86, IE64) support instances 0 and 1; IE32,
+6502, and Z80 support instance 0 only. Instance-1 windows are M68K
+`0x420000-0x49FFFF`, x86 `0x4A0000-0x51FFFF`, and IE64 `0x520000-0x59FFFF`, each
+512 KiB. The mailbox holds twelve ring slots at a uniform `0x400` stride, and
+the ring index is `cpuTypeIndex*2 + instance` with no special case (the `0x400`
+stride exceeds a ring's `0x308` content, so no ring's last slot overflows into
+its neighbour). `COPROC_SELECTED_STATE` reports whether the selected worker is
+running, while `COPROC_INSTANCE_STATE` reports all live instances atomically
+without changing `COPROC_CPU_TYPE` or `COPROC_INSTANCE`;
+the aggregate `COPROC_WORKER_STATE` sets a per-type bit when any instance of
+that type is running. Start, stop, enqueue, ring depth, uptime, and ticket
+ownership are scoped to the selected instance. A worker must echo the mailbox
+layout version (`COPROC_MAILBOX_VERSION`) into its ring header at startup or the
+manager refuses to route it work and START fails with `COPROC_ERR_STALE_WORKER`.
+
+The coprocessor discovery block at `0xF25A0-0xF25BF` reports the selected
+type's instance limit, selected-instance state, mailbox layout version, worker
+window, worker ring, and an atomic all-instance liveness mask. The mailbox
+contains twelve `0x400`-byte ring slots from `0x790000` through `0x792FFF`;
+each ring publishes layout version 1 and a worker must acknowledge that version
+before START succeeds.
+
+Instance-1 windows are M68K `0x420000-0x49FFFF`, x86
+`0x4A0000-0x51FFFF`, and IE64 `0x520000-0x59FFFF`, each 512 KiB; the ring
+index is `cpuTypeIndex*2+instance`, `COPROC_SELECTED_STATE` reports the selected
+worker, and `COPROC_INSTANCE_STATE` reports all live instances without changing
+the selectors.
 
 M68K workers initialise their own stack bounds and supervisor/user stack
 pointers and arm the M68K JIT. Coprocessor shared-window pages route through
-memory helpers so their byte-swap rules match interpreted execution; the second
-M68K worker RAM window is excluded from that shared-window treatment and remains
+memory helpers so their byte-swap rules match interpreted execution; both M68K
+worker RAM windows are excluded from that shared-window treatment and remain
 ordinary big-endian worker RAM. M68K block compilation is serialised across the
 main CPU and worker instances.
 

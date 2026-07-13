@@ -7,6 +7,8 @@ sources:
   - ../mk64-ie/ie/ie_platform_log.c
   - ../mk64-ie/src/platform/platform.h
   - ../mk64-ie/src/staff_ghosts.c
+  - ../mk64-ie/ie/ie_gfx_svc_client.c
+  - ../mk64-ie/ie/ie_audio_svc_client.c
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -72,11 +74,12 @@ A programme "runs" when it reaches the frame loop. It feels usable when:
 - Frame pacing is deliberate.
 - Saves fail closed.
 - Long asset reads do not starve audio.
+- Optional worker failure returns that contract to a known local path.
 - Fatal errors are observable.
 - Smoke checks cover the boot path and the important services.
 
 ## 64.5 The General IE Lesson
 
 Large IE software needs a last-mile layer. Rendering and sound prove the
-machine works. Input, saves, pacing, logging, and smoke checks make the
-programme usable.
+machine works. Input, saves, pacing, explicit service fallback, logging,
+and smoke checks make the programme usable.

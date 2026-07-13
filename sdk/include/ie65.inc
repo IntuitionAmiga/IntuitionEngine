@@ -2749,6 +2749,11 @@ FILE_ERR_PATH_TRAVERSAL = 3         ; Path traversal attempt blocked
 ; ============================================================================
 ; COPROCESSOR REGISTERS (via gateway $F200-$F24F -> bus $F2340)
 ; ============================================================================
+;
+; NOTE: The capability/version discovery block (COPROC_EXT2, bus 0xF25A0-
+; 0xF25BF) lies OUTSIDE this gateway range, so the 6502 cannot read it. A 6502
+; coprocessor service learns the mailbox layout version from its ring header
+; (RING_ACK at ring base + 4), not from an MMIO register. See coproc_service_65.asm.
 
 ; Gateway register addresses (6502 address space)
 COPROC_CMD            = $F200            ; Command register (W triggers)

@@ -102,8 +102,12 @@
 
 .equ RING_HEAD   0x790000
 .equ RING_TAIL   0x790001
+.equ RING_ACK    0x790004
 .equ ENTRIES     0x790008
 .equ RESPONSES   0x790208
+
+; Mailbox layout version echoed back at startup (COPROC_LAYOUT_VERSION).
+.equ LAYOUT_VER  1
 
 ; ============================================================================
 ; REGISTER ALLOCATION
@@ -129,6 +133,12 @@
 ; request, it advances head. We detect this by comparing our cached tail
 ; against the current head value. Both are single bytes masked to 8 bits,
 ; so reads are effectively atomic.
+
+    ; Version-gate handshake: echo the mailbox layout version into the ring
+    ; header so the host routes work to this service. A stale image built for
+    ; a different layout never reaches this address and is refused at START.
+    LDA #LAYOUT_VER
+    STA @RING_ACK
 
 main_loop:
     ; Read tail

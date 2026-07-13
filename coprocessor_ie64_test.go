@@ -198,7 +198,7 @@ func TestIE64WorkerEnqueuePoll(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr.baseDir = tmpDir
 
-	ringIdx := cpuTypeToIndex(EXEC_TYPE_IE64)
+	ringIdx := coprocRingIndex(EXEC_TYPE_IE64, 0)
 	ringBase := ringBaseAddr(ringIdx)
 
 	// Build a service that polls ring and completes one request
@@ -292,7 +292,7 @@ func TestIE64WorkerEnqueueManualComplete(t *testing.T) {
 	ticket := bus.Read32(COPROC_TICKET)
 
 	// Manually write OK status to the response descriptor (simulating IE64 worker)
-	ringBase := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64))
+	ringBase := ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE64, 0))
 	respAddr := ringBase + RING_RESPONSES_OFFSET + 0*RESP_DESC_SIZE // slot 0
 	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
 
@@ -412,7 +412,7 @@ func TestIE64WorkerStats(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	mgr.baseDir = tmpDir
-	ringIdx := cpuTypeToIndex(EXEC_TYPE_IE64)
+	ringIdx := coprocRingIndex(EXEC_TYPE_IE64, 0)
 	ringBase := ringBaseAddr(ringIdx)
 	svcBin := buildIE64ServiceBinary(ringBase)
 	binPath := filepath.Join(tmpDir, "svc.ie64")
@@ -528,6 +528,7 @@ func newTestBusAndManagerExt(t *testing.T) (*MachineBus, *CoprocessorManager) {
 	t.Helper()
 	bus, mgr := newTestBusAndManager(t)
 	bus.MapIO(COPROC_EXT_BASE, COPROC_EXT_END, mgr.HandleRead, mgr.HandleWrite)
+	bus.MapIO(COPROC_EXT2_BASE, COPROC_EXT2_END, mgr.HandleRead, mgr.HandleWrite)
 	return bus, mgr
 }
 
@@ -722,7 +723,7 @@ func TestBusyPct_ClearedByPoll_NonM68KMode(t *testing.T) {
 	bus, mgr := newTestBusAndManagerExt(t)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE64] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][0] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
 	mgr.mu.Unlock()
 
 	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE64)
@@ -736,7 +737,7 @@ func TestBusyPct_ClearedByPoll_NonM68KMode(t *testing.T) {
 	}
 	ticket := bus.Read32(COPROC_TICKET)
 
-	respAddr := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64)) + RING_RESPONSES_OFFSET
+	respAddr := ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE64, 0)) + RING_RESPONSES_OFFSET
 	bus.Write32(respAddr+RESP_TICKET_OFF, ticket)
 	bus.Write32(respAddr+RESP_STATUS_OFF, COPROC_TICKET_OK)
 
@@ -757,11 +758,11 @@ func TestRingDepth_PerCPU(t *testing.T) {
 	bus, mgr := newTestBusAndManagerExt(t)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = newOpenSyntheticWorker(EXEC_TYPE_IE32)
+	mgr.workers[EXEC_TYPE_IE32][0] = newOpenSyntheticWorker(EXEC_TYPE_IE32)
 	mgr.mu.Unlock()
 
-	ie32Ring := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32))
-	ie64Ring := ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE64))
+	ie32Ring := ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0))
+	ie64Ring := ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE64, 0))
 	bus.Write8(ie32Ring+RING_HEAD_OFFSET, 3)
 	bus.Write8(ie32Ring+RING_TAIL_OFFSET, 1)
 	bus.Write8(ie64Ring+RING_HEAD_OFFSET, 0)
@@ -777,8 +778,8 @@ func TestWorkerUptime_PerCPU(t *testing.T) {
 	bus, mgr := newTestBusAndManagerExt(t)
 
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_Z80] = newOpenSyntheticWorker(EXEC_TYPE_Z80)
-	mgr.workerStartTime[EXEC_TYPE_Z80] = time.Now().Add(-2 * time.Second)
+	mgr.workers[EXEC_TYPE_Z80][0] = newOpenSyntheticWorker(EXEC_TYPE_Z80)
+	mgr.workerStartTime[EXEC_TYPE_Z80][0] = time.Now().Add(-2 * time.Second)
 	mgr.mu.Unlock()
 
 	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_Z80)

@@ -559,6 +559,7 @@ func newAROSBootEnvironment(rom []byte, hostRoot string, opts AROSBootEnvironmen
 		coproc = NewCoprocessorManager(bus, ".")
 		bus.MapIO(COPROC_BASE, COPROC_END, coproc.HandleRead, coproc.HandleWrite)
 		bus.MapIO(COPROC_EXT_BASE, COPROC_EXT_END, coproc.HandleRead, coproc.HandleWrite)
+		bus.MapIO(COPROC_EXT2_BASE, COPROC_EXT2_END, coproc.HandleRead, coproc.HandleWrite)
 		coproc.SetIRQTarget(cpu)
 		coproc.StartCompletionWatcher()
 	}

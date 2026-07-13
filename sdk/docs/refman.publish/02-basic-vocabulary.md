@@ -281,23 +281,68 @@ Program the copper list. See Chapter 4.
 
 Returns the cosine of *expr*, where *expr* is in radians.
 
+### COCAPS
+
+`COCAPS(`*cpuType*`)`
+
+Return the number of worker instances a CPU type supports. M68K, x86,
+and IE64 return `2`; IE32, 6502, and Z80 return `1`. This call also
+selects *cpuType* for `COSELSTATE()`. See Chapter 32.
+
+### COCALL
+
+`COCALL(`*cpuType*`,`*op*`,`*reqPtr*`,`*reqLen*`,`*respPtr*`,`*respCap*`)`
+
+`COCALL(`*cpuType*`,`*instance*`,`*op*`,`*reqPtr*`,`*reqLen*`,`*respPtr*`,`*respCap*`)`
+
+Submit work to a coprocessor service and return its ticket. The
+six-argument form selects instance `0`; the seven-argument form names
+the instance explicitly. A return value of `0` means submission failed.
+See Chapter 32.
+
+### COINSTANCE
+
+`COINSTANCE()`
+
+Return the currently selected worker instance (the `COPROC_INSTANCE`
+selector). See Chapter 32.
+
+### COSELSTATE
+
+`COSELSTATE()`
+
+Return the running state of the selected `(cpuType, instance)` worker:
+`1` if online, `0` otherwise. See Chapter 32.
+
+### COSTATUS
+
+`COSTATUS(`*ticket*`)`
+
+Return the current status of a coprocessor ticket without waiting. See
+Chapter 32 for the six status values.
+
 ### COSTART
 
-`COSTART `*args*
+`COSTART `*cpuType*`,"`*serviceFile*`"`
 
-Start a coprocessor program. See Chapter 32.
+`COSTART `*cpuType*`,`*instance*`,"`*serviceFile*`"`
+
+Start a coprocessor worker. The optional *instance* selects a worker
+instance (default `0`). M68K, x86, and IE64 accept `0` or `1`; IE32,
+6502, and Z80 accept only `0`. See Chapter 32.
 
 ### COSTOP
 
-`COSTOP `*args*
+`COSTOP `*cpuType*[`,`*instance*]`
 
-Stop a coprocessor program. See Chapter 32.
+Stop a coprocessor worker for the given type and optional *instance*
+(default `0`). See Chapter 32.
 
 ### COWAIT
 
-`COWAIT `*args*
+`COWAIT `*ticket*[`,`*timeoutMs*]`
 
-Wait for a coprocessor to reach a synchronisation point. See
+Wait for a coprocessor ticket to complete or the timeout to expire. See
 Chapter 32.
 
 ### DATA
@@ -1213,5 +1258,6 @@ those references:
 | SOUND MOD, MOD STATUS                         | 19 |
 | HOST                                          | 36 |
 | COSTART, COSTOP, COWAIT                       | 32 |
+| COCALL, COSTATUS, COCAPS, COINSTANCE, COSELSTATE | 32 |
 | CALL, USR                                     | 25 |
 | LOAD, SAVE, BLOAD, RUN "*.ie*", RUN AOT, COMPILE, TRANSPILE, ASSEMBLE, TYPE | 35 |

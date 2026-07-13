@@ -802,7 +802,8 @@ expr_primary:
     bra     .check_var_range
 
 .check_co_funcs:
-    ; --- Intercept coprocessor functions (COCALL, COSTATUS) ---
+    ; --- Intercept coprocessor functions (COCALL, COCAPS, COSTATUS,
+    ;     COSELSTATE, COINSTANCE) ---
     move.q  r2, #0x63            ; 'c'
     bne     r3, r2, .check_var_range
     load.b  r3, 1(r17)
@@ -811,32 +812,133 @@ expr_primary:
     bne     r3, r2, .check_var_range
     load.b  r3, 2(r17)
     or.q    r3, r3, #0x20
-    move.q  r2, #0x63            ; 'c' → COCALL
+    move.q  r2, #0x63            ; 'c' → COCALL / COCAPS
     beq     r3, r2, .check_cocall_func
-    move.q  r2, #0x73            ; 's' → COSTATUS
+    move.q  r2, #0x69            ; 'i' → COINSTANCE
+    beq     r3, r2, .check_coinstance_func
+    move.q  r2, #0x73            ; 's' → COSTATUS / COSELSTATE
+    beq     r3, r2, .check_cos_func
+    bra     .check_var_range
+
+.check_cos_func:
+    ; Third char is 's'. Fourth char selects: 't' → COSTATUS, 'e' → COSELSTATE.
+    load.b  r3, 3(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x74            ; 't' → COSTATUS
     beq     r3, r2, .check_costatus_func
+    move.q  r2, #0x65            ; 'e' → COSELSTATE
+    beq     r3, r2, .check_coselstate_func
     bra     .check_var_range
 
 .check_cocall_func:
-    ; Match "COCALL" (6 chars) + '('
+    ; Third char is 'c'. Fourth char is 'a' for both COCALL and COCAPS; fifth
+    ; char selects: 'l' → COCALL, 'p' → COCAPS.
     load.b  r3, 3(r17)
     or.q    r3, r3, #0x20
     move.q  r2, #0x61            ; 'a'
     bne     r3, r2, .check_var_range
     load.b  r3, 4(r17)
     or.q    r3, r3, #0x20
-    move.q  r2, #0x6C            ; 'l'
-    bne     r3, r2, .check_var_range
+    move.q  r2, #0x6C            ; 'l' → COCALL
+    beq     r3, r2, .check_cocall_ll
+    move.q  r2, #0x70            ; 'p' → COCAPS
+    beq     r3, r2, .check_cocaps_func
+    bra     .check_var_range
+
+.check_cocall_ll:
+    ; Match "COCALL" (6 chars) + '('
     load.b  r3, 5(r17)
     or.q    r3, r3, #0x20
     move.q  r2, #0x6C            ; 'l'
     bne     r3, r2, .check_var_range
-    ; Check for '(' after keyword
     load.b  r3, 6(r17)
     move.q  r2, #0x28            ; '('
     bne     r3, r2, .check_var_range
     add.q   r17, r17, #7         ; consume "COCALL("
     jsr     fn_cocall
+    rts
+
+.check_cocaps_func:
+    ; Match "COCAPS" (6 chars) + '('
+    load.b  r3, 5(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x73            ; 's'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 6(r17)
+    move.q  r2, #0x28            ; '('
+    bne     r3, r2, .check_var_range
+    add.q   r17, r17, #7         ; consume "COCAPS("
+    jsr     fn_cocaps
+    rts
+
+.check_coinstance_func:
+    ; Match "COINSTANCE" (10 chars) + '('
+    load.b  r3, 3(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x6E            ; 'n'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 4(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x73            ; 's'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 5(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x74            ; 't'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 6(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x61            ; 'a'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 7(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x6E            ; 'n'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 8(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x63            ; 'c'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 9(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x65            ; 'e'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 10(r17)
+    move.q  r2, #0x28            ; '('
+    bne     r3, r2, .check_var_range
+    add.q   r17, r17, #11        ; consume "COINSTANCE("
+    jsr     fn_coinstance
+    rts
+
+.check_coselstate_func:
+    ; Fourth char already verified 'e'. Match remaining "LSTATE" + '('.
+    load.b  r3, 4(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x6C            ; 'l'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 5(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x73            ; 's'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 6(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x74            ; 't'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 7(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x61            ; 'a'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 8(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x74            ; 't'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 9(r17)
+    or.q    r3, r3, #0x20
+    move.q  r2, #0x65            ; 'e'
+    bne     r3, r2, .check_var_range
+    load.b  r3, 10(r17)
+    move.q  r2, #0x28            ; '('
+    bne     r3, r2, .check_var_range
+    add.q   r17, r17, #11        ; consume "COSELSTATE("
+    jsr     fn_coselstate
     rts
 
 .check_costatus_func:

@@ -4,6 +4,8 @@ sources:
   - video_compositor.go
   - audio_chip.go
   - machine_bus.go
+  - coprocessor_constants.go
+  - coprocessor_manager.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -134,29 +136,36 @@ translation applies.
 ## K.4 Coprocessor channels
 
 The coprocessor block (Chapter 32) is a many-to-many channel
-between the main CPU and a pool of worker CPUs. Each worker
-listens on its own ring buffer; the main CPU posts work items
-into the ring and reads the result back.
+between the main CPU and a pool of worker instances. Each running
+instance listens on its own ring buffer; the main CPU posts work
+items into that ring and reads the result back.
 
 ```
    Main CPU
    |
-   |  COSTART / COCALL  -->  +----------------+
-   |                         |  Ring buffer   |
-   |  COSTATUS / COWAIT  <-- |  (per-worker)  |
-   |                         +-------+--------+
-   |                                 |
-   |                         +-------+--------+
-   |                         |  Worker CPU    |
-   |                         |  (one of 6     |
-   |                         |   types)       |
-   |                         +----------------+
+   |  COSTART / COCALL  -->  +-------------------+
+   |                         |  Assigned ring    |
+   |  COSTATUS / COWAIT  <-- |  (per instance)   |
+   |                         +---------+---------+
+   |                                   |
+   |                         +---------+---------+
+   |                         |  Worker instance  |
+   |                         |  type plus number |
+   |                         +-------------------+
 ```
 
 Six worker types share the protocol: an IE64 worker, an IE32
 worker, a 6502 worker, a Z80 worker, an M68K worker, and an x86
 worker. The main CPU is whichever one boots the machine; all the
-others are available as workers when not booted.
+others are available as workers when not booted. M68K, x86, and
+IE64 provide instances `0` and `1`; IE32, 6502, and Z80 provide
+instance `0` only.
+
+The mailbox reserves twelve ring slots from `$790000` to `$792FFF`.
+Each slot has a uniform `$400` stride, and its index is
+`cpuTypeIndex * 2 + instance`. The unused second slots for IE32,
+6502, and Z80 remain reserved so every supported worker follows the
+same address rule.
 
 ## K.5 Bus translation for the small CPUs
 

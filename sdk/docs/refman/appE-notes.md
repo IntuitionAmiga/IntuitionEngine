@@ -3,7 +3,7 @@ title: "Music Note and Frequency Tables"
 sources:
   - audio_chip.go
   - psg_engine.go
-  - sn76489_engine.go
+  - sn76489_chip.go
   - sid_engine.go
   - ted_engine.go
   - pokey_engine.go

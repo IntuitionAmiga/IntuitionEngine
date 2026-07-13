@@ -152,9 +152,17 @@ mechanism described in Chapters 27 and 28.
 | `$F2300`  | Media loader. |
 | `$F2320`  | RUN loader block. |
 | `$F2340`  | Coprocessor. |
+| `$F238C`  | `COPROC_INSTANCE`, worker instance selector. |
+| `$F23B0`  | Coprocessor selected-worker statistics. |
+| `$F25A0`  | Coprocessor capability, version, window, ring, and instance-state discovery. |
 | `$F2400`  | SysInfo. |
 | `$F2410` | `SYSINFO_FEATURES`; bit `3`, `SYSINFO_FEATURE_VOODOO_TEX_SLOTS`, reports retained Voodoo texture slots. |
 | `$F2414`/`$F2418` | `SYSINFO_LOW_WINDOW_LO` / `SYSINFO_LOW_WINDOW_HI`, dense low-RAM window size. |
 | `$F8000`  | Voodoo 3D. |
 | `$F833C`/`$F8340`/`$F8344` | `VOODOO_CMD_PTR` / `VOODOO_CMD_COUNT` / `VOODOO_CMD_SUBMIT`, Voodoo command-stream replay. |
 | `$F8350`/`$F8354` | `VOODOO_TEX_SLOT` / `VOODOO_TEX_BIND`, retain an upload by identifier and bind it again. `VOODOO_TEX_SLOT_NONE` is `$FFFFFFFF`. |
+
+The coprocessor mailbox occupies `$790000` to `$792FFF`, with twelve
+`$400`-byte ring slots. M68K receives its selected ring base in `A4`,
+x86 in `EBP`, and IE64 in `R30` at worker entry. M68K, x86, and IE64
+support instances `0` and `1`; IE32, 6502, and Z80 support instance `0`.

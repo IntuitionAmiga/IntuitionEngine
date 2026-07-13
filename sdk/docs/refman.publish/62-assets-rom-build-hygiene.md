@@ -25,9 +25,15 @@ That gives the port three useful properties:
 ## 62.2 Keep Ranges Apart
 
 The packed image uses separate regions for the loader, table of
-contents, asset data, game image, and texture store. The tests reject
-layouts that overlap the texture window or exceed the allowed pack data
-range.
+contents, asset data, three worker service images, game image, and
+texture store. Its table names the IE64 TnL service, the M68K graphics
+service, and the M68K audio service alongside ordinary assets.
+
+The packer checks loaded spans against worker-private RAM and the
+coprocessor mailbox. It also rejects layouts that overlap the texture
+window or exceed the allowed pack data range. A blob is not safe merely
+because its file offset is unique. Its eventual address on the IE bus
+must also be free.
 
 The rule is simple: every large region needs a named home before the
 programme grows.
@@ -51,8 +57,9 @@ The reader does not need:
 - Generated binary dumps.
 - External build scripts.
 
-The reader needs the IE pattern: named assets, deterministic layout,
-range checks, byte-order rules, and explicit failure.
+The reader needs the IE pattern: named assets and services,
+deterministic layout, worker and mailbox reservations, range checks,
+byte-order rules, and explicit failure.
 
 ## 62.5 The General IE Lesson
 

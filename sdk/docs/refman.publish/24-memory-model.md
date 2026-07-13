@@ -57,6 +57,16 @@ The `5`-megabyte VRAM block from `$100000` to `$5FFFFF` is wired
 directly to the VideoChip framebuffer (Chapter 4). Writes here
 appear on screen the next time the compositor refreshes.
 
+This aperture also contains dedicated coprocessor worker windows.
+Starting a worker clears and claims its selected range: IE32 instance 0
+uses `$200000` to `$27FFFF`; M68K instances 0 and 1 use `$280000` to
+`$2FFFFF` and `$420000` to `$49FFFF`; 6502 instance 0 uses `$300000`
+to `$30FFFF`; Z80 instance 0 uses `$310000` to `$31FFFF`; x86
+instances 0 and 1 use `$320000` to `$39FFFF` and `$4A0000` to
+`$51FFFF`; IE64 instances 0 and 1 use `$3A0000` to `$41FFFF` and
+`$520000` to `$59FFFF`. Do not use an active worker window as a
+framebuffer or scratch range.
+
 Memory beyond `$600000` is plain RAM when it is backed by the current
 guest-RAM allocation. Its upper bound depends on the amount of RAM the
 Intuition Engine was started with and on the active CPU profile. The two
@@ -177,6 +187,7 @@ The full map:
 | `$F23C0`-`$F23DF` | `32B`  | IRQ diagnostics              |
 | `$F23E0`-`$F23FF` | `32B`  | Bootstrap file bridge        |
 | `$F2400`-`$F24FF` | `256B` | SysInfo (RAM-size discovery) |
+| `$F25A0`-`$F25BF` | `32B`  | Coprocessor capability and instance discovery |
 | `$F2600`-`$F29FF` | `1K`   | SFX trigger extended window, channels `0`-`31` |
 | `$F8000`-`$F87FF` | `2K`   | Voodoo 3D registers          |
 | `$FA000`-`$FBAFF` | `6912B`| ULA VRAM (bitmap + attrs)    |

@@ -1930,9 +1930,18 @@ aot_scan_stmt_body:
     la      r5, aot_kw_costatus
     jsr     aot_match_fn
     bnez    r8, .sts_costatus
+    la      r5, aot_kw_coselstate
+    jsr     aot_match_fn
+    bnez    r8, .sts_coselstate
+    la      r5, aot_kw_coinstance
+    jsr     aot_match_fn
+    bnez    r8, .sts_coinstance
     la      r5, aot_kw_cocall
     jsr     aot_match_fn
     bnez    r8, .sts_cocall
+    la      r5, aot_kw_cocaps
+    jsr     aot_match_fn
+    bnez    r8, .sts_cocaps
 
 .sts_advance:
     move.q  r20, r1
@@ -1967,6 +1976,15 @@ aot_scan_stmt_body:
     rts
 .sts_cocall:
     la      r8, aot_rsn_cocall
+    rts
+.sts_cocaps:
+    la      r8, aot_rsn_cocaps
+    rts
+.sts_coinstance:
+    la      r8, aot_rsn_coinstance
+    rts
+.sts_coselstate:
+    la      r8, aot_rsn_coselstate
     rts
 
 ; aot_run_is_aot - R17 points at TK_RUN. Returns R8=1 if "RUN AOT". Clobbers R2-R4.
@@ -2198,6 +2216,9 @@ aot_kw_costop:   dc.b "costop", 0
 aot_kw_cowait:   dc.b "cowait", 0
 aot_kw_cocall:   dc.b "cocall", 0
 aot_kw_costatus: dc.b "costatus", 0
+aot_kw_cocaps:     dc.b "cocaps", 0
+aot_kw_coinstance: dc.b "coinstance", 0
+aot_kw_coselstate: dc.b "coselstate", 0
 aot_kw_compile:  dc.b "compile", 0
 aot_kw_type:     dc.b "type", 0
     align 4
@@ -2209,6 +2230,9 @@ aot_rsn_costop:   dc.b "COSTOP cannot be compiled", 0
 aot_rsn_cowait:   dc.b "COWAIT cannot be compiled", 0
 aot_rsn_cocall:   dc.b "COCALL cannot be compiled", 0
 aot_rsn_costatus: dc.b "COSTATUS cannot be compiled", 0
+aot_rsn_cocaps:     dc.b "COCAPS cannot be compiled", 0
+aot_rsn_coinstance: dc.b "COINSTANCE cannot be compiled", 0
+aot_rsn_coselstate: dc.b "COSELSTATE cannot be compiled", 0
 aot_rsn_compile:  dc.b "COMPILE is direct-only", 0
 aot_rsn_type:     dc.b "TYPE is direct-only", 0
 aot_rsn_runaot:   dc.b "RUN AOT is direct-only", 0

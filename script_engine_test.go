@@ -1167,8 +1167,12 @@ func TestScriptEngine_CoprocWorkers(t *testing.T) {
 func TestScriptEngine_CoprocWorkersReportsSecondM68KInstance(t *testing.T) {
 	bus := NewMachineBus()
 	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
-	regs := map[uint32]uint32{COPROC_WORKER_STATE: 1<<EXEC_TYPE_M68K | 1<<7}
-	bus.MapIO(COPROC_BASE, COPROC_END,
+	// Simulate both M68K instances online via COPROC_INSTANCE_STATE (the
+	// per-instance liveness bitmask, bit cpuType*2+instance).
+	regs := map[uint32]uint32{
+		COPROC_INSTANCE_STATE: 1<<(EXEC_TYPE_M68K*2+0) | 1<<(EXEC_TYPE_M68K*2+1),
+	}
+	bus.MapIO(COPROC_BASE, COPROC_EXT2_END,
 		func(addr uint32) uint32 { return regs[addr] },
 		func(addr uint32, value uint32) { regs[addr] = value })
 
@@ -1185,6 +1189,98 @@ func TestScriptEngine_CoprocWorkersReportsSecondM68KInstance(t *testing.T) {
 	if err := se.LastError(); err != nil {
 		t.Fatalf("script error: %v", err)
 	}
+}
+
+func TestScriptEngine_CoprocInstanceArgsAndInvalid(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mgr := NewCoprocessorManager(bus, t.TempDir())
+	mgr.versionGateEnabled = false
+	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+	bus.MapIO(COPROC_EXT2_BASE, COPROC_EXT2_END, mgr.HandleRead, mgr.HandleWrite)
+	t.Cleanup(mgr.StopAll)
+
+	// Bring both IE64 instances online (synthetic workers; no service image).
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64][0] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][1] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.mu.Unlock()
+
+	// coproc.workers() lists both instances.
+	if err := se.RunString(`
+		local w = coproc.workers()
+		local found0, found1 = false, false
+		for _, e in ipairs(w) do
+			if e.cpu_type == "ie64" and e.instance == 0 then found0 = true end
+			if e.cpu_type == "ie64" and e.instance == 1 then found1 = true end
+		end
+		if not (found0 and found1) then error("both IE64 instances should be listed") end
+	`, "coproc_two_instances"); err != nil {
+		t.Fatal(err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+
+	// An invalid instance raises.
+	if err := se.RunString(`coproc.stop("ie32", 1)`, "coproc_bad_instance"); err != nil {
+		t.Fatal(err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil {
+		t.Fatal("expected coproc.stop with invalid instance to raise")
+	}
+}
+
+// TestScriptEngine_CoprocWorkersPreservesSelection pins that coproc.workers()
+// does not clobber the shared COPROC_CPU_TYPE / COPROC_INSTANCE command
+// selectors (P2): a raw command issued afterwards must still target the
+// caller's selection.
+func TestScriptEngine_CoprocWorkersPreservesSelection(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	mgr := NewCoprocessorManager(bus, t.TempDir())
+	mgr.versionGateEnabled = false
+	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+	bus.MapIO(COPROC_EXT2_BASE, COPROC_EXT2_END, mgr.HandleRead, mgr.HandleWrite)
+	t.Cleanup(mgr.StopAll)
+
+	// Bring a couple of instances online so the enumeration actually iterates.
+	mgr.mu.Lock()
+	mgr.workers[EXEC_TYPE_IE64][0] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.workers[EXEC_TYPE_IE64][1] = newOpenSyntheticWorker(EXEC_TYPE_IE64)
+	mgr.mu.Unlock()
+
+	// Stage a specific selection, then list workers.
+	bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_M68K)
+	bus.Write32(COPROC_INSTANCE, 1)
+	if err := se.RunString(`local w = coproc.workers()`, "coproc_preserve"); err != nil {
+		t.Fatal(err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+
+	if got := bus.Read32(COPROC_CPU_TYPE); got != EXEC_TYPE_M68K {
+		t.Errorf("COPROC_CPU_TYPE clobbered by coproc.workers(): got %d, want %d", got, EXEC_TYPE_M68K)
+	}
+	if got := bus.Read32(COPROC_INSTANCE); got != 1 {
+		t.Errorf("COPROC_INSTANCE clobbered by coproc.workers(): got %d, want 1", got)
+	}
+}
+
+// startMemInstanceViaBus stages img at blobAddr and issues START_MEM through the
+// bus MMIO surface. Returns (error code, failed).
+func startMemInstanceViaBus(bus *MachineBus, mgr *CoprocessorManager, cpuType, instance uint32, img []byte, blobAddr uint32) (uint32, bool) {
+	copy(bus.GetMemory()[blobAddr:], img)
+	bus.Write32(COPROC_CPU_TYPE, cpuType)
+	bus.Write32(COPROC_INSTANCE, instance)
+	bus.Write32(COPROC_REQ_PTR, blobAddr)
+	bus.Write32(COPROC_REQ_LEN, uint32(len(img)))
+	bus.Write32(COPROC_CMD, COPROC_CMD_START_MEM)
+	return bus.Read32(COPROC_CMD_ERROR), bus.Read32(COPROC_CMD_STATUS) != COPROC_STATUS_OK
 }
 
 func TestScriptEngine_CoprocTypeOperationsSelectDefaultInstance(t *testing.T) {

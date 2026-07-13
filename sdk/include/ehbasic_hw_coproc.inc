@@ -21,9 +21,13 @@
 
 exec_do_costart:
     jsr     exec_skip_spaces
-    ; Parse cpuType expression
+    ; Parse cpuType expression, write it before further evals clobber regs
     jsr     coproc_eval_int
-    move.q  r22, r8              ; R22 = cpuType
+    la      r1, COPROC_CPU_TYPE
+    store.l r8, (r1)
+    ; Default instance 0 (written explicitly so a prior POKE cannot redirect)
+    la      r1, COPROC_INSTANCE
+    store.l r0, (r1)
 
     ; Expect comma
     jsr     exec_skip_spaces
@@ -31,9 +35,26 @@ exec_do_costart:
     move.q  r2, #0x2C            ; ','
     bne     r1, r2, .costart_done
     add.q   r17, r17, #1         ; skip comma
-
-    ; Parse filename string
     jsr     exec_skip_spaces
+
+    ; Optional instance: a string-literal filename starts with '"'. If the next
+    ; token is not a string, it is a numeric instance expression followed by a
+    ; second comma before the filename.
+    load.b  r1, (r17)
+    move.q  r2, #0x22            ; '"'
+    beq     r1, r2, .costart_filename
+    jsr     coproc_eval_int
+    la      r1, COPROC_INSTANCE
+    store.l r8, (r1)
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C            ; ','
+    bne     r1, r2, .costart_done
+    add.q   r17, r17, #1         ; skip comma
+    jsr     exec_skip_spaces
+
+.costart_filename:
+    ; Parse filename string
     jsr     str_eval             ; R8 = filename string pointer
     move.q  r10, r8
 
@@ -47,10 +68,6 @@ exec_do_costart:
     add.q   r1, r1, #1
     bra     .costart_copy
 .costart_copied:
-
-    ; Write cpuType to COPROC_CPU_TYPE
-    la      r1, COPROC_CPU_TYPE
-    store.l r22, (r1)
 
     ; Write filename pointer to COPROC_NAME_PTR
     la      r1, COPROC_NAME_PTR
@@ -78,14 +95,26 @@ exec_do_costart:
 
 exec_do_costop:
     jsr     exec_skip_spaces
-    ; Parse cpuType expression
+    ; Parse cpuType expression, write it before any further eval clobbers regs
     jsr     coproc_eval_int
-    move.q  r22, r8              ; R22 = cpuType
-
-    ; Write cpuType to COPROC_CPU_TYPE
     la      r1, COPROC_CPU_TYPE
-    store.l r22, (r1)
+    store.l r8, (r1)
+    ; Default instance 0 (written explicitly so a prior POKE cannot redirect)
+    la      r1, COPROC_INSTANCE
+    store.l r0, (r1)
 
+    ; Optional ", instance"
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C            ; ','
+    bne     r1, r2, .costop_go
+    add.q   r17, r17, #1         ; skip comma
+    jsr     exec_skip_spaces
+    jsr     coproc_eval_int
+    la      r1, COPROC_INSTANCE
+    store.l r8, (r1)
+
+.costop_go:
     ; Trigger STOP command
     la      r1, COPROC_CMD
     move.l  r2, #COPROC_CMD_STOP
@@ -141,72 +170,86 @@ exec_do_cowait:
 ; Enqueues an async coprocessor request.
 ; Returns ticket number as FP64 in R8.
 
+; Two forms, disambiguated structurally (expr_eval clobbers r20-r27, so no live
+; arg counter can survive across evals):
+;   6 args: COCALL(cpuType, op, reqPtr, reqLen, respPtr, respCap)      instance 0
+;   7 args: COCALL(cpuType, instance, op, reqPtr, reqLen, respPtr, respCap)
+; The two forms share the first six parse positions; after parsing six args a
+; trailing ',' means the seven-arg form (a seventh arg follows), a ')' the
+; six-arg form. Any other count raises ?FC.
 fn_cocall:
     ; '(' already consumed by caller - skip spaces
     jsr     exec_skip_spaces
 
-    ; Arg 1: cpuType
+    ; Shared arg 1
     jsr     coproc_eval_int
-    push    r8                   ; save cpuType
+    push    r8
+    jsr     .cocall_want_comma
+    beqz    r8, .cocall_pop1
+
+    ; Shared arg 2
+    jsr     exec_skip_spaces
+    jsr     coproc_eval_int
+    push    r8
+    jsr     .cocall_want_comma
+    beqz    r8, .cocall_pop2
+
+    ; Shared arg 3
+    jsr     exec_skip_spaces
+    jsr     coproc_eval_int
+    push    r8
+    jsr     .cocall_want_comma
+    beqz    r8, .cocall_pop3
+
+    ; Shared arg 4
+    jsr     exec_skip_spaces
+    jsr     coproc_eval_int
+    push    r8
+    jsr     .cocall_want_comma
+    beqz    r8, .cocall_pop4
+
+    ; Shared arg 5
+    jsr     exec_skip_spaces
+    jsr     coproc_eval_int
+    push    r8
+    jsr     .cocall_want_comma
+    beqz    r8, .cocall_pop5
+
+    ; Shared arg 6
+    jsr     exec_skip_spaces
+    jsr     coproc_eval_int
+    push    r8
+
+    ; Peek: ',' => seven-arg form, ')' => six-arg form.
     jsr     exec_skip_spaces
     load.b  r1, (r17)
-    move.q  r2, #0x2C
-    bne     r1, r2, .cocall_err
-    add.q   r17, r17, #1
+    move.q  r2, #0x2C            ; ','
+    beq     r1, r2, .cocall_seven
 
-    ; Arg 2: op
-    jsr     exec_skip_spaces
-    jsr     coproc_eval_int
-    push    r8                   ; save op
-    jsr     exec_skip_spaces
-    load.b  r1, (r17)
-    move.q  r2, #0x2C
-    bne     r1, r2, .cocall_err2
-    add.q   r17, r17, #1
+    ; Six-arg form: stack = cpuType, op, reqPtr, reqLen, respPtr, respCap
+    pop     r25                  ; respCap
+    pop     r24                  ; respPtr
+    pop     r23                  ; reqLen
+    pop     r22                  ; reqPtr
+    pop     r21                  ; op
+    pop     r20                  ; cpuType
+    move.q  r27, r0              ; instance = 0
+    bra     .cocall_dispatch
 
-    ; Arg 3: reqPtr
+.cocall_seven:
+    add.q   r17, r17, #1         ; skip comma
     jsr     exec_skip_spaces
-    jsr     coproc_eval_int
-    push    r8                   ; save reqPtr
-    jsr     exec_skip_spaces
-    load.b  r1, (r17)
-    move.q  r2, #0x2C
-    bne     r1, r2, .cocall_err3
-    add.q   r17, r17, #1
+    jsr     coproc_eval_int      ; arg 7 = respCap
+    move.q  r25, r8              ; respCap
+    ; stack = cpuType, instance, op, reqPtr, reqLen, respPtr
+    pop     r24                  ; respPtr
+    pop     r23                  ; reqLen
+    pop     r22                  ; reqPtr
+    pop     r21                  ; op
+    pop     r27                  ; instance
+    pop     r20                  ; cpuType
 
-    ; Arg 4: reqLen
-    jsr     exec_skip_spaces
-    jsr     coproc_eval_int
-    push    r8                   ; save reqLen
-    jsr     exec_skip_spaces
-    load.b  r1, (r17)
-    move.q  r2, #0x2C
-    bne     r1, r2, .cocall_err4
-    add.q   r17, r17, #1
-
-    ; Arg 5: respPtr
-    jsr     exec_skip_spaces
-    jsr     coproc_eval_int
-    push    r8                   ; save respPtr
-    jsr     exec_skip_spaces
-    load.b  r1, (r17)
-    move.q  r2, #0x2C
-    bne     r1, r2, .cocall_err5
-    add.q   r17, r17, #1
-
-    ; Arg 6: respCap
-    jsr     exec_skip_spaces
-    jsr     coproc_eval_int
-    ; R8 = respCap (keep in R8)
-    move.q  r25, r8              ; R25 = respCap
-
-    ; Pop args in reverse: respPtr, reqLen, reqPtr, op, cpuType
-    pop     r24                  ; R24 = respPtr
-    pop     r23                  ; R23 = reqLen
-    pop     r22                  ; R22 = reqPtr
-    pop     r21                  ; R21 = op    (R21 = register T=12)
-    pop     r20                  ; R20 = cpuType (R20 = register S=11)
-
+.cocall_dispatch:
     move.q  r8, r22
     move.q  r9, r23
     jsr     coproc_validate_public_span
@@ -216,9 +259,12 @@ fn_cocall:
     jsr     coproc_validate_public_span
     beqz    r8, .cocall_fc
 
-    ; Write MMIO registers
+    ; Write MMIO registers (instance explicit, then the request descriptor)
     la      r1, COPROC_CPU_TYPE
     store.l r20, (r1)
+
+    la      r1, COPROC_INSTANCE
+    store.l r27, (r1)
 
     la      r1, COPROC_OP
     store.l r21, (r1)
@@ -261,6 +307,21 @@ fn_cocall:
 .cocall_ret:
     rts
 
+; .cocall_want_comma - after an arg, require a ',' separator. Returns R8=1 and
+; advances past the comma, or R8=0 (leaving the cursor) if the next non-space
+; character is not a comma.
+.cocall_want_comma:
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x2C            ; ','
+    bne     r1, r2, .cwc_no
+    add.q   r17, r17, #1
+    move.q  r8, #1
+    rts
+.cwc_no:
+    move.q  r8, r0
+    rts
+
 .cocall_fail:
     move.q  r8, r0               ; return 0 on enqueue failure
     ; Skip closing ')'
@@ -279,17 +340,21 @@ fn_cocall:
     move.q  r8, r0
     rts
 
-.cocall_err5:
-    pop     r8                   ; discard respPtr
-.cocall_err4:
-    pop     r8                   ; discard reqLen
-.cocall_err3:
-    pop     r8                   ; discard reqPtr
-.cocall_err2:
-    pop     r8                   ; discard op
-.cocall_err:
-    pop     r8                   ; discard cpuType
-    move.q  r8, r0               ; return 0
+; Malformed argument list: pop the args pushed so far, then raise ?FC.
+.cocall_pop5:
+    pop     r8
+.cocall_pop4:
+    pop     r8
+.cocall_pop3:
+    pop     r8
+.cocall_pop2:
+    pop     r8
+.cocall_pop1:
+    pop     r8
+    move.q  r8, #ERR_FC
+    la      r9, err_msg_fc
+    jsr     raise_error
+    move.q  r8, r0
     rts
 
 ; coproc_validate_public_span - validate a COCALL request/response span.
@@ -452,4 +517,68 @@ fn_costats:
     bne     r1, r2, .costats_ret
     add.q   r17, r17, #1
 .costats_ret:
+    rts
+
+; ============================================================================
+; fn_cocaps - COCAPS(cpuType)
+; ============================================================================
+; Returns the number of worker instances a CPU type supports (COPROC_INSTANCE_LIMIT).
+
+fn_cocaps:
+    ; '(' already consumed by caller
+    jsr     exec_skip_spaces
+    jsr     coproc_eval_int      ; R8 = cpuType
+    la      r1, COPROC_CPU_TYPE
+    store.l r8, (r1)
+    la      r1, COPROC_INSTANCE_LIMIT
+    load.l  r8, (r1)
+    jsr     fp_float
+    ; Skip closing ')'
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x29            ; ')'
+    bne     r1, r2, .cocaps_ret
+    add.q   r17, r17, #1
+.cocaps_ret:
+    rts
+
+; ============================================================================
+; fn_coinstance - COINSTANCE()
+; ============================================================================
+; Returns the currently selected worker instance (COPROC_INSTANCE shadow).
+
+fn_coinstance:
+    ; '(' already consumed by caller
+    jsr     exec_skip_spaces
+    la      r1, COPROC_INSTANCE
+    load.l  r8, (r1)
+    jsr     fp_float
+    ; Skip closing ')'
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x29            ; ')'
+    bne     r1, r2, .coinst_ret
+    add.q   r17, r17, #1
+.coinst_ret:
+    rts
+
+; ============================================================================
+; fn_coselstate - COSELSTATE()
+; ============================================================================
+; Returns the running state of the selected (COPROC_CPU_TYPE, COPROC_INSTANCE)
+; worker (COPROC_SELECTED_STATE): 1 online, 0 offline.
+
+fn_coselstate:
+    ; '(' already consumed by caller
+    jsr     exec_skip_spaces
+    la      r1, COPROC_SELECTED_STATE
+    load.l  r8, (r1)
+    jsr     fp_float
+    ; Skip closing ')'
+    jsr     exec_skip_spaces
+    load.b  r1, (r17)
+    move.q  r2, #0x29            ; ')'
+    bne     r1, r2, .cosel_ret
+    add.q   r17, r17, #1
+.cosel_ret:
     rts

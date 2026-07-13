@@ -202,6 +202,8 @@ Raw coprocessor commands report their last command result through
 | `5`  | `COPROC_ERR_QUEUE_FULL` | The request queue cannot accept another entry. |
 | `6`  | `COPROC_ERR_NO_WORKER` | The selected worker is not running. |
 | `7`  | `COPROC_ERR_STALE_TICKET` | The ticket no longer names a live request. |
+| `8`  | `COPROC_ERR_INVALID_INSTANCE` | The CPU type is valid, but the selected instance is beyond its limit. |
+| `9`  | `COPROC_ERR_STALE_WORKER` | The worker did not acknowledge the current mailbox layout version. |
 
 ## I.8 Raised by the CPU itself
 

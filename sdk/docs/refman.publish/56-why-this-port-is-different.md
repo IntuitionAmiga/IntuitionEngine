@@ -14,33 +14,35 @@ inside Intuition Engine. It treats Intuition Engine as the target
 machine.
 
 The game core runs as an M68K programme with an MC68020-class address
-space and FPU arithmetic. Transform and lighting work is handed to an IE
-coprocessor service. The checked tree starts that service as an IE64
-worker. Voodoo draws the triangles. Native IE audio voices play samples
-and notes. The file device supplies packed data and saves.
+space and FPU arithmetic. It is joined by two M68K workers and one IE64
+worker. One M68K worker translates display lists and drives Voodoo. The
+other advances the music and controls native IE voices. IE64 performs
+batched transform and lighting work. Voodoo draws the triangles. The file
+device supplies saves, while a packed image can supply the programme,
+assets, and worker services together.
 
 That is the important shape:
 
 ```text
-M68K game core
+Main M68K ----> game state, input, display lists, audio commands
     |
-    | shared RAM requests
-    v
-IE64 TnL worker ----> transformed vertices
+    +----> M68K worker 0 ----> display-list translation and frame pacing
+    |             |
+    |             +----> IE64 worker 0 ----> transform and lighting
+    |             |
+    |             +----> Voodoo ----> composited IE frame
     |
-    v
-Voodoo command stream and texture upload
-    |
-    v
-Composited IE frame
+    +----> M68K worker 1 ----> sequence and note control
+                                  |
+                                  +----> IE SFX voices ----> IE mixer
 
-Sequence and note logic ----> IE SFX voices ----> IE mixer
-Input FIFO and File I/O ----> platform contracts ----> game state
+Packed data and File I/O ----> platform contracts ----> game state
 ```
 
-The source tree contains planning notes for other coprocessor choices.
-The guide follows the checked implementation: the transform service used
-by the current integration is IE64.
+These are not four separate computers. They are four processors on the
+same IE backplane, sharing programme data and sending coarse requests
+through the coprocessor mailbox. Voodoo is another card on that same
+machine.
 
 ## 56.1 Not Another Console In A Box
 
@@ -51,11 +53,13 @@ devices.
 
 The result is a normal IE programme with an unusual history:
 
-- M68K runs the main game loop.
+- The main M68K runs the game loop and owns mutable game state.
 - The FPU is used for game-side floating-point work.
-- Shared RAM carries coprocessor requests.
-- Voodoo receives already translated drawing work.
-- IE audio engines play the final voices.
+- M68K worker 0 translates drawing work and submits it to Voodoo.
+- IE64 transforms and lights batches of vertices for that worker.
+- M68K worker 1 advances music and updates native IE voices.
+- Shared RAM carries requests, responses, drawing data, and audio state.
+- Voodoo and the IE mixer finish the visible and audible work.
 - File I/O supplies assets, save data, and test-visible records.
 
 The reader should notice what is missing. There is no reader path that
@@ -68,12 +72,13 @@ Earlier chapters teach the parts separately: M68K, coprocessors, Voodoo,
 audio, File I/O, input, IE Mon, and IE Script. A large port uses them
 together.
 
-The case study shows three rules that small examples cannot show as
+The case study shows four rules that small examples cannot show as
 well:
 
-1. Keep control logic close to the game.
-2. Move throughput work to hardware-shaped IE services.
-3. Measure the actual frame instead of guessing where time went.
+1. Keep ownership of mutable game state on one control CPU.
+2. Move coarse throughput work to workers with clear contracts.
+3. Use the machine's graphics and audio cards at their native boundary.
+4. Measure each pipeline stage instead of guessing where time went.
 
 ## 56.3 The General IE Lesson
 

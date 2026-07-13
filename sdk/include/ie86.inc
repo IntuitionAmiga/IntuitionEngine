@@ -1427,6 +1427,20 @@ COPROC_WORKER_UPTIME  equ 0xF23B4               ; Seconds since IE64 worker star
 COPROC_STATS_RESET    equ 0xF23B8               ; Write 1 to zero stats (W)
 COPROC_BUSY_PCT       equ 0xF23BC               ; Worker busy % 0-100 (R)
 
+; Capability / version / selected-instance discovery block (0xF25A0-0xF25BF)
+COPROC_INSTANCE_LIMIT  equ 0xF25A0              ; Instance count for COPROC_CPU_TYPE (R)
+COPROC_SELECTED_STATE  equ 0xF25A4              ; State of selected (type,instance) (R)
+COPROC_MAILBOX_VERSION equ 0xF25A8              ; Mailbox layout version (R)
+COPROC_WORKER_BASE     equ 0xF25AC              ; Selected worker window base (R)
+COPROC_WORKER_END      equ 0xF25B0              ; Selected worker window end (R)
+COPROC_WORKER_RING     equ 0xF25B4              ; Selected worker ring base addr (R)
+COPROC_INSTANCE_STATE  equ 0xF25B8              ; Per-(cpuType,instance) running bitmask (R)
+COPROC_LAYOUT_VERSION  equ 1                     ; Mailbox layout version
+
+; Coprocessor error codes (read from COPROC_CMD_ERROR)
+COPROC_ERR_INVALID_INSTANCE equ 8               ; Valid CPU type, instance beyond limit
+COPROC_ERR_STALE_WORKER     equ 9               ; Worker failed the layout-version handshake
+
 ; Command values
 COPROC_CMD_START      equ 1              ; Start worker from file
 COPROC_CMD_STOP       equ 2              ; Stop worker

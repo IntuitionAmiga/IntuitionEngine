@@ -21,6 +21,9 @@ The case-study port records counters for the work that matters:
 | Texture stream bytes | How much texture data crossed into Voodoo |
 | Audio voice writes | How much audio control traffic was emitted |
 | Clipped triangles | How much graphics work was rejected before drawing |
+| Graphics-worker frames and time | Whether translation or presentation owns the frame |
+| Audio-worker pumps and time | Whether sequence work keeps its cadence |
+| Coprocessor drains and waits | Whether useful overlap was achieved |
 
 These are not decorative numbers. They tell you whether a change moved
 work out of the hot path or merely moved it somewhere harder to see.
@@ -31,9 +34,11 @@ Frame-rate readings are useful only when the scene, frame group, and
 instrumentation are known. A short race scene, a title screen, and a
 blank smoke frame do not measure the same thing.
 
-The case-study notes use groups of frames rather than single-frame
-claims. That makes changes such as command streams, texture upload
-paths, audio shadowing, and coprocessor batching visible.
+The case study uses groups of frames rather than single-frame claims. It
+also separates time spent by the main M68K, graphics worker, IE64 TnL
+worker, audio worker, and Voodoo submission path. That makes changes such
+as command streams, texture upload paths, audio shadowing, and
+coprocessor batching visible.
 
 ## 63.3 Reduce Traffic, Not Meaning
 
@@ -44,7 +49,10 @@ Several optimisations preserve the same visible behaviour:
   retransmit them when slots are not available.
 - Submit Voodoo register writes through a command stream.
 - Avoid rewriting unchanged audio voice fields.
-- Batch transform and lighting work.
+- Submit one coarse frame contract to the graphics worker.
+- Batch transform and lighting work for IE64.
+- Keep only one graphics frame and one audio pump in flight, so overlap
+  does not become unbounded ownership.
 - Measure MMIO volume before and after each change.
 
 The work is still the same game frame. The bus traffic is cleaner.
@@ -52,5 +60,6 @@ The work is still the same game frame. The bus traffic is cleaner.
 ## 63.4 The General IE Lesson
 
 Profile the contract, not your hopes. Count triangles, bytes, MMIO
-writes, voice updates, command pairs, and frame groups. Then optimise
-the path that the counters prove is hot.
+writes, voice updates, command pairs, worker completions, and frame
+groups. Attribute time to the pipeline stage that owns it, then optimise
+the path that the measurements prove is hot.

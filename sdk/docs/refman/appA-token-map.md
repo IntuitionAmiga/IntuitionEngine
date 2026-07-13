@@ -74,7 +74,9 @@ recognises them as literal characters at run time:
   no token byte. See Chapter 36 for the form and use of the HOST
   command.
 - `COSTART`, `COSTOP`, and `COWAIT` are recognised as raw statements
-  when the line runs. They have no token bytes. See Chapter 32.
+  when the line runs. The coprocessor functions `COCALL`, `COSTATUS`,
+  `COCAPS`, `COINSTANCE`, and `COSELSTATE` are likewise recognised as
+  raw identifiers in expressions. None have token bytes. See Chapter 32.
 - `TRICOLOR` is left as literal characters so the Voodoo dispatcher
   can recognise it at run time. See Chapter 9.
 

@@ -24,6 +24,16 @@ type CoprocWorker struct {
 	done    chan struct{} // closed when current Execute() returns
 	frozen  bool
 
+	// gatePending is set while a worker is installed in its slot but has not yet
+	// cleared the START-time version handshake. enqueue rejects a pending worker
+	// so a concurrent COPROC_CMD_ENQUEUE (issued while START polls with m.mu
+	// released) cannot route work to a not-yet-acknowledged worker.
+	// gateAcked is set once the worker clears the handshake; enqueue's
+	// defence-in-depth re-check only guards workers that once acked, so
+	// synthetic workers injected directly by tests are not falsely rejected.
+	gatePending bool
+	gateAcked   bool
+
 	// Deprecated: kept for compatibility during transition
 	stop func()
 }
@@ -92,10 +102,11 @@ type CoprocessorManager struct {
 	baseDir string
 	monitor *MachineMonitor
 
-	mu                   sync.Mutex
-	workers              [7]*CoprocWorker // instance 0, indexed by cpuType (1-6)
-	workersAlt           [7]*CoprocWorker // instance 1 (only types with coprocInstanceLimit > 1)
-	nextTicket           uint32
+	mu sync.Mutex
+	// workers is indexed [cpuType 1..6][instance 0..1]. The instance-1 slots
+	// of single-instance types stay nil.
+	workers    [7][2]*CoprocWorker
+	nextTicket uint32
 	completions          map[uint32]*CoprocCompletion
 	pendingMonitorUnregs []reapedMonitor
 
@@ -132,11 +143,17 @@ type CoprocessorManager struct {
 	// Adaptive threshold calibration
 	dispatchOverheadNs atomic.Uint64
 
-	// Worker start time for uptime tracking (per instance)
-	workerStartTime    [7]time.Time
-	workerImagePath    [7]string
-	workerStartTimeAlt [7]time.Time
-	workerImagePathAlt [7]string
+	// versionGateEnabled enforces the START-time layout-version handshake: a
+	// worker that does not echo COPROC_LAYOUT_VERSION into its ring within the
+	// timeout is stopped and START fails with COPROC_ERR_STALE_WORKER. Enabled
+	// in production (NewCoprocessorManager); unit tests that start raw,
+	// non-conforming spin-loop images disable it via SetVersionGateEnabled.
+	versionGateEnabled  bool
+	versionGateTimeout  time.Duration
+
+	// Worker start time and image path for uptime tracking, per (cpuType, instance)
+	workerStartTime [7][2]time.Time
+	workerImagePath [7][2]string
 
 	// Rolling busy% tracking (10x100ms buckets = 1 second window)
 	busyBuckets       [10]busyBucket
@@ -150,11 +167,13 @@ type CoprocessorManager struct {
 // NewCoprocessorManager creates a new coprocessor manager.
 func NewCoprocessorManager(bus *MachineBus, baseDir string) *CoprocessorManager {
 	mgr := &CoprocessorManager{
-		bus:            bus,
-		baseDir:        baseDir,
-		nextTicket:     1,
-		completions:    make(map[uint32]*CoprocCompletion),
-		completionWake: make(chan struct{}, 1),
+		bus:                bus,
+		baseDir:            baseDir,
+		nextTicket:         1,
+		completions:        make(map[uint32]*CoprocCompletion),
+		completionWake:     make(chan struct{}, 1),
+		versionGateEnabled: true,
+		versionGateTimeout: 100 * time.Millisecond,
 	}
 	if bus != nil {
 		bus.RegisterCoprocessorCompletionWake(mgr.handleCompletionStatusWrite)
@@ -174,6 +193,11 @@ func (m *CoprocessorManager) initRings() {
 		m.bus.Write8(base+RING_HEAD_OFFSET, 0)
 		m.bus.Write8(base+RING_TAIL_OFFSET, 0)
 		m.bus.Write8(base+RING_CAPACITY_OFFSET, RING_CAPACITY)
+		// Version-gate handshake: publish the layout version, clear the ack. A
+		// conforming worker echoes the version into RING_ACK_VERSION_OFFSET at
+		// startup; startWorkerLocked refuses to route work otherwise.
+		m.bus.Write8(base+RING_LAYOUT_VERSION_OFFSET, COPROC_LAYOUT_VERSION)
+		m.bus.Write8(base+RING_ACK_VERSION_OFFSET, 0)
 	}
 }
 
@@ -183,10 +207,7 @@ func (m *CoprocessorManager) workerSlotLocked(cpuType, instance uint32) **Coproc
 	if cpuType < 1 || cpuType > 6 || instance >= coprocInstanceLimit(cpuType) {
 		return nil
 	}
-	if instance == 0 {
-		return &m.workers[cpuType]
-	}
-	return &m.workersAlt[cpuType]
+	return &m.workers[cpuType][instance]
 }
 
 func (m *CoprocessorManager) workerAtLocked(cpuType, instance uint32) *CoprocWorker {
@@ -207,20 +228,18 @@ func (m *CoprocessorManager) forEachWorkerSlotLocked(fn func(cpuType, instance u
 }
 
 func (m *CoprocessorManager) setWorkerMetaLocked(cpuType, instance uint32, start time.Time, path string) {
-	if instance == 0 {
-		m.workerStartTime[cpuType] = start
-		m.workerImagePath[cpuType] = path
-	} else {
-		m.workerStartTimeAlt[cpuType] = start
-		m.workerImagePathAlt[cpuType] = path
+	if cpuType < 1 || cpuType > 6 || instance > 1 {
+		return
 	}
+	m.workerStartTime[cpuType][instance] = start
+	m.workerImagePath[cpuType][instance] = path
 }
 
 func (m *CoprocessorManager) workerStartTimeAt(cpuType, instance uint32) time.Time {
-	if instance == 0 {
-		return m.workerStartTime[cpuType]
+	if cpuType < 1 || cpuType > 6 || instance > 1 {
+		return time.Time{}
 	}
-	return m.workerStartTimeAlt[cpuType]
+	return m.workerStartTime[cpuType][instance]
 }
 
 // SetIRQTarget sets the M68K CPU that receives completion interrupts.
@@ -505,17 +524,15 @@ func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
 	case COPROC_COMPLETED_TICKET:
 		return m.completedTicket.Load()
 	case COPROC_RING_DEPTH:
-		idx, cpuType := m.selectedMonitorCPUIndexLocked()
-		if idx < 0 {
+		typeIdx, cpuType := m.selectedMonitorCPUIndexLocked()
+		if typeIdx < 0 {
 			return 0
 		}
-		if m.instance != 0 {
-			idx = coprocRingIndex(cpuType, m.instance)
-			if idx < 0 {
-				return 0
-			}
+		ringIdx := coprocRingIndex(cpuType, m.instance)
+		if ringIdx < 0 {
+			return 0
 		}
-		ringBase := ringBaseAddr(idx)
+		ringBase := ringBaseAddr(ringIdx)
 		head := uint32(m.bus.Read8(ringBase + RING_HEAD_OFFSET))
 		tail := uint32(m.bus.Read8(ringBase + RING_TAIL_OFFSET))
 		cap := uint32(m.bus.Read8(ringBase + RING_CAPACITY_OFFSET))
@@ -537,6 +554,29 @@ func (m *CoprocessorManager) readReg(regBase uint32) uint32 {
 		return m.computeBusyPct()
 	case COPROC_STATS_RESET:
 		return 0
+	case COPROC_INSTANCE_LIMIT:
+		return coprocInstanceLimit(m.cpuType)
+	case COPROC_SELECTED_STATE:
+		return m.computeSelectedState()
+	case COPROC_MAILBOX_VERSION:
+		return COPROC_LAYOUT_VERSION
+	case COPROC_WORKER_BASE:
+		if base, _, _, ok := workerWindow(m.cpuType, m.instance); ok {
+			return base
+		}
+		return 0
+	case COPROC_WORKER_END:
+		if _, end, _, ok := workerWindow(m.cpuType, m.instance); ok {
+			return end
+		}
+		return 0
+	case COPROC_WORKER_RING:
+		if idx := coprocRingIndex(m.cpuType, m.instance); idx >= 0 {
+			return ringBaseAddr(idx)
+		}
+		return 0
+	case COPROC_INSTANCE_STATE:
+		return m.computeInstanceStateMask()
 	default:
 		return 0
 	}
@@ -547,7 +587,7 @@ func (m *CoprocessorManager) selectedMonitorCPUIndexLocked() (int, uint32) {
 		return idx, m.cpuType
 	}
 	for cpuType := uint32(1); cpuType <= 6; cpuType++ {
-		if m.workers[cpuType] != nil {
+		if m.workers[cpuType][0] != nil {
 			return cpuTypeToIndex(cpuType), cpuType
 		}
 	}
@@ -771,7 +811,7 @@ func (m *CoprocessorManager) cmdEnqueue() {
 	if cpuIdx < 0 {
 		m.ticket = 0
 		m.cmdStatus = COPROC_STATUS_ERROR
-		m.cmdError = COPROC_ERR_INVALID_CPU
+		m.cmdError = coprocSelectionError(m.cpuType, m.instance)
 		return
 	}
 
@@ -781,6 +821,33 @@ func (m *CoprocessorManager) cmdEnqueue() {
 		m.cmdStatus = COPROC_STATUS_ERROR
 		m.cmdError = COPROC_ERR_NO_WORKER
 		return
+	}
+
+	// Defence in depth: if a gated worker's version ack regressed, refuse to
+	// enqueue. Only guards workers that cleared the START handshake, so
+	// directly-injected synthetic workers are unaffected.
+	if m.versionGateEnabled {
+		worker.mu.Lock()
+		pending := worker.gatePending
+		gated := worker.gateAcked
+		worker.mu.Unlock()
+		if pending {
+			// Worker is installed but has not cleared the START handshake yet:
+			// never route work to it.
+			m.ticket = 0
+			m.cmdStatus = COPROC_STATUS_ERROR
+			m.cmdError = COPROC_ERR_STALE_WORKER
+			return
+		}
+		if gated {
+			ackAddr := ringBaseAddr(cpuIdx) + RING_ACK_VERSION_OFFSET
+			if uint32(m.bus.Read8(ackAddr)) != COPROC_LAYOUT_VERSION {
+				m.ticket = 0
+				m.cmdStatus = COPROC_STATUS_ERROR
+				m.cmdError = COPROC_ERR_STALE_WORKER
+				return
+			}
+		}
 	}
 
 	// Prune stale completions
@@ -1004,27 +1071,64 @@ func (m *CoprocessorManager) scanTicketStatus(ticket uint32) uint32 {
 func (m *CoprocessorManager) IsWorkerRunning(cpuType uint32) bool {
 	m.mu.Lock()
 	m.reapDeadWorkersLocked()
-	running := cpuType >= 1 && cpuType <= 6 && m.workers[cpuType] != nil
+	running := false
+	if cpuType >= 1 && cpuType <= 6 {
+		for inst := uint32(0); inst < coprocInstanceLimit(cpuType); inst++ {
+			if m.workers[cpuType][inst] != nil {
+				running = true
+				break
+			}
+		}
+	}
 	drained := m.drainPendingUnregsLocked()
 	m.mu.Unlock()
 	m.flushReaped(drained)
 	return running
 }
 
+// computeWorkerState returns the aggregate per-type running bitmask: bit N
+// (1..6) is set when ANY instance of that cpuType is online. Per-instance state
+// is reported separately through COPROC_SELECTED_STATE (computeSelectedState).
 func (m *CoprocessorManager) computeWorkerState() uint32 {
 	m.reapDeadWorkersLocked()
 	var state uint32
 	for i := uint32(1); i <= 6; i++ {
-		if m.workers[i] != nil {
-			state |= 1 << i
+		for inst := uint32(0); inst < coprocInstanceLimit(i); inst++ {
+			if m.workers[i][inst] != nil {
+				state |= 1 << i
+				break
+			}
 		}
 	}
-	// Second-instance workers report above the per-type bits: bit 7 is the
-	// second M68K worker (ring 6).
-	if m.workersAlt[EXEC_TYPE_M68K] != nil {
-		state |= 1 << 7
-	}
 	return state
+}
+
+// computeInstanceStateMask returns a bitmask with bit (cpuType*2 + instance)
+// set for every running worker. It reads no command-selection state, so a
+// consumer can enumerate all instances with a single atomic read without
+// disturbing COPROC_CPU_TYPE / COPROC_INSTANCE.
+func (m *CoprocessorManager) computeInstanceStateMask() uint32 {
+	m.reapDeadWorkersLocked()
+	var mask uint32
+	for cpuType := uint32(1); cpuType <= 6; cpuType++ {
+		for inst := uint32(0); inst < coprocInstanceLimit(cpuType); inst++ {
+			if m.workers[cpuType][inst] != nil {
+				mask |= 1 << (cpuType*2 + inst)
+			}
+		}
+	}
+	return mask
+}
+
+// computeSelectedState returns 1 when the worker selected by the current
+// COPROC_CPU_TYPE / COPROC_INSTANCE shadow registers is online, else 0. It
+// replaces the retired COPROC_WORKER_STATE bit-7 overload.
+func (m *CoprocessorManager) computeSelectedState() uint32 {
+	m.reapDeadWorkersLocked()
+	if m.workerAtLocked(m.cpuType, m.instance) != nil {
+		return 1
+	}
+	return 0
 }
 
 func (m *CoprocessorManager) computeBusyPct() uint32 {
@@ -1144,8 +1248,8 @@ func (m *CoprocessorManager) StartWorkerFromImage(cpuType uint32, path string, r
 }
 
 func (m *CoprocessorManager) startWorkerLocked(cpuType, instance uint32, filename string, replace bool) error {
-	if coprocRingIndex(cpuType, instance) < 0 {
-		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "invalid coprocessor CPU type %d instance %d", cpuType, instance)
+	if code := coprocSelectionError(cpuType, instance); code != COPROC_ERR_NONE {
+		return coprocLifecycleErr(code, "invalid coprocessor CPU type %d instance %d", cpuType, instance)
 	}
 	filename = strings.TrimSpace(filename)
 	if filename == "" {
@@ -1174,7 +1278,7 @@ func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType, instance uint32,
 	filename := label
 	slot := m.workerSlotLocked(cpuType, instance)
 	if slot == nil {
-		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "invalid coprocessor CPU type %d instance %d", cpuType, instance)
+		return coprocLifecycleErr(coprocSelectionError(cpuType, instance), "invalid coprocessor CPU type %d instance %d", cpuType, instance)
 	}
 
 	if existing := *slot; existing != nil {
@@ -1186,6 +1290,13 @@ func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType, instance uint32,
 		m.mu.Unlock()
 		m.stopWorkerAndUnregister(cpuType, existing)
 		m.mu.Lock()
+	}
+
+	// Clear any stale version ack left by a previous worker on this ring before
+	// launching, so a non-conforming replacement cannot pass the START gate on a
+	// leftover acknowledgement (initRings only clears at init/reset).
+	if idx := coprocRingIndex(cpuType, instance); idx >= 0 {
+		m.bus.Write8(ringBaseAddr(idx)+RING_ACK_VERSION_OFFSET, 0)
 	}
 
 	m.mu.Unlock()
@@ -1206,6 +1317,13 @@ func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType, instance uint32,
 		return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%s coprocessor worker was started concurrently", coprocInstanceLabel(cpuType, instance))
 	}
 	*slot = worker
+	// Mark the worker startup-pending under an enabled gate so a concurrent
+	// enqueue cannot reach it before awaitWorkerAckLocked clears the handshake.
+	if m.versionGateEnabled {
+		worker.mu.Lock()
+		worker.gatePending = true
+		worker.mu.Unlock()
+	}
 	m.setWorkerMetaLocked(cpuType, instance, time.Now(), filename)
 	mon := m.monitor
 
@@ -1223,7 +1341,88 @@ func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType, instance uint32,
 		m.mu.Lock()
 	}
 	m.watchWorkerDone(worker)
+	if err := m.awaitWorkerAckLocked(cpuType, instance, slot, worker); err != nil {
+		return err
+	}
 	return nil
+}
+
+// SetVersionGateEnabled toggles the START-time layout-version handshake. It is
+// used by tests that start raw, non-conforming worker images; production leaves
+// it enabled.
+func (m *CoprocessorManager) SetVersionGateEnabled(enabled bool) {
+	m.mu.Lock()
+	m.versionGateEnabled = enabled
+	m.mu.Unlock()
+}
+
+// awaitWorkerAckLocked blocks (releasing m.mu while polling) until the freshly
+// started worker echoes COPROC_LAYOUT_VERSION into its ring's
+// RING_ACK_VERSION_OFFSET, or the gate timeout expires. On timeout it tears the
+// worker down and returns COPROC_ERR_STALE_WORKER, guaranteeing the manager
+// never routes a request descriptor to a non-acknowledging worker. Caller holds
+// m.mu on entry and exit.
+func (m *CoprocessorManager) awaitWorkerAckLocked(cpuType, instance uint32, slot **CoprocWorker, worker *CoprocWorker) error {
+	if !m.versionGateEnabled {
+		return nil
+	}
+	idx := coprocRingIndex(cpuType, instance)
+	if idx < 0 {
+		return nil
+	}
+	ackAddr := ringBaseAddr(idx) + RING_ACK_VERSION_OFFSET
+	timeout := m.versionGateTimeout
+	if timeout <= 0 {
+		timeout = 100 * time.Millisecond
+	}
+
+	m.mu.Unlock()
+	deadline := time.Now().Add(timeout)
+	acked := false
+	for {
+		if uint32(m.bus.Read8(ackAddr)) == COPROC_LAYOUT_VERSION {
+			acked = true
+			break
+		}
+		if time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(200 * time.Microsecond)
+	}
+	m.mu.Lock()
+
+	if acked {
+		// Success requires that we still own the slot. Another lifecycle op may
+		// have stopped or replaced this worker while m.mu was released for the
+		// ack poll; a leftover or replacement ack must not let START report
+		// success for a worker that is no longer installed.
+		if *slot == worker {
+			worker.mu.Lock()
+			worker.gateAcked = true
+			worker.gatePending = false
+			worker.mu.Unlock()
+			return nil
+		}
+		// Lost ownership: stop our now-orphaned worker and fail the start.
+		m.mu.Unlock()
+		m.stopWorkerAndUnregister(cpuType, worker)
+		m.mu.Lock()
+		return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED,
+			"%s coprocessor worker was stopped or replaced during startup",
+			coprocInstanceLabel(cpuType, instance))
+	}
+	// Stale worker: tear it down if it is still the installed one.
+	if *slot == worker {
+		*slot = nil
+		m.setWorkerMetaLocked(cpuType, instance, time.Time{}, "")
+		m.markWorkerDownCompletionsLocked(cpuType, instance)
+		m.mu.Unlock()
+		m.stopWorkerAndUnregister(cpuType, worker)
+		m.mu.Lock()
+	}
+	return coprocLifecycleErr(COPROC_ERR_STALE_WORKER,
+		"%s coprocessor worker did not acknowledge mailbox layout version %d",
+		coprocInstanceLabel(cpuType, instance), COPROC_LAYOUT_VERSION)
 }
 
 func (m *CoprocessorManager) watchWorkerDone(worker *CoprocWorker) {
@@ -1246,7 +1445,7 @@ func (m *CoprocessorManager) StopWorker(cpuType uint32) error {
 func (m *CoprocessorManager) stopWorkerLocked(cpuType, instance uint32) error {
 	slot := m.workerSlotLocked(cpuType, instance)
 	if slot == nil {
-		return coprocLifecycleErr(COPROC_ERR_INVALID_CPU, "invalid coprocessor CPU type %d instance %d", cpuType, instance)
+		return coprocLifecycleErr(coprocSelectionError(cpuType, instance), "invalid coprocessor CPU type %d instance %d", cpuType, instance)
 	}
 	worker := *slot
 	if worker == nil {
@@ -1286,22 +1485,22 @@ func (m *CoprocessorManager) pruneCompletions() {
 }
 
 func (m *CoprocessorManager) createWorker(cpuType, instance uint32, data []byte) (*CoprocWorker, error) {
-	if instance != 0 && cpuType != EXEC_TYPE_M68K {
+	if instance >= coprocInstanceLimit(cpuType) {
 		return nil, fmt.Errorf("CPU type %d does not support worker instance %d", cpuType, instance)
 	}
 	switch cpuType {
 	case EXEC_TYPE_IE32:
-		return createIE32Worker(m.bus, data)
+		return createIE32Worker(m.bus, data, instance)
 	case EXEC_TYPE_6502:
-		return create6502Worker(m.bus, data)
+		return create6502Worker(m.bus, data, instance)
 	case EXEC_TYPE_M68K:
 		return createM68KWorker(m.bus, data, instance)
 	case EXEC_TYPE_Z80:
-		return createZ80Worker(m.bus, data)
+		return createZ80Worker(m.bus, data, instance)
 	case EXEC_TYPE_X86:
-		return createX86Worker(m.bus, data)
+		return createX86Worker(m.bus, data, instance)
 	case EXEC_TYPE_IE64:
-		return createIE64Worker(m.bus, data)
+		return createIE64Worker(m.bus, data, instance)
 	default:
 		return nil, fmt.Errorf("unsupported CPU type: %d", cpuType)
 	}
@@ -1428,7 +1627,9 @@ func (m *CoprocessorManager) GetActiveWorkers() []CoprocDebugInfo {
 	return result
 }
 
-// WorkerInventory returns all six coprocessor worker slots, online or offline.
+// WorkerInventory returns every supported coprocessor worker slot, online or
+// offline. JIT-capable CPU types contribute two slots; the others contribute
+// one.
 func (m *CoprocessorManager) WorkerInventory() []CoprocWorkerSlot {
 	m.mu.Lock()
 	m.reapDeadWorkersLocked()
@@ -1441,11 +1642,7 @@ func (m *CoprocessorManager) WorkerInventory() []CoprocWorkerSlot {
 				Label:     coprocInstanceLabel(cpuType, inst),
 				MonitorID: -1,
 			}
-			if inst == 0 {
-				slot.Path = m.workerImagePath[cpuType]
-			} else {
-				slot.Path = m.workerImagePathAlt[cpuType]
-			}
+			slot.Path = m.workerImagePath[cpuType][inst]
 			if w := m.workerAtLocked(cpuType, inst); w != nil {
 				slot.Online = true
 				slot.MonitorID = w.monitorID

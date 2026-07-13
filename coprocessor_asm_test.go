@@ -248,7 +248,7 @@ func TestCoprocCallerPlumbing_IE32(t *testing.T) {
 
 	// Pre-create a dummy worker + completed ticket
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -318,7 +318,7 @@ func TestCoprocCallerPlumbing_Z80(t *testing.T) {
 
 	// Pre-create completed ticket
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -397,7 +397,7 @@ func TestCoprocCallerPlumbing_6502(t *testing.T) {
 
 	// Pre-create completed ticket
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -481,7 +481,7 @@ func TestCoprocCallerPlumbing_M68K(t *testing.T) {
 
 	// Pre-create completed ticket
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -567,7 +567,7 @@ func TestCoprocCallerPlumbing_X86(t *testing.T) {
 
 	// Pre-create completed ticket
 	mgr.mu.Lock()
-	mgr.workers[EXEC_TYPE_IE32] = &CoprocWorker{
+	mgr.workers[EXEC_TYPE_IE32][0] = &CoprocWorker{
 		cpuType: EXEC_TYPE_IE32,
 		done:    make(chan struct{}),
 		stop:    func() {},
@@ -658,9 +658,12 @@ func TestCoprocWorkerE2E_IE32Master(t *testing.T) {
 	bus := NewMachineBus()
 	mgr := NewCoprocessorManager(bus, tmpDir)
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+	// Worker is simulated in-test by a spin loop that never performs the
+	// version-gate ack, so disable the gate here.
+	mgr.versionGateEnabled = false
 
 	// Build worker binary (NOP loop)
-	workerCode := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	workerCode := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 
 	// Write to temp file
 	svcPath := filepath.Join(tmpDir, "svc.ie32")
@@ -740,9 +743,12 @@ func TestCoprocWorkerE2E_Z80Master(t *testing.T) {
 	bus := NewMachineBus()
 	mgr := NewCoprocessorManager(bus, tmpDir)
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
+	// Worker is simulated in-test by a spin loop that never performs the
+	// version-gate ack, so disable the gate here.
+	mgr.versionGateEnabled = false
 
 	// Build worker binary (NOP loop)
-	workerCode := buildIE32ServiceBinary(ringBaseAddr(cpuTypeToIndex(EXEC_TYPE_IE32)))
+	workerCode := buildIE32ServiceBinary(ringBaseAddr(coprocRingIndex(EXEC_TYPE_IE32, 0)))
 
 	svcPath := filepath.Join(tmpDir, "svc.ie32")
 	if err := os.WriteFile(svcPath, workerCode, 0644); err != nil {

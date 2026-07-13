@@ -713,7 +713,7 @@ make iewarp-runtime-assets
 
 That target copies the worker to `Systems/AROS/Libs/iewarp_service.ie64` for repo-root runs and to `$(AROS_RELEASE_DIR)/Libs/iewarp_service.ie64` for the AROS release tree. If `iewarp.library` changes its hardcoded worker path, rebuild the AROS library/ROM so the live image and development tree stay in sync.
 
-The worker runs a simple poll loop on its assigned ring buffer (ring index 5, base address `MAILBOX_BASE + 5 * 0x300 = 0x820F00`). It spins comparing head vs tail bytes. When head != tail, it reads the request descriptor at the tail slot, dispatches the operation, writes the response descriptor, and advances the tail pointer.
+The worker runs a simple poll loop on its assigned ring buffer (IE64 ring index `cpuTypeIndex 5 * 2 + instance`, so instance 0 is ring index 10 at base `MAILBOX_BASE + 10 * 0x400 = 0x792800`). The host seeds the assigned ring base into `r30` at worker entry, so the same image serves whichever instance ring it was started as. It spins comparing head vs tail bytes. When head != tail, it reads the request descriptor at the tail slot, dispatches the operation, writes the response descriptor, and advances the tail pointer.
 
 The worker implements all 22 operations:
 
@@ -801,7 +801,7 @@ Horizontal gradient: each column is a solid color interpolated between start and
 
 ### Ring Buffer Layout
 
-Each ring has 768 bytes (`RING_STRIDE = 0x300`):
+Each ring has 1024 bytes (`RING_STRIDE = 0x400`):
 
 | Offset | Size | Field |
 |--------|------|-------|
@@ -838,8 +838,8 @@ Each ring has 768 bytes (`RING_STRIDE = 0x300`):
 | Region | Address Range | Size |
 |--------|--------------|------|
 | IE64 Worker code/data | 0x3A0000 - 0x41FFFF | 512 KB |
-| Mailbox (6 CPU rings) | 0x790000 - 0x7917FF | 6 KB |
-| IE64 ring (index 5) | 0x790F00 - 0x7911FF | 768 bytes |
+| Mailbox (12 ring slots) | 0x790000 - 0x792FFF | 12 KB |
+| IE64 ring (index 10, instance 0) | 0x792800 - 0x792BFF | 1024 bytes |
 | Coprocessor MMIO | 0xF2340 - 0xF238F | 80 bytes |
 | Coprocessor Extended | 0xF23B0 - 0xF23BF | 16 bytes |
 

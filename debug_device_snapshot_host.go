@@ -10,7 +10,10 @@ const (
 	fileIODeviceSnapshotVersion       = 3
 	mediaLoaderSnapshotVersion        = 1
 	programExecutorSnapshotVersion    = 1
-	coprocessorManagerSnapshotVersion = 1
+	// Version 2 adds the per-instance selector and per-completion instance so
+	// second-instance workers survive snapshot/restore. Version 1 blobs still
+	// restore (their absent instance fields default to 0).
+	coprocessorManagerSnapshotVersion = 2
 )
 
 type fileIODeviceDebugSnapshot struct {
@@ -137,6 +140,7 @@ func (e *ProgramExecutor) DebugRestoreSnapshot(version uint32, data []byte) erro
 type coprocessorCompletionDebugSnapshot struct {
 	Ticket     uint32
 	CPUType    uint32
+	Instance   uint32
 	Status     uint32
 	ResultCode uint32
 	RespLen    uint32
@@ -154,6 +158,7 @@ type coprocessorManagerDebugSnapshot struct {
 	Ticket               uint32
 	TicketStatus         uint32
 	Op                   uint32
+	Instance             uint32
 	ReqPtr               uint32
 	ReqLen               uint32
 	RespPtr              uint32
@@ -186,14 +191,14 @@ func (m *CoprocessorManager) DebugSnapshot() (uint32, []byte, error) {
 			createdNS = c.created.UnixNano()
 		}
 		completions = append(completions, coprocessorCompletionDebugSnapshot{
-			Ticket: c.ticket, CPUType: c.cpuType, Status: c.status, ResultCode: c.resultCode,
-			RespLen: c.respLen, Observed: c.observed, CreatedNS: createdNS,
+			Ticket: c.ticket, CPUType: c.cpuType, Instance: c.instance, Status: c.status,
+			ResultCode: c.resultCode, RespLen: c.respLen, Observed: c.observed, CreatedNS: createdNS,
 		})
 	}
 	return marshalSnapshot(coprocessorManagerSnapshotVersion, coprocessorManagerDebugSnapshot{
 		NextTicket: m.nextTicket, Completions: completions, Cmd: m.cmd, CPUType: m.cpuType,
 		CmdStatus: m.cmdStatus, CmdError: m.cmdError, Ticket: m.ticket, TicketStatus: m.ticketStatus,
-		Op: m.op, ReqPtr: m.reqPtr, ReqLen: m.reqLen, RespPtr: m.respPtr, RespCap: m.respCap,
+		Op: m.op, Instance: m.instance, ReqPtr: m.reqPtr, ReqLen: m.reqLen, RespPtr: m.respPtr, RespCap: m.respCap,
 		Timeout: m.timeout, NamePtr: m.namePtr, WorkerState: m.workerState,
 		OpsDispatched: m.opsDispatched, BytesProcessed: m.bytesProcessed,
 		CompletionIRQEnabled: m.completionIRQEnabled.Load(), CompletedTicket: m.completedTicket.Load(),
@@ -205,7 +210,7 @@ func (m *CoprocessorManager) DebugRestoreSnapshot(version uint32, data []byte) e
 	if m == nil {
 		return fmt.Errorf("nil coprocessor manager")
 	}
-	if version != coprocessorManagerSnapshotVersion {
+	if version != coprocessorManagerSnapshotVersion && version != 1 {
 		return fmt.Errorf("unsupported coprocessor manager snapshot version %d", version)
 	}
 	var snap coprocessorManagerDebugSnapshot
@@ -219,15 +224,15 @@ func (m *CoprocessorManager) DebugRestoreSnapshot(version uint32, data []byte) e
 			created = time.Unix(0, c.CreatedNS)
 		}
 		completions[c.Ticket] = &CoprocCompletion{
-			ticket: c.Ticket, cpuType: c.CPUType, status: c.Status, resultCode: c.ResultCode,
-			respLen: c.RespLen, observed: c.Observed, created: created,
+			ticket: c.Ticket, cpuType: c.CPUType, instance: c.Instance, status: c.Status,
+			resultCode: c.ResultCode, respLen: c.RespLen, observed: c.Observed, created: created,
 		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.nextTicket, m.completions = snap.NextTicket, completions
 	m.cmd, m.cpuType, m.cmdStatus, m.cmdError = snap.Cmd, snap.CPUType, snap.CmdStatus, snap.CmdError
-	m.ticket, m.ticketStatus, m.op = snap.Ticket, snap.TicketStatus, snap.Op
+	m.ticket, m.ticketStatus, m.op, m.instance = snap.Ticket, snap.TicketStatus, snap.Op, snap.Instance
 	m.reqPtr, m.reqLen, m.respPtr, m.respCap = snap.ReqPtr, snap.ReqLen, snap.RespPtr, snap.RespCap
 	m.timeout, m.namePtr, m.workerState = snap.Timeout, snap.NamePtr, snap.WorkerState
 	m.opsDispatched, m.bytesProcessed = snap.OpsDispatched, snap.BytesProcessed
