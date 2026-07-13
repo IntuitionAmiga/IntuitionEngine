@@ -1253,6 +1253,27 @@ func TestX86FormRegion_RejectsPredecessorChainToExternalCall(t *testing.T) {
 	}
 }
 
+func TestX86FormRegion_RejectsEmbeddedInterpreterOnlyControl(t *testing.T) {
+	mem := make([]byte, 0x11040)
+	start := uint32(0x10000)
+
+	// Block 0 contains PUSHF before its direct successor. Per-block
+	// production compilation stops before PUSHF, so region formation must
+	// not admit the same block and bypass that interpreter boundary.
+	mem[start+0] = 0x9C // PUSHF
+	mem[start+1] = 0xEB // JMP rel8 to block 1
+	mem[start+2] = 0x0D
+
+	block1 := start + 0x10
+	mem[block1+0] = 0x90 // NOP
+	mem[block1+1] = 0xEB // JMP rel8 back to block 0
+	mem[block1+2] = 0xED
+
+	if region := x86FormRegion(start, NewCodeCache(), mem); region != nil {
+		t.Fatalf("x86FormRegion accepted interpreter-only block with %d blocks", len(region.blocks))
+	}
+}
+
 func TestBuildX86IOBitmap_LowRAMClean(t *testing.T) {
 	bus := NewMachineBus()
 	adapter := NewX86BusAdapter(bus)

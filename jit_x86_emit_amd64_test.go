@@ -1591,7 +1591,7 @@ func TestX86JIT_FallbackBeforeMemoryDoubleShiftPreservesPriorFlags(t *testing.T)
 	}
 }
 
-func TestX86JIT_FallbackBeforeUnsupportedMOVZXPreservesPriorFlags(t *testing.T) {
+func TestX86JIT_NativeMemoryMOVZXPreservesPriorFlags(t *testing.T) {
 	r := newX86JITTestRig(t)
 	r.cpu.EAX = 0xFFFFFFFF
 	r.cpu.EDX = 1
@@ -1602,15 +1602,50 @@ func TestX86JIT_FallbackBeforeUnsupportedMOVZXPreservesPriorFlags(t *testing.T) 
 
 	r.compileAndRun(t, 0x1000,
 		0x01, 0xD0, // ADD EAX, EDX ; EAX=0, CF=1
-		0x0F, 0xB7, 0x0E, // MOVZX ECX, word ptr [ESI]; fallback boundary
-		0x29, 0xD3, // SUB EBX, EDX; must not shadow ADD before fallback
+		0x0F, 0xB7, 0x0E, // MOVZX ECX, word ptr [ESI]
 	)
 
-	if r.cpu.EIP != 0x1002 {
-		t.Fatalf("EIP = %#x, want fallback boundary %#x", r.cpu.EIP, uint32(0x1002))
+	if r.cpu.EIP != 0x1005 {
+		t.Fatalf("EIP = %#x, want %#x", r.cpu.EIP, uint32(0x1005))
+	}
+	if r.cpu.ECX != 0x1234 {
+		t.Fatalf("ECX = %#x, want 0x1234", r.cpu.ECX)
 	}
 	if r.cpu.Flags&x86FlagCF == 0 {
 		t.Fatalf("CF cleared at fallback boundary, flags=%#x", r.cpu.Flags)
+	}
+}
+
+func TestX86JIT_NativeMemoryMOVZXByte(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.ESI = 0x2000
+	r.cpu.memory[0x2000] = 0xA5
+
+	r.compileAndRun(t, 0x1000,
+		0x0F, 0xB6, 0x0E, // MOVZX ECX, byte ptr [ESI]
+	)
+
+	if r.cpu.ECX != 0xA5 {
+		t.Fatalf("ECX = %#x, want 0xA5", r.cpu.ECX)
+	}
+}
+
+func TestX86JIT_NativeWordMOVMemoryRoundTrip(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0xAABB1234
+	r.cpu.ECX = 0xCCDD0000
+	r.cpu.ESI = 0x2000
+
+	r.compileAndRun(t, 0x1000,
+		0x66, 0x89, 0x06, // MOV word ptr [ESI], AX
+		0x66, 0x8B, 0x0E, // MOV CX, word ptr [ESI]
+	)
+
+	if got := uint16(r.cpu.memory[0x2000]) | uint16(r.cpu.memory[0x2001])<<8; got != 0x1234 {
+		t.Fatalf("memory word = %#x, want 0x1234", got)
+	}
+	if r.cpu.ECX != 0xCCDD1234 {
+		t.Fatalf("ECX = %#x, want 0xCCDD1234", r.cpu.ECX)
 	}
 }
 

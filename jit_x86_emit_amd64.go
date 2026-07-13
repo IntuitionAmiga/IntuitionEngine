@@ -654,6 +654,13 @@ func x86EmitMemLoad16(cb *CodeBuffer, dstReg byte, addrReg byte) {
 	cb.EmitBytes(0x0F, 0xB7, modRM(0, dstReg, 4), sibByte(0, addrReg, x86AMD64RegMemBase))
 }
 
+// x86EmitMemStore16 emits the low 16 bits of srcReg to [memBase + addrReg].
+func x86EmitMemStore16(cb *CodeBuffer, addrReg byte, srcReg byte) {
+	cb.EmitBytes(0x66)
+	emitREX_SIB(cb, false, srcReg, addrReg, x86AMD64RegMemBase)
+	cb.EmitBytes(0x89, modRM(0, srcReg, 4), sibByte(0, addrReg, x86AMD64RegMemBase))
+}
+
 // ===========================================================================
 // Prologue / Epilogue
 // ===========================================================================
@@ -946,7 +953,9 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 			return false
 		}
 		switch {
-		case op2 == 0xB6 || op2 == 0xB7 || op2 == 0xBE || op2 == 0xBF:
+		case op2 == 0xB6 || op2 == 0xB7:
+			return ji.hasModRM
+		case op2 == 0xBE || op2 == 0xBF:
 			return ji.hasModRM && ji.modrm>>6 == 3
 		case op2 == 0xAF:
 			return ji.hasModRM && ji.modrm>>6 == 3
@@ -965,7 +974,8 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 	}
 
 	op := byte(opcode)
-	if ji.prefixes&x86PrefOpSize != 0 && !x86OpSizePrefixIgnored(op) && (op < 0xB8 || op > 0xBF) {
+	if ji.prefixes&x86PrefOpSize != 0 && !x86OpSizePrefixIgnored(op) &&
+		(op < 0xB8 || op > 0xBF) && op != 0x89 && op != 0x8B {
 		return false
 	}
 
@@ -1137,9 +1147,9 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		op2 := byte(opcode)
 		switch {
 		case op2 == 0xB6:
-			return x86EmitMOVZX_Gv_Eb(cb, ji)
+			return x86EmitMOVZX_Gv_Eb(cb, ji, memory, instrIdx)
 		case op2 == 0xB7:
-			return x86EmitMOVZX_Gv_Ew(cb, ji)
+			return x86EmitMOVZX_Gv_Ew(cb, ji, memory, instrIdx)
 		case op2 == 0xBE:
 			return x86EmitMOVSX_Gv_Eb(cb, ji)
 		case op2 == 0xBF:
@@ -1177,7 +1187,8 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 	}
 
 	op := byte(opcode)
-	if ji.prefixes&x86PrefOpSize != 0 && !x86OpSizePrefixIgnored(op) && (op < 0xB8 || op > 0xBF) {
+	if ji.prefixes&x86PrefOpSize != 0 && !x86OpSizePrefixIgnored(op) &&
+		(op < 0xB8 || op > 0xBF) && op != 0x89 && op != 0x8B {
 		return false
 	}
 
@@ -1656,7 +1667,15 @@ func x86EmitMOV_Ev_Gv(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	if mod == 3 {
 		dstReg := ji.modrm & 7
 		x86EmitLoadGuestReg32(cb, amd64R8, srcReg)
-		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+		if ji.prefixes&x86PrefOpSize != 0 {
+			x86EmitLoadGuestReg32(cb, amd64R11, dstReg)
+			amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, -65536)
+			amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, 0x0000FFFF)
+			amd64ALU_reg_reg32(cb, 0x09, amd64R11, amd64R8)
+			x86EmitStoreGuestReg32(cb, dstReg, amd64R11)
+		} else {
+			x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+		}
 		return true
 	}
 
@@ -1666,8 +1685,14 @@ func x86EmitMOV_Ev_Gv(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	}
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64R8, srcReg)
-	x86EmitMemStore32(cb, amd64R10, amd64R8)
-	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		x86EmitMemStore16(cb, amd64R10, amd64R8)
+		width = 2
+	} else {
+		x86EmitMemStore32(cb, amd64R10, amd64R8)
+	}
+	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, width)
 	return true
 }
 
@@ -1682,7 +1707,15 @@ func x86EmitMOV_Gv_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	if mod == 3 {
 		srcReg := ji.modrm & 7
 		x86EmitLoadGuestReg32(cb, amd64R8, srcReg)
-		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+		if ji.prefixes&x86PrefOpSize != 0 {
+			x86EmitLoadGuestReg32(cb, amd64R11, dstReg)
+			amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, -65536)
+			amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, 0x0000FFFF)
+			amd64ALU_reg_reg32(cb, 0x09, amd64R11, amd64R8)
+			x86EmitStoreGuestReg32(cb, dstReg, amd64R11)
+		} else {
+			x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+		}
 		return true
 	}
 
@@ -1691,8 +1724,16 @@ func x86EmitMOV_Gv_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 		return false
 	}
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
-	x86EmitMemLoad32(cb, amd64R8, amd64R10)
-	x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		x86EmitMemLoad16(cb, amd64R8, amd64R10)
+		x86EmitLoadGuestReg32(cb, amd64R11, dstReg)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, -65536)
+		amd64ALU_reg_reg32(cb, 0x09, amd64R11, amd64R8)
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R11)
+	} else {
+		x86EmitMemLoad32(cb, amd64R8, amd64R10)
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+	}
 	return true
 }
 
@@ -2538,11 +2579,20 @@ func x86EmitPUSH_imm8(cb *CodeBuffer, ji *X86JITInstr, memory []byte) bool {
 // MOVZX / MOVSX Emitters (two-byte opcodes)
 // ===========================================================================
 
-func x86EmitMOVZX_Gv_Eb(cb *CodeBuffer, ji *X86JITInstr) bool {
-	if !ji.hasModRM || ji.modrm>>6 != 3 {
+func x86EmitMOVZX_Gv_Eb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !ji.hasModRM {
 		return false
 	}
 	dstReg := (ji.modrm >> 3) & 7
+	if ji.modrm>>6 != 3 {
+		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+			return false
+		}
+		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		x86EmitMemLoad8(cb, amd64R8, amd64R10)
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+		return true
+	}
 	srcR8 := ji.modrm & 7
 
 	// r8 encoding: 0-3 = AL/CL/DL/BL, 4-7 = AH/CH/DH/BH
@@ -2561,11 +2611,20 @@ func x86EmitMOVZX_Gv_Eb(cb *CodeBuffer, ji *X86JITInstr) bool {
 	return true
 }
 
-func x86EmitMOVZX_Gv_Ew(cb *CodeBuffer, ji *X86JITInstr) bool {
-	if !ji.hasModRM || ji.modrm>>6 != 3 {
+func x86EmitMOVZX_Gv_Ew(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !ji.hasModRM {
 		return false
 	}
 	dstReg := (ji.modrm >> 3) & 7
+	if ji.modrm>>6 != 3 {
+		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+			return false
+		}
+		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		x86EmitMemLoad16(cb, amd64R8, amd64R10)
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+		return true
+	}
 	srcReg := ji.modrm & 7
 
 	x86EmitLoadGuestReg32(cb, amd64R8, srcReg)

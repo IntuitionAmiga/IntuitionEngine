@@ -906,8 +906,10 @@ is active. Debug break-in hooks and MMIO poll fast paths use JIT-specific
 helpers so named registers are synchronised only when a debugger hook,
 interrupt handler, fallback interpreter step, or final JIT exit actually needs
 that view.
-Multi-block x86 region promotion is enabled by default and can be disabled with
-`X86_JIT_REGIONS=0`.
+Multi-block x86 region promotion is experimental and disabled by default.
+Set `X86_JIT_REGIONS=1` to enable it.
+Compatible x86 block chaining is enabled by default; set
+`X86_JIT_CHAINS=0` to disable it.
 
 Audio engines that can advance state in chunks may implement `BlockTicker`
 beside `SampleTicker`. Implementations must match repeated `TickSample` calls

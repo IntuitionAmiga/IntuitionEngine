@@ -93,7 +93,15 @@ func x86ShadowSetup(t *testing.T, romPath string, forceNative bool) *CPU_X86 {
 	if err != nil {
 		t.Skipf("rom not present (%s): %v", romPath, err)
 	}
-	bus := NewMachineBus()
+	var bus *MachineBus
+	if filepath.Base(romPath) == "iedoom.ie86" {
+		bus, err = NewMachineBusSized(256 * 1024 * 1024)
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		bus = NewMachineBus()
+	}
 	adapter := NewX86BusAdapter(bus)
 	cpu := NewCPU_X86(adapter)
 	cpu.memory = adapter.GetMemory()

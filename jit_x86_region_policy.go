@@ -16,12 +16,12 @@ var (
 	x86JITStatsOn             = os.Getenv("X86_JIT_STATS") == "1"
 	x86RegionPromotionEnabled = x86RegionPromotionDefaultEnabled()
 	x86RTSChainingEnabled     = os.Getenv("X86_JIT_RTS") == "1"
-	x86BlockChainingEnabled   = os.Getenv("X86_JIT_CHAINS") == "1"
+	x86BlockChainingEnabled   = os.Getenv("X86_JIT_CHAINS") != "0"
 	x86JITStats               x86JITCounters
 )
 
 func x86RegionPromotionDefaultEnabled() bool {
-	return os.Getenv("X86_JIT_REGIONS") != "0"
+	return os.Getenv("X86_JIT_REGIONS") == "1"
 }
 
 type x86JITCounters struct {

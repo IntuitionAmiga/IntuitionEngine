@@ -48,7 +48,12 @@ func newIEDoomRendererCPU(t *testing.T, jit bool) *CPU_X86 {
 	if err != nil {
 		t.Skipf("IEDoom linked image not present: %v", err)
 	}
-	bus := NewMachineBus()
+	// IEDoom's linked heap starts at 32 MiB, exactly beyond the legacy test
+	// bus. Give renderer calls the same flat address space as the real runner.
+	bus, err := NewMachineBusSized(256 * 1024 * 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
 	adapter := NewX86BusAdapter(bus)
 	cpu := NewCPU_X86(adapter)
 	cpu.memory = adapter.GetMemory()

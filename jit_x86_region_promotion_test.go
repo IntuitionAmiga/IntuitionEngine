@@ -4,14 +4,14 @@ package main
 
 import "testing"
 
-func TestX86RegionPromotion_DefaultOnOptOut(t *testing.T) {
+func TestX86RegionPromotion_DefaultOffOptIn(t *testing.T) {
 	t.Setenv("X86_JIT_REGIONS", "")
-	if !x86RegionPromotionDefaultEnabled() {
-		t.Fatal("x86 region promotion should be enabled by default")
-	}
-	t.Setenv("X86_JIT_REGIONS", "0")
 	if x86RegionPromotionDefaultEnabled() {
-		t.Fatal("X86_JIT_REGIONS=0 should disable x86 region promotion")
+		t.Fatal("x86 region promotion should be disabled by default")
+	}
+	t.Setenv("X86_JIT_REGIONS", "1")
+	if !x86RegionPromotionDefaultEnabled() {
+		t.Fatal("X86_JIT_REGIONS=1 should enable x86 region promotion")
 	}
 }
 

@@ -847,10 +847,8 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 
 // x86ShouldStepInInterpreter identifies stack/control instructions that are
 // deliberately routed through CPU_X86.Step in the production dispatcher. The
-// x86 linked-C workloads are sensitive to exact frame and return-address
-// semantics; keeping these instructions on the canonical interpreter path
-// preserves correctness while the JIT still handles surrounding straight-line
-// ALU/memory blocks by default.
+// native stack emitters do not yet perform the guest-memory safety, MMIO, and
+// JIT invalidation handling required for production memory accesses.
 // x86StepInInterpreterDisabledForTest, when true, lets focused tests
 // compile stack/control instructions through their native emitters,
 // which production deliberately routes to the interpreter (see below).
@@ -1210,6 +1208,22 @@ func x86FormRegion(hotPC uint32, cache *CodeCache, memory []byte) *x86Region {
 		instrs := x86ScanBlock(memory, pc)
 		if len(instrs) == 0 || x86NeedsFallback(instrs) {
 			break
+		}
+		// Region compilation must preserve the same production boundary as
+		// per-block compilation. Linked-C stack/control instructions are
+		// deliberately stepped by the interpreter; admitting a block that
+		// contains one here would bypass x86ShouldStepInInterpreter and use
+		// the region compiler's native PUSH/POP/CALL/RET handling instead.
+		// That corrupts frame/return state once a hot region is promoted.
+		regionSafe := true
+		for _, ji := range instrs {
+			if x86ShouldStepInInterpreter(ji) {
+				regionSafe = false
+				break
+			}
+		}
+		if !regionSafe {
+			return nil
 		}
 
 		blockIdx := len(region.blocks)
