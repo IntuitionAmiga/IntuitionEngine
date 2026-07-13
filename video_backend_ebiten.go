@@ -125,7 +125,7 @@ func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 `
 
 func NewEbitenOutput() (VideoOutput, error) {
-	return &EbitenOutput{
+	eo := &EbitenOutput{
 		width:         DefaultPresentationWidth,
 		height:        DefaultPresentationHeight,
 		format:        PixelFormatRGBA,
@@ -138,7 +138,11 @@ func NewEbitenOutput() (VideoOutput, error) {
 		done:          make(chan struct{}),
 		doneOnce:      &sync.Once{},
 		showStatusBar: true,
-	}, nil
+	}
+	// Browser build only: expose ieTypeText/ieKey so the demo page's text input
+	// can drive the guest keyboard on touch devices. No-op on native.
+	registerWasmInput(eo)
+	return eo, nil
 }
 
 func (eo *EbitenOutput) Start() error {

@@ -827,14 +827,21 @@
         <p class="tagline">Six rival home computers on one bus.</p>
         <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit machines from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, with a touch of SNES-style Mode 7 affine texturing and a 3DFX Voodoo thrown in, rebuilt on a single shared bus.</p>
         <p class="lead">A 6502 can play a SID tune while an x86 draws Atari ANTIC graphics or a 68020 drives a copper down PC VGA modes; all six architectures live on the same bus at once, in combinations no silicon ever shipped. The whole machine is free and open source.</p>
-        <p class="lead">It is two things at once: a demoscene platform built on hardware combinations that never existed on any real board, and a home computer waiting for its first generation of programmers, where you learn game and demo programming from scratch, on the machine, for the machine. I have been building it since 1992, for the people who still write a rotozoomer by hand and for the people about to write their first.</p>
+        <p class="lead">It is two things at once: a demoscene platform built on hardware combinations that never existed on any real board, and a home computer waiting for its first generation of programmers, where you learn game and demo programming from scratch, on the machine, for the machine. I have been building it since 1991, for the people who still write a rotozoomer by hand and for the people about to write their first.</p>
         <div class="actions">
           <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
           <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://youtube.com/@IntuitionAmiga">YouTube</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
         </div>
-        <p style="max-width: 820px; margin: 1rem 0 0; color: var(--muted); font-size: 0.95rem;">Your first ninety seconds: launch the browser demo, and at the Ready prompt type <code>DIR "Demos"</code>, then <code>RUN "rotozoomer_ie64.ie64"</code>, a rotozoomer written in IE64 assembly. Then <code>LOAD "rotozoomer_basic.bas"</code>, the same effect written in BASIC, <code>LIST</code> it to see how it is made, and <code>RUN AOT</code> to compile it to native IE64 code and run it.</p>
+        <p style="max-width: 820px; margin: 1rem 0 0; color: var(--muted); font-size: 0.95rem;">Your first minute, and the first thing on screen is yours, not a demo off the disk. Launch the browser demo and type this at the Ready prompt:</p>
+        <pre class="code-panel" style="max-width: 820px"><code>SCREEN &amp;H13
+PALETTE 1, 63, 0, 0
+PLOT 160, 100, 1
+POKE32 &amp;HF0800, 1 : REM switch the sound chip on
+SOUND 0, 440, 200, 0, 128
+GATE 0, ON : REM play the note</code></pre>
+        <p style="max-width: 820px; margin: 0.6rem 0 0; color: var(--muted); font-size: 0.95rem;">A red dot appears in the middle of the screen and a tone plays. That is the whole machine answering the first thing you wrote. From here <code>RUN AOT</code> compiles your own BASIC to native IE64 code on the spot, and <code>DIR "Demos"</code> lists the rotozoomers to pull apart. Two ways in: <a href="#guide">make your first effect</a>, or <a href="#architecture">see the hardware</a>.</p>
 
 
         <div class="hero-grid">
@@ -974,14 +981,14 @@
 
         <div class="subhead">
           <h3>Full games on the live image</h3>
-          <p>Not effect demos. Complete, playable ports. Mario Kart 64 splits work across two CPUs; the same Chocolate Doom engine runs on both x86 and the 68020, proving the shared-bus contract at game scale.</p>
+          <p>Not effect demos. Complete, playable ports. Mario Kart 64 splits its work across four processors and a Voodoo; the same Chocolate Doom engine runs on both x86 and the 68020, proving the shared-bus contract at game scale. The full porting story is <a href="#guide">Part VIII of the Reference Guide</a>.</p>
         </div>
         <div class="grid two">
           <article id="mariokart" class="demo-card">
             <span class="kicker">Coprocessor case study</span>
             <h3>Mario Kart 64</h3>
             <div class="runtime">4 CPUs + Voodoo</div>
-            <p>mk64-ie runs four processors at once inside a single <code>mariokart64.ie68</code>: a main 68020 building each display list, a second 68020 translating it into draw calls, a third 68020 running the audio sequencer, and an IE64 worker doing transform and lighting, with the geometry feeding a Voodoo. The two 68020 workers are the M68K type's two instances, real work behind a real port.</p>
+            <p>mk64-ie runs four processors at once inside a single <code>mariokart64.ie68</code>: a main 68020 building each display list, a second 68020 translating it into draw calls, a third 68020 running the audio sequencer, and an IE64 worker doing transform and lighting, with the geometry feeding a Voodoo. The two 68020 workers are the M68K type's two instances, real work behind a real port. <a href="#coprocessors">How the four CPUs split the work</a>.</p>
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D028-SHOT" data-id="3f11zTtFd6s"><button type="button" class="lty-playbtn" aria-label="Play mariokart64.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
           </article>
           <article class="demo-card">
@@ -1047,23 +1054,47 @@
           <article class="card">
             <span class="kicker">Effects</span>
             <h3>The hardware sceners reach for</h3>
-            <p>A copper that rewrites registers in step with the beam, a blitter with copy, fill, line, masked and alpha copy, colour expand, scale, Mode 7 and raw memory copy, and the Voodoo for textured 3D. Mix a CPU, a video chip and a sound chip that never shared a board. <a href="#demos">Watch the same rotozoomer written thirteen ways</a>, then write the fourteenth.</p>
+            <p>A copper that rewrites registers in step with the beam, and can point itself at any chip on the bus, not just the video registers; a blitter with copy, fill, line, masked and alpha copy, colour expand, scale, Mode 7 and raw memory copy; and the Voodoo for textured 3D. Mix a CPU, a video chip and a sound chip that never shared a board. <a href="#demos">Watch the same rotozoomer written thirteen ways</a>, then write the fourteenth.</p>
           </article>
           <article class="card">
             <span class="kicker">Chip music</span>
             <h3>Play the real formats</h3>
-            <p>The machine plays the real thing from every camp: Commodore's SID and the Plus/4's TED, Atari's POKEY with its SAP tunes, the ST's SNDH and YM, Amiga MOD and AHX, AY files from the Spectrum and the Amstrad CPC, each on its own hardware protocol, with VTX and the Spectrum's whole tracker family from Pro Tracker to ASC, VGM from Sega, MSX, the BBC Micro and the rest of the SN76489 and AY worlds, and WAV, MIDI and Doom MUS besides. A stereo SAP drives two POKEY chips at once, a MultiSID <code>.sid</code> runs on two or three SIDs together, and five of the classic engines carry a Plus mode: the authentic chip, or an enhanced render, one command apart.</p>
+            <p>Put real chip music in your own demo with one command. The machine plays the real thing from every camp: Commodore's SID and the Plus/4's TED, Atari's POKEY with its SAP tunes, the ST's SNDH and YM, Amiga MOD and AHX, AY files from the Spectrum and the Amstrad CPC, each on its own hardware protocol, with VTX and the Spectrum's whole tracker family from Pro Tracker to ASC, VGM from Sega, MSX, the BBC Micro and the rest of the SN76489 and AY worlds, and WAV, MIDI and Doom MUS besides. A stereo SAP drives two POKEY chips at once, a MultiSID <code>.sid</code> runs on two or three SIDs together, up to nine voices at once, and five of the classic engines carry a Plus mode: the authentic chip, or an enhanced render, one command apart. Play a SID, AY, POKEY, TED or AHX file and switch that engine's Plus mode on for an enhanced render of the same tune.</p>
             <pre class="code-panel"><code>SOUND PLAY "TITLE.MOD"
 SOUND PLAY "INTRO.AHX",1
-SOUND PLAY "SONG.MID"</code></pre>
+SOUND PLAY "SONG.MID"
+SID PLUS ON
+SOUND PLAY "TUNE.SID"
+SID PLUS OFF
+SOUND STOP</code></pre>
           </article>
           <article class="card">
             <span class="kicker">Debug it like hardware</span>
             <h3>Freeze, step, rewind</h3>
-            <p>IE Mon freezes every CPU, single-steps one core while the rest stay frozen, sets conditional breakpoints and watchpoints, and steps back through recorded history. IEScript drives the same machine from Lua for repeatable tests.</p>
+            <p>IE Mon freezes every CPU, single-steps one core while the rest stay frozen, sets conditional breakpoints and watchpoints, and steps back through recorded history, rewinding the whole machine, every CPU, chip and register, then replaying it one instruction at a time to any breakpoint, watchpoint or fault. IEScript drives the same machine from Lua for repeatable tests.</p>
             <p><a href="#iemon">IE Mon</a> and <a href="#iescript">IEScript</a></p>
           </article>
         </div>
+        <div class="subhead" style="margin-top: 1.4rem">
+          <h3>Make one, then release it</h3>
+          <p>A finished production here is source you can pass to someone else. Here is a real one.</p>
+        </div>
+        <article class="card">
+          <span class="kicker">A complete demo, start to finish</span>
+          <h3>wobble_zoom.bas</h3>
+          <p>A 62-line source file. It wobbles a splash image line by line, rotozooms it through the blitter's Mode 7, and rides it on a MIDI score. Its splash and its tune ship on the browser demo's disk, so you can watch it now with nothing to install: open the demo, load the file, and it plays.</p>
+          <pre class="code-panel"><code>110 SOUND PLAY "sdk/examples/assets/music/enjoythesilence.mid"
+310 BLOAD "sdk/examples/assets/splash_640x92.rgba",SR
+420 FOR Y=0 TO 91
+440 X=OX+INT(24*SIN(T+Y*0.12))
+510 BLIT COPY SA,DA,CW,1,ST,TS
+520 NEXT Y
+660 BLIT MODE7 TX,BB,640,480,U0,V0,DC,DS,0-DS,DC,1023,511,TS,ST
+710 BLIT MEMCOPY BB,FB,1228800
+720 VSYNC
+760 GOTO 400</code></pre>
+          <p>Open <a href="/demo/">the browser demo</a>, type <code>LOAD "sdk/examples/basic/wobble_zoom.bas"</code>, then <code>RUN</code>. Or type <code>RUN AOT</code> to compile the same BASIC to native IE64 code and run that instead. Chapter 51 of the Reference Guide explains how it works, buffer by buffer. To pass your own work to someone else, send them the source and its assets: they open the browser demo, add the files to the disk, and it runs, with nothing installed either side. Programmes that keep to the compiled core of BASIC also <code>COMPILE</code> to a standalone <code>.ie64</code> you can hand to anyone who has the machine. The source and examples are <a href="https://github.com/IntuitionAmiga/IntuitionEngine">on GitHub</a>.</p>
+        </article>
         <div class="actions">
           <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
           <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
@@ -1149,10 +1180,11 @@ SOUND PLAY "SONG.MID"</code></pre>
         </article>
 
         <div class="actions">
-          <a class="button" href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Download the Reference Guide</a>
-          <a class="button secondary" href="docs/00-Preface.pdf">Read the preface</a>
-          <a class="button secondary" href="docs/45-first-frame-loop.pdf">Sample chapter: Your First Frame Loop</a>
+          <a class="button" href="docs/00-Preface.pdf">Start with the preface</a>
+          <a class="button secondary" href="docs/45-first-frame-loop.pdf">Read a chapter: Your First Frame Loop</a>
+          <a class="button secondary" href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Download the whole book</a>
         </div>
+        <p style="margin-top: 0.8rem; color: var(--muted); font-size: 0.92rem;">The guide is written to be read in order, one finished thing at a time. The preface and the frame-loop chapter each read on their own if you want a taste before the full download.</p>
       </div>
     </section>
 
@@ -1160,7 +1192,7 @@ SOUND PLAY "SONG.MID"</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>Six CPU views, one bus</h2>
-          <p>A profile boots the machine into one of six instruction sets and sets its loader and RAM ceiling. Any CPU can then start the others as concurrent workers, and every core reaches the same MachineBus RAM, SYSINFO, MMIO devices, video and audio engines, files, debug state, and coprocessor services.</p>
+          <p>A profile boots the machine into one of six instruction sets and sets its loader and RAM ceiling. Any CPU can then start the others as concurrent workers, and every core reaches the same MachineBus RAM, SYSINFO, MMIO devices, video and audio engines, files, debug state, and coprocessor services. This is the hardware in full, for when you want it; nothing here is needed to start making things at the BASIC prompt.</p>
         </div>
         <div class="grid three">
           <article class="card">
@@ -1354,6 +1386,12 @@ IE_VIDEO_MODE  0x000F0004
 IE_VRAM_BASE   0x00100000
 EmuTOS mode    960 x 540 RGBA, stride 3840
 IE_PSG_BASE    0x000F0C00</code></pre>
+          </article>
+          <article class="card">
+            <span class="kicker">EmuTOS GEM</span>
+            <h3>A rotozoomer in a GEM window</h3>
+            <p>Proof of the driver at work: <code>rotozoomer_gem.prg</code> is a rotozoomer written in m68k assembly as an ordinary windowed GEM application. It runs on the EmuTOS desktop and drives the VideoChip blitter's Mode 7 affine texture unit for the rotation and zoom, a stock GEM programme reaching hardware no Atari ever shipped. Its soundtrack is an Amiga AHX module, played with no Paula emulation at all: the AHX oscillators and envelopes are rebuilt as voices on the machine's own subtractive SoundChip synth.</p>
+            <div class="yt-lite pending" data-asset="AL-GEM-ROTO" data-id="qgOWCFo-b8w"><button type="button" class="lty-playbtn" aria-label="Play the EmuTOS GEM rotozoomer video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
           </article>
           <article class="card">
             <span class="kicker">AROS graphics and filesystem</span>
@@ -1847,32 +1885,32 @@ SOUND PLAY "SONG.MID"</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>Manuals and register maps</h2>
-          <p>PDFs and the reference-guide bundle hold ISA tables, monitor commands, IEScript APIs, MMIO maps, examples, and the Part VIII full game-port case study.</p>
+          <p>Five manuals and the reference-guide bundle, each answering one question. Every ISA table, monitor command, IEScript call and MMIO map is written down, including the Part VIII full game-port case study.</p>
         </div>
         <div class="doc-list">
           <article class="card">
-            <h3><a href="docs/architecture.pdf">architecture.pdf</a></h3>
-            <p>System architecture and runtime overview, including bus, CPU, MMIO, audio, video, and tooling.</p>
+            <h3><a href="docs/architecture.pdf">How the machine is built</a></h3>
+            <p>The whole system in one document: the shared bus, all six CPUs, MMIO, the audio and video engines, and the tooling. Start here to see how the parts fit together.</p>
           </article>
           <article class="card">
-            <h3><a href="docs/IE64_ISA.pdf">IE64_ISA.pdf</a></h3>
-            <p>IE64 64-bit RISC reference for addressing, FPU, control registers, timer, privilege, and MMU behaviour.</p>
+            <h3><a href="docs/IE64_ISA.pdf">The IE64 instruction set</a></h3>
+            <p>The 64-bit RISC core in full: addressing, the FPU, control registers, the timer, privilege levels and MMU behaviour. The manual for the machine's native CPU.</p>
           </article>
           <article class="card">
-            <h3><a href="docs/IE32_ISA.pdf">IE32_ISA.pdf</a></h3>
-            <p>IE32 32-bit RISC-like CPU manual with fixed 8-byte instruction format and addressing behaviour.</p>
+            <h3><a href="docs/IE32_ISA.pdf">The IE32 instruction set</a></h3>
+            <p>The 32-bit RISC-like core: a fixed eight-byte instruction format and its addressing modes.</p>
           </article>
           <article class="card">
-            <h3><a href="docs/iemon.pdf">iemon.pdf</a></h3>
-            <p>Machine monitor manual for debugger commands, breakpoints, watchpoints, reverse history, and scripted access.</p>
+            <h3><a href="docs/iemon.pdf">How to debug it</a></h3>
+            <p>The machine monitor: breakpoints, watchpoints, whole-machine reverse history, device views and scripted access. Freeze the machine and read it at hardware level.</p>
           </article>
           <article class="card">
-            <h3><a href="docs/iescript.pdf">iescript.pdf</a></h3>
-            <p>IEScript automation API for programme control, MMIO, screenshots, recording, frame hashes, waits, and debugger integration.</p>
+            <h3><a href="docs/iescript.pdf">How to automate it</a></h3>
+            <p>The IEScript API: drive programmes, poke MMIO, capture screenshots and video, wait on frame hashes, and reach into the debugger, all from Lua.</p>
           </article>
           <article class="card">
-            <h3><a href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Intuition Engine Programmers Reference Guide.zip</a></h3>
-            <p>Programmer's Reference Guide bundle, including the Part VIII full game-port case study.</p>
+            <h3><a href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Learn it from zero</a></h3>
+            <p>The Programmer's Reference Guide: a from-zero tutorial and the full reference in one book, ending with the Part VIII game-port case study.</p>
           </article>
         </div>
 
@@ -1884,7 +1922,7 @@ SOUND PLAY "SONG.MID"</code></pre>
     <div class="wrap">
       <div>
         <strong>Intuition Engine</strong><br>
-        Thirty-five years in the making, a machine I have been building since I was fifteen. Six CPUs, the classic video and sound chips, a copper, a blitter and a Voodoo, all on one bus. Made for the people who still write a rotozoomer by hand.
+        Thirty-five years in the making, a machine I have been building since I was fourteen. Six CPUs, the classic video and sound chips, a copper, a blitter and a Voodoo, all on one bus. Made for the people who still write a rotozoomer by hand.
       </div>
       <div class="actions">
         <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>

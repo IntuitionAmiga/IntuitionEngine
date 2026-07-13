@@ -56,7 +56,19 @@
     @media (prefers-reduced-motion: reduce) {
       .loader-line::after { animation: none; }
     }
-    #stage { width: 100%; display: flex; justify-content: center; }
+    /* The stage is the scrollable region: flex:1 so it fills the space above
+       the tools bar, min-height:0 so it can shrink inside the column, and
+       "safe center" so a canvas taller than the viewport scrolls instead of
+       clipping its lower rows (the BASIC prompt) out of reach. */
+    #stage {
+      width: 100%;
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      justify-content: safe center;
+      align-items: safe center;
+      overflow: auto;
+    }
     /* Ebiten injects its own <canvas> as a child of <body>. No CSS sizing
        at all: Ebiten derives its render-target size from the canvas's CSS
        box, so stretching it (the old faux fullscreen) made the Go-side
@@ -68,6 +80,35 @@
       background: #000;
     }
     a { color: #9EFFFF; }
+    /* File tools bar: add a visitor's own file to the in-memory disk, or
+       download a file the machine saved. Hidden until the screen is ready. */
+    #ie-tools {
+      flex: 0 0 auto;
+      width: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem 1.2rem;
+      padding: 0.6rem 1rem;
+      background: rgba(20, 20, 42, 0.92);
+      border-top: 1px solid rgba(158, 255, 255, 0.18);
+      font-size: 0.85rem;
+    }
+    #ie-tools[hidden] { display: none; }
+    #ie-tools .ie-tool { display: inline-flex; align-items: center; gap: 0.4rem; color: #C9C3F5; }
+    #ie-tools input[type="text"] {
+      background: #0d0d1f; color: #F8F7FF;
+      border: 1px solid rgba(158, 255, 255, 0.25);
+      border-radius: 4px; padding: 0.2rem 0.4rem; font: inherit; width: 12rem;
+    }
+    #ie-tools button {
+      background: #2d2b55; color: #F8F7FF;
+      border: 1px solid rgba(158, 255, 255, 0.35);
+      border-radius: 4px; padding: 0.25rem 0.7rem; font: inherit; cursor: pointer;
+    }
+    #ie-tools button:hover { background: #3a3770; }
+    #ie-tool-hint { flex-basis: 100%; text-align: center; margin: 0; min-height: 1em; }
   </style>
 </head>
 <body>
@@ -82,6 +123,19 @@
     </p>
   </div>
   <div id="stage"></div>
+  <div id="ie-tools" hidden>
+    <label class="ie-tool" id="ie-kbd-tool" hidden>Tap to enable mobile keyboard input:
+      <input type="text" id="ie-kbd" spellcheck="false" autocomplete="off" autocapitalize="none" autocorrect="off" enterkeyhint="enter" aria-label="Enable mobile keyboard input">
+    </label>
+    <label class="ie-tool">Load a .bas file from disk:
+      <input type="file" id="ie-import" multiple>
+    </label>
+    <span class="ie-tool">Save your program:
+      <input type="text" id="ie-save-name" placeholder="name.bas" spellcheck="false" autocomplete="off" autocapitalize="none">
+      <button type="button" id="ie-save-btn">Save to computer</button>
+    </span>
+    <p id="ie-tool-hint" class="hint"></p>
+  </div>
 
   <script src="wasm_exec.js"></script>
   <script>
@@ -215,6 +269,8 @@
           if (adopted && window.ieFirstFrame) {
             clearInterval(timer);
             document.getElementById('loader').hidden = true;
+            var tools = document.getElementById('ie-tools');
+            if (tools) { tools.hidden = false; }
             c.scrollIntoView({ block: 'center' });
             c.focus();
           } else if (tries > 300) { // ~30s
@@ -232,6 +288,183 @@
       // the first gesture behaved differently across browsers (silent grant,
       // permission prompt, mid-keystroke relayout), so it was removed.
 
+      function setToolHint(msg) {
+        var el = document.getElementById('ie-tool-hint');
+        if (el) { el.textContent = msg || ''; }
+      }
+
+      // A BASIC string literal has no escape for a double quote or a line break,
+      // so a filename containing one cannot be placed inside LOAD "..." / SAVE
+      // "..." without breaking or injecting into the line. Such names are handled
+      // by hand rather than auto-driven.
+      function basicSafeName(n) {
+        return !!n && !/["\r\n]/.test(n);
+      }
+
+      // File tools stay entirely in the tab. The Go side registers
+      // window.ieImportFile / window.ieExportFile at boot; import copies a picked
+      // file's bytes into the in-memory disk volume that BASIC LOAD/BLOAD read,
+      // export reads a saved file back out as a Blob download. No upload, no
+      // server write: imported files live for the session and vanish on reload.
+      function wireTools() {
+        // The touch keyboard control is only useful where a canvas cannot open
+        // the soft keyboard, so show it on touch/mobile devices only; desktop
+        // users type straight on the canvas. Bias towards showing it so a real
+        // mobile is never locked out of typing by a missed detection.
+        var isTouch = (navigator.maxTouchPoints || 0) > 0
+          || (window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
+          || /Android|iPhone|iPad|iPod|Mobile|Silk|Kindle|BlackBerry|Opera Mini|IEMobile/i.test(navigator.userAgent || '');
+        var kbdTool = document.getElementById('ie-kbd-tool');
+        if (kbdTool && isTouch) { kbdTool.hidden = false; }
+
+        // Touch keyboard: a real text input opens the mobile IME (a canvas never
+        // does). Forward its characters and edit keys to the guest via the Go
+        // bridge, keeping the field empty so the machine owns the line. Desktop
+        // users can still type straight on the canvas as before.
+        var kbd = document.getElementById('ie-kbd');
+        if (kbd) {
+          // beforeinput is the robust path across Android IMEs: it reports the
+          // inserted text and edit intents even when keydown does not.
+          kbd.addEventListener('beforeinput', function (e) {
+            var t = e.inputType || '';
+            if (t === 'insertLineBreak') {
+              if (typeof window.ieKey === 'function') { window.ieKey('Enter'); }
+            } else if (t === 'deleteContentBackward') {
+              if (typeof window.ieKey === 'function') { window.ieKey('Backspace'); }
+            } else if (t.indexOf('insert') === 0 && e.data) {
+              if (typeof window.ieTypeText === 'function') { window.ieTypeText(e.data); }
+            } else {
+              return; // let anything unrecognised fall through
+            }
+            e.preventDefault();
+            kbd.value = '';
+          });
+          // Navigation and control keys that insert nothing arrive as keydown.
+          // Enter and Backspace are handled by beforeinput, so exclude them here.
+          kbd.addEventListener('keydown', function (e) {
+            var nav = { Tab: 1, Escape: 1, ArrowUp: 1, ArrowDown: 1, ArrowLeft: 1, ArrowRight: 1, Home: 1, End: 1, Delete: 1 };
+            if (nav[e.key]) {
+              if (typeof window.ieKey === 'function') { window.ieKey(e.key); }
+              e.preventDefault();
+            }
+          });
+        }
+        var importInput = document.getElementById('ie-import');
+        if (importInput) {
+          importInput.addEventListener('change', async function () {
+            if (typeof window.ieImportFile !== 'function') {
+              setToolHint('The machine is still booting, try again in a moment.');
+              return;
+            }
+            // Bound the import so a fat multi-select cannot wedge the tab. The Go
+            // bridge enforces the per-file cap too, so a console caller cannot
+            // exceed it; these mirror it and add an aggregate and a count cap.
+            var MAX_FILE = 64 * 1024 * 1024;
+            var MAX_TOTAL = 128 * 1024 * 1024;
+            var MAX_COUNT = 64;
+            var added = [];
+            var skipped = 0;
+            var files = importInput.files;
+            if (files.length > MAX_COUNT) {
+              importInput.value = '';
+              setToolHint('Too many files at once. Add at most ' + MAX_COUNT + '.');
+              return;
+            }
+            var total = 0;
+            for (var i = 0; i < files.length; i++) {
+              var f = files[i];
+              if (f.size > MAX_FILE || total + f.size > MAX_TOTAL) { skipped++; continue; }
+              try {
+                var buf = await f.arrayBuffer();
+                if (window.ieImportFile(f.name, new Uint8Array(buf))) {
+                  added.push(f.name);
+                  total += f.size;
+                } else {
+                  skipped++;
+                }
+              } catch (e) { skipped++; }
+            }
+            importInput.value = '';
+            var note = skipped ? ' (' + skipped + ' file' + (skipped > 1 ? 's' : '') + ' skipped, too large)' : '';
+            if (!added.length) {
+              setToolHint('Nothing was added.' + note);
+              return;
+            }
+            // Auto-load the program: find the .bas among the imported files and
+            // drive BASIC's own LOAD (as if typed). Any assets imported alongside
+            // it stay on the disk for the program to BLOAD.
+            var prog = null;
+            for (var j = 0; j < added.length; j++) {
+              if (/\.bas$/i.test(added[j])) { prog = added[j]; break; }
+            }
+            if (prog && basicSafeName(prog) && typeof window.ieTypeText === 'function' && typeof window.ieKey === 'function') {
+              window.ieTypeText('LOAD "' + prog + '"');
+              window.ieKey('Enter');
+              var extra = added.length - 1;
+              setToolHint('Loaded ' + prog + (extra > 0 ? ' with ' + extra + ' more file' + (extra > 1 ? 's' : '') : '') + '. Type RUN.' + note);
+            } else if (prog) {
+              setToolHint('Added ' + added.join(', ') + '. That name has a quote or line break, so type LOAD yourself.' + note);
+            } else {
+              setToolHint('Added ' + added.join(', ') + '.' + note);
+            }
+            var c = document.querySelector('canvas');
+            if (c) { c.focus(); }
+          });
+        }
+        // Save the program the visitor typed straight to their computer. There
+        // is no host command to reach BASIC's program text directly, so this
+        // drives BASIC's own SAVE (exactly as if the user typed it) to write the
+        // listing to the in-memory disk, then pulls that file out as a download.
+        var saveBtn = document.getElementById('ie-save-btn');
+        if (saveBtn) {
+          saveBtn.addEventListener('click', function () {
+            if (typeof window.ieTypeText !== 'function' || typeof window.ieKey !== 'function' || typeof window.ieExportFile !== 'function' || typeof window.ieDeleteFile !== 'function') {
+              setToolHint('The machine is still booting, try again in a moment.');
+              return;
+            }
+            var name = (document.getElementById('ie-save-name').value || '').trim();
+            if (!name) { name = 'program.bas'; }
+            if (!basicSafeName(name)) {
+              setToolHint('A file name cannot contain a double quote or a line break.');
+              return;
+            }
+            // Clear any existing entry first so the poll below only succeeds once
+            // BASIC has written the fresh version; otherwise an overwrite could
+            // export the pre-save bytes. Keep the old bytes to restore if SAVE
+            // never runs (for example the machine was not at the Ready prompt).
+            var old = window.ieExportFile(name);
+            window.ieDeleteFile(name);
+            window.ieTypeText('SAVE "' + name + '"');
+            window.ieKey('Enter');
+            setToolHint('Saving ' + name + '...');
+            var tries = 0;
+            var poll = setInterval(function () {
+              tries++;
+              var bytes = window.ieExportFile(name);
+              if (bytes) {
+                clearInterval(poll);
+                var url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = name.split('/').pop();
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+                setToolHint('Saved ' + a.download + ' to your computer.');
+              } else if (tries > 40) { // about 4 seconds
+                clearInterval(poll);
+                if (old) { window.ieImportFile(name, old); } // SAVE did not run; put it back
+                setToolHint('Could not save ' + name + '. At the Ready prompt, type SAVE "' + name + '" yourself, then try again.');
+              }
+            }, 100);
+            var c = document.querySelector('canvas');
+            if (c) { c.focus(); }
+          });
+        }
+      }
+
+      wireTools();
       boot();
     })();
   </script>

@@ -39,6 +39,10 @@ type FileIODevice struct {
 	memFS    bool
 	memFiles map[string][]byte // canonical key -> loaded data (cache)
 	memNames map[string]string // canonical key -> original path (known set, for DIR)
+	// memImported marks keys written by an explicit visitor import (SetMemFile),
+	// so an imported flat basename overrides a bundled asset of the same basename
+	// during resolution, even the exact registered nested path it replaces.
+	memImported map[string]bool
 	// memFetch lazily fetches a file's bytes by its original relative path when
 	// it is known (in memNames) but not yet cached (in memFiles). Set on wasm to
 	// an HTTP fetch of the assets folder; nil on native. This keeps boot fast:

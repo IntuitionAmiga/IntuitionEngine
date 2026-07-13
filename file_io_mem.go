@@ -47,6 +47,9 @@ func (f *FileIODevice) ensureMemMaps() {
 	if f.memNames == nil {
 		f.memNames = make(map[string]string)
 	}
+	if f.memImported == nil {
+		f.memImported = make(map[string]bool)
+	}
 }
 
 // putMemFile caches data under the canonical key and records the original name.
@@ -66,9 +69,30 @@ func (f *FileIODevice) RegisterMemPath(name string) {
 }
 
 // SetMemFile adds or replaces a file in the in-memory volume, preserving the
-// given name's case for DIR.
+// given name's case for DIR. The entry is marked imported so it wins base-name
+// resolution over a bundled asset of the same basename (the visitor-import path).
 func (f *FileIODevice) SetMemFile(name string, data []byte) {
 	f.putMemFile(name, data)
+	f.memImported[fileIOMemKey(name)] = true
+}
+
+// DeleteMemFile removes whatever entry a read of name would resolve to (exact
+// path suffix first, then base name), dropping both its cached bytes and its
+// registration. Returns true if an entry was removed. The browser save flow
+// uses this to clear an existing file before issuing SAVE, so a poll for the
+// result cannot observe the pre-SAVE bytes on an overwrite.
+func (f *FileIODevice) DeleteMemFile(name string) bool {
+	if f == nil {
+		return false
+	}
+	key, ok := f.resolveMemKey(name)
+	if !ok {
+		return false
+	}
+	delete(f.memFiles, key)
+	delete(f.memNames, key)
+	delete(f.memImported, key)
+	return true
 }
 
 // candidateKeys returns the canonical keys to try for a name, from the full
@@ -97,15 +121,25 @@ func pathBaseSlash(p string) string {
 	return p
 }
 
-// resolveMemKey maps a requested name to a known canonical key: first by exact
-// path suffix, then, failing that, by base name anywhere in the tree so a user
-// can RUN/LOAD a demo without typing its CPU subfolder. Base-name matches are
-// sorted for determinism.
+// resolveMemKey maps a requested name to a known canonical key. A visitor-
+// imported entry wins first (so an imported flat basename overrides a bundled
+// asset of the same basename, even the exact registered nested path it replaces),
+// then an exact path suffix, then by base name anywhere in the tree so a user can
+// RUN/LOAD a demo without typing its CPU subfolder. Matches are sorted for
+// determinism.
 func (f *FileIODevice) resolveMemKey(name string) (string, bool) {
 	if f == nil {
 		return "", false
 	}
-	for _, key := range f.candidateKeys(name) {
+	cands := f.candidateKeys(name)
+	// An imported file (uploaded by the visitor) takes priority over a bundled
+	// asset, regardless of the request naming the bundled nested path.
+	for _, key := range cands {
+		if f.memImported[key] {
+			return key, true
+		}
+	}
+	for _, key := range cands {
 		if _, ok := f.memNames[key]; ok {
 			return key, true
 		}
@@ -114,11 +148,18 @@ func (f *FileIODevice) resolveMemKey(name string) (string, bool) {
 	if base == "" {
 		return "", false
 	}
-	var matches []string
+	var imported, matches []string
 	for key := range f.memNames {
 		if pathBaseSlash(key) == base { // keys are already lower-case
 			matches = append(matches, key)
+			if f.memImported[key] {
+				imported = append(imported, key)
+			}
 		}
+	}
+	if len(imported) > 0 {
+		sort.Strings(imported)
+		return imported[0], true
 	}
 	if len(matches) == 0 {
 		return "", false

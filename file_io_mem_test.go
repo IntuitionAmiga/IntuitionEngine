@@ -68,6 +68,76 @@ func TestWasmFileIOMem_SeededReadServesBLOAD(t *testing.T) {
 	}
 }
 
+// TestWasmFileIOMem_ImportedBasenameResolvesNestedPath proves the demo-sharing
+// path underneath the browser file bridge: a visitor imports a demo's assets as
+// flat basenames (all a browser file input exposes), yet a BASIC BLOAD that
+// names the original nested asset path still resolves them by base name. This is
+// why sharing wobble_zoom.bas plus its two loose asset files is enough, with no
+// directory tree to recreate.
+func TestWasmFileIOMem_ImportedBasenameResolvesNestedPath(t *testing.T) {
+	bus := NewMachineBus()
+	f := NewMemoryFileIODevice(bus)
+	asset := []byte{0x01, 0x02, 0x03, 0x04}
+	f.SetMemFile("splash_640x92.rgba", asset) // imported as a bare basename
+
+	const nameAddr, dstAddr = 0x1000, 0x2000
+	stageCString(bus, nameAddr, "sdk/examples/assets/splash_640x92.rgba") // nested request
+	f.fileNamePtr = nameAddr
+	f.fileDataPtr = dstAddr
+	f.doRead()
+	if f.fileStatus != 0 || f.fileErrorCode != FILE_ERR_OK {
+		t.Fatalf("nested-path read of imported basename status=%d err=%d", f.fileStatus, f.fileErrorCode)
+	}
+	if got := readBytes(bus, dstAddr, len(asset)); string(got) != string(asset) {
+		t.Fatalf("resolved bytes = %v, want %v", got, asset)
+	}
+}
+
+// TestWasmFileIOMem_DeleteRemovesResolved proves DeleteMemFile drops the entry a
+// read would resolve (including a nested-path request against a base-name key)
+// and reports false when there is nothing to remove. The browser save flow uses
+// this to clear a file before re-saving so a poll cannot read pre-save bytes.
+func TestWasmFileIOMem_DeleteRemovesResolved(t *testing.T) {
+	bus := NewMachineBus()
+	f := NewMemoryFileIODevice(bus)
+	f.SetMemFile("x.bas", []byte("10 PRINT 1"))
+
+	if !f.DeleteMemFile("x.bas") {
+		t.Fatal("DeleteMemFile of an existing file returned false")
+	}
+	if _, ok := f.readMemFile("x.bas"); ok {
+		t.Fatal("file still readable after delete")
+	}
+	if f.DeleteMemFile("x.bas") {
+		t.Fatal("DeleteMemFile of a missing file returned true")
+	}
+}
+
+// TestWasmFileIOMem_ImportOverridesBundledNestedAsset proves the sharing flow:
+// when a visitor imports a replacement for a bundled asset under its flat
+// basename, a BLOAD naming the original nested manifest path resolves the
+// imported bytes, not the bundled asset a lazy fetch would supply.
+func TestWasmFileIOMem_ImportOverridesBundledNestedAsset(t *testing.T) {
+	bus := NewMachineBus()
+	f := NewMemoryFileIODevice(bus)
+	f.memFetch = func(string) ([]byte, bool) { return []byte("BUNDLED"), true }
+	f.RegisterMemPath("sdk/examples/assets/splash_640x92.rgba") // manifest nested path
+	imported := []byte("IMPORTED")
+	f.SetMemFile("splash_640x92.rgba", imported) // flat browser import
+
+	const nameAddr, dstAddr = 0x1000, 0x2000
+	stageCString(bus, nameAddr, "sdk/examples/assets/splash_640x92.rgba")
+	f.fileNamePtr = nameAddr
+	f.fileDataPtr = dstAddr
+	f.doRead()
+	if f.fileStatus != 0 || f.fileErrorCode != FILE_ERR_OK {
+		t.Fatalf("read status=%d err=%d", f.fileStatus, f.fileErrorCode)
+	}
+	if got := readBytes(bus, dstAddr, len(imported)); string(got) != "IMPORTED" {
+		t.Fatalf("resolved %q, want IMPORTED (bundled asset should be overridden)", got)
+	}
+}
+
 // TestWasmFileIOMem_DirLists proves DIR (LIST) enumerates the volume, sorted,
 // CRLF-delimited.
 func TestWasmFileIOMem_DirLists(t *testing.T) {

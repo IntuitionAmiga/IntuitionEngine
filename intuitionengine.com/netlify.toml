@@ -8,6 +8,13 @@
     X-Frame-Options = "SAMEORIGIN"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
+    # frame-ancestors as a real header (meta-delivered CSP cannot set it) to back
+    # up X-Frame-Options. Scripts are left untouched here: a full script-src CSP
+    # would need every inline <script> hashed or externalised first.
+    Content-Security-Policy = "frame-ancestors 'self'"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"
+    Cross-Origin-Resource-Policy = "same-origin"
 
 # The wasm binary has no fingerprinted filename, so it must revalidate: Netlify
 # ETags make a repeat visit a 304 and the browser reuses its cached (and

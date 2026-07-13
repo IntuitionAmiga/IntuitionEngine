@@ -37,6 +37,9 @@ func newRuntimeFileIODevice(bus *MachineBus, _ string) *FileIODevice {
 	// Register the volume so hostReadFile (used by the launcher, Program
 	// Executor and media loader) reads from the same in-memory disk.
 	wasmFileVolume = dev
+	// Expose ieImportFile/ieExportFile so the demo page can add the visitor's
+	// own file to this volume and read a saved file back out for download.
+	registerWasmFileBridge(dev)
 	return dev
 }
 
