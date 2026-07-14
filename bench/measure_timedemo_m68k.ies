@@ -1,0 +1,47 @@
+-- DEMO1 timedemo throughput measurement.
+-- Watches Doom `gametic` and records wall time to reach tic milestones.
+-- gametic symbol for the timedemo image = 0x00100D10.
+
+local GAMETIC = 0x00100CB8
+local TARGET = 350
+local START_AT = 1
+
+local function u32(addr)
+    local ok, data = pcall(function() return dbg.read_mem(addr, 4) end)
+    if not ok or #data < 4 then return 0 end
+    return string.byte(data, 4) + string.byte(data, 3) * 0x100 +
+        string.byte(data, 2) * 0x10000 + string.byte(data, 1) * 0x1000000
+end
+
+-- Wait for gametic to first advance (skip load/startup).
+local t_boot = sys.time_ms()
+local started_ms = nil
+local last = 0
+while true do
+    dbg.open()
+    local g = u32(GAMETIC)
+    dbg.close()
+    if started_ms == nil and g >= START_AT then
+        started_ms = sys.time_ms()
+        print(string.format("[bench] gametic reached %d at boot+%dms", g, started_ms - t_boot))
+    end
+    if g >= TARGET then
+        local now = sys.time_ms()
+        local window = now - started_ms
+        print(string.format("[bench] gametic=%d target=%d window_ms=%d boot_ms=%d",
+            g, TARGET, window, started_ms - t_boot))
+        sys.write_file("bench/last_result.txt",
+            string.format("mode=%s window_ms=%d boot_ms=%d tics=%d\n",
+                cpu.execution_mode(), window, started_ms - t_boot, TARGET - START_AT))
+        break
+    end
+    last = g
+    sys.wait_ms(5)
+    -- Safety timeout: 120s wall.
+    if sys.time_ms() - t_boot > 120000 then
+        print(string.format("[bench] TIMEOUT gametic=%d", g))
+        break
+    end
+end
+
+sys.exit(0)

@@ -10,7 +10,7 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 
 **Activation:** Set `cpu.x86JitEnabled = true` and call `cpu.X86ExecuteJIT()` or `cpu.x86JitExecute()`. The dispatch function `x86JitExecute()` routes to the JIT when enabled, otherwise to the interpreter.
 
-**Coverage:** 50+ instruction forms including MOV, ADD/SUB/AND/OR/XOR/CMP/TEST, INC/DEC, PUSH/POP, LEA, Jcc, JMP/CALL, SHL/SHR/SAR/ROL/ROR, NOT/NEG, MUL/IMUL/DIV/IDIV, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP, LEAVE, PUSHF, XCHG, CBW/CDQ, REP MOVSB/MOVSD/STOSB/STOSD/CMPSB/SCASB, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. RET is a block terminator handled by the Go dispatch loop (not JIT-compiled; target is stack-dependent). Segment-modifying instructions, far control flow, INT/IRET, and I/O port instructions fall back to the interpreter.
+**Coverage:** 50+ instruction forms including MOV, ADD/SUB/AND/OR/XOR/CMP/TEST, INC/DEC, PUSH/POP r32, LEA, Jcc, JMP rel8/rel32, SHL/SHR/SAR/ROL/ROR, NOT/NEG, MUL/IMUL/DIV/IDIV, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP, LEAVE, PUSHF, XCHG, CBW/CDQ, REP MOVSB/MOVSD/STOSB/STOSD/CMPSB/SCASB, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. RET and CALL rel32 are block terminators handled by the Go dispatch loop (not JIT-compiled in production; RET's target is stack-dependent and CALL rel32 is rejected by both the single-block and region compilers). Segment-modifying instructions, far control flow, INT/IRET, and I/O port instructions fall back to the interpreter.
 
 ---
 
@@ -259,7 +259,7 @@ A no-op label within the compiled block. Mapped guest registers stay live in hos
 
 ### Chain Exit
 
-Emitted at block terminators with statically-known targets (JMP rel8/rel32, CALL rel32):
+Emitted at block terminators with statically-known targets (JMP rel8/rel32). `CALL rel32` (0xE8) is **not** chained in production: both the single-block compiler and region formation stop at it (see [Fallback Rules](#fallback-rules)), so it exits to the Go dispatch loop. The compiler retains dormant native CALL-push/chain code for a future policy change.
 
 1. Accumulate instruction count into `ChainCount`
 2. Decrement `ChainBudget`; if exhausted -> unchained exit
@@ -332,6 +332,46 @@ This avoids inlining a full exit sequence at every memory access, keeping code c
 - SIB: base + index*scale with scale=1/2/4/8
 
 Historical note: older x86 JIT notes described masking effective addresses to a 25-bit / 32 MB space with `AND reg, 0x01FFFFFF`. That mask is retired; current x86 address checks use the bus/profile memory cap and must not alias addresses above 32 MiB into low memory.
+
+### Native Span Guard (Stack and Word Accesses)
+
+Native emitters that touch a multi-byte span at a runtime-computed address
+(`PUSH r32`, `POP r32`, `MOVSX Gv,Ew` with a memory source) validate the whole
+access span before performing any load, store or architectural state change.
+`x86EmitSpanGuard(cb, firstReg, size, retPC, instrCount)` emits, in order:
+
+1. **Cross-page check.** `MOV R8, firstReg; AND R8, 0xFF; CMP R8, 0x101-size;
+   JAE bail`. A span whose first byte sits within `size-1` of a page boundary
+   could straddle two 256-byte pages with differing I/O or code status, so it
+   bails to the interpreter rather than checking each page.
+2. **Bounds check.** `CMP firstReg, ceiling-size+1; JAE bail`, where `ceiling`
+   is the resolved guest-visible RAM ceiling (see below). Catches spans that
+   run off the end of active RAM, including 32-bit wraparound at the top of the
+   address space.
+3. **I/O check.** The existing single-page `x86EmitIOCheck` on the (now proven
+   single-page) span.
+
+All three comparisons use immediates only; the guard performs no memory loads.
+Bails route through `x86EmitDeferredBailJcc` to the shared deferred-bail exit
+with `retPC` set to the faulting instruction, so the interpreter re-executes it
+with full guest-memory semantics and unchanged architectural state.
+
+`PUSH r32` and `POP r32` compute the access address in R10 **without** mutating
+ESP, run the guard, then perform the store/load and only then commit ESP. `PUSH`
+additionally emits `x86EmitSelfModCheck` so a push onto a compiled code page
+invalidates it. This keeps constant-EA elision disabled for these
+runtime-address spans: the guard always runs.
+
+### Guest-Visible Memory Ceiling
+
+The span bound is the guest-visible ceiling, not the backing slice length. The
+backing slice (`len(memory)`) may exceed `MachineBus.ProfileMemoryCap()` /
+`ActiveVisibleRAM`, and a backing length above 4 GiB would wrap when cast to
+`uint32`. `x86ResolveMemCeiling(memory)` returns
+`min(publishedCeiling, len(memory))` clamped to `0xFFFFFFFF`; the published
+ceiling comes from `cpu.x86VisibleRAMCeiling()` (min of backing length and
+`ProfileMemoryCap()`), staged into the compile-time global
+`x86CompileMemCeiling` and captured per block into `x86CompileState.memCeiling`.
 
 ---
 
@@ -413,6 +453,22 @@ Both use LAHF/SAHF to preserve CMP flags across the ECX decrement.
 | x87 Tier 2 | Transcendentals, FILD/FIST, FCOM, control, BCD, FST mem32 | Complex FPU state |
 | Flag manipulation | CLC/STC/CLD/STD/CLI/STI/CMC | Direct flag register writes (deferred) |
 | BCD arithmetic | DAA/DAS/AAA/AAS/AAM/AAD | Complex flag semantics |
+| Complex stack control | indirect CALL/JMP (0xFF /2../5), RET (0xC3/0xC2), LEAVE (0xC9), PUSH imm (0x68/0x6A), PUSHF/POPF (0x9C/0x9D) | Control-flow or flag semantics; RET address cache is infrastructure-only |
+
+`CALL rel32` (0xE8) falls back to the interpreter in production on both tiers.
+`x86ShouldStepInInterpreter` returns true for it, so the single-block compiler
+(`x86CompileBlock`) ends the block before the `CALL`, and `x86FormRegion` both
+rejects any block containing such an instruction and explicitly rejects a final
+0xE8 (returns `nil`). The compiler still contains dormant native return-address
+push and chain-exit code for `CALL rel32`; it is unreachable unless the
+region-formation policy is changed to admit it. Indirect `CALL`/`JMP` (0xFF with
+ModR/M reg field 2-5) always falls back.
+
+`PUSH r32` and `POP r32` (0x50-0x5F) are **not** in this table: they compile
+natively behind the span guard (see [Native Span Guard](#native-span-guard-stack-and-word-accesses)),
+bailing to the interpreter only when the runtime access span is cross-page,
+out of active RAM, or on an I/O page. `MOVSX Gv,Ew` with a memory source is
+likewise native behind the same guard.
 
 ---
 
@@ -478,6 +534,35 @@ Same-session measurements (warm CPU, mains power, `benchtime 10s`):
 
 ALU and Mixed benchmarks benefit most from self-loop native compilation which eliminates ~10,000 Go-native round-trips per benchmark run, replacing them with ~3 (at budget=4095). String benchmark benefits from ERMS hardware REP STOSB on proven-safe pages (native string instruction instead of JIT byte loop, 4.3x faster than pre-ERMS JIT loop).
 
+### Doom Timedemo (End-to-End Acceptance)
+
+Real-workload acceptance for the x86 JIT performance plan uses Chocolate Doom
+(`iedoom`) built for both x86 (`.ie86`) and M68020 (`.ie68`) from the same
+source revision, running the deterministic `DEMO1` timedemo (tics 0-350). The
+harness (`bench/measure_timedemo.ies`, M68K variant `bench/measure_timedemo_m68k.ies`)
+watches the guest `gametic` symbol and records wall time to reach tic 350.
+
+Measurement conditions: one pinned CPU (`taskset -c 0`), mains power, governor
+`performance`, two warm-ups then the median of five runs.
+
+| Image | DEMO1 tics 0-350 (median ms) |
+|-------|------------------------------|
+| `.ie86` (x86 JIT) | 17,187 |
+| `.ie68` (M68020 JIT) | 18,914 |
+
+The plan's acceptance gate requires `.ie86` to reach at least 90 per cent of
+`.ie68` throughput. At these medians `.ie86` runs at 18,914 / 17,187 = 110 per
+cent of the M68020 build (that is, faster), clearing the gate. The optimisations
+documented above (native byte-load MOV 0x8A, general LEA, moffs8 0xA0,
+memory-source MOVSX, guarded native `PUSH`/`POP` r32) took the x86 timedemo from
+roughly 59 s to about 17 s (~3.3x) on this host.
+
+The largest measured x86 cost before optimisation was interpreter-fallback
+register synchronisation (full `syncJITRegs` round-trips on every fallback
+instruction), identified with `X86_JIT_STATS=1` fallback-opcode profiling. The
+optimisation strategy was to convert the highest-frequency fallback opcodes to
+guarded native emitters, eliminating those round-trips.
+
 ---
 
 ## Host Feature Detection
@@ -539,6 +624,27 @@ When `HasERMS` is true and the page range is proven safe (all pages non-I/O), RE
 - Jcc two-way chain slots (taken + not-taken for inter-block conditional branches)
 - Loop memory-check hoisting for linear base+stride patterns
 - Superblock/trace compilation beyond basic region formation
+
+## Runtime Switches
+
+The four x86-specific switches are read once at init in
+`jit_x86_region_policy.go`. Two shared switches also affect the x86 JIT but are
+owned elsewhere: `IE_PERF_ACCT` in `perf_accounting.go` and `IE_SIMD` in the
+shared SIMD subsystem (`simd_gate.go`).
+
+| Variable | Init site | Default | Effect |
+|----------|-----------|---------|--------|
+| `X86_JIT_CHAINS` | `jit_x86_region_policy.go` | on | Block chaining; set `0` to disable |
+| `X86_JIT_REGIONS` | `jit_x86_region_policy.go` | off | Experimental multi-block region formation; set `1` to enable |
+| `X86_JIT_RTS` | `jit_x86_region_policy.go` | off | Native RET-address-cache chaining (infrastructure); set `1` to enable |
+| `X86_JIT_STATS` | `jit_x86_region_policy.go` | off | Live + exit JIT profiling and fallback-opcode histogram; set `1` to enable |
+| `IE_PERF_ACCT` | `perf_accounting.go` | off | Shared perf accounting: JIT/interpreter timing, retired-instruction counters, deopt taxonomy |
+| `IE_SIMD` | `simd_gate.go` | on | Shared SIMD kill switch; `0` reverts SIMD kernels to scalar |
+
+`X86_JIT_STATS=1` prints a per-run exit summary (instructions, fallbacks, I/O
+bails, cache hits) and, on exit, a descending fallback-opcode histogram used to
+target native emitter work. Timing fields (`jit_ns`/`interp_ns`) and the deopt
+taxonomy are only populated when `IE_PERF_ACCT=1` is also set.
 
 ## Host W^X
 

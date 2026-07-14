@@ -730,6 +730,31 @@ Interrupt Delivery" section of this manual for the full model.
   x86 self-modifying-code tracking uses 256-byte code pages and range
   invalidation.
 
+### x86 JIT backend (amd64)
+
+The x86 guest core has a native amd64 JIT (Linux, Windows and macOS amd64; no
+arm64 or wasm backend, where the x86 core interprets). The guest target is the
+32-bit flat-model i386 base plus the intentionally supported `BSWAP` and an x87
+FPU on SSE2; there is no 486/Pentium/MMX/SSE guest requirement. Blocks are
+scanned and compiled with the fixed Tier 1 register mapping plus per-block Tier 2
+frequency allocation, native EFLAGS passthrough, block chaining, and self-loop
+and experimental multi-block region formation.
+
+Memory accesses at runtime-computed addresses go through a page-safety and I/O
+bitmap check on the fast path. Native stack and word emitters (`PUSH`/`POP` r32,
+memory-source `MOVSX Gv,Ew`) validate their whole access span against the
+guest-visible RAM ceiling (`ProfileMemoryCap()`, not the backing slice length)
+before any load, store or `ESP` change, and bail to the interpreter on
+cross-page, out-of-bounds or I/O spans. Instructions with segment, far
+control-flow, interrupt, port-I/O or complex-flag semantics stay on the
+interpreter.
+
+Runtime switches: `X86_JIT_CHAINS` (default on), `X86_JIT_REGIONS` (default
+off), `X86_JIT_RTS` (default off), `X86_JIT_STATS` (profiling, default off), the
+shared `IE_PERF_ACCT` accounting, and the shared `IE_SIMD` kill switch. The full
+instruction coverage, span-guard details, profiling method and Doom `DEMO1`
+acceptance measurement are in [`x86_JIT.md`](x86_JIT.md).
+
 ## Build Profiles and Observable Runtime
 
 Build tags change host backends, not the guest-visible ISA contract. The main
