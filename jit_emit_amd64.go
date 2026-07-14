@@ -1016,12 +1016,28 @@ func emitChainExit(cb *CodeBuffer, br *blockRegs, targetPC uint64, instrCount ui
 //   - storeRegs: IE64 register bitmask - which registers to store back
 //   - calleeSaved: IE64 register bitmask - which callee-saved pairs to restore (unused on amd64, we always restore all)
 func emitEpilogue(cb *CodeBuffer, storeRegs uint32, _ uint32) {
-	// Conservatively store all mapped IE64 registers back to the register file.
-	amd64MOV_mem_reg(cb, amd64RegBase, 1*8, amd64RegIE64R1)
-	amd64MOV_mem_reg(cb, amd64RegBase, 2*8, amd64RegIE64R2)
-	amd64MOV_mem_reg(cb, amd64RegBase, 3*8, amd64RegIE64R3)
-	amd64MOV_mem_reg(cb, amd64RegBase, 4*8, amd64RegIE64R4)
-	amd64MOV_mem_reg(cb, amd64RegBase, 31*8, amd64RegIE64SP)
+	// Store only the resident IE64 registers that the block (or the
+	// instructions retired before a mid-block bail) actually wrote. The
+	// prologue loads all five resident registers unconditionally, so an
+	// unwritten resident host register still equals its register-file slot
+	// and its store back is redundant. storeRegs (br.written or writtenSoFar)
+	// carries R31 (SP) whenever a stack op modified it (analyzeBlockRegs /
+	// instrWrittenRegs), so gating on it is sound. Matches the ARM64 backend.
+	if storeRegs&(1<<1) != 0 {
+		amd64MOV_mem_reg(cb, amd64RegBase, 1*8, amd64RegIE64R1)
+	}
+	if storeRegs&(1<<2) != 0 {
+		amd64MOV_mem_reg(cb, amd64RegBase, 2*8, amd64RegIE64R2)
+	}
+	if storeRegs&(1<<3) != 0 {
+		amd64MOV_mem_reg(cb, amd64RegBase, 3*8, amd64RegIE64R3)
+	}
+	if storeRegs&(1<<4) != 0 {
+		amd64MOV_mem_reg(cb, amd64RegBase, 4*8, amd64RegIE64R4)
+	}
+	if storeRegs&(1<<31) != 0 {
+		amd64MOV_mem_reg(cb, amd64RegBase, 31*8, amd64RegIE64SP)
+	}
 
 	// Store spilled registers that were written (R5-R30)
 	// Spilled writes are already stored during instruction emission,
