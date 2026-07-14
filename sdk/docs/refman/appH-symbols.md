@@ -160,6 +160,7 @@ mechanism described in Chapters 27 and 28.
 | `$F2414`/`$F2418` | `SYSINFO_LOW_WINDOW_LO` / `SYSINFO_LOW_WINDOW_HI`, dense low-RAM window size. |
 | `$F8000`  | Voodoo 3D. |
 | `$F833C`/`$F8340`/`$F8344` | `VOODOO_CMD_PTR` / `VOODOO_CMD_COUNT` / `VOODOO_CMD_SUBMIT`, Voodoo command-stream replay. |
+| `$00000001`/`$00000002` | `VOODOO_CMD_SUBMIT_REPLAY` / `VOODOO_CMD_SUBMIT_REPLAY_LE`, big-endian or little-endian command-stream pairs. |
 | `$F8350`/`$F8354` | `VOODOO_TEX_SLOT` / `VOODOO_TEX_BIND`, retain an upload by identifier and bind it again. `VOODOO_TEX_SLOT_NONE` is `$FFFFFFFF`. |
 
 The coprocessor mailbox occupies `$790000` to `$792FFF`, with twelve

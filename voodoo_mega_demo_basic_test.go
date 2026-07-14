@@ -25,7 +25,7 @@ func TestVoodooMegaDemoBasicStaticContract(t *testing.T) {
 			t.Fatalf("pure BASIC demo must not contain %s", forbidden)
 		}
 	}
-	if strings.Count(upper, "BLOAD") != 1 || !strings.Contains(src, `BLOAD "sdk/examples/assets/music/Reggae_2.sid",SA`) {
+	if strings.Count(upper, "BLOAD") != 1 || !strings.Contains(src, `BLOAD "sdk/examples/assets/music/Reggae_2.sid",SidData`) {
 		t.Fatalf("demo must only BLOAD the committed Reggae_2.sid asset")
 	}
 
@@ -38,30 +38,52 @@ func TestVoodooMegaDemoBasicStaticContract(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"SN=MEMALLOC(4096,4096)",
-		"PR=MEMALLOC(12288,4096)",
-		"ST=MEMALLOC(4096,4096)",
-		"MS=MEMALLOC(4096,4096)",
-		"SA=MEMALLOC(8192,4096)",
-		"RS=54321",
-		"POKE32 VX,&H028001E0",
-		"POKE32 FB,&H0770",
-		"POKE32 CP,0",
+		"SineTable=MEMALLOC(4096,4096)",
+		"ProjectionTable=MEMALLOC(12288,4096)",
+		"StarData=MEMALLOC(4096,4096)",
+		"MessageData=MEMALLOC(4096,4096)",
+		"SidData=MEMALLOC(8192,4096)",
+		"CommandBuffer=MEMALLOC(524288,4096)",
+		"AnimationTables=MEMALLOC(8192,4096)",
+		"GlyphSpans=MEMALLOC(16384,4096)",
+		"ProjectionResults=MEMALLOC(2883584,4096)",
+		"SpawnTables=MEMALLOC(352256,4096)",
+		"RandomSeed=54321",
+		"VoodooVideoDimensions=&HF8214",
+		"POKE32 VoodooVideoDimensions,&H028001E0",
+		"POKE32 VoodooFbzMode,&H0770",
+		"POKE32 VoodooColourPath,0",
 		"POKE32 &HF0E24,4790",
 		"POKE32 &HF0E28,5",
-		"POKE32 &HF8128,1",
-		"SO=SO+SS",
-		"WR=6944",
-		"FOR SI=0 TO 255",
-		"CHC=PEEK(MS+MI)",
+		"POKE32 VoodooSwapBuffer,1",
+		"CommandPointerRegister=&HF833C",
+		"CommandCountRegister=&HF8340",
+		"CommandSubmitRegister=&HF8344",
+		"POKE32 CommandSubmitRegister,2",
+		"IF CommandCount>65524 THEN RETURN",
+		"IF CommandCount>65522 THEN RETURN",
+		"ScrollPixelOffset=ScrollPixelOffset+ScrollSpeed",
+		"ScrollCharacter=ScrollCharacter+1",
+		"FOR StarIndex=0 TO 255",
+		"SpanRecord=GlyphSpans+(FontIndex*7+FontRowIndex)*28",
+		"TunnelOffsetX=PEEK32(TwistXTable+AnimationPhase*4)",
+		"ScreenX=PEEK32(ProjectionResults+(ProjectionProductX+ProjectionProductBias)*4)-ProjectionResultBias+ScreenCentreX",
+		"SpawnRadius=PEEK32(SpawnRadiusTable+(RandomValue AND 255)*4)",
+		"StarLocalX=PEEK32(SpawnXTable+SpawnCoordinateIndex)",
+		"StarLocalY=PEEK32(SpawnYTable+SpawnCoordinateIndex)",
+		"WobbleRemainder=WobbleRemainder+1-ScrollSpeed",
+		"CharacterCode=PEEK(MessageData+MessageIndex)",
 	} {
 		if !strings.Contains(upper, strings.ToUpper(want)) {
 			t.Fatalf("demo source missing %q", want)
 		}
 	}
+	if strings.Contains(upper, "&HFA014") {
+		t.Fatal("demo uses the obsolete Voodoo video dimension address")
+	}
 
 	if regexp.MustCompile(`(?m)(^|:)\s*(VOODOO|VERTEX|VSYNC)\b`).MatchString(upper) {
-		t.Fatalf("render loop must use direct POKE32 Voodoo MMIO without high-level Voodoo commands or VSYNC")
+		t.Fatalf("render loop must use the Voodoo register interface without high-level commands or VSYNC")
 	}
 }
 
@@ -124,8 +146,7 @@ func TestVoodooMegaDemoBasicAOTArithmeticSmoke(t *testing.T) {
 	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, t.TempDir())
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	runAOTLines(t, h,
-		"10 X=1664525*54321+1013904223",
-		"20 X=X-INT(X/4294967296)*4294967296:IF X<0 THEN X=X+4294967296",
+		"10 X=(1664525*54321+1013904223) AND &HFFFFFFFF",
 		"30 POKE32 327680,X",
 		"40 POKE32 327684,&H80000000",
 		"50 POKE32 327688,4660 AND 255",
@@ -168,7 +189,7 @@ func TestVoodooMegaDemoBasicRunAOTSmoke(t *testing.T) {
 	var capturedFrame []byte
 	h.pumpUntil(func() bool {
 		sidCtrl := sidPlayer.HandlePlayRead(SID_PLAY_CTRL)
-		if v.HandleRead(VOODOO_ENABLE) != 1 || sidCtrl&1 == 0 || sidCtrl&2 != 0 || !sidPlayer.ForceLoop {
+		if v.HandleRead(VOODOO_ENABLE) != 1 || sidCtrl&1 == 0 || sidCtrl&2 != 0 || !sidPlayer.ForceLoop || v.cmdStreamCount == 0 || v.cmdStreamPtr == 0 {
 			return false
 		}
 		frame := v.GetFrame()
@@ -179,7 +200,7 @@ func TestVoodooMegaDemoBasicRunAOTSmoke(t *testing.T) {
 		return true
 	}, 60*time.Second)
 	out := h.readOutput()
-	if strings.Contains(out, "?COMPILE ERROR") || strings.Contains(out, "?SYNTAX ERROR") || strings.Contains(out, "?FC ERROR") || strings.Contains(out, "?OUT OF MEMORY") {
+	if strings.Contains(out, "?COMPILE ERROR") || strings.Contains(out, "?SYNTAX ERROR") || strings.Contains(out, "?FrameCounter ERROR") || strings.Contains(out, "?OUT OF MEMORY") {
 		t.Fatalf("RUN AOT failed: %q", out)
 	}
 	if got := v.HandleRead(VOODOO_ENABLE); got != 1 {
@@ -192,6 +213,9 @@ func TestVoodooMegaDemoBasicRunAOTSmoke(t *testing.T) {
 	}
 	if got := v.HandleRead(VOODOO_VIDEO_DIM); got != 0x028001e0 {
 		t.Fatalf("Voodoo dimensions=%#x, want 0x028001e0", got)
+	}
+	if v.cmdStreamCount == 0 || v.cmdStreamPtr == 0 {
+		t.Fatalf("Voodoo command stream was not submitted: pointer=%#x count=%d", v.cmdStreamPtr, v.cmdStreamCount)
 	}
 	if got := sidPlayer.HandlePlayRead(SID_PLAY_CTRL); got&1 == 0 || got&2 != 0 || !sidPlayer.ForceLoop {
 		t.Fatalf("SID_PLAY_CTRL status=%d ForceLoop=%v, want playing loop with no error", got, sidPlayer.ForceLoop)
@@ -220,7 +244,7 @@ func TestVoodooMegaDemoBasicRunAOTSmoke(t *testing.T) {
 		pixels++
 	}
 	if !nonBlack {
-		vars := readAOTNativeVarsForVoodoo(t, h, "FC", "SO", "SI", "CI", "I", "ZZ", "SX", "SY2", "QP", "CO", "RX", "RY")
+		vars := readAOTNativeVarsForVoodoo(t, h, "FrameCounter", "ScrollOffset", "StarIndex", "CharacterIndex", "DataIndex", "StarDepth", "ScreenX", "ScreenY", "ShadowPass", "FontColumn", "RectangleX", "RectangleY")
 		t.Fatalf("Voodoo frame remained black after bounded RUN AOT smoke; pc=%#x instr=%#x asm=%#x code=%#x text len=%#x code len=%#x current line=%d error=%d error line=%d vars=%#v batch=%d jobs=%d busy=%v swapPending=%v status=%#x fbz=%#x color0=%#x swap=%#x output=%q\n%s\n%s",
 			h.cpu.PC,
 			h.bus.Read64(uint32(h.cpu.PC)),
@@ -238,6 +262,17 @@ func TestVoodooMegaDemoBasicRunAOTSmoke(t *testing.T) {
 	if whiteish*100 > pixels*80 {
 		t.Fatalf("Voodoo frame is mostly white after bounded RUN AOT smoke: %d/%d pixels", whiteish, pixels)
 	}
+	startFrame := readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"]
+	targetFrame := startFrame + 3
+	started := time.Now()
+	h.pumpUntil(func() bool {
+		return readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"] >= targetFrame
+	}, 10*time.Second)
+	endFrame := readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"]
+	if endFrame < targetFrame {
+		t.Fatalf("RUN AOT advanced from frame %d to %d, want at least %d within 10 seconds", startFrame, endFrame, targetFrame)
+	}
+	t.Logf("RUN AOT rendered three further frames in %s", time.Since(started))
 }
 
 func readAOTNativeVarsForVoodoo(t *testing.T, h *ehbasicTestHarness, names ...string) map[string]uint64 {
@@ -272,6 +307,8 @@ func basicAOTVarTagForVoodoo(name string) uint32 {
 		c := uint32(byte(ch))
 		if count < 4 {
 			tag = (tag << 8) | c
+		} else {
+			tag = tag*33 + c
 		}
 		count++
 	}

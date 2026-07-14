@@ -96,6 +96,31 @@ func TestVoodoo_CommandStream_ReplaysM68KGuestRAMWrites(t *testing.T) {
 	}
 }
 
+func TestVoodoo_CommandStream_ReplaysLittleEndianGuestWrites(t *testing.T) {
+	bus, v := newMappedTestVoodoo(t)
+	stream := uint32(0x2800)
+	commands := []uint32{
+		VOODOO_COLOR_SELECT, 0,
+		VOODOO_VERTEX_AX, 16,
+		VOODOO_VERTEX_AY, 32,
+		VOODOO_TRIANGLE_CMD, 0,
+	}
+	for i, value := range commands {
+		bus.Write32(stream+uint32(i*4), value)
+	}
+	bus.Write32(VOODOO_CMD_PTR, stream)
+	bus.Write32(VOODOO_CMD_COUNT, uint32(len(commands)/2))
+	bus.Write32(VOODOO_CMD_SUBMIT, VOODOO_CMD_SUBMIT_REPLAY_LE)
+
+	if got := len(v.triangleBatch); got != 1 {
+		t.Fatalf("triangle batch length = %d, want 1", got)
+	}
+	tri := v.triangleBatch[0]
+	if tri.Vertices[0].X != 1 || tri.Vertices[0].Y != 2 {
+		t.Fatalf("vertex A = (%f,%f), want (1,2)", tri.Vertices[0].X, tri.Vertices[0].Y)
+	}
+}
+
 func TestVoodoo_CommandStream_IgnoresControlRegisterRecursion(t *testing.T) {
 	bus, v := newMappedTestVoodoo(t)
 	stream := uint32(0x2400)

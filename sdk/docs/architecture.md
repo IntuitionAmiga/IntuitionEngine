@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-13*
+*Last modified: 2026-07-14*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -1012,6 +1012,7 @@ graph TB
     end
 
     subgraph VOOS["Voodoo 3D (Layer 20, 0xF8000-0xF87FF)"]
+        VOO_CMD["Command Stream Replay<br/>Guest RAM address/value pairs<br/>Big-endian or little-endian"]
         VOO_VTX["Vertex Assembly<br/>12.4 X/Y, 12.12 colour, 20.12 Z<br/>14.18 S/T, 2.30 W"]
         VOO_TRI["Triangle Rasteriser<br/>Gouraud shading"]
         VOO_TEX["Texture Unit<br/>Perspective-correct S/T/W<br/>64KB texture memory (0xD0000)"]
@@ -1021,6 +1022,9 @@ graph TB
         VOO_CK["Chroma Key"]
         VOO_BE["Vulkan / Software Backend"]
     end
+
+    VOO_CMD -->|"normal register writes"| VOO_VTX
+    VOO_CMD -->|"triangle and swap commands"| VOO_TRI
 
     COMPS["Compositor<br/>Z-order: 0 - 10 - 12 - 13 - 15 - 20<br/>60Hz output"]
     DISPLAY["Display<br/>Ebiten VideoOutput"]
@@ -1043,7 +1047,7 @@ graph TB
     class TED_TXT,TED_CHR,TED_COL,TED_CUR video
     class ANT_DLP,ANT_SCR,GTIA_C,GTIA_PM,GTIA_PR,ANT_COL video
     class ULA_BMP,ULA_ATR,ULA_BDR,ULA_COL video
-    class VOO_VTX,VOO_TRI,VOO_TEX,VOO_ZB,VOO_AB,VOO_FOG,VOO_CK,VOO_BE video
+    class VOO_CMD,VOO_VTX,VOO_TRI,VOO_TEX,VOO_ZB,VOO_AB,VOO_FOG,VOO_CK,VOO_BE video
     class COMPS,DISPLAY comp
 ```
 
@@ -1053,6 +1057,27 @@ blitter fills in raster-op modes update the front buffer directly and mark the
 covered dirty tiles once when the destination stride is the display row stride;
 non-rectangular strides keep the per-pixel path for exact dirty tracking. Raster
 band writes through bus memory aggregate backing invalidation per row.
+
+### Voodoo Command Stream Replay
+
+The Voodoo command stream reduces guest MMIO traffic by replaying an array of
+absolute register address and value pairs from guest RAM. Software writes the
+array address to `VOODOO_CMD_PTR` (`0xF833C`), its pair count to
+`VOODOO_CMD_COUNT` (`0xF8340`), then writes a replay value to
+`VOODOO_CMD_SUBMIT` (`0xF8344`). The engine reads the complete stream into a
+scratch buffer and applies it through the normal Voodoo register path under one
+lock. This retains the side effects and ordering of individual register writes
+without requiring a guest MMIO exit for every word.
+
+`VOODOO_CMD_SUBMIT_REPLAY` (`1`) selects the original big-endian pair format.
+`VOODOO_CMD_SUBMIT_REPLAY_LE` (`2`) selects little-endian pairs. These values
+describe the byte order of the command buffer, not the CPU that submits it, so
+any CPU may use either format when its software constructs a matching buffer.
+If both bits are present, the little-endian selection takes precedence.
+
+A stream may contain at most 65,536 pairs. Misaligned addresses, addresses
+outside the Voodoo register block, and recursive writes to the three command
+stream control registers are skipped.
 
 ### Voodoo 3D State Binding
 

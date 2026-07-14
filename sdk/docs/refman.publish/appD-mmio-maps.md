@@ -501,10 +501,11 @@ Command-stream registers:
 |---------|----------|
 | `$F833C` | `VOODOO_CMD_PTR`, guest-RAM stream pointer. |
 | `$F8340` | `VOODOO_CMD_COUNT`, number of address/value pairs. |
-| `$F8344` | `VOODOO_CMD_SUBMIT`, write `1` to replay the stream. |
+| `$F8344` | `VOODOO_CMD_SUBMIT`, write `1` for big-endian pairs or `2` for little-endian pairs. |
 
-The stream contains big-endian 32-bit Voodoo register addresses and
-big-endian 32-bit values. Replay uses the same register path as
+Submit value `VOODOO_CMD_SUBMIT_REPLAY` (`1`) reads big-endian register
+addresses and values. `VOODOO_CMD_SUBMIT_REPLAY_LE` (`2`) reads both
+words as little-endian values. Replay uses the same register path as
 ordinary Voodoo writes. Misaligned addresses, out-of-range addresses,
 and writes back to the command-stream control registers are skipped.
 The maximum count is `65536` pairs.

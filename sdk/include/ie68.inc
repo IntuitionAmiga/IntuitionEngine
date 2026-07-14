@@ -1814,7 +1814,9 @@ VOODOO_TEX_HEIGHT     equ $F8334            ; Texture height for upload (IE exte
 VOODOO_TEX_UPLOAD     equ $F8338            ; Write to trigger texture upload (IE extension)
 VOODOO_CMD_PTR        equ $F833C            ; Guest RAM command stream pointer
 VOODOO_CMD_COUNT      equ $F8340            ; Command stream addr/value pair count
-VOODOO_CMD_SUBMIT     equ $F8344            ; Write 1 to replay command stream
+VOODOO_CMD_SUBMIT     equ $F8344            ; Submit command stream
+VOODOO_CMD_SUBMIT_REPLAY equ $00000001
+VOODOO_CMD_SUBMIT_REPLAY_LE equ $00000002
 VOODOO_TEX_SRC_PTR    equ $F8348            ; Guest RAM texture upload pointer
 VOODOO_TEX_SRC_BYTES  equ $F834C            ; Guest RAM texture upload byte count
 VOODOO_TEX_SLOT       equ $F8350            ; Slot retained by the next texture upload

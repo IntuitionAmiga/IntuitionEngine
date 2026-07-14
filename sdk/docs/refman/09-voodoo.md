@@ -259,15 +259,22 @@ status register reports `FBI_BUSY` and `SST_BUSY`; during a pending
 publish it also reports `SWAPBUF`.
 
 Long setup sequences may also be replayed from guest RAM. The command
-stream is a sequence of big-endian address/value longword pairs. Each
-address is an absolute Voodoo register address, and each value is the
-`32`-bit word to write there:
+stream is a sequence of address/value longword pairs. Each address is
+an absolute Voodoo register address, and each value is the `32`-bit word
+to write there. The submit value selects the byte order of both words:
 
 | Address    | Name                 | Purpose |
 |------------|----------------------|---------|
 | `$F833C`  | `VOODOO_CMD_PTR`     | Pointer to the command stream in guest RAM. |
 | `$F8340`  | `VOODOO_CMD_COUNT`   | Number of address/value pairs to replay. |
-| `$F8344`  | `VOODOO_CMD_SUBMIT`  | Write `1` to replay the stream. |
+| `$F8344`  | `VOODOO_CMD_SUBMIT`  | Write `VOODOO_CMD_SUBMIT_REPLAY` for big-endian pairs or `VOODOO_CMD_SUBMIT_REPLAY_LE` for little-endian pairs. |
+
+`VOODOO_CMD_SUBMIT_REPLAY` is `$00000001` and preserves the original
+big-endian stream format. `VOODOO_CMD_SUBMIT_REPLAY_LE` is `$00000002`
+and reads both words as little-endian values. The latter permits IE64,
+IE32, x86, 6502, and Z80 software to construct streams with native
+longword stores where those stores are available. The flag describes
+the buffer byte order and is not tied to a particular CPU.
 
 Replay uses the same register path as individual `POKE32` or CPU MMIO
 writes. Misaligned addresses, addresses outside the Voodoo block, and
@@ -726,7 +733,7 @@ Voodoo has these programming boundaries:
 | Texture upload | Copies `w * h * 4` bytes from `$D0000` if the size fits in `64` KB. |
 | Texture slot store | A selected identifier from `0` through `65535` retains a private copy when `TEX_UPLOAD` is written. `$FFFFFFFF` disables retention. |
 | Texture slot bind | Makes an existing retained texture current without another texel transfer. An empty or out-of-range identifier leaves the current texture unchanged. |
-| Command stream | Replays up to `65536` big-endian address/value pairs from guest RAM through the normal Voodoo register path. |
+| Command stream | Replays up to `65536` address/value pairs from guest RAM through the normal Voodoo register path. Submit value `1` selects big-endian pairs and value `2` selects little-endian pairs. |
 | Texture sampling | Uses point sampling, with wrap by default and clamp when `CLAMP_S` or `CLAMP_T` is set. |
 | Chroma key | Discards a final pixel colour that matches the key or keyed range. |
 | Fog | Blends by the clamped Z value. |

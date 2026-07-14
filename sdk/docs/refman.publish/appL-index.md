@@ -313,6 +313,8 @@ symbols, and Appendix J gives the full memory map.
 | VOODOO_CMD_COUNT | Chapter 9, Appendix D, Appendix H |
 | VOODOO_CMD_PTR | Chapter 9, Appendix D, Appendix H |
 | VOODOO_CMD_SUBMIT | Chapter 9, Appendix D, Appendix H |
+| VOODOO_CMD_SUBMIT_REPLAY | Chapter 9, Appendix D, Appendix H |
+| VOODOO_CMD_SUBMIT_REPLAY_LE | Chapter 9, Appendix D, Appendix H |
 | VOODOO_TEX_BIND | Chapter 9, Appendix D, Appendix H |
 | VOODOO_TEX_SLOT | Chapter 9, Appendix D, Appendix H |
 | VRAM | Chapter 3, Chapter 4, Chapter 24, Appendix J |

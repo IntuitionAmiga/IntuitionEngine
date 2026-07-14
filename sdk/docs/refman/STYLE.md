@@ -432,9 +432,9 @@ Current controlled polish pass:
     `coprocessor_startmem_test.go` for `COPROC_CMD_START_MEM = 6`.
   - `voodoo_constants.go`, `video_voodoo.go`, and
     `video_voodoo_command_stream_test.go` for `VOODOO_CMD_PTR`,
-    `VOODOO_CMD_COUNT`, `VOODOO_CMD_SUBMIT`, big-endian guest-RAM
-    address/value pairs, replay value `1`, and the `65536` write
-    limit.
+    `VOODOO_CMD_COUNT`, `VOODOO_CMD_SUBMIT`, selectable big-endian or
+    little-endian guest-RAM address/value pairs, replay values `1` and
+    `2`, and the `65536` write limit.
   - `cpu_m68k.go` for the M68K flat-image raw deposit rule: loading
     skips MMIO apertures and the stack guard hole instead of causing
     device side effects.
