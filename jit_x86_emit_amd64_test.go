@@ -1630,6 +1630,78 @@ func TestX86JIT_NativeMemoryMOVZXByte(t *testing.T) {
 	}
 }
 
+func TestX86JIT_NativeMOV_Gb_Eb_Memory(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0x11223344
+	r.cpu.ESI = 0x2000
+	r.cpu.memory[0x2000] = 0xA5
+
+	// MOV AL, byte ptr [ESI]  (8A 06) -- must preserve high 24 bits of EAX.
+	r.compileAndRun(t, 0x1000, 0x8A, 0x06)
+
+	if r.cpu.EAX != 0x112233A5 {
+		t.Fatalf("EAX = %#x, want 0x112233A5", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_NativeMOV_Gb_Eb_RegReg(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EBX = 0x1111117F // BL=0x7F
+	r.cpu.ECX = 0x22222299 // CL=0x99
+
+	// MOV BL, CL (8A D9) -- BL<-CL, preserve upper EBX.
+	r.compileAndRun(t, 0x1000, 0x8A, 0xD9)
+
+	if r.cpu.EBX != 0x11111199 {
+		t.Fatalf("EBX = %#x, want 0x11111199", r.cpu.EBX)
+	}
+}
+
+func TestX86JIT_NativeMOV_Gb_Eb_HighByte(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EAX = 0x000000AB // AL=0xAB
+	r.cpu.EBX = 0x11223344 // BH=0x33
+
+	// MOV BH, AL (8A F8): reg=BH(7), rm=AL(0) -> BH<-AL=0xAB.
+	r.compileAndRun(t, 0x1000, 0x8A, 0xF8)
+
+	if r.cpu.EBX != 0x1122AB44 {
+		t.Fatalf("EBX = %#x, want 0x1122AB44", r.cpu.EBX)
+	}
+
+	// MOV AL, BH (8A C7): reg=AL(0), rm=BH(7) -> AL<-BH=0xAB.
+	r.cpu.EAX = 0x99999900
+	r.compileAndRun(t, 0x1000, 0x8A, 0xC7)
+	if r.cpu.EAX != 0x999999AB {
+		t.Fatalf("EAX = %#x, want 0x999999AB", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_NativeLEA_SIB_Disp32(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EBX = 0x1000
+	r.cpu.ESI = 0x10
+
+	// LEA EAX, [EBX + ESI*4 + 0x100]  (8D 84 B3 00 01 00 00)
+	r.compileAndRun(t, 0x1000, 0x8D, 0x84, 0xB3, 0x00, 0x01, 0x00, 0x00)
+
+	if r.cpu.EAX != 0x1140 {
+		t.Fatalf("EAX = %#x, want 0x1140", r.cpu.EAX)
+	}
+}
+
+func TestX86JIT_NativeLEA_BaseOnly(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EDX = 0x22224444
+
+	// LEA ECX, [EDX]  (8D 0A)
+	r.compileAndRun(t, 0x1000, 0x8D, 0x0A)
+
+	if r.cpu.ECX != 0x22224444 {
+		t.Fatalf("ECX = %#x, want 0x22224444", r.cpu.ECX)
+	}
+}
+
 func TestX86JIT_NativeWordMOVMemoryRoundTrip(t *testing.T) {
 	r := newX86JITTestRig(t)
 	r.cpu.EAX = 0xAABB1234

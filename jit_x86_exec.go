@@ -123,7 +123,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 	// Performance monitoring
 	var perfStartTime time.Time
 	var lastPerfReport time.Time
-	perfEnabled := false // Can be toggled via cpu field if needed
+	perfEnabled := x86JITStatsOn // temporary: X86_JIT_STATS=1 enables live+exit profiling
 
 	if perfEnabled {
 		perfStartTime = time.Now()
@@ -196,6 +196,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			instrs := x86ScanBlock(cpu.memory, pc)
 			if len(instrs) == 0 {
 				// Interpreter fallback: sync jitRegs -> named, step, sync back
+				x86RecordFallbackOpcode(cpu.memory, pc)
 				cpu.syncJITRegsToNamed()
 				var stepT0 time.Time
 				if perfAcctOn {
@@ -217,6 +218,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			}
 
 			if x86NeedsFallback(instrs) {
+				x86RecordFallbackOpcode(cpu.memory, pc)
 				cpu.syncJITRegsToNamed()
 				var stepT0 time.Time
 				if perfAcctOn {
@@ -253,6 +255,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				// MMIO bail). Any other compile error is a real JIT bug
 				// and panics so the gap is fixed at its source.
 				if err.Error() == "no instructions compiled" {
+					x86RecordFallbackOpcode(cpu.memory, pc)
 					cpu.syncJITRegsToNamed()
 					var stepT0 time.Time
 					if perfAcctOn {
@@ -520,6 +523,29 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 	cpu.x86RenormalizeFPUBoundary()
 	cpu.syncJITRegsToNamed()
 	cpu.syncJITSegRegsToNamed()
+
+	if x86JITStatsOn {
+		hitRate := float64(0)
+		if diagCacheHits+diagCacheMisses > 0 {
+			hitRate = float64(diagCacheHits) / float64(diagCacheHits+diagCacheMisses) * 100
+		}
+		fbPct := float64(0)
+		if instructionCount > 0 {
+			fbPct = float64(diagFallbackInstr) / float64(instructionCount) * 100
+		}
+		fmt.Printf("\nx86 JIT exit: instrs=%d fallback=%d (%.2f%%) io_bails=%d cache_hit=%.1f%%\n",
+			instructionCount, diagFallbackInstr, fbPct, diagIOBails, hitRate)
+		// jit_ns/interp_ns come from PerfAcct, which only accumulates when
+		// IE_PERF_ACCT=1. Print them only then, else they are misleading zeros.
+		// jit_ns/interp_ns and the deopt taxonomy only accumulate when
+		// IE_PERF_ACCT=1; print them only then to avoid misleading zeros.
+		if perfAcctOn {
+			acct := cpu.perfAcct.Snapshot()
+			fmt.Printf("x86 JIT timing: jit_ns=%d interp_ns=%d\n", acct.JitNs, acct.InterpNs)
+			fmt.Printf("x86 JIT %s\n", cpu.deoptStats.String())
+		}
+		x86FallbackOpcodeReport()
+	}
 }
 
 // x86RegMapToUint64 packs a [8]byte regMap into a uint64 for runtime

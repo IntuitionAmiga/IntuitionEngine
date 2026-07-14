@@ -1206,6 +1206,8 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		return x86EmitMOV_r32_imm32(cb, ji, memory)
 
 	// MOV AL, moffs8 (0xA0) / MOV moffs8, AL (0xA2)
+	case op == 0xA0:
+		return x86EmitMOV_AL_moffs8(cb, ji, memory, instrIdx)
 	case op == 0xA2:
 		return x86EmitMOV_moffs8_AL(cb, ji, memory, instrIdx)
 
@@ -1279,6 +1281,10 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 	// MOV Ev, Gv (0x89)
 	case op == 0x89:
 		return x86EmitMOV_Ev_Gv(cb, ji, memory, instrIdx)
+	// MOV Gb, Eb (0x8A) -- byte load into 8-bit register
+	case op == 0x8A:
+		return x86EmitMOV_Gb_Eb(cb, ji, memory, instrIdx)
+
 	// MOV Gv, Ev (0x8B) -- reg-reg only for now
 	case op == 0x8B:
 		return x86EmitMOV_Gv_Ev(cb, ji, memory, instrIdx)
@@ -1573,6 +1579,25 @@ func x86EmitMOV_moffs8_AL(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrI
 	return true
 }
 
+// x86EmitMOV_AL_moffs8 handles MOV AL, moffs8 (0xA0) -- byte load from an
+// absolute address into AL, preserving the upper 24 bits of EAX.
+func x86EmitMOV_AL_moffs8(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if ji.length < 5 {
+		return false
+	}
+	addr := readLE32(memory, x86MoffsDispPC(ji))
+	amd64MOV_reg_imm32(cb, amd64R10, addr)
+	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	x86EmitMemLoad8(cb, amd64R11, amd64R10) // zero-extended byte in R11
+	x86EmitLoadGuestReg32(cb, amd64R8, 0)   // EAX
+	emitREX(cb, false, 0, amd64R8)
+	cb.EmitBytes(0x81, modRM(3, 4, amd64R8)) // AND EAX, 0xFFFFFF00
+	cb.Emit32(0xFFFFFF00)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64R11) // OR EAX, byte
+	x86EmitStoreGuestReg32(cb, 0, amd64R8)
+	return true
+}
+
 // x86EmitMOV_Eb_Gb handles MOV Eb, Gb (0x88) for register and memory modes.
 func x86EmitMOV_Eb_Gb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
 	if !ji.hasModRM {
@@ -1622,6 +1647,54 @@ func x86EmitMOV_Eb_Gb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	}
 	x86EmitMemStore8(cb, amd64R10, amd64R8)
 	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 1)
+	return true
+}
+
+// x86EmitMOV_Gb_Eb handles MOV Gb, Eb (0x8A) -- byte load into an 8-bit
+// register destination, for both register-direct and memory sources. The
+// destination's other 24 bits are preserved, matching x86 8-bit semantics.
+func x86EmitMOV_Gb_Eb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !ji.hasModRM {
+		return false
+	}
+	mod := ji.modrm >> 6
+	dstR8 := (ji.modrm >> 3) & 7
+	dstGuestReg := dstR8 & 3
+	dstHigh := dstR8 >= 4
+
+	// Load the source byte, zero-extended, into R11.
+	if mod == 3 {
+		srcR8 := ji.modrm & 7
+		srcGuestReg := srcR8 & 3
+		srcHigh := srcR8 >= 4
+		x86EmitLoadGuestReg32(cb, amd64R11, srcGuestReg)
+		if srcHigh {
+			amd64SHR_imm32(cb, amd64R11, 8)
+		}
+		emitREX(cb, false, amd64R11, amd64R11)
+		cb.EmitBytes(0x0F, 0xB6, modRM(3, amd64R11, amd64R11)) // MOVZX R11, R11b
+	} else {
+		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+			return false
+		}
+		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		x86EmitMemLoad8(cb, amd64R11, amd64R10) // zero-extended byte
+	}
+
+	// Merge R11's low byte into the destination guest register's byte slot.
+	x86EmitLoadGuestReg32(cb, amd64R8, dstGuestReg)
+	if dstHigh {
+		emitREX(cb, false, 0, amd64R8)
+		cb.EmitBytes(0x81, modRM(3, 4, amd64R8)) // AND R8, 0xFFFF00FF
+		cb.Emit32(0xFFFF00FF)
+		amd64SHL_imm32(cb, amd64R11, 8)
+	} else {
+		emitREX(cb, false, 0, amd64R8)
+		cb.EmitBytes(0x81, modRM(3, 4, amd64R8)) // AND R8, 0xFFFFFF00
+		cb.Emit32(0xFFFFFF00)
+	}
+	amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64R11) // OR R8, R11
+	x86EmitStoreGuestReg32(cb, dstGuestReg, amd64R8)
 	return true
 }
 
@@ -4911,7 +4984,14 @@ func x86EmitLEA(cb *CodeBuffer, ji *X86JITInstr, memory []byte) bool {
 		return true
 	}
 
-	return false // Other LEA forms not yet in Tier 1
+	// General case: LEA loads the effective address value itself (no memory
+	// access), so reuse the shared EA computation and store the result. This
+	// covers [reg], [reg+disp32], [disp32], and all SIB forms.
+	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	x86EmitStoreGuestReg32(cb, dstReg, amd64R10)
+	return true
 }
 
 // ===========================================================================
