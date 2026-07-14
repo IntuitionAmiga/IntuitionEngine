@@ -2549,7 +2549,9 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 	cpu.m68kJitDispatchActive.Store(true)
 	defer cpu.m68kJitDispatchActive.Store(false)
 
-	enableM68KPollWiring(cpu)
+	// AddressIsMMIOPredicate is set per call from the live cpu.bus at each
+	// TryFastMMIOPoll site; wiring the shared global M68KPollPattern here is dead
+	// and races across concurrent CPUs. See jit_exec.go.
 
 	execMem := cpu.m68kGetJITExecMem()
 	ctx := cpu.m68kJitCtx

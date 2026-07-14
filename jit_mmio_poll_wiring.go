@@ -16,10 +16,14 @@
 //   - Z80  : Z80BusAdapter.bus is *MachineBus.
 //   - 6502 : Bus6502Adapter.bus is Bus32, type-assert to *MachineBus.
 //
-// Each backend's exec-entry calls its enable* helper once before the
-// dispatch loop. The helpers are idempotent — calling twice rewrites the
-// predicate to the latest captured bus, which is the desired behaviour
-// when a CPU is reset and re-entered.
+// NOTE: the exec loops no longer call these helpers. Every TryFastMMIOPoll
+// site sets pattern.AddressIsMMIOPredicate locally from its own live CPU/bus
+// before matching (jit_mmio_poll_exec_amd64.go, cpu_x86_poll_match_jit.go), so
+// the shared global predicate these helpers write is never read on the hot
+// path. Wiring it from each exec-loop start was therefore dead work AND raced
+// across concurrent same-type CPUs (e.g. IE64 coprocessor worker slots, each
+// running its dispatcher on its own goroutine). The helpers are retained as a
+// single-threaded, directly-tested classifier utility (jit_mmio_poll_wiring_test.go).
 
 //go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
 

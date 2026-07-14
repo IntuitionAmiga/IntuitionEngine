@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 )
 
 // ===========================================================================
@@ -89,6 +90,22 @@ const jitBudget = 4095
 // Returns the x86-64 register number and whether it's "mapped" (resident in
 // a callee-saved register) vs "spilled" (in the register file in memory).
 func ie64ToAMD64Reg(ie64Reg byte) (amd64Reg byte, mapped bool) {
+	// SP is pinned to R14 in every tier and is never remapped.
+	if ie64Reg == 31 {
+		return amd64RegIE64SP, true
+	}
+	// Region tier (Technique 2): the hottest guest registers are resident in
+	// the callee-saved hosts chosen by the planner. Any guest register not in
+	// the active map is spilled (memory-backed) for the whole region, exactly
+	// as R5-R30 are under the fixed mapping.
+	if ie64ActiveRegionMap != nil {
+		for i := range ie64ActiveRegionMap {
+			if ie64ActiveRegionMap[i].guest == ie64Reg {
+				return ie64ActiveRegionMap[i].host, true
+			}
+		}
+		return 0, false
+	}
 	switch ie64Reg {
 	case 1:
 		return amd64RegIE64R1, true // RBX
@@ -705,6 +722,19 @@ func emitSizeMaskAMD64(cb *CodeBuffer, rd byte, size byte) {
 // each block emit and clears after the region completes.
 var ie64CurrentInstrCountBase uint32
 
+// ie64CompileMu serializes IE64 native code generation. The emitter carries
+// per-compilation state in package globals (ie64CurrentInstrCountBase, the
+// region register map) whose save/restore-on-defer discipline is only sound
+// under single-threaded generation. Multiple IE64 CPUs compile concurrently -
+// each coprocessor worker slot runs its own cpu.jitExecute() on its own
+// goroutine (coproc_worker_ie64.go) - so without this lock one worker's region
+// compile could overwrite the map or count base another worker's compile is
+// mid-read on, emitting corrupt native code. Held only across code generation
+// (compileBlock, ie64CompileRegion); native execution runs fully in parallel
+// outside it, and emit is short and cold (compile-once), so contention is
+// negligible.
+var ie64CompileMu sync.Mutex
+
 // emitPackedPCAndCount sets up the block-exit return channel.
 //
 // Phase 2 redesign: R15 carries the full 64-bit target PC (no packing);
@@ -829,10 +859,19 @@ func emitPrologue(cb *CodeBuffer, blockPC uint64, br *blockRegs) int {
 
 	// Conservatively load all mapped IE64 registers for correctness.
 	// This avoids liveness holes across mixed JIT/interpreter handoffs.
-	amd64MOV_reg_mem(cb, amd64RegIE64R1, amd64RAX, 1*8)  // R1 -> RBX
-	amd64MOV_reg_mem(cb, amd64RegIE64R2, amd64RAX, 2*8)  // R2 -> RBP
-	amd64MOV_reg_mem(cb, amd64RegIE64R3, amd64RAX, 3*8)  // R3 -> R12
-	amd64MOV_reg_mem(cb, amd64RegIE64R4, amd64RAX, 4*8)  // R4 -> R13
+	// Under the region tier the resident set is the planner's remap; under the
+	// fixed tier it is R1-R4. SP (R31 -> R14) is resident in every tier.
+	if ie64ActiveRegionMap != nil {
+		for i := range ie64ActiveRegionMap {
+			b := ie64ActiveRegionMap[i]
+			amd64MOV_reg_mem(cb, b.host, amd64RAX, int32(b.guest)*8)
+		}
+	} else {
+		amd64MOV_reg_mem(cb, amd64RegIE64R1, amd64RAX, 1*8) // R1 -> RBX
+		amd64MOV_reg_mem(cb, amd64RegIE64R2, amd64RAX, 2*8) // R2 -> RBP
+		amd64MOV_reg_mem(cb, amd64RegIE64R3, amd64RAX, 3*8) // R3 -> R12
+		amd64MOV_reg_mem(cb, amd64RegIE64R4, amd64RAX, 4*8) // R4 -> R13
+	}
 	amd64MOV_reg_mem(cb, amd64RegIE64SP, amd64RAX, 31*8) // R31 -> R14
 
 	// Load block start PC into R15
@@ -901,10 +940,21 @@ func emitMMUMicroTLBProbeAMD64(cb *CodeBuffer, prefixOff int32) int {
 // emitEpilogue but does not pop the stack frame or restore callee-saved.
 // On entry RDI = RegsPtr (current convention inside the JIT body).
 func emitLightweightStoreRegs(cb *CodeBuffer) {
-	amd64MOV_mem_reg(cb, amd64RegBase, 1*8, amd64RegIE64R1)
-	amd64MOV_mem_reg(cb, amd64RegBase, 2*8, amd64RegIE64R2)
-	amd64MOV_mem_reg(cb, amd64RegBase, 3*8, amd64RegIE64R3)
-	amd64MOV_mem_reg(cb, amd64RegBase, 4*8, amd64RegIE64R4)
+	// Spill the full resident set to the canonical register file so the chained
+	// target block re-loads correct values through its own chainEntry. The
+	// resident set is the region remap under the region tier, R1-R4 otherwise;
+	// SP (R31 -> R14) is always resident.
+	if ie64ActiveRegionMap != nil {
+		for i := range ie64ActiveRegionMap {
+			b := ie64ActiveRegionMap[i]
+			amd64MOV_mem_reg(cb, amd64RegBase, int32(b.guest)*8, b.host)
+		}
+	} else {
+		amd64MOV_mem_reg(cb, amd64RegBase, 1*8, amd64RegIE64R1)
+		amd64MOV_mem_reg(cb, amd64RegBase, 2*8, amd64RegIE64R2)
+		amd64MOV_mem_reg(cb, amd64RegBase, 3*8, amd64RegIE64R3)
+		amd64MOV_mem_reg(cb, amd64RegBase, 4*8, amd64RegIE64R4)
+	}
 	amd64MOV_mem_reg(cb, amd64RegBase, 31*8, amd64RegIE64SP)
 }
 
@@ -1023,17 +1073,29 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, _ uint32) {
 	// and its store back is redundant. storeRegs (br.written or writtenSoFar)
 	// carries R31 (SP) whenever a stack op modified it (analyzeBlockRegs /
 	// instrWrittenRegs), so gating on it is sound. Matches the ARM64 backend.
-	if storeRegs&(1<<1) != 0 {
-		amd64MOV_mem_reg(cb, amd64RegBase, 1*8, amd64RegIE64R1)
-	}
-	if storeRegs&(1<<2) != 0 {
-		amd64MOV_mem_reg(cb, amd64RegBase, 2*8, amd64RegIE64R2)
-	}
-	if storeRegs&(1<<3) != 0 {
-		amd64MOV_mem_reg(cb, amd64RegBase, 3*8, amd64RegIE64R3)
-	}
-	if storeRegs&(1<<4) != 0 {
-		amd64MOV_mem_reg(cb, amd64RegBase, 4*8, amd64RegIE64R4)
+	// Store only the resident registers the block actually wrote. The resident
+	// set is the region remap under the region tier, R1-R4 otherwise; each is
+	// gated on its own guest-register bit in storeRegs.
+	if ie64ActiveRegionMap != nil {
+		for i := range ie64ActiveRegionMap {
+			b := ie64ActiveRegionMap[i]
+			if storeRegs&(1<<b.guest) != 0 {
+				amd64MOV_mem_reg(cb, amd64RegBase, int32(b.guest)*8, b.host)
+			}
+		}
+	} else {
+		if storeRegs&(1<<1) != 0 {
+			amd64MOV_mem_reg(cb, amd64RegBase, 1*8, amd64RegIE64R1)
+		}
+		if storeRegs&(1<<2) != 0 {
+			amd64MOV_mem_reg(cb, amd64RegBase, 2*8, amd64RegIE64R2)
+		}
+		if storeRegs&(1<<3) != 0 {
+			amd64MOV_mem_reg(cb, amd64RegBase, 3*8, amd64RegIE64R3)
+		}
+		if storeRegs&(1<<4) != 0 {
+			amd64MOV_mem_reg(cb, amd64RegBase, 4*8, amd64RegIE64R4)
+		}
 	}
 	if storeRegs&(1<<31) != 0 {
 		amd64MOV_mem_reg(cb, amd64RegBase, 31*8, amd64RegIE64SP)
@@ -1071,6 +1133,11 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, _ uint32) {
 
 // compileBlock compiles a scanned block of IE64 instructions to x86-64 machine code.
 func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBlock, error) {
+	// Serialize against concurrent IE64 compiles: emit reads/writes package-
+	// global compilation state (count base, region map). See ie64CompileMu.
+	ie64CompileMu.Lock()
+	defer ie64CompileMu.Unlock()
+
 	if n := ie64CountFusedLeafCalls(instrs); n != 0 {
 		globalIE64JITStats.inlinedCalls.Add(uint64(n))
 	}
@@ -1277,6 +1344,11 @@ func ie64FormRegionMMU(cpu *CPU64, hotPC uint64) *ie64Region {
 // late-block exits report cumulative-across-region instructions
 // retired, not just the current block's count.
 func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JITBlock, error) {
+	// Serialize against concurrent IE64 compiles: the region register map and
+	// count base are package globals set/cleared over this call. See ie64CompileMu.
+	ie64CompileMu.Lock()
+	defer ie64CompileMu.Unlock()
+
 	if region == nil || len(region.blocks) < 2 {
 		return nil, errIE64RegionTooSmall
 	}
@@ -1287,6 +1359,15 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 	if !ie64RegionPlanAccepted(plan) {
 		return nil, errIE64RegionSpillPressure
 	}
+
+	// Technique 2: bind the region's hottest guest registers to the callee-saved
+	// hosts for the whole region. The prologue loads this set, every spill site
+	// (epilogue, chain-exit store) writes it back, and ie64ToAMD64Reg resolves
+	// in-body references against it, so the loaded/spilled/in-body mappings stay
+	// coherent. Cleared on return: the fixed Tier-1 mapping governs single blocks.
+	prevRegionMap := ie64ActiveRegionMap
+	ie64ActiveRegionMap = ie64BuildRegionRegMap(plan)
+	defer func() { ie64ActiveRegionMap = prevRegionMap }()
 
 	var allInstrs []JITInstr
 	for _, blk := range region.blocks {

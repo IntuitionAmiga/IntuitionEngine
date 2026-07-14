@@ -123,7 +123,9 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 	}
 	defer cpu.freeZ80JIT()
 
-	enableZ80PollWiring(adapter)
+	// AddressIsMMIOPredicate is set per call from the live bus at each
+	// TryFastMMIOPoll site; wiring the shared global Z80PollPattern here is dead
+	// and races across concurrent CPUs. See jit_exec.go.
 
 	execMem := cpu.getZ80JITExecMem()
 	ctx := cpu.jitCtx.(*Z80JITContext)

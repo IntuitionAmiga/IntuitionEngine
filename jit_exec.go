@@ -147,7 +147,11 @@ func (cpu *CPU64) ExecuteJIT() {
 	}
 	defer cpu.freeJIT()
 
-	enableIE64PollWiring(cpu)
+	// The MMIO-poll matcher's AddressIsMMIOPredicate is set per call from the
+	// live cpu.bus at each TryFastMMIOPoll site (jit_mmio_poll_exec_amd64.go),
+	// so no exec-loop wiring of the shared global IE64PollPattern is needed.
+	// Writing that global here raced across concurrent IE64 CPUs (coprocessor
+	// worker slots each run ExecuteJIT on their own goroutine) for no effect.
 
 	execMem := cpu.getJITExecMem()
 

@@ -82,7 +82,9 @@ func (cpu *CPU_X86) initX86JIT() error {
 	cpu.x86JitCodeBM = make([]byte, len(cpu.x86JitIOBitmap))
 
 	cpu.x86JitCtx = newX86JITContext(cpu, cpu.x86JitCodeBM, cpu.x86JitIOBitmap)
-	enableX86PollWiring(cpu)
+	// AddressIsMMIOPredicate is set per call from the live CPU at each
+	// TryFastMMIOPoll site (cpu_x86_poll_match_jit.go); wiring the shared global
+	// X86PollPattern here is dead and races across concurrent CPUs. See jit_exec.go.
 	return nil
 }
 

@@ -94,9 +94,9 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 	}
 	defer cpu.freeJIT6502()
 
-	if adapter, ok := cpu.memory.(*Bus6502Adapter); ok {
-		enable6502PollWiring(adapter)
-	}
+	// AddressIsMMIOPredicate is set per call from the live bus at each
+	// TryFastMMIOPoll site; wiring the shared global P65PollPattern here is dead
+	// and races across concurrent CPUs. See jit_exec.go.
 
 	execMem := cpu.getJIT6502ExecMem()
 	ctx := cpu.jitCtx

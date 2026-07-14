@@ -160,6 +160,55 @@ var ie64RegionHostRegs = []byte{
 	amd64RBX, amd64RBP, amd64R12, amd64R13, amd64R10, amd64R11,
 }
 
+// ie64RegionResidentHostRegs are the host registers a promoted region may bind
+// to its hottest guest registers (Technique 2). Only the four callee-saved
+// GPRs are usable: R14 stays pinned to SP, and R10/R11 are reserved as JIT
+// scratch (epilogue ctx pointer, micro-TLB probe) and must never hold guest
+// state across an instruction boundary. Ordered hottest-first.
+var ie64RegionResidentHostRegs = []byte{amd64RBX, amd64RBP, amd64R12, amd64R13}
+
+// ie64ResidentBinding pins one guest register to a host register for the
+// duration of a single region compilation. SP (R31 -> R14) is always resident
+// and is not represented here.
+type ie64ResidentBinding struct {
+	guest byte
+	host  byte
+}
+
+// ie64ActiveRegionMap, when non-nil, overrides the fixed Tier-1 GPR mapping for
+// the region currently being compiled. ie64ToAMD64Reg, the block prologue and
+// every register spill site (epilogue, lightweight chain-exit store) consult it
+// so the loaded, spilled and in-body mappings stay coherent. IE64 code
+// generation is single-threaded, so a package global is sound; ie64CompileRegion
+// sets it on entry and clears it on return.
+var ie64ActiveRegionMap []ie64ResidentBinding
+
+// ie64BuildRegionRegMap selects the region's resident guest->host bindings from
+// the planner's weighted ranking, capped at the four usable callee-saved hosts.
+// Returns nil when the planner chose nothing (region falls back to the fixed
+// Tier-1 mapping).
+func ie64BuildRegionRegMap(plan ie64RegionPlan) []ie64ResidentBinding {
+	n := len(plan.residentGuestRegs)
+	if n > len(ie64RegionResidentHostRegs) {
+		n = len(ie64RegionResidentHostRegs)
+	}
+	if n == 0 {
+		return nil
+	}
+	bindings := make([]ie64ResidentBinding, 0, n)
+	for i := 0; i < n; i++ {
+		g := plan.residentGuestRegs[i]
+		if g == 0 || g == 31 {
+			continue // never remap the zero register or SP
+		}
+		bindings = append(bindings, ie64ResidentBinding{guest: g, host: ie64RegionResidentHostRegs[i]})
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+	return bindings
+}
+
 func (p ie64RegionPlan) residentMask() uint32 {
 	var mask uint32
 	for _, reg := range p.residentGuestRegs {
