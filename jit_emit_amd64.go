@@ -1142,6 +1142,8 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 		globalIE64JITStats.inlinedCalls.Add(uint64(n))
 	}
 
+	ie64MarkFPSRCCDead(instrs)
+
 	cb := NewCodeBuffer(len(instrs) * 384) // x86-64 instructions are variable length
 
 	br := analyzeBlockRegs(instrs)
@@ -1407,6 +1409,11 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		ie64CurrentInstrCountBase = uint32(totalInstrCount)
 		instrOffsets := make([]int, len(blk))
 		writtenSoFar := uint32(0)
+
+		// FPSR CC liveness is computed per sub-block: each sub-block end is
+		// treated as an observer, so cross-block CC elision is forgone but
+		// never mis-applied.
+		ie64MarkFPSRCCDead(blk)
 
 		for i := range blk {
 			ji := &blk[i]
@@ -4215,7 +4222,9 @@ func emitFABS_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	emitLoadFPRegAMD64(cb, amd64RAX, ji.rs)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, 0x7FFFFFFF) // AND EAX, 0x7FFFFFFF
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	emitSetFPCondCodesAMD64(cb)
+	if !ji.fpsrCCDead {
+		emitSetFPCondCodesAMD64(cb)
+	}
 }
 
 func emitFNEG_AMD64(cb *CodeBuffer, ji *JITInstr) {
@@ -4223,14 +4232,18 @@ func emitFNEG_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	emitLoadImm32AMD64(cb, amd64RCX, 0x80000000)
 	amd64ALU_reg_reg32(cb, 0x31, amd64RAX, amd64RCX) // XOR EAX, ECX
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	emitSetFPCondCodesAMD64(cb)
+	if !ji.fpsrCCDead {
+		emitSetFPCondCodesAMD64(cb)
+	}
 }
 
 func emitFMOVI_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
 	amd64MOV_reg_reg32(cb, amd64RAX, rsReg)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	emitSetFPCondCodesAMD64(cb)
+	if !ji.fpsrCCDead {
+		emitSetFPCondCodesAMD64(cb)
+	}
 }
 
 func emitFMOVO_AMD64(cb *CodeBuffer, ji *JITInstr) {
@@ -4255,7 +4268,9 @@ func emitFMOVECR_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	}
 	emitLoadImm32AMD64(cb, amd64RAX, bits)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	emitSetFPCondCodesAMD64(cb)
+	if !ji.fpsrCCDead {
+		emitSetFPCondCodesAMD64(cb)
+	}
 }
 
 func emitFMOVSR_AMD64(cb *CodeBuffer, ji *JITInstr) {
@@ -4366,7 +4381,9 @@ func emitFSQRT_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	amd64SSE_scalar(cb, 0x51, 1, 0) // SQRTSS XMM1, XMM0
 	amd64MOVD_reg_xmm(cb, amd64RAX, 1)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	emitSetFPCondCodesAMD64(cb)
+	if !ji.fpsrCCDead {
+		emitSetFPCondCodesAMD64(cb)
+	}
 }
 
 func emitFINT_AMD64(cb *CodeBuffer, ji *JITInstr) {
@@ -4409,7 +4426,9 @@ func emitFINT_AMD64(cb *CodeBuffer, ji *JITInstr) {
 
 	amd64MOVD_reg_xmm(cb, amd64RAX, 1)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	emitSetFPCondCodesAMD64(cb)
+	if !ji.fpsrCCDead {
+		emitSetFPCondCodesAMD64(cb)
+	}
 }
 
 // emitFCMP_AMD64 handles FCMP using UCOMISS.
@@ -4499,7 +4518,9 @@ func emitFCVTIF_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	cb.EmitBytes(0x0F, 0x2A, modRM(3, 0, amd64RAX))
 	amd64MOVD_reg_xmm(cb, amd64RAX, 0)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	emitSetFPCondCodesAMD64(cb)
+	if !ji.fpsrCCDead {
+		emitSetFPCondCodesAMD64(cb)
+	}
 }
 
 func emitSetFPUInvalidAMD64(cb *CodeBuffer) {
@@ -4940,8 +4961,10 @@ func emitFLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	// condition codes. Helper path does not reach here - the dispatcher
 	// performs the FP register write and condition-code update.
 	emitStoreFPRegAMD64(cb, amd64RDX, ji.rd)
-	amd64MOV_reg_reg32(cb, amd64RAX, amd64RDX)
-	emitSetFPCondCodesAMD64(cb)
+	if !ji.fpsrCCDead {
+		amd64MOV_reg_reg32(cb, amd64RAX, amd64RDX)
+		emitSetFPCondCodesAMD64(cb)
+	}
 }
 
 func emitFSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {

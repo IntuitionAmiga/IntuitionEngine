@@ -239,16 +239,17 @@ func newJITContext(cpu *CPU64) *JITContext {
 // ===========================================================================
 
 type JITInstr struct {
-	opcode    byte
-	rd        byte
-	size      byte
-	xbit      byte
-	rs        byte
-	rt        byte
-	mmuBail   bool  // when true, emit bail-to-interpreter instead of native memory access
-	fusedFlag uint8 // see ie64Fused* constants
-	imm32     uint32
-	pcOffset  uint32 // byte offset from block start
+	opcode     byte
+	rd         byte
+	size       byte
+	xbit       byte
+	rs         byte
+	rt         byte
+	mmuBail    bool  // when true, emit bail-to-interpreter instead of native memory access
+	fpsrCCDead bool  // when true, elide the trailing FPSR condition-code update (dead write)
+	fusedFlag  uint8 // see ie64Fused* constants
+	imm32      uint32
+	pcOffset   uint32 // byte offset from block start
 }
 
 // Fusion flags for JITInstr.fusedFlag.
