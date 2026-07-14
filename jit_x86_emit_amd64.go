@@ -74,6 +74,27 @@ var x86CurrentCS *x86CompileState
 var x86CompileIOBitmap []byte
 var x86CompileCodeBitmap []byte
 
+// x86CompileMemCeiling is the guest-visible RAM ceiling (bytes) the span guard
+// must bound direct native accesses by. Set by the execution loop before each
+// compile to the x86 CPU's active visible RAM (which may be smaller than the
+// backing slice). Zero means "unset": x86CompileBlock falls back to
+// len(memory) so test and region compiles that never publish it keep working.
+var x86CompileMemCeiling uint32
+
+// x86ResolveMemCeiling picks the direct-access bound: the smaller of the
+// published visible ceiling and the backing length, clamped to the 32-bit
+// address space. A native access at or above this must bail to the interpreter.
+func x86ResolveMemCeiling(memory []byte) uint32 {
+	ceil := uint64(len(memory))
+	if x86CompileMemCeiling != 0 && uint64(x86CompileMemCeiling) < ceil {
+		ceil = uint64(x86CompileMemCeiling)
+	}
+	if ceil > 0xFFFFFFFF {
+		ceil = 0xFFFFFFFF
+	}
+	return uint32(ceil)
+}
+
 // x86CompileRegMapOverrideForTest, when non-nil, replaces the default
 // register map in x86CompileBlock. Tests use it to prove emitters stay
 // correct under non-default allocations (Tier-2 regions remap or spill
@@ -150,6 +171,7 @@ type x86CompileState struct {
 	dirtyMask      byte            // bit i set = guest reg i was written and needs store-back
 	ioBitmap       []byte          // I/O bitmap for compile-time page checks (nil if unavailable)
 	codeBitmap     []byte          // code page bitmap for compile-time self-mod elision
+	memCeiling     uint32          // guest-visible RAM ceiling for span-guard bounds (min of active RAM and backing)
 	host           x86HostFeatures // detected host CPU features for optimal encoding selection
 	// hasNonSelfLoopJcc is set when the block contains any conditional
 	// branch whose target is not the block's own startPC. Such branches
@@ -545,6 +567,57 @@ func x86EmitIOCheck(cb *CodeBuffer, addrReg byte, retPC uint32, instrCount int) 
 		})
 	}
 	// Fast path continues inline (no jump-over needed)
+}
+
+// x86EmitDeferredBailJcc records an interpreter bail taken when the immediately
+// preceding flag-setting instruction satisfies cond. Used by the span guard for
+// bounds and cross-page checks. retPC is the guest PC re-entered on bail.
+func x86EmitDeferredBailJcc(cb *CodeBuffer, cond byte, retPC uint32, instrCount int) {
+	jccOff := amd64Jcc_rel32(cb, cond)
+	if x86CurrentBails != nil {
+		*x86CurrentBails = append(*x86CurrentBails, x86DeferredBail{
+			jccOffset: jccOff, retPC: retPC, instrIdx: instrCount, kind: 0,
+		})
+	}
+}
+
+// x86EmitSpanGuard validates the whole guest-memory span [firstReg,
+// firstReg+size-1] before a native access whose address is not a proven-safe
+// constant. It bails to the interpreter (retPC) when:
+//   - the span crosses a 256-byte page boundary,
+//   - the last byte is at/above active RAM (which, with the page check, also
+//     bounds the first byte and catches 32-bit wrap: a wrapped address is far
+//     above memLen), or
+//   - the single touched page is mapped to MMIO.
+//
+// Bailing on any page crossing means the caller's own single-page IO and
+// self-modifying-code checks are sufficient: after this guard the span is
+// proven to sit within one in-RAM page. The bound is the compile state's
+// memCeiling (guest-visible RAM, not the backing length), baked in as an
+// immediate so the hot path performs no memory loads. firstReg is preserved;
+// R8 and RCX are clobbered. size must be <= 256. Callers must invoke this
+// before mutating any guest state so the interpreter re-executes the
+// instruction cleanly.
+func x86EmitSpanGuard(cb *CodeBuffer, firstReg byte, size uint32, retPC uint32, instrCount int) {
+	memLen := uint32(0)
+	if x86CurrentCS != nil {
+		memLen = x86CurrentCS.memCeiling
+	}
+	// Cross-page: bail when the low-byte offset is large enough that the last
+	// byte spills onto the next page (offset > 0x100-size).
+	amd64MOV_reg_reg32(cb, amd64R8, firstReg)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, 0xFF) // AND R8, 0xFF (page offset)
+	amd64CMP_reg_imm32(cb, amd64R8, int32(0x101-size))
+	x86EmitDeferredBailJcc(cb, amd64CondAE, retPC, instrCount) // JAE: offset >= 0x101-size
+
+	// Bounds: bail when the last byte is at/above active RAM. Same-page (above)
+	// means the first byte is then in range too. A wrapped/underflowed address
+	// is a large value and also trips this.
+	amd64CMP_reg_imm32(cb, firstReg, int32(memLen-size+1))
+	x86EmitDeferredBailJcc(cb, amd64CondAE, retPC, instrCount)
+
+	// Single in-RAM page: an MMIO page must go through the interpreter's bus.
+	x86EmitIOCheck(cb, firstReg, retPC, instrCount)
 }
 
 // x86CurrentBails collects deferred bail sites during block compilation.
@@ -1370,11 +1443,11 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 
 	// PUSH r32 (0x50-0x57)
 	case op >= 0x50 && op <= 0x57:
-		return x86EmitPUSH_r32(cb, ji)
+		return x86EmitPUSH_r32(cb, ji, instrIdx)
 
 	// POP r32 (0x58-0x5F)
 	case op >= 0x58 && op <= 0x5F:
-		return x86EmitPOP_r32(cb, ji)
+		return x86EmitPOP_r32(cb, ji, instrIdx)
 
 	// PUSH imm32 (0x68)
 	case op == 0x68:
@@ -2567,35 +2640,53 @@ func x86EmitALU_AL_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Com
 // PUSH / POP Emitters
 // ===========================================================================
 
-func x86EmitPUSH_r32(cb *CodeBuffer, ji *X86JITInstr) bool {
+func x86EmitPUSH_r32(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	guestReg := byte(ji.opcode) - 0x50
 	x86MarkDirty(4) // ESP modified
 
+	// Compute the target address (ESP-4) in R10 WITHOUT mutating ESP yet, so
+	// a guard bail can re-execute the whole PUSH in the interpreter with the
+	// guest ESP still intact.
+	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 4) // SUB R10d, 4
+
+	// Validate the full 4-byte span [ESP-4, ESP-1]: bail to the interpreter
+	// on out-of-RAM, wraparound, page-crossing, or MMIO before writing memory
+	// or committing ESP.
+	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
+
 	if guestReg == 4 {
-		amd64MOV_reg_reg32(cb, amd64R8, x86AMD64RegGuestESP)
+		amd64MOV_reg_reg32(cb, amd64R8, x86AMD64RegGuestESP) // PUSH ESP: original value
 	} else {
 		x86EmitLoadGuestReg32(cb, amd64R8, guestReg)
 	}
-
-	// ESP -= 4
-	amd64ALU_reg_imm32_32bit(cb, 5, x86AMD64RegGuestESP, 4) // SUB R14d, 4
-
-	// Write to [memory + ESP]
-	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
 
 	// MOV [RSI + R10], R8d
 	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
 	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
 
+	// Commit ESP = R10.
+	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+
+	// If the slot lives on a JIT-compiled code page, invalidate so stale
+	// native code is not executed. The write is already done and ESP
+	// committed, so the bail resumes at the next instruction.
+	x86EmitSelfModCheck(cb, amd64R10, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
+
 	return true
 }
 
-func x86EmitPOP_r32(cb *CodeBuffer, ji *X86JITInstr) bool {
+func x86EmitPOP_r32(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	guestReg := byte(ji.opcode) - 0x58
 	x86MarkDirty(4) // ESP modified
 
-	// Read from [memory + ESP]
+	// Target address = ESP in R10; ESP is not incremented until after the
+	// read so a guard bail can re-execute the pop through the interpreter.
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
+
+	// Validate the full 4-byte span [ESP, ESP+3] before loading or changing
+	// ESP: bail on out-of-RAM, wraparound, page-crossing, or MMIO.
+	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
 
 	// MOV R8d, [RSI + R10]
 	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
@@ -2605,7 +2696,7 @@ func x86EmitPOP_r32(cb *CodeBuffer, ji *X86JITInstr) bool {
 	x86EmitStoreGuestReg32(cb, guestReg, amd64R8)
 
 	if guestReg == 4 {
-		return true
+		return true // POP ESP: loaded value is the new ESP, no increment
 	}
 
 	// ESP += 4
@@ -2744,7 +2835,10 @@ func x86EmitMOVSX_Gv_Ew(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx
 		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 			return false
 		}
-		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		// Validate the full 2-byte span [EA, EA+1] with no constant-EA
+		// elision: bail on out-of-RAM, wraparound, page-crossing, or MMIO so
+		// a word straddling into an MMIO page reads through the interpreter.
+		x86EmitSpanGuard(cb, amd64R10, 2, ji.opcodePC, instrIdx)
 		x86EmitMemLoad16(cb, amd64R8, amd64R10) // zero-extended 16-bit into R8
 	}
 	// MOVSX R8d, R8w -- sign-extend the low 16 bits to 32.
@@ -5362,6 +5456,7 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 
 	cs.ioBitmap = x86CompileIOBitmap
 	cs.codeBitmap = x86CompileCodeBitmap
+	cs.memCeiling = x86ResolveMemCeiling(memory)
 	cs.host = x86Host
 
 	cs.regMap = x86DefaultRegMap()
@@ -5566,11 +5661,10 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 			break
 		}
 
-		// Stack/control instructions: stop before the instruction so the
-		// dispatcher executes it through the interpreter. Native emitters
-		// remain available to focused tests, but production JIT execution
-		// keeps linked-C frame and return-address semantics on the
-		// canonical path.
+		// Remaining stack/control instructions (CALL/RET/LEAVE/PUSH-imm/PUSHF/
+		// indirect; PUSH/POP r32 are handled natively): stop before the
+		// instruction so the dispatcher runs it through the interpreter,
+		// keeping frame and return-address semantics on the canonical path.
 		if x86ShouldStepInInterpreter(*ji) {
 			break
 		}
@@ -5732,6 +5826,7 @@ func x86CompileRegion(region *x86Region, execMem *ExecMem, memory []byte) (*JITB
 	cs.flagsNeeded = x86PeepholeFlags(allInstrs)
 	cs.ioBitmap = x86CompileIOBitmap
 	cs.codeBitmap = x86CompileCodeBitmap
+	cs.memCeiling = x86ResolveMemCeiling(memory)
 	cs.host = x86Host
 
 	x86CurrentCS = cs

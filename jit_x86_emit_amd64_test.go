@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 	"unsafe"
 )
@@ -860,7 +861,8 @@ func TestX86JIT_PUSH_POP_r32(t *testing.T) {
 	enableNativeStackOpsForTest(t)
 	r := newX86JITTestRig(t)
 	r.cpu.EAX = 0x12345678
-	r.cpu.ESP = 0x10000
+	// Stack in plain RAM, clear of the 0xF000-0xFFFF translateIO window.
+	r.cpu.ESP = 0x20000
 
 	// PUSH EAX; POP EBX
 	r.compileAndRun(t, 0x1000,
@@ -871,15 +873,15 @@ func TestX86JIT_PUSH_POP_r32(t *testing.T) {
 	if r.cpu.EBX != 0x12345678 {
 		t.Errorf("EBX = 0x%08X, want 0x12345678", r.cpu.EBX)
 	}
-	if r.cpu.ESP != 0x10000 {
-		t.Errorf("ESP = 0x%08X, want 0x10000 (balanced push/pop)", r.cpu.ESP)
+	if r.cpu.ESP != 0x20000 {
+		t.Errorf("ESP = 0x%08X, want 0x20000 (balanced push/pop)", r.cpu.ESP)
 	}
 }
 
 func TestX86JIT_PUSH_imm32(t *testing.T) {
 	enableNativeStackOpsForTest(t)
 	r := newX86JITTestRig(t)
-	r.cpu.ESP = 0x10000
+	r.cpu.ESP = 0x20000
 
 	// PUSH 0xDEADBEEF; POP EAX
 	r.compileAndRun(t, 0x1000,
@@ -1699,6 +1701,192 @@ func TestX86JIT_NativeLEA_BaseOnly(t *testing.T) {
 
 	if r.cpu.ECX != 0x22224444 {
 		t.Fatalf("ECX = %#x, want 0x22224444", r.cpu.ECX)
+	}
+}
+
+// TestX86JIT_PUSH_MMIO_BailsToInterpreter verifies the native PUSH r32
+// emitter routes a stack slot on an MMIO page back to the interpreter
+// instead of writing directly to the backing memory shadow. The bail must
+// leave ESP intact and set EIP back to the PUSH so the interpreter redoes it.
+func TestX86JIT_PUSH_MMIO_BailsToInterpreter(t *testing.T) {
+	r := newX86JITTestRig(t)
+	// 0xF000-0xFFFF is a translateIO (MMIO) range in the rig's IO bitmap.
+	// PUSH EAX writes to ESP-4, so ESP=0xF004 targets the IO page 0xF000.
+	r.cpu.ESP = 0xF004
+	r.cpu.EAX = 0xDEADBEEF
+
+	r.compileAndRun(t, 0x1000, 0x50) // PUSH EAX
+
+	if r.cpu.ESP != 0xF004 {
+		t.Fatalf("ESP = %#x, want unchanged 0xF004 (IO bail before commit)", r.cpu.ESP)
+	}
+	if r.cpu.EIP != 0x1000 {
+		t.Fatalf("EIP = %#x, want 0x1000 (bail retPC re-executes PUSH)", r.cpu.EIP)
+	}
+}
+
+func TestX86JIT_POP_MMIO_BailsToInterpreter(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.ESP = 0xF000 // POP EAX reads from ESP, an IO page
+	r.cpu.EAX = 0x11112222
+
+	r.compileAndRun(t, 0x1000, 0x58) // POP EAX
+
+	if r.cpu.ESP != 0xF000 {
+		t.Fatalf("ESP = %#x, want unchanged 0xF000 (IO bail before commit)", r.cpu.ESP)
+	}
+	if r.cpu.EAX != 0x11112222 {
+		t.Fatalf("EAX = %#x, want unchanged 0x11112222 (POP bailed)", r.cpu.EAX)
+	}
+	if r.cpu.EIP != 0x1000 {
+		t.Fatalf("EIP = %#x, want 0x1000 (bail retPC re-executes POP)", r.cpu.EIP)
+	}
+}
+
+// TestX86JIT_PUSH_SamePageRAM_Native confirms an aligned in-page stack write
+// (first byte at page offset 0xFC, last at 0xFF) still compiles and executes
+// natively: the span guard must not bail on a fully in-RAM single page.
+func TestX86JIT_PUSH_SamePageRAM_Native(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.ESP = 0x10100 // PUSH writes [0x100FC, 0x100FF] -- page 0x100, all RAM
+	r.cpu.EAX = 0xCAFEF00D
+
+	r.compileAndRun(t, 0x1000, 0x50) // PUSH EAX
+
+	if r.cpu.ESP != 0x100FC {
+		t.Fatalf("ESP = %#x, want 0x100FC (native push executed)", r.cpu.ESP)
+	}
+	got := uint32(r.cpu.memory[0x100FC]) | uint32(r.cpu.memory[0x100FD])<<8 |
+		uint32(r.cpu.memory[0x100FE])<<16 | uint32(r.cpu.memory[0x100FF])<<24
+	if got != 0xCAFEF00D {
+		t.Fatalf("stack word = %#x, want 0xCAFEF00D", got)
+	}
+}
+
+// TestX86JIT_PUSH_CrossPage_Bails checks that a stack write straddling a page
+// boundary (first-byte offsets 0xFD/0xFE/0xFF) bails to the interpreter with
+// architectural state unchanged, so page-crossing semantics stay canonical.
+func TestX86JIT_PUSH_CrossPage_Bails(t *testing.T) {
+	// ESP so that ESP-4 lands at the given first-byte page offset.
+	for _, off := range []uint32{0xFD, 0xFE, 0xFF} {
+		t.Run(fmt.Sprintf("off_%02X", off), func(t *testing.T) {
+			r := newX86JITTestRig(t)
+			esp := 0x10000 + off + 4 // ESP-4 = 0x10000+off
+			r.cpu.ESP = esp
+			r.cpu.EAX = 0x11223344
+
+			r.compileAndRun(t, 0x1000, 0x50) // PUSH EAX
+
+			if r.cpu.ESP != esp {
+				t.Fatalf("off %#x: ESP = %#x, want unchanged %#x (cross-page bail)", off, r.cpu.ESP, esp)
+			}
+			if r.cpu.EIP != 0x1000 {
+				t.Fatalf("off %#x: EIP = %#x, want 0x1000 (bail re-executes PUSH)", off, r.cpu.EIP)
+			}
+		})
+	}
+}
+
+// TestX86JIT_POP_OutOfBounds_Bails checks that a pop whose span escapes active
+// RAM bails cleanly instead of doing an out-of-range host access.
+func TestX86JIT_POP_OutOfBounds_Bails(t *testing.T) {
+	r := newX86JITTestRig(t)
+	memSize := uint32(len(r.cpu.memory))
+	// POP reads [ESP, ESP+3]; last byte at MemSize is the first OOB start.
+	r.cpu.ESP = memSize - 1
+	r.cpu.EAX = 0x55667788
+
+	r.compileAndRun(t, 0x1000, 0x58) // POP EAX
+
+	if r.cpu.ESP != memSize-1 {
+		t.Fatalf("ESP = %#x, want unchanged %#x (OOB bail)", r.cpu.ESP, memSize-1)
+	}
+	if r.cpu.EAX != 0x55667788 {
+		t.Fatalf("EAX = %#x, want unchanged (POP bailed)", r.cpu.EAX)
+	}
+	if r.cpu.EIP != 0x1000 {
+		t.Fatalf("EIP = %#x, want 0x1000 (bail re-executes POP)", r.cpu.EIP)
+	}
+}
+
+// TestX86JIT_PUSH_CodePage_Invalidates checks that a native push onto a
+// JIT-compiled code page triggers self-modifying-code invalidation covering
+// the written span, so stale native code is not reused.
+func TestX86JIT_PUSH_CodePage_Invalidates(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.ESP = 0x10004    // writes [0x10000, 0x10003] on page 0x100
+	r.cpu.EAX = 0xABCD1234 // written before the self-mod bail
+	r.codeBM[0x10000>>8] = 1
+	r.ctx.NeedInval = 0
+
+	r.compileAndRun(t, 0x1000, 0x50) // PUSH EAX
+
+	if r.ctx.NeedInval == 0 {
+		t.Fatalf("NeedInval = 0, want set (push onto code page must invalidate)")
+	}
+	if r.ctx.InvalAddr != 0x10000 || r.ctx.InvalSize != 4 {
+		t.Fatalf("Inval range = [%#x,+%d), want [0x10000,+4)", r.ctx.InvalAddr, r.ctx.InvalSize)
+	}
+	// The write itself completes before the self-mod bail.
+	got := uint32(r.cpu.memory[0x10000]) | uint32(r.cpu.memory[0x10001])<<8 |
+		uint32(r.cpu.memory[0x10002])<<16 | uint32(r.cpu.memory[0x10003])<<24
+	if got != 0xABCD1234 {
+		t.Fatalf("stack word = %#x, want 0xABCD1234", got)
+	}
+}
+
+// TestX86JIT_MOVSX_Ew_CrossPageMMIO_Bails covers the P2 word-load case: a
+// 16-bit load whose second byte falls on an MMIO page must bail so the high
+// byte is read through the bus, not the backing shadow.
+func TestX86JIT_MOVSX_Ew_CrossPageMMIO_Bails(t *testing.T) {
+	r := newX86JITTestRig(t)
+	// 0xF000-0xFFFF is MMIO. EA = 0xEFFF -> span [0xEFFF, 0xF000] crosses into
+	// the MMIO page.
+	r.cpu.ESI = 0xEFFF
+	r.cpu.EAX = 0x99AABBCC
+
+	r.compileAndRun(t, 0x1000, 0x0F, 0xBF, 0x06) // MOVSX EAX, word [ESI]
+
+	if r.cpu.EAX != 0x99AABBCC {
+		t.Fatalf("EAX = %#x, want unchanged (cross-page MMIO bail)", r.cpu.EAX)
+	}
+	if r.cpu.EIP != 0x1000 {
+		t.Fatalf("EIP = %#x, want 0x1000 (bail re-executes MOVSX)", r.cpu.EIP)
+	}
+}
+
+// TestX86JIT_StackAboveVisibleRAM_Bails covers the case where the backing
+// slice is larger than the guest-visible RAM ceiling: a stack access inside
+// the backing but above active RAM must still bail so it is not serviced from
+// backing memory the guest cannot see.
+func TestX86JIT_StackAboveVisibleRAM_Bails(t *testing.T) {
+	r := newX86JITTestRig(t)
+	const visible = 0x100000 // 1 MiB visible; backing is 32 MiB
+	r.bus.ApplyProfileVisibleCeiling(visible)
+	if got := r.cpu.x86VisibleRAMCeiling(); got != visible {
+		t.Fatalf("ceiling = %#x, want %#x (active RAM < backing)", got, visible)
+	}
+	// compileAndRun compiles via x86CompileBlock, which reads this global.
+	x86CompileMemCeiling = r.cpu.x86VisibleRAMCeiling()
+	t.Cleanup(func() { x86CompileMemCeiling = 0 })
+
+	// Above-visible POP: address is inside the 32 MiB backing but above the
+	// 1 MiB visible ceiling -> must bail.
+	r.cpu.ESP = visible + 0x1000
+	r.cpu.EAX = 0x0BADF00D
+	r.compileAndRun(t, 0x1000, 0x58) // POP EAX
+	if r.cpu.ESP != visible+0x1000 || r.cpu.EAX != 0x0BADF00D || r.cpu.EIP != 0x1000 {
+		t.Fatalf("above-visible POP not bailed: ESP=%#x EAX=%#x EIP=%#x",
+			r.cpu.ESP, r.cpu.EAX, r.cpu.EIP)
+	}
+
+	// Below-visible PUSH: fully within visible RAM and a single non-MMIO page
+	// -> executes natively.
+	r.cpu.ESP = visible // writes [0xFFFFC, 0xFFFFF], below the ceiling
+	r.cpu.EAX = 0x12345678
+	r.compileAndRun(t, 0x1000, 0x50) // PUSH EAX
+	if r.cpu.ESP != 0xFFFFC {
+		t.Fatalf("below-visible PUSH did not execute: ESP=%#x, want 0xFFFFC", r.cpu.ESP)
 	}
 }
 

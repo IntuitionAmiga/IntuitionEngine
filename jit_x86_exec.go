@@ -245,6 +245,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			// Compile block (pass bitmaps for compile-time page checks)
 			x86CompileIOBitmap = cpu.x86JitIOBitmap
 			x86CompileCodeBitmap = cpu.x86JitCodeBM
+			x86CompileMemCeiling = cpu.x86VisibleRAMCeiling()
 			var err error
 			block, err = x86CompileBlock(instrs, pc, execMem, cpu.memory)
 			if err != nil {
@@ -321,6 +322,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				// Try multi-block region compilation first (only for 3+ block regions)
 				x86CompileIOBitmap = cpu.x86JitIOBitmap
 				x86CompileCodeBitmap = cpu.x86JitCodeBM
+				x86CompileMemCeiling = cpu.x86VisibleRAMCeiling()
 				if x86JITStatsOn {
 					x86JITStats.regionCandidates.Add(1)
 				}

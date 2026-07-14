@@ -820,6 +820,25 @@ func (c *CPU_X86) read8(addr uint32) byte {
 	return c.bus.Read(addr)
 }
 
+// x86VisibleRAMCeiling returns the byte ceiling below which the JIT may access
+// guest RAM directly (via the backing slice) without going through the bus.
+// It is the smaller of the backing length and the bus's guest-visible RAM cap
+// (ProfileMemoryCap / ActiveVisibleRAM), clamped to the 32-bit address space.
+// Native accesses at or above this must bail to the interpreter so the bus
+// enforces active-RAM and MMIO semantics.
+func (c *CPU_X86) x86VisibleRAMCeiling() uint32 {
+	ceil := uint64(len(c.memory))
+	if adapter, ok := c.bus.(*X86BusAdapter); ok && adapter.bus != nil {
+		if cap := adapter.bus.ProfileMemoryCap(); cap != 0 && cap < ceil {
+			ceil = cap
+		}
+	}
+	if ceil > 0xFFFFFFFF {
+		ceil = 0xFFFFFFFF
+	}
+	return uint32(ceil)
+}
+
 // read16 reads a 16-bit word from memory (little-endian)
 func (c *CPU_X86) read16(addr uint32) uint16 {
 	lo := c.bus.Read(addr)

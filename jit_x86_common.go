@@ -846,13 +846,20 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 }
 
 // x86ShouldStepInInterpreter identifies stack/control instructions that are
-// deliberately routed through CPU_X86.Step in the production dispatcher. The
-// native stack emitters do not yet perform the guest-memory safety, MMIO, and
-// JIT invalidation handling required for production memory accesses.
-// x86StepInInterpreterDisabledForTest, when true, lets focused tests
-// compile stack/control instructions through their native emitters,
-// which production deliberately routes to the interpreter (see below).
-// The emitters stay covered without changing the production policy.
+// deliberately routed through CPU_X86.Step in the production dispatcher.
+//
+// PUSH/POP r32 (0x50-0x5F) are NOT in this set: they compile natively via
+// x86EmitPUSH_r32/x86EmitPOP_r32, guarded by x86EmitSpanGuard which enforces
+// bounds (guest-visible RAM), page-crossing, MMIO, and self-modifying-code
+// invalidation, bailing to the interpreter otherwise.
+//
+// The remaining stack/control ops below stay on the interpreter to keep
+// CALL/RET return-address and frame semantics and the PUSH-imm/PUSHF/indirect
+// paths on the canonical path, not for lack of memory-safety handling.
+//
+// x86StepInInterpreterDisabledForTest, when true, lets focused tests compile
+// these remaining ops through their native emitters without changing the
+// production policy.
 var x86StepInInterpreterDisabledForTest bool
 
 func x86ShouldStepInInterpreter(ji X86JITInstr) bool {
