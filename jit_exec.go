@@ -318,6 +318,42 @@ func (cpu *CPU64) ExecuteJIT() {
 			continue
 		}
 
+		// Static-JMP chase (Technique 1). When the current PC sits on a run of
+		// static unconditional jumps (BRA / JMP R0,disp), collapse them in Go
+		// instead of compiling and dispatching a native block per trampoline
+		// hop. MMU-off only: the chase reads flat physical bytes. Disabled while
+		// a debug adapter is attached so a patched-over jump cannot skip a
+		// breakpoint, matching the native-chaining guard below. The landing PC
+		// is re-checked from the top of the loop (HALT, interrupt poll, block
+		// lookup), so a self-loop or cycle stays interruptible.
+		if !cpu.mmuEnabled && cpu.debugBreakIn == nil &&
+			(cpu.debugBreakpointsActive == nil || !cpu.debugBreakpointsActive()) {
+			// Cheap gate: only sit up the chase (closure + fetch) when the
+			// current PC actually holds a static-jump opcode. In hot single-
+			// block loops the PC never lands on a BRA/JMP at a dispatcher
+			// boundary, so this keeps the common path free of chase overhead.
+			memLen := uint64(len(cpu.memory))
+			var op0 byte
+			mapped := true
+			if pcPhys <= memLen-IE64_INSTR_SIZE {
+				op0 = cpu.memory[pcPhys]
+			} else if w, ok := cpu.bus.ReadPhys64WithFault(pcPhys); ok {
+				op0 = byte(w)
+			} else {
+				mapped = false
+			}
+			if mapped && (op0 == OP_BRA || op0 == OP_JMP) {
+				if newPC, retired := ie64ChaseStaticJumpsFlat(pcPhys, cpu.memory, cpu.bus); retired > 0 {
+					cpu.PC = newPC
+					cpu.InstructionCount += uint64(retired)
+					if perfAcctOn {
+						cpu.perfAcct.AddInstrs(uint64(retired))
+					}
+					continue
+				}
+			}
+		}
+
 		// HALT detection. For low pcPhys inside the cpu.memory window,
 		// keep the cheap byte index; for high pcPhys, fetch the 8-byte
 		// instruction word through the bus so an unmapped page stops
