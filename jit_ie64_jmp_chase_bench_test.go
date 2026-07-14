@@ -49,3 +49,43 @@ func BenchmarkIE64_TrampolineColdDispatch_JIT(b *testing.B) {
 	b.StopTimer()
 	b.ReportMetric(float64(hops), "hops/op")
 }
+
+// BenchmarkIE64_ConstLoad_JIT is the focused benchmark for constant-address
+// LOAD/STORE elision (Technique 1). A tight backward loop performs a run of
+// LOAD rd, K(R0) with compile-time constant addresses below IO_REGION_START,
+// so each load's native path omits the I/O-region compare, window bound and
+// I/O-page bitmap probe. The loop compiles into a single native block.
+func BenchmarkIE64_ConstLoad_JIT(b *testing.B) {
+	if !jitAvailable {
+		b.Skip("JIT not available on this platform")
+	}
+	const nLoads = 16
+	var instrs [][]byte
+	for i := 0; i < nLoads; i++ {
+		instrs = append(instrs, ie64Instr(OP_LOAD, byte(1+i%8), IE64_SIZE_Q, 0, 0, 0, uint32(0x100+i*8)))
+	}
+	// SUB.Q R10, R10, #1 (immediate: xbit=1, rs=R10).
+	instrs = append(instrs, ie64Instr(OP_SUB, 10, IE64_SIZE_Q, 1, 10, 0, 1))
+	// BNE R10, R0, loop : backward branch to PROG_START.
+	branchIdx := len(instrs)
+	back := uint32(int32(-int64(branchIdx) * int64(IE64_INSTR_SIZE)))
+	instrs = append(instrs, ie64Instr(OP_BNE, 0, 0, 0, 10, 0, back))
+	totalInstrs := int(benchIterations) * len(instrs)
+
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	resetState := func() {
+		cpu.PC = PROG_START
+		cpu.regs[10] = benchIterations
+		cpu.running.Store(true)
+	}
+	setupJITBench(b, cpu, instrs, resetState)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resetState()
+		cpu.jitExecute()
+	}
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
+}

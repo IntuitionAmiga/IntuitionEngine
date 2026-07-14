@@ -2917,10 +2917,18 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	// helper - direct [memBase + addr] would be wrong.
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
 	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
-	physPathOff := amd64Jcc_rel32(cb, amd64CondE) // JE → physical path
+	physPathOff := amd64Jcc_rel32(cb, amd64CondE) // JE → MMU-off path
 	mmuMissOff := emitMMUMicroTLBProbeAMD64(cb, int32(jitCtxOffMicroTLBReadPrefix))
+	// A micro-TLB hit falls through here with RAX overwritten by the
+	// translated PHYSICAL address, so the full I/O and bounds checks below
+	// must run for it. Constant-address elision is therefore restricted to the
+	// MMU-off path (physPathOff): only there does RAX still hold the constant
+	// virtual address the low-RAM proof was computed for.
+	_, constElide := ie64ConstLowRAMAccess(ji.rs, ji.imm32, ji.size)
 	physPathPC := cb.Len()
-	patchRel32(cb, physPathOff, physPathPC)
+	if !constElide {
+		patchRel32(cb, physPathOff, physPathPC)
+	}
 
 	// Fast path: addr < IO_REGION_START (R8). 64-bit CMP so any address
 	// with upper bits set routes to the slow path.
@@ -2973,6 +2981,21 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	}
 	doneOff2 := amd64JMP_rel32(cb)
 
+	// Constant-address elided path (MMU off only). RAX holds the constant
+	// virtual address, proven to lie in RAM below the I/O region, so the I/O
+	// compare, window bound and I/O-page bitmap probe are all omitted. It is
+	// emitted here, before the resume entry, and ends with its own jump to
+	// donePC so the resume-entry fallthrough never runs it with a stale RAX.
+	elideDoneOff := 0
+	if constElide {
+		patchRel32(cb, physPathOff, cb.Len())
+		emitMemLoad(cb, dstReg, ji.size)
+		if !mapped {
+			emitStoreSpilledRegAMD64(cb, dstReg, ji.rd)
+		}
+		elideDoneOff = amd64JMP_rel32(cb)
+	}
+
 	// Helper exit. All three bail paths (MMU on, high addr, I/O page)
 	// converge here. emitLOADHelperExit ends with emitEpilogue → RET,
 	// so there is no fallthrough into the post-block done label.
@@ -2989,6 +3012,9 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	donePC := cb.Len()
 	patchRel32(cb, doneOff1, donePC)
 	patchRel32(cb, doneOff2, donePC)
+	if constElide {
+		patchRel32(cb, elideDoneOff, donePC)
+	}
 }
 
 // emitLOADHelperExit writes the JITContext HELPER_LOAD protocol fields
@@ -3064,8 +3090,16 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
 	physPathOff := amd64Jcc_rel32(cb, amd64CondE)
 	mmuMissOff := emitMMUMicroTLBProbeAMD64(cb, int32(jitCtxOffMicroTLBWritePrefix))
+	// A micro-TLB hit falls through here with RAX overwritten by the
+	// translated PHYSICAL address, so the full I/O and bounds checks below must
+	// run for it. Constant-address elision is restricted to the MMU-off path
+	// (physPathOff): only there does RAX still hold the constant virtual
+	// address the low-RAM proof was computed for.
+	_, constElide := ie64ConstLowRAMAccess(ji.rs, ji.imm32, ji.size)
 	physPathPC := cb.Len()
-	patchRel32(cb, physPathOff, physPathPC)
+	if !constElide {
+		patchRel32(cb, physPathOff, physPathPC)
+	}
 	if preserveSrcAcrossProbe {
 		amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(amd64OffCtxPtr))
 		amd64MOV_reg_mem(cb, srcReg, amd64RDX, int32(jitCtxOffHelperVal))
@@ -3120,6 +3154,25 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 		doneOff3 = amd64JMP_rel32(cb)
 	}
 
+	// Constant-address elided path (MMU off only). RAX holds the constant
+	// virtual address, proven in RAM below the I/O region, so the I/O compare,
+	// window bound, I/O-page bitmap probe and BLT shadow checks are omitted.
+	// The self-modifying-code store check is retained (low RAM can hold code).
+	// srcReg is restored first if it was parked in HelperVal across the probe.
+	// Emitted before the resume entry and ended with its own jump to donePC so
+	// the resume-entry fallthrough never re-runs the store with a stale RAX.
+	elideDoneOff := 0
+	if constElide {
+		patchRel32(cb, physPathOff, cb.Len())
+		if preserveSrcAcrossProbe {
+			amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(amd64OffCtxPtr))
+			amd64MOV_reg_mem(cb, srcReg, amd64RDX, int32(jitCtxOffHelperVal))
+		}
+		emitMemStore(cb, srcReg, ji.size)
+		emitIE64SMCStoreCheckAMD64(cb, ji.size, true)
+		elideDoneOff = amd64JMP_rel32(cb)
+	}
+
 	// Helper exit. All three bail paths converge here.
 	resumeLabel := ie64ResumeLabel(cb, instrPC)
 	helperPC := cb.Len()
@@ -3140,6 +3193,9 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	patchRel32(cb, doneOff2, donePC)
 	if len(bltShadowStoreOffs) != 0 {
 		patchRel32(cb, doneOff3, donePC)
+	}
+	if constElide {
+		patchRel32(cb, elideDoneOff, donePC)
 	}
 }
 

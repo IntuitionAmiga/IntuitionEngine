@@ -1056,6 +1056,38 @@ func ie64ResolveTerminatorTarget(opcode byte, rs byte, imm32 uint32, instrPC uin
 	return 0, false
 }
 
+// ie64WindowCoversIORegion is a compile-time proof that the low guest-RAM
+// window always covers the whole sub-I/O address range. The window is never
+// smaller than MIN_GUEST_RAM, so any address below IO_REGION_START is both
+// mapped RAM and inside the window. If this invariant were ever broken the
+// subtraction would underflow an unsigned constant and fail to compile,
+// invalidating the constant-address elision in ie64ConstLowRAMAccess.
+const ie64WindowCoversIORegion uint64 = MIN_GUEST_RAM - IO_REGION_START
+
+// ie64ConstLowRAMAccess reports whether a LOAD/STORE with base register rs,
+// signed 32-bit displacement imm32 and the given operand size has a
+// compile-time constant effective address that provably lands in low RAM
+// below the I/O region. When it returns ok, the access needs neither an
+// I/O-page probe nor a window bound check: base R0 is hardwired zero, the
+// displacement is non-negative, and the whole access [addr, addr+bytes) lies
+// below IO_REGION_START, which is always inside the window (see
+// ie64WindowCoversIORegion). MMU translation is a separate concern and is not
+// elided by this. Shared, untagged, so the amd64/arm64 emitters and the wasm
+// backend apply the identical proof.
+func ie64ConstLowRAMAccess(rs byte, imm32 uint32, size byte) (uint64, bool) {
+	if rs != 0 {
+		return 0, false
+	}
+	if int32(imm32) < 0 {
+		return 0, false
+	}
+	addr := uint64(imm32)
+	if addr+uint64(ie64AccessBytes(size)) > IO_REGION_START {
+		return 0, false
+	}
+	return addr, true
+}
+
 // ie64CacheKey is the exact composite key used by IE64's MMU mode so that
 // two address spaces sharing the same virtual PC cannot collide on the
 // JIT cache. The legacy `(ptbr * golden_ratio) ^ pcVirt` hash was lossy
