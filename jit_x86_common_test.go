@@ -817,8 +817,6 @@ func TestX86NeedsFallback(t *testing.T) {
 	}{
 		{"RET", X86JITInstr{opcode: 0x00C3}},
 		{"LEAVE", X86JITInstr{opcode: 0x00C9}},
-		{"PUSH r32", X86JITInstr{opcode: 0x0050}},
-		{"POP r32", X86JITInstr{opcode: 0x0058}},
 		{"PUSH imm32", X86JITInstr{opcode: 0x0068}},
 		{"PUSH imm8", X86JITInstr{opcode: 0x006A}},
 		{"PUSH Ev", X86JITInstr{opcode: 0x00FF, hasModRM: true, modrm: 0x30}},
@@ -826,6 +824,20 @@ func TestX86NeedsFallback(t *testing.T) {
 	} {
 		if !x86NeedsFallback([]X86JITInstr{tt.ji}) {
 			t.Errorf("%s should need fallback", tt.name)
+		}
+	}
+
+	// PUSH/POP r32 now compile natively (block start included) and must not
+	// route to the interpreter fallback.
+	for _, tt := range []struct {
+		name string
+		ji   X86JITInstr
+	}{
+		{"PUSH r32", X86JITInstr{opcode: 0x0050}},
+		{"POP r32", X86JITInstr{opcode: 0x0058}},
+	} {
+		if x86NeedsFallback([]X86JITInstr{tt.ji}) {
+			t.Errorf("%s should not need fallback", tt.name)
 		}
 	}
 

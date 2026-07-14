@@ -868,8 +868,9 @@ func x86ShouldStepInInterpreter(ji X86JITInstr) bool {
 		return true
 	case op == 0xC9: // LEAVE
 		return true
-	case op >= 0x50 && op <= 0x5F: // PUSH/POP r32
-		return true
+	// PUSH/POP r32 (0x50-0x5F) have native emitters (x86EmitPUSH_r32/
+	// x86EmitPOP_r32) and run mid-block already; letting a block start with
+	// them lets the prologue/epilogue compile instead of single-stepping.
 	case op == 0x68 || op == 0x6A: // PUSH imm32/imm8
 		return true
 	case op == 0x9C || op == 0x9D: // PUSHF/POPF
