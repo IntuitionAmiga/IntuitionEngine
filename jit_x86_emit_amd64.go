@@ -1153,7 +1153,7 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		case op2 == 0xBE:
 			return x86EmitMOVSX_Gv_Eb(cb, ji)
 		case op2 == 0xBF:
-			return x86EmitMOVSX_Gv_Ew(cb, ji)
+			return x86EmitMOVSX_Gv_Ew(cb, ji, memory, instrIdx)
 		case op2 == 0xAF:
 			return x86EmitIMUL_Gv_Ev(cb, ji, cs)
 		case op2 == 0xA4 || op2 == 0xAC:
@@ -2731,15 +2731,23 @@ func x86EmitMOVSX_Gv_Eb(cb *CodeBuffer, ji *X86JITInstr) bool {
 	return true
 }
 
-func x86EmitMOVSX_Gv_Ew(cb *CodeBuffer, ji *X86JITInstr) bool {
-	if !ji.hasModRM || ji.modrm>>6 != 3 {
+func x86EmitMOVSX_Gv_Ew(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !ji.hasModRM {
 		return false
 	}
 	dstReg := (ji.modrm >> 3) & 7
-	srcReg := ji.modrm & 7
 
-	x86EmitLoadGuestReg32(cb, amd64R8, srcReg)
-	// MOVSX R8d, R8w
+	if ji.modrm>>6 == 3 {
+		srcReg := ji.modrm & 7
+		x86EmitLoadGuestReg32(cb, amd64R8, srcReg)
+	} else {
+		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+			return false
+		}
+		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		x86EmitMemLoad16(cb, amd64R8, amd64R10) // zero-extended 16-bit into R8
+	}
+	// MOVSX R8d, R8w -- sign-extend the low 16 bits to 32.
 	emitREX(cb, false, amd64R8, amd64R8)
 	cb.EmitBytes(0x0F, 0xBF, modRM(3, amd64R8, amd64R8))
 

@@ -1702,6 +1702,29 @@ func TestX86JIT_NativeLEA_BaseOnly(t *testing.T) {
 	}
 }
 
+func TestX86JIT_NativeMOVSX_Gv_Ew_Memory(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.ESI = 0x2000
+	// word -1
+	r.cpu.memory[0x2000] = 0xFF
+	r.cpu.memory[0x2001] = 0xFF
+	r.cpu.EAX = 0x12345678
+
+	// MOVSX EAX, word ptr [ESI]  (0F BF 06)
+	r.compileAndRun(t, 0x1000, 0x0F, 0xBF, 0x06)
+	if r.cpu.EAX != 0xFFFFFFFF {
+		t.Fatalf("EAX = %#x, want 0xFFFFFFFF (sign-extended -1)", r.cpu.EAX)
+	}
+
+	// positive word 0x1234
+	r.cpu.memory[0x2000] = 0x34
+	r.cpu.memory[0x2001] = 0x12
+	r.compileAndRun(t, 0x1000, 0x0F, 0xBF, 0x06)
+	if r.cpu.EAX != 0x00001234 {
+		t.Fatalf("EAX = %#x, want 0x00001234", r.cpu.EAX)
+	}
+}
+
 func TestX86JIT_NativeWordMOVMemoryRoundTrip(t *testing.T) {
 	r := newX86JITTestRig(t)
 	r.cpu.EAX = 0xAABB1234
