@@ -880,6 +880,11 @@ func emitPrologue(cb *CodeBuffer, blockPC uint64, br *blockRegs) int {
 	// Now overwrite RDI with RegsPtr (base for register file access)
 	amd64MOV_reg_reg(cb, amd64RegBase, amd64RAX)
 
+	// Seed FP residents from canonical FPRegs memory (Technique 3, B1). On the
+	// shared chainEntry path so both Go-entry and native-chain-entry re-load.
+	// RAX (RegsPtr) is already copied to RegBase above, so it is free scratch.
+	emitFPResidencyLoad(cb)
+
 	return chainEntryOff
 }
 
@@ -940,6 +945,11 @@ func emitMMUMicroTLBProbeAMD64(cb *CodeBuffer, prefixOff int32) int {
 // emitEpilogue but does not pop the stack frame or restore callee-saved.
 // On entry RDI = RegsPtr (current convention inside the JIT body).
 func emitLightweightStoreRegs(cb *CodeBuffer) {
+	// Spill FP residents so the chained target re-loads canonical FP state via
+	// its own chainEntry (Technique 3, B1). Idempotent with the epilogue spill
+	// on the unchained fall-through.
+	emitFPResidencySpill(cb)
+
 	// Spill the full resident set to the canonical register file so the chained
 	// target block re-loads correct values through its own chainEntry. The
 	// resident set is the region remap under the region tier, R1-R4 otherwise;
@@ -1066,6 +1076,11 @@ func emitChainExit(cb *CodeBuffer, br *blockRegs, targetPC uint64, instrCount ui
 //   - storeRegs: IE64 register bitmask - which registers to store back
 //   - calleeSaved: IE64 register bitmask - which callee-saved pairs to restore (unused on amd64, we always restore all)
 func emitEpilogue(cb *CodeBuffer, storeRegs uint32, _ uint32) {
+	// Spill FP residents to canonical memory before any exit (Technique 3, B1).
+	// Every emitEpilogue site is a terminal RET, so this covers block-end,
+	// mid-block helper bails and dispatcher exits uniformly.
+	emitFPResidencySpill(cb)
+
 	// Store only the resident IE64 registers that the block (or the
 	// instructions retired before a mid-block bail) actually wrote. The
 	// prologue loads all five resident registers unconditionally, so an
@@ -1148,6 +1163,21 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 
 	br := analyzeBlockRegs(instrs)
 	br.hasBackwardBranch = detectBackwardBranches(instrs, startPC)
+
+	// FP register residency (Technique 3, B1): keep the block's hottest FP32
+	// registers in host XMM8..XMM15 across the block. Only eligible when the
+	// block has FP state (hasFPU) and no residency barrier / FP64 usage. The
+	// plan is a package global consulted by the prologue, FP load/store helpers
+	// and exit spills; cleared on return.
+	prevFPPlan := ie64ActiveFPPlan
+	ie64ActiveFPPlan = nil
+	if br.hasFPU && ie64FPResidencyEnabled() {
+		if plan, ok := ie64BuildBlockFPPlan(instrs); ok {
+			ie64ActiveFPPlan = &plan
+		}
+	}
+	defer func() { ie64ActiveFPPlan = prevFPPlan }()
+
 	chainEntryOffset := emitPrologue(cb, startPC, &br)
 
 	instrOffsets := make([]int, len(instrs))
@@ -1380,6 +1410,22 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 	// Force-true so the prologue + counter machinery handles intra-region
 	// back-edges correctly.
 	br.hasBackwardBranch = true
+
+	// FP register residency across the whole region (Technique 3, B3). The plan
+	// is built over the flattened region instructions: a residency barrier
+	// anywhere disqualifies the region, because residents live in XMM8..15 across
+	// internal edges and a helper/memory op would clobber them. Residents are
+	// seeded on the shared chainEntry (region entry) and spilled at every
+	// external exit (epilogue, chain-exit store, bail); internal direct JMPs keep
+	// them live. Cleared on return.
+	prevFPPlan := ie64ActiveFPPlan
+	ie64ActiveFPPlan = nil
+	if br.hasFPU && ie64FPResidencyEnabled() {
+		if fpPlan, ok := ie64BuildBlockFPPlan(allInstrs); ok {
+			ie64ActiveFPPlan = &fpPlan
+		}
+	}
+	defer func() { ie64ActiveFPPlan = prevFPPlan }()
 
 	cb := NewCodeBuffer(len(allInstrs) * 384)
 	chainEntryOff := emitPrologue(cb, region.entryPC, &br)
@@ -4053,14 +4099,103 @@ func emitJSR_INDHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blo
 // FPU Helpers
 // ===========================================================================
 
+// ie64ActiveFPPlan, when non-nil, keeps the region's hottest FP32 registers
+// resident in host XMM8..XMM15 for the duration of one block compile (Technique
+// 3, sub-slice B1). It is set by compileBlock before the prologue and cleared on
+// return; nil restores the memory-backed FP path. Consulted by emitLoadFPRegAMD64
+// / emitStoreFPRegAMD64 and by the prologue-load / exit-spill helpers.
+var ie64ActiveFPPlan *ie64FPResidencyPlan
+
+// ie64FPResidentSingleXMM returns the host XMM holding FP32 register fpIdx and
+// true, when that register is resident in the active plan.
+func ie64FPResidentSingleXMM(fpIdx byte) (byte, bool) {
+	if ie64ActiveFPPlan == nil {
+		return 0, false
+	}
+	b, ok := ie64ActiveFPPlan.resident(fpIdx & 0x0F)
+	if !ok || b.kind != ie64FPResSingle {
+		return 0, false
+	}
+	return b.xmm, true
+}
+
+// ie64FPResidentPairXMM returns the host XMM holding FP64 register (pair) fpIdx
+// and true, when that pair is resident in the active plan. The XMM's low 64 bits
+// hold the little-endian double bit pattern.
+func ie64FPResidentPairXMM(fpIdx byte) (byte, bool) {
+	if ie64ActiveFPPlan == nil {
+		return 0, false
+	}
+	b, ok := ie64ActiveFPPlan.resident(fpIdx & 0x0E)
+	if !ok || b.kind != ie64FPResPair {
+		return 0, false
+	}
+	return b.xmm, true
+}
+
 func emitLoadFPRegAMD64(cb *CodeBuffer, amd64Dst, fpIdx byte) {
+	if xmm, ok := ie64FPResidentSingleXMM(fpIdx); ok {
+		amd64MOVD_reg_xmm(cb, amd64Dst, xmm) // Dst = low32(XMMr)
+		return
+	}
 	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
 	amd64MOV_reg_mem32(cb, amd64Dst, amd64R11, int32(fpIdx&0x0F)*4)
 }
 
 func emitStoreFPRegAMD64(cb *CodeBuffer, amd64Src, fpIdx byte) {
+	if xmm, ok := ie64FPResidentSingleXMM(fpIdx); ok {
+		amd64MOVD_xmm_reg(cb, xmm, amd64Src) // XMMr = zero_ext(Src)
+		return
+	}
 	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
 	amd64MOV_mem_reg32(cb, amd64R11, int32(fpIdx&0x0F)*4, amd64Src)
+}
+
+// emitFPResidencyLoad loads every resident FP register from the FPRegs array
+// into its host XMM. Emitted once on the shared chainEntry path so both the
+// Go-entry and native-chain-entry passes seed residents from canonical memory.
+// Uses R11 (FPU pointer) and RAX as scratch; both are dead at the call site.
+func emitFPResidencyLoad(cb *CodeBuffer) {
+	if ie64ActiveFPPlan == nil {
+		return
+	}
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
+	for _, b := range ie64ActiveFPPlan.bindings {
+		switch b.kind {
+		case ie64FPResSingle:
+			amd64MOV_reg_mem32(cb, amd64RAX, amd64R11, int32(b.baseSlot)*4)
+			amd64MOVD_xmm_reg(cb, b.xmm, amd64RAX)
+		case ie64FPResPair:
+			// Raw 64-bit load from the contiguous even/odd slots (bypasses the
+			// residency hook, which is not yet armed for this XMM during seeding).
+			amd64MOV_reg_mem(cb, amd64RAX, amd64R11, int32(b.baseSlot)*4)
+			amd64MOVQ_xmm_reg(cb, b.xmm, amd64RAX)
+		}
+	}
+}
+
+// emitFPResidencySpill writes every resident FP register's host XMM back to the
+// FPRegs array. Emitted at every block exit (full epilogue and chain-exit
+// lightweight store) so the interpreter, a chained target block, or an interrupt
+// handler observes canonical FP state. Idempotent: an unwritten resident still
+// equals its memory slot, so re-spilling is harmless. Uses R11 and RAX scratch.
+func emitFPResidencySpill(cb *CodeBuffer) {
+	if ie64ActiveFPPlan == nil {
+		return
+	}
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
+	for _, b := range ie64ActiveFPPlan.bindings {
+		switch b.kind {
+		case ie64FPResSingle:
+			amd64MOVD_reg_xmm(cb, amd64RAX, b.xmm)
+			amd64MOV_mem_reg32(cb, amd64R11, int32(b.baseSlot)*4, amd64RAX)
+		case ie64FPResPair:
+			// Raw 64-bit store to the contiguous even/odd slots (bypasses the
+			// residency hook so the canonical FPRegs image is refreshed).
+			amd64MOVQ_reg_xmm(cb, amd64RAX, b.xmm)
+			amd64MOV_mem_reg(cb, amd64R11, int32(b.baseSlot)*4, amd64RAX)
+		}
+	}
 }
 
 // ===========================================================================
@@ -5139,6 +5274,10 @@ func emitDSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 }
 
 func emitStoreDPairBitsAMD64(cb *CodeBuffer, srcReg byte, fpIdx byte) {
+	if xmm, ok := ie64FPResidentPairXMM(fpIdx); ok {
+		amd64MOVQ_xmm_reg(cb, xmm, srcReg) // low64(XMMr) = srcReg
+		return
+	}
 	base := int32(fpIdx&0x0E) * 4
 	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
 	amd64MOV_mem_reg32(cb, amd64R11, base, srcReg)
@@ -5148,6 +5287,10 @@ func emitStoreDPairBitsAMD64(cb *CodeBuffer, srcReg byte, fpIdx byte) {
 }
 
 func emitLoadDPairBitsAMD64(cb *CodeBuffer, dstReg byte, fpIdx byte) {
+	if xmm, ok := ie64FPResidentPairXMM(fpIdx); ok {
+		amd64MOVQ_reg_xmm(cb, dstReg, xmm) // dstReg = low64(XMMr)
+		return
+	}
 	base := int32(fpIdx&0x0E) * 4
 	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
 	amd64MOV_reg_mem32(cb, dstReg, amd64R11, base)
