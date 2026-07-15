@@ -19,7 +19,10 @@ License: GPLv3 or later
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // Local variable indices inside every generated block function.
 const (
@@ -54,6 +57,145 @@ var wasmBlockLocals = []byte{
 	wasmTypeI64, wasmTypeI64,
 	wasmTypeI32,
 	wasmTypeI32, wasmTypeI32,
+}
+
+const wasmGPRLocalBase = 19
+
+type wasmGPRPlan struct {
+	locals   [32]uint32
+	dirty    [32]bool
+	bindings []byte
+}
+
+type wasmFPPlan struct {
+	locals   [8]uint32
+	dirty    [8]bool
+	bindings []byte // even architectural FP slot naming each FP64 pair
+}
+
+func (p *wasmFPPlan) local(r byte) uint32 {
+	if p == nil || r >= 16 {
+		return 0
+	}
+	return p.locals[(r&0x0e)/2]
+}
+
+func wasmBuildFPPlan(instrs []JITInstr, localBase uint32) *wasmFPPlan {
+	var uses [8]int
+	var dirty [8]bool
+	for i := range instrs {
+		ins := &instrs[i]
+		switch ins.opcode {
+		case OP_DMOV, OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV,
+			OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT:
+			owner := (ins.rd & 0x0e) / 2
+			uses[owner]++
+			dirty[owner] = true
+		case OP_DCMP:
+		case OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BGT, OP_BLE, OP_BHI, OP_BLS,
+			OP_BRA, OP_JMP, OP_HALT64, OP_NOP64:
+			continue
+		default:
+			return nil
+		}
+		for _, r := range []byte{ins.rs, ins.rt} {
+			if r < 16 {
+				uses[(r&0x0e)/2]++
+			}
+		}
+	}
+	type candidate struct{ pair, use int }
+	var candidates []candidate
+	for pair, use := range uses {
+		if use != 0 {
+			candidates = append(candidates, candidate{pair, use})
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].use != candidates[j].use {
+			return candidates[i].use > candidates[j].use
+		}
+		return candidates[i].pair < candidates[j].pair
+	})
+	p := &wasmFPPlan{}
+	for i, c := range candidates {
+		p.locals[c.pair] = localBase + uint32(i)
+		p.dirty[c.pair] = dirty[c.pair]
+		p.bindings = append(p.bindings, byte(c.pair*2))
+	}
+	return p
+}
+
+func (p *wasmGPRPlan) local(r byte) uint32 {
+	if p == nil || r >= 32 {
+		return 0
+	}
+	return p.locals[r]
+}
+
+// wasmBuildGPRPlan retains hot integer registers only in blocks that cannot
+// leave through a helper. This first residency tier therefore has one exit
+// invariant: every dirty local is spilled by exit/exitDyn before returning.
+func wasmBuildGPRPlan(instrs []JITInstr) *wasmGPRPlan {
+	var uses [32]int
+	var dirty [32]bool
+	for i := range instrs {
+		ins := &instrs[i]
+		switch ins.opcode {
+		case OP_MOVE, OP_MOVT, OP_MOVEQ, OP_LEA,
+			OP_ADD, OP_SUB, OP_MULU, OP_MULS, OP_DIVU, OP_DIVS,
+			OP_MOD64, OP_MODS, OP_NEG, OP_MULHU, OP_MULHS,
+			OP_AND64, OP_OR64, OP_EOR, OP_NOT64,
+			OP_LSL, OP_LSR, OP_ASR, OP_CLZ, OP_CTZ, OP_POPCNT,
+			OP_BSWAP, OP_SEXT, OP_ROL, OP_ROR:
+			if ins.rd != 0 && ins.rd != 31 {
+				uses[ins.rd]++
+				dirty[ins.rd] = true
+			}
+		case OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BGT, OP_BLE, OP_BHI, OP_BLS,
+			OP_BRA, OP_JMP, OP_HALT64, OP_NOP64:
+		default:
+			return nil
+		}
+		if ins.rs != 0 && ins.rs != 31 {
+			uses[ins.rs]++
+		}
+		if ins.xbit == 0 && ins.rt != 0 && ins.rt != 31 {
+			uses[ins.rt]++
+		}
+	}
+	type candidate struct {
+		reg byte
+		use int
+	}
+	var candidates []candidate
+	for r := byte(1); r < 31; r++ {
+		if uses[r] != 0 {
+			candidates = append(candidates, candidate{r, uses[r]})
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].use != candidates[j].use {
+			return candidates[i].use > candidates[j].use
+		}
+		return candidates[i].reg < candidates[j].reg
+	})
+	if len(candidates) > 16 {
+		candidates = candidates[:16]
+	}
+	p := &wasmGPRPlan{}
+	for i, c := range candidates {
+		p.locals[c.reg] = wasmGPRLocalBase + uint32(i)
+		p.dirty[c.reg] = dirty[c.reg]
+		p.bindings = append(p.bindings, c.reg)
+	}
+	return p
 }
 
 // wasmSupportedOpcode is the backend capability allowlist for the current
@@ -136,7 +278,13 @@ func wasmCompileBlock(instrs []JITInstr, startPC uint64) ([]byte, error) {
 		}
 	}
 
-	e := &wasmBlockEmitter{b: &wasmBody{}, needsMem: needsMem, needsSMC: needsSMC, needsFP: hasFP}
+	gprPlan := wasmBuildGPRPlan(instrs)
+	localBase := uint32(wasmGPRLocalBase)
+	if gprPlan != nil {
+		localBase += uint32(len(gprPlan.bindings))
+	}
+	fpPlan := wasmBuildFPPlan(instrs, localBase)
+	e := &wasmBlockEmitter{b: &wasmBody{}, needsMem: needsMem, needsSMC: needsSMC, needsFP: hasFP, gprPlan: gprPlan, fpPlan: fpPlan}
 	if hasFP {
 		// Internal helper first, so the block function can call it.
 		ccType := m.addType([]byte{wasmTypeI32, wasmTypeI64}, nil)
@@ -151,7 +299,18 @@ func wasmCompileBlock(instrs []JITInstr, startPC uint64) ([]byte, error) {
 	e.exit(startPC+uint64(len(instrs))*8, uint32(len(instrs)))
 	e.b.end()
 
-	fn := m.addFunc(typ, wasmBlockLocals, e.b.code)
+	locals := append([]byte(nil), wasmBlockLocals...)
+	if gprPlan != nil {
+		for range gprPlan.bindings {
+			locals = append(locals, wasmTypeI64)
+		}
+	}
+	if fpPlan != nil {
+		for range fpPlan.bindings {
+			locals = append(locals, wasmTypeF64)
+		}
+	}
+	fn := m.addFunc(typ, locals, e.b.code)
 	m.exportFunc("block", fn)
 	return m.build(), nil
 }
@@ -167,6 +326,8 @@ type wasmBlockEmitter struct {
 	needsMem bool
 	needsSMC bool
 	needsFP  bool
+	gprPlan  *wasmGPRPlan
+	fpPlan   *wasmFPPlan
 }
 
 func (e *wasmBlockEmitter) prologue() {
@@ -180,6 +341,13 @@ func (e *wasmBlockEmitter) prologue() {
 		b.localSet(local)
 	}
 	loadPtr(jitCtxOffRegsPtr, wasmLocRegs)
+	if e.gprPlan != nil {
+		for _, r := range e.gprPlan.bindings {
+			b.localGet(wasmLocRegs)
+			b.i64Load(3, uint32(r)*8)
+			b.localSet(e.gprPlan.local(r))
+		}
+	}
 	if e.needsMem {
 		loadPtr(jitCtxOffMemPtr, wasmLocMem)
 		loadPtr(jitCtxOffIOBitmapPtr, wasmLocBmp)
@@ -203,12 +371,21 @@ func (e *wasmBlockEmitter) prologue() {
 	if e.needsFP {
 		loadPtr(jitCtxOffFPUPtr, wasmLocFpu)
 	}
+	if e.fpPlan != nil {
+		for _, r := range e.fpPlan.bindings {
+			b.localGet(wasmLocFpu)
+			b.memOp(wasmOpF64Load, 2, fpPairOff(r))
+			b.localSet(e.fpPlan.local(r))
+		}
+	}
 }
 
 // exit writes RetPC and RetCount. The caller appends the final end (or
 // return) itself where needed.
 func (e *wasmBlockEmitter) exit(retPC uint64, retCount uint32) {
 	b := e.b
+	e.spillGPRs()
+	e.spillFPs()
 	b.localGet(wasmLocCtx)
 	b.i64Const(int64(retPC))
 	b.i64Store(3, jitCtxOffRetPC)
@@ -223,8 +400,58 @@ func (e *wasmBlockEmitter) loadReg(r byte) {
 		e.b.i64Const(0)
 		return
 	}
+	if local := e.gprPlan.local(r); local != 0 {
+		e.b.localGet(local)
+		return
+	}
 	e.b.localGet(wasmLocRegs)
 	e.b.i64Load(3, uint32(r)*8)
+}
+
+func (e *wasmBlockEmitter) spillGPRs() {
+	if e.gprPlan == nil {
+		return
+	}
+	for _, r := range e.gprPlan.bindings {
+		if !e.gprPlan.dirty[r] {
+			continue
+		}
+		e.b.localGet(wasmLocRegs)
+		e.b.localGet(e.gprPlan.local(r))
+		e.b.i64Store(3, uint32(r)*8)
+	}
+}
+
+func (e *wasmBlockEmitter) spillFPs() {
+	if e.fpPlan == nil {
+		return
+	}
+	for _, r := range e.fpPlan.bindings {
+		pair := (r & 0x0e) / 2
+		if !e.fpPlan.dirty[pair] {
+			continue
+		}
+		e.b.localGet(wasmLocFpu)
+		e.b.localGet(e.fpPlan.local(r))
+		e.b.memOp(wasmOpF64Store, 2, fpPairOff(r))
+	}
+}
+
+func (e *wasmBlockEmitter) storeReg(r byte) {
+	if r == 0 {
+		e.b.op(wasmOpDrop)
+		return
+	}
+	if local := e.gprPlan.local(r); local != 0 {
+		e.b.localSet(local)
+		return
+	}
+	// The computed value is already on the stack. Save it temporarily so the
+	// memory address can precede it for i64.store.
+	e.b.localSet(wasmLocT0)
+	e.b.localGet(wasmLocRegs)
+	e.b.localGet(wasmLocT0)
+	e.b.i64Store(3, uint32(r)*8)
 }
 
 // operand3 pushes the third operand: zero-extended imm32 when xbit is set,
@@ -319,21 +546,15 @@ func (e *wasmBlockEmitter) instr(ins *JITInstr, idx uint32, instrPC uint64) {
 		e.emitDStore(ins, idx, instrPC)
 		return
 	}
-	rd := ins.rd
-	if rd != 0 {
-		b.localGet(wasmLocRegs) // store address, value follows
-	}
 	e.value(ins)
-	if rd != 0 {
-		b.i64Store(3, uint32(rd)*8)
-	} else {
-		b.op(wasmOpDrop)
-	}
+	e.storeReg(ins.rd)
 }
 
 // exitDyn writes RetPC from an i64 local and RetCount as a constant.
 func (e *wasmBlockEmitter) exitDyn(pcLocal uint32, retCount uint32) {
 	b := e.b
+	e.spillGPRs()
+	e.spillFPs()
 	b.localGet(wasmLocCtx)
 	b.localGet(pcLocal)
 	b.i64Store(3, jitCtxOffRetPC)
@@ -619,9 +840,11 @@ func (e *wasmBlockEmitter) emitLoad(ins *JITInstr, idx uint32, instrPC uint64) {
 	}
 	b := e.b
 	e.effAddr(ins)
-	e.memChecks(ie64AccessBytes(ins.size), func() {
-		e.helperExit(HELPER_LOAD, ins.size, ins.rd, idx, instrPC, false)
-	})
+	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, ins.size); !proven {
+		e.memChecks(ie64AccessBytes(ins.size), func() {
+			e.helperExit(HELPER_LOAD, ins.size, ins.rd, idx, instrPC, false)
+		})
+	}
 	b.localGet(wasmLocRegs)
 	e.guestAddr()
 	switch ins.size {
@@ -645,9 +868,11 @@ func (e *wasmBlockEmitter) emitStore(ins *JITInstr, idx uint32, instrPC uint64) 
 	b.localSet(wasmLocB)
 	e.effAddr(ins)
 	n := ie64AccessBytes(ins.size)
-	e.memChecks(n, func() {
-		e.helperExit(HELPER_STORE, ins.size, ins.rd, idx, instrPC, true)
-	})
+	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, ins.size); !proven {
+		e.memChecks(n, func() {
+			e.helperExit(HELPER_STORE, ins.size, ins.rd, idx, instrPC, true)
+		})
+	}
 	e.guestAddr()
 	b.localGet(wasmLocB)
 	switch ins.size {
@@ -1214,12 +1439,23 @@ func fpPairOff(idx byte) uint32 { return uint32(idx&0x0E) * 4 }
 
 // loadPairBits pushes the raw bits of an FP pair as i64.
 func (e *wasmBlockEmitter) loadPairBits(idx byte) {
+	if local := e.fpPlan.local(idx); local != 0 {
+		e.b.localGet(local)
+		e.b.op(wasmOpI64ReinterpretF64)
+		return
+	}
 	e.b.localGet(wasmLocFpu)
 	e.b.i64Load(2, fpPairOff(idx))
 }
 
 // storePairBitsFrom stores an i64 local into an FP pair.
 func (e *wasmBlockEmitter) storePairBitsFrom(idx byte, local uint32) {
+	if resident := e.fpPlan.local(idx); resident != 0 {
+		e.b.localGet(local)
+		e.b.op(wasmOpF64ReinterpretI64)
+		e.b.localSet(resident)
+		return
+	}
 	e.b.localGet(wasmLocFpu)
 	e.b.localGet(local)
 	e.b.i64Store(2, fpPairOff(idx))
@@ -1292,9 +1528,9 @@ func (e *wasmBlockEmitter) emitFP64(ins *JITInstr) {
 	switch ins.opcode {
 	case OP_DMOV:
 		// Pure pair copy; condition codes untouched.
-		b.localGet(wasmLocFpu)
 		e.loadPairBits(ins.rs)
-		b.i64Store(2, fpPairOff(ins.rd))
+		b.localSet(wasmLocT0)
+		e.storePairBitsFrom(ins.rd, wasmLocT0)
 	case OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV:
 		e.loadPairBits(ins.rs)
 		b.localSet(wasmLocA)
@@ -1593,9 +1829,11 @@ func (e *wasmBlockEmitter) emitFP64(ins *JITInstr) {
 func (e *wasmBlockEmitter) emitDLoad(ins *JITInstr, idx uint32, instrPC uint64) {
 	b := e.b
 	e.effAddr(ins)
-	e.memChecks(8, func() {
-		e.helperExit(HELPER_DLOAD, IE64_SIZE_Q, ins.rd, idx, instrPC, false)
-	})
+	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, IE64_SIZE_Q); !proven {
+		e.memChecks(8, func() {
+			e.helperExit(HELPER_DLOAD, IE64_SIZE_Q, ins.rd, idx, instrPC, false)
+		})
+	}
 	e.guestAddr()
 	b.i64Load(0, 0)
 	b.localSet(wasmLocT0)
@@ -1609,9 +1847,11 @@ func (e *wasmBlockEmitter) emitDStore(ins *JITInstr, idx uint32, instrPC uint64)
 	e.loadPairBits(ins.rd)
 	b.localSet(wasmLocB)
 	e.effAddr(ins)
-	e.memChecks(8, func() {
-		e.helperExit(HELPER_DSTORE, IE64_SIZE_Q, ins.rd, idx, instrPC, true)
-	})
+	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, IE64_SIZE_Q); !proven {
+		e.memChecks(8, func() {
+			e.helperExit(HELPER_DSTORE, IE64_SIZE_Q, ins.rd, idx, instrPC, true)
+		})
+	}
 	e.guestAddr()
 	b.localGet(wasmLocB)
 	b.i64Store(0, 0)

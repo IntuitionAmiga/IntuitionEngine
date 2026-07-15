@@ -73,6 +73,19 @@ func ie64ChaseStaticJumps(startPC uint64, fetch func(pc uint64) (uint64, bool)) 
 	return pc, retired
 }
 
+// ie64ChaseStaticJumpsMemory is the flat linear-memory adapter used by the
+// wasm dispatcher. Browser IE64 execution has no high physical backing: an
+// instruction outside the guest memory slice is simply unmapped.
+func ie64ChaseStaticJumpsMemory(startPC uint64, memory []byte) (uint64, uint32) {
+	memLen := uint64(len(memory))
+	return ie64ChaseStaticJumps(startPC, func(p uint64) (uint64, bool) {
+		if memLen < IE64_INSTR_SIZE || p > memLen-IE64_INSTR_SIZE {
+			return 0, false
+		}
+		return binary.LittleEndian.Uint64(memory[p:]), true
+	})
+}
+
 // ie64ChaseStaticJumpsFlat is the low-window/bus fetch adapter used by the
 // native dispatcher. memory is the low physical window; addresses above it are
 // read through the bus. It exists so the dispatcher call site stays a single

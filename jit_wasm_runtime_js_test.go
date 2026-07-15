@@ -41,7 +41,7 @@ func wasmNodeProgram(iters uint32) []byte {
 	}, nil)
 }
 
-func newWasmNodeMachine(t *testing.T, program []byte) *CPU64 {
+func newWasmNodeMachine(t testing.TB, program []byte) *CPU64 {
 	t.Helper()
 	bus := NewMachineBus()
 	cpu := NewCPU64(bus)
@@ -102,6 +102,93 @@ func TestWasmJIT_Node_EndToEndParity(t *testing.T) {
 	t.Logf("compiles=%d blockRuns=%d chainRuns=%d interp=%v jit=%v speedup=%.2fx",
 		rt.compiles, rt.blockRuns, rt.chainRuns, interpDur, jitDur,
 		float64(interpDur)/float64(jitDur))
+}
+
+func TestWasmJIT_Node_StaticJumpChase(t *testing.T) {
+	program := make([]byte, 0x28)
+	copy(program[0x00:], ie64Instr(OP_JMP, 0, 0, 0, 0, 0, uint32(PROG_START+0x10)))
+	copy(program[0x10:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0x10))
+	copy(program[0x20:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	cpu.wasmJITDispatch(rt)
+
+	if cpu.PC != PROG_START+0x20 {
+		t.Fatalf("PC = %#x, want %#x", cpu.PC, uint64(PROG_START+0x20))
+	}
+	if cpu.InstructionCount != 3 {
+		t.Fatalf("InstructionCount = %d, want 3", cpu.InstructionCount)
+	}
+	if rt.fallSteps != 1 {
+		t.Fatalf("interpreter fallback steps = %d, want only the landing HALT", rt.fallSteps)
+	}
+	if rt.hot[PROG_START] != 0 || rt.hot[PROG_START+0x10] != 0 || rt.enqueues != 0 {
+		t.Fatalf("static jumps entered tiering: hot=%v enqueues=%d", rt.hot, rt.enqueues)
+	}
+}
+
+func TestWasmJIT_Node_TimerDisablesStaticJumpChase(t *testing.T) {
+	program := bytes.Join([][]byte{
+		ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 8),
+		ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 8),
+		ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 8),
+		ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0),
+	}, nil)
+	cpu := newWasmNodeMachine(t, program)
+	cpu.timerPeriod.Store(3)
+	cpu.timerCount.Store(3)
+	cpu.timerEnabled.Store(true)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	cpu.wasmJITDispatch(rt)
+
+	if cpu.timerState.Load() != TIMER_EXPIRED {
+		t.Fatalf("timer state = %d, want expired", cpu.timerState.Load())
+	}
+	if rt.fallSteps != 4 {
+		t.Fatalf("interpreter fallback steps = %d, want all four instructions", rt.fallSteps)
+	}
+	if rt.compiles != 0 || rt.blockRuns != 0 {
+		t.Fatalf("timer-enabled execution entered JIT: compiles=%d runs=%d", rt.compiles, rt.blockRuns)
+	}
+}
+
+func BenchmarkWasmJIT_StaticJumpDispatch(b *testing.B) {
+	const jumps = 16
+	program := make([]byte, (jumps+1)*IE64_INSTR_SIZE)
+	for i := 0; i < jumps; i++ {
+		pc := uint64(PROG_START + i*IE64_INSTR_SIZE)
+		next := uint32(pc + IE64_INSTR_SIZE)
+		copy(program[i*IE64_INSTR_SIZE:], ie64Instr(OP_JMP, 0, 0, 0, 0, 0, next))
+	}
+	copy(program[jumps*IE64_INSTR_SIZE:], ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
+
+	b.Run("interpreter-dispatch", func(b *testing.B) {
+		cpu := newWasmNodeMachine(b, program)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			cpu.PC = PROG_START
+			for j := 0; j < jumps; j++ {
+				cpu.StepOne()
+			}
+		}
+	})
+	b.Run("bounded-chase", func(b *testing.B) {
+		cpu := newWasmNodeMachine(b, program)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			pc, retired := ie64ChaseStaticJumpsMemory(PROG_START, cpu.memory)
+			if pc != PROG_START+jumps*IE64_INSTR_SIZE || retired != jumps {
+				b.Fatal("chase result changed")
+			}
+		}
+	})
 }
 
 func TestWasmJIT_Node_MMUGateEnqueueHalf(t *testing.T) {

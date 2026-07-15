@@ -59,6 +59,21 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 		if cpu.trapHalted {
 			return
 		}
+		// The architectural timer advances before every decoded instruction.
+		// Compiled blocks and the static-jump chase retire several instructions
+		// without that per-instruction hook, so match the native dispatcher and
+		// stay in the interpreter for as long as the timer is enabled.
+		if cpu.timerEnabled.Load() {
+			rt.fallSteps++
+			if cpu.StepOne() == 0 {
+				return
+			}
+			cpu.InstructionCount++
+			if !cpu.running.Load() {
+				return
+			}
+			continue
+		}
 		checkCounter++
 		if checkCounter&0x3F == 0 {
 			if !cpu.running.Load() {
@@ -96,6 +111,25 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 				return
 			}
 			continue
+		}
+
+		// Collapse cold static trampoline chains before tiering or compiled
+		// dispatch. The shared chase is bounded and cycle-safe, so the loop
+		// returns here after every successful chase to re-run interrupt,
+		// debugger and stop checks at the landing PC. Debugger attachment
+		// disables the optimisation so no patched-over jump skips a boundary.
+		if !cpu.mmuEnabled && cpu.debugBreakIn == nil &&
+			(cpu.debugBreakpointsActive == nil || !cpu.debugBreakpointsActive()) {
+			pc := cpu.PC
+			memLen := uint64(len(cpu.memory))
+			if memLen >= IE64_INSTR_SIZE && pc <= memLen-IE64_INSTR_SIZE &&
+				(cpu.memory[pc] == OP_BRA || cpu.memory[pc] == OP_JMP) {
+				if newPC, retired := ie64ChaseStaticJumpsMemory(pc, cpu.memory); retired != 0 {
+					cpu.PC = newPC
+					cpu.InstructionCount += uint64(retired)
+					continue
+				}
+			}
 		}
 
 		// A sustained streak of LOAD helper exits at one PC is a guest

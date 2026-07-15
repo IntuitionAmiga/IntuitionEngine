@@ -109,4 +109,16 @@ func TestIE64ChaseStaticJumps_NonJumpStartNoop(t *testing.T) {
 	}
 }
 
+func TestIE64ChaseStaticJumpsMemory_CollapsesWasmChain(t *testing.T) {
+	memory := make([]byte, 0x40)
+	copy(memory[0x00:], ie64Instr(OP_JMP, 0, 0, 0, 0, 0, 0x10))
+	copy(memory[0x10:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0x10))
+	copy(memory[0x20:], ie64Instr(OP_NOP64, 0, 0, 0, 0, 0, 0))
+
+	pc, retired := ie64ChaseStaticJumpsMemory(0, memory)
+	if pc != 0x20 || retired != 2 {
+		t.Fatalf("chase = (pc %#x, retired %d), want (0x20, 2)", pc, retired)
+	}
+}
+
 var _ = binary.LittleEndian
