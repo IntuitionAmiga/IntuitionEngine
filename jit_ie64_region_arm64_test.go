@@ -52,6 +52,86 @@ func TestARM64Region_FormsAndCompilesNonMMUChain(t *testing.T) {
 	}
 }
 
+func TestARM64Region_FormsMMUVirtualChain(t *testing.T) {
+	rig := newIE64TestRig()
+	setupIdentityMMU(rig.cpu, 160)
+	putIE64RegionInstrARM64(rig.cpu.memory, 0x100, OP_ADD, 0, 0, 0, 0)
+	putIE64RegionBRAARM64(rig.cpu.memory, 0x108, 0x200)
+	putIE64RegionInstrARM64(rig.cpu.memory, 0x200, OP_ADD, 0, 0, 0, 0)
+	putIE64RegionInstrARM64(rig.cpu.memory, 0x208, OP_RTS64, 0, 0, 0, 0)
+
+	region := ie64FormRegionMMU(rig.cpu, 0x100)
+	if region == nil {
+		t.Fatal("ie64FormRegionMMU returned nil for a valid virtual chain")
+	}
+	if len(region.blocks) != 2 || region.blockPCs[0] != 0x100 || region.blockPCs[1] != 0x200 {
+		t.Fatalf("MMU region = {blockPCs:%v blocks:%d}, want virtual PCs [0x100 0x200]", region.blockPCs, len(region.blocks))
+	}
+}
+
+func TestARM64Region_MMUMarksAtomicBail(t *testing.T) {
+	rig := newIE64TestRig()
+	setupIdentityMMU(rig.cpu, 160)
+	putIE64RegionInstrARM64(rig.cpu.memory, 0x100, OP_ADD, 0, 0, 0, 0)
+	putIE64RegionBRAARM64(rig.cpu.memory, 0x108, 0x200)
+	putIE64RegionInstrARM64(rig.cpu.memory, 0x200, OP_CAS, 1, 2, 3, 0)
+
+	region := ie64FormRegionMMU(rig.cpu, 0x100)
+	if region == nil {
+		t.Fatal("ie64FormRegionMMU returned nil for an atomic MMU region")
+	}
+	if !region.blocks[1][0].mmuBail {
+		t.Fatal("MMU region did not mark OP_CAS for interpreter bailout")
+	}
+}
+
+func TestARM64Region_MMUCompilesPhysicalCodeWithVirtualExits(t *testing.T) {
+	rig := newIE64TestRig()
+	setupIdentityMMU(rig.cpu, 160)
+	flags := byte(PTE_P | PTE_R | PTE_W | PTE_X | PTE_U)
+	mmuMap(rig.cpu, 0x1100, 4, flags)
+	mmuMap(rig.cpu, 0x2200, 5, flags)
+	putIE64RegionInstrARM64(rig.cpu.memory, 0x4100, OP_ADD, 1, 1, 2, 0)
+	putIE64RegionBRAARM64(rig.cpu.memory, 0x4108, 0x5200)
+	putIE64RegionInstrARM64(rig.cpu.memory, 0x5200, OP_ADD, 1, 1, 2, 0)
+	putIE64RegionInstrARM64(rig.cpu.memory, 0x5208, OP_JMP, 0, 0, 0, 0x100000)
+
+	region := ie64FormRegionMMU(rig.cpu, 0x1100)
+	if region == nil || len(region.blocks) != 2 {
+		t.Fatalf("ie64FormRegionMMU returned %#v, want two virtually linked blocks", region)
+	}
+	execMem, err := AllocExecMem(64 * 1024)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	block, err := ie64CompileRegion(region, execMem, rig.cpu.memory)
+	if err != nil {
+		t.Fatalf("ie64CompileRegion: %v", err)
+	}
+	ctx := newJITContext(rig.cpu)
+	ctx.MMUEnabled = 1
+	rig.cpu.regs[2] = 1
+	callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
+
+	if ctx.RetPC != 0x100000 || ctx.RetCount != 4 {
+		t.Fatalf("MMU region exit = {PC:%#x count:%d}, want {PC:0x100000 count:4}", ctx.RetPC, ctx.RetCount)
+	}
+	if rig.cpu.regs[1] != 2 {
+		t.Fatalf("R1 = %d, want both physical code blocks to execute", rig.cpu.regs[1])
+	}
+	wantRanges := [][2]uint64{{0x1100, 0x1110}, {0x2200, 0x2210}}
+	if len(block.coveredRanges) != len(wantRanges) {
+		t.Fatalf("covered ranges = %v, want %v", block.coveredRanges, wantRanges)
+	}
+	for i := range wantRanges {
+		if block.coveredRanges[i] != wantRanges[i] {
+			t.Fatalf("covered ranges = %v, want %v", block.coveredRanges, wantRanges)
+		}
+	}
+	runtime.KeepAlive(ctx)
+}
+
 func TestARM64Region_BackEdgeRetainsBudgetExit(t *testing.T) {
 	memory := make([]byte, 0x1000)
 	putIE64RegionInstrARM64(memory, 0x100, OP_ADD, 0, 0, 0, 0)

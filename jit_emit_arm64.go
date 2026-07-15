@@ -4789,7 +4789,62 @@ func ie64FormRegion(hotPC uint64, memory []byte) *ie64Region {
 }
 
 func ie64FormRegionMMU(cpu *CPU64, hotPC uint64) *ie64Region {
-	return nil
+	if cpu == nil || cpu.bus == nil || !cpu.mmuEnabled {
+		return nil
+	}
+	pc := hotPC
+	totalInstrs := 0
+	visited := make(map[uint64]struct{})
+	region := &ie64Region{entryPC: hotPC}
+	memLen := uint64(len(cpu.memory))
+	for len(region.blockPCs) < ie64ARM64RegionMaxBlocks && totalInstrs < ie64ARM64RegionMaxInstructions {
+		if _, seen := visited[pc]; seen {
+			break
+		}
+		pcPhys, fault, _ := cpu.translateAddr(pc, ACCESS_EXEC)
+		if fault {
+			break
+		}
+		pageEnd := (pcPhys &^ uint64(MMU_PAGE_MASK)) + MMU_PAGE_SIZE
+		highPhys := memLen < IE64_INSTR_SIZE || pcPhys > memLen-IE64_INSTR_SIZE
+		var instrs []JITInstr
+		if !highPhys && pageEnd <= memLen {
+			instrs = scanBlockWithLimit(cpu.memory, pcPhys, pageEnd)
+		} else {
+			instrs = scanBlockBusWithLimit(cpu.bus, pcPhys, pageEnd)
+		}
+		if len(instrs) == 0 || needsFallback(instrs) {
+			break
+		}
+		for _, ji := range instrs {
+			if ji.fusedFlag != 0 {
+				return nil
+			}
+		}
+		if len(region.blocks) > 0 && totalInstrs+len(instrs) > ie64ARM64RegionMaxInstructions {
+			break
+		}
+		markIE64MMUBails(instrs)
+		visited[pc] = struct{}{}
+		region.blockPCs = append(region.blockPCs, pc)
+		region.blocks = append(region.blocks, instrs)
+		totalInstrs += len(instrs)
+
+		last := &instrs[len(instrs)-1]
+		if !isBlockTerminator(last.opcode) || last.fusedFlag&ie64FusedRTSLeafReturn != 0 {
+			break
+		}
+		instrPC := pc + uint64(last.pcOffset)
+		target, ok := ie64ResolveTerminatorTarget(last.opcode, last.rs, last.imm32, instrPC)
+		if !ok {
+			break
+		}
+		pc = target
+	}
+	if len(region.blocks) < 2 {
+		return nil
+	}
+	return region
 }
 
 func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JITBlock, error) {
