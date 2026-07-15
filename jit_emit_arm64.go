@@ -4,7 +4,10 @@
 
 package main
 
-import "errors"
+import (
+	"errors"
+	"math"
+)
 
 // ===========================================================================
 // ARM64 Register Mapping
@@ -628,6 +631,78 @@ func arm64FRINTP_S(sd, sn byte) uint32 {
 	return 0x1E24C000 | uint32(sn)<<5 | uint32(sd)
 }
 
+// The double-precision forms below are the single-precision encodings with the
+// ftype field (bits 23:22) set to 01 rather than 00, and, for the transfers and
+// conversions that name a general register, sf (bit 31) set to select an X
+// register. They are written out as whole constants rather than derived from the
+// S forms so that a mis-typed bit shows up here against the manual, not as a
+// wrong answer three layers up.
+
+// fmov Dd, Xn (general→FP transfer, 64-bit)
+func arm64FMOV_XtoD(dd, xn byte) uint32 {
+	return 0x9E670000 | uint32(xn)<<5 | uint32(dd)
+}
+
+// fmov Xd, Dn (FP→general transfer, 64-bit)
+func arm64FMOV_DtoX(xd, dn byte) uint32 {
+	return 0x9E660000 | uint32(dn)<<5 | uint32(xd)
+}
+
+// fadd Dd, Dn, Dm (double-precision add)
+func arm64FADD_D(dd, dn, dm byte) uint32 {
+	return 0x1E602800 | uint32(dm)<<16 | uint32(dn)<<5 | uint32(dd)
+}
+
+// fsub Dd, Dn, Dm (double-precision subtract)
+func arm64FSUB_D(dd, dn, dm byte) uint32 {
+	return 0x1E603800 | uint32(dm)<<16 | uint32(dn)<<5 | uint32(dd)
+}
+
+// fmul Dd, Dn, Dm (double-precision multiply)
+func arm64FMUL_D(dd, dn, dm byte) uint32 {
+	return 0x1E600800 | uint32(dm)<<16 | uint32(dn)<<5 | uint32(dd)
+}
+
+// fdiv Dd, Dn, Dm (double-precision divide)
+func arm64FDIV_D(dd, dn, dm byte) uint32 {
+	return 0x1E601800 | uint32(dm)<<16 | uint32(dn)<<5 | uint32(dd)
+}
+
+// fcmp Dn, Dm (double-precision compare, sets NZCV)
+func arm64FCMP_D(dn, dm byte) uint32 {
+	return 0x1E602000 | uint32(dm)<<16 | uint32(dn)<<5
+}
+
+// scvtf Dd, Xn (signed int64→float64)
+func arm64SCVTF_XD(dd, xn byte) uint32 {
+	return 0x9E620000 | uint32(xn)<<5 | uint32(dd)
+}
+
+// fcvtzs Xd, Dn (float64→signed int64, round toward zero)
+func arm64FCVTZS_DX(xd, dn byte) uint32 {
+	return 0x9E780000 | uint32(dn)<<5 | uint32(xd)
+}
+
+// frintn Dd, Dn (round to nearest even, double-precision)
+func arm64FRINTN_D(dd, dn byte) uint32 {
+	return 0x1E644000 | uint32(dn)<<5 | uint32(dd)
+}
+
+// frintz Dd, Dn (round toward zero, double-precision)
+func arm64FRINTZ_D(dd, dn byte) uint32 {
+	return 0x1E65C000 | uint32(dn)<<5 | uint32(dd)
+}
+
+// frintm Dd, Dn (round toward -infinity/floor, double-precision)
+func arm64FRINTM_D(dd, dn byte) uint32 {
+	return 0x1E654000 | uint32(dn)<<5 | uint32(dd)
+}
+
+// frintp Dd, Dn (round toward +infinity/ceil, double-precision)
+func arm64FRINTP_D(dd, dn byte) uint32 {
+	return 0x1E64C000 | uint32(dn)<<5 | uint32(dd)
+}
+
 // lsr Wd, Wn, #shift (immediate, alias for UBFM Wd, Wn, #shift, #31)
 func arm64LSR_W_imm(rd, rn byte, shift uint32) uint32 {
 	return 0x53007C00 | (shift&0x1F)<<16 | uint32(rn)<<5 | uint32(rd)
@@ -912,6 +987,11 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, calleeSaved uint32) {
 // compileBlock compiles a scanned block of IE64 instructions to ARM64 machine code.
 func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBlock, error) {
 	cb := NewCodeBuffer(len(instrs) * 256) // FPU ops can emit 30-60 ARM64 instructions with CC setting
+
+	// Mark FP condition-code writes that no observer can reach, so the FP
+	// emitters can drop the classifier entirely. Per sub-block, so nothing is
+	// elided across a block boundary.
+	ie64MarkFPSRCCDead(instrs)
 
 	br := analyzeBlockRegs(instrs)
 	br.hasBackwardBranch = detectBackwardBranches(instrs, startPC)
@@ -1203,8 +1283,28 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitDSTORE(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DSIN, OP_DCOS, OP_DTAN, OP_DATAN, OP_DLOG, OP_DEXP, OP_DPOW:
 		emitDTransHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
-	case OP_DMOV, OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DMOD,
-		OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT, OP_DCMP, OP_DCVTIF, OP_DCVTFI, OP_FCVTSD, OP_FCVTDS:
+	case OP_DMOV:
+		emitDMOV_ARM64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DADD:
+		emitDPBinaryARM64(cb, ji, instrPC, br, writtenSoFar, arm64FADD_D)
+	case OP_DSUB:
+		emitDPBinaryARM64(cb, ji, instrPC, br, writtenSoFar, arm64FSUB_D)
+	case OP_DMUL:
+		emitDPBinaryARM64(cb, ji, instrPC, br, writtenSoFar, arm64FMUL_D)
+	case OP_DDIV:
+		emitDPBinaryARM64(cb, ji, instrPC, br, writtenSoFar, arm64FDIV_D)
+	case OP_DINT:
+		emitDINT_ARM64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DCMP:
+		emitDCMP_ARM64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DCVTIF:
+		emitDCVTIF_ARM64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DCVTFI:
+		emitDCVTFI_ARM64(cb, ji, instrPC, br, writtenSoFar)
+
+	// Still interpreted on both backends. Keep this list and the amd64 one in
+	// step: sdk/docs/IE64_JIT.md documents a single shared fallback table.
+	case OP_DMOD, OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
 	// MMU/privilege opcodes: always bail to interpreter
@@ -3083,6 +3183,35 @@ func emitSetFPCondCodes(cb *CodeBuffer) {
 	cb.Emit32(arm64STR_W_imm(1, arm64RegFPUBase, fpuOffFPSR))
 }
 
+// emitFPCondCodesARM64 appends an FP32 condition-code update, unless the
+// liveness pass in jit_ie64_fpsr_liveness.go proved this particular write dead:
+// a later non-faulting FP32 killer overwrites the whole CC field before anything
+// can read it.
+//
+// Only the CC field is elided. Sticky exception flags stay eager on every path,
+// because a raised flag remains observable until software clears it.
+//
+// The pass's fpsrCCSink is deliberately not honoured here. Sinking needs the
+// exit-funnel materialisation the amd64 backend has and this one does not, so a
+// sunk write simply falls through to an ordinary inline update: slower than
+// amd64, never wrong. fpsrCCDead and fpsrCCSink are set on disjoint cases, so
+// ignoring one cannot disturb the other.
+func emitFPCondCodesARM64(cb *CodeBuffer, ji *JITInstr) {
+	if ji.fpsrCCDead {
+		return
+	}
+	emitSetFPCondCodes(cb)
+}
+
+// emitFPCondCodes64ARM64 is emitFPCondCodesARM64 for a binary64 result already
+// in X0.
+func emitFPCondCodes64ARM64(cb *CodeBuffer, ji *JITInstr) {
+	if ji.fpsrCCDead {
+		return
+	}
+	emitSetFPCondCodes64(cb)
+}
+
 // emitSetFPCondCodes64 classifies IEEE-754 binary64 bits in X0 and updates
 // FPSR condition codes. It preserves exception flags.
 func emitSetFPCondCodes64(cb *CodeBuffer) {
@@ -3156,7 +3285,7 @@ func emitFABS(cb *CodeBuffer, ji *JITInstr) {
 	emitLoadImm32(cb, 1, 0x7FFFFFFF)
 	cb.Emit32(arm64AND_W(0, 0, 1)) // clear sign bit
 	emitStoreFPReg(cb, 0, ji.rd)
-	emitSetFPCondCodes(cb)
+	emitFPCondCodesARM64(cb, ji)
 }
 
 func emitFNEG(cb *CodeBuffer, ji *JITInstr) {
@@ -3164,14 +3293,14 @@ func emitFNEG(cb *CodeBuffer, ji *JITInstr) {
 	emitLoadImm32(cb, 1, 0x80000000)
 	cb.Emit32(arm64EOR_W(0, 0, 1)) // flip sign bit
 	emitStoreFPReg(cb, 0, ji.rd)
-	emitSetFPCondCodes(cb)
+	emitFPCondCodesARM64(cb, ji)
 }
 
 func emitFMOVI(cb *CodeBuffer, ji *JITInstr) {
 	rsReg := resolveReg(cb, ji.rs, 0)
 	cb.Emit32(arm64MOV_W(0, rsReg)) // W0 = uint32(rs)
 	emitStoreFPReg(cb, 0, ji.rd)
-	emitSetFPCondCodes(cb)
+	emitFPCondCodesARM64(cb, ji)
 }
 
 func emitFMOVO(cb *CodeBuffer, ji *JITInstr) {
@@ -3196,7 +3325,7 @@ func emitFMOVECR(cb *CodeBuffer, ji *JITInstr) {
 	}
 	emitLoadImm32(cb, 0, bits)
 	emitStoreFPReg(cb, 0, ji.rd)
-	emitSetFPCondCodes(cb)
+	emitFPCondCodesARM64(cb, ji)
 }
 
 func emitFMOVSR(cb *CodeBuffer, ji *JITInstr) {
@@ -3407,7 +3536,7 @@ func emitFPBinaryArith(cb *CodeBuffer, ji *JITInstr, fpOp func(sd, sn, sm byte) 
 	// S0 = fs, and emitSetFPCondCodes preserves the sticky bits it finds.
 	emitFPStickyGate32ARM64(cb, ji.opcode)
 	emitStoreFPReg(cb, 0, ji.rd)
-	emitSetFPCondCodes(cb)
+	emitFPCondCodesARM64(cb, ji)
 }
 
 func emitFADD(cb *CodeBuffer, ji *JITInstr) { emitFPBinaryArith(cb, ji, arm64FADD_S) }
@@ -3469,7 +3598,7 @@ func emitFSQRT(cb *CodeBuffer, ji *JITInstr) {
 	emitFPSqrtSticky32ARM64(cb)
 	cb.Emit32(arm64FMOV_StoW(0, 1))
 	emitStoreFPReg(cb, 0, ji.rd)
-	emitSetFPCondCodes(cb)
+	emitFPCondCodesARM64(cb, ji)
 }
 
 func emitFINT(cb *CodeBuffer, ji *JITInstr) {
@@ -3526,7 +3655,7 @@ func emitFINT(cb *CodeBuffer, ji *JITInstr) {
 
 	cb.Emit32(arm64FMOV_StoW(0, 1))
 	emitStoreFPReg(cb, 0, ji.rd)
-	emitSetFPCondCodes(cb)
+	emitFPCondCodesARM64(cb, ji)
 }
 
 func emitFCMP(cb *CodeBuffer, ji *JITInstr) {
@@ -3648,7 +3777,7 @@ func emitFCVTIF(cb *CodeBuffer, ji *JITInstr) {
 	cb.Emit32(arm64SCVTF_WS(0, rsReg)) // S0 = float32(int32(rs))
 	cb.Emit32(arm64FMOV_StoW(0, 0))
 	emitStoreFPReg(cb, 0, ji.rd)
-	emitSetFPCondCodes(cb)
+	emitFPCondCodesARM64(cb, ji)
 }
 
 func emitSetFPUInvalid(cb *CodeBuffer) {
@@ -3795,7 +3924,7 @@ func emitFLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 	// Store to FP register and set CC (direct-load paths only).
 	emitStoreFPReg(cb, 2, ji.rd)
 	cb.Emit32(arm64MOV_W(0, 2))
-	emitSetFPCondCodes(cb)
+	emitFPCondCodesARM64(cb, ji)
 }
 
 func emitFSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
@@ -3970,7 +4099,7 @@ func emitDLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 
 	emitStoreDPairBits(cb, 2, ji.rd)
 	cb.Emit32(arm64MOV(0, 2))
-	emitSetFPCondCodes64(cb)
+	emitFPCondCodes64ARM64(cb, ji)
 }
 
 func emitDSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
@@ -4051,6 +4180,388 @@ func emitLoadDPairBits(cb *CodeBuffer, dstReg byte, fpIdx byte) {
 	cb.Emit32(arm64LDR_W_imm(1, arm64RegFPUBase, uint32(base+1)))
 	cb.Emit32(arm64LSL_imm(1, 1, 32))
 	cb.Emit32(arm64ORR(dstReg, dstReg, 1))
+}
+
+// ===========================================================================
+// FPU — Category D: Double precision
+// ===========================================================================
+//
+// The native set here is exactly the amd64 backend's: DMOV, DADD, DSUB, DMUL,
+// DDIV, DINT, DCMP, DCVTIF, DCVTFI. DMOD, DABS, DNEG, DSQRT, FCVTSD and FCVTDS
+// still bail on both backends, so the two fallback tables stay identical and
+// sdk/docs/IE64_JIT.md can describe one rule rather than two.
+//
+// Every emitter below is deliberately shaped like its amd64 twin — same clause
+// order, same helper split — so the pair can be diffed by eye. The FP64
+// exception rules live in IE64FPU (fpu_ie64.go) and are the only spec; six of
+// the bugs fixed on this branch came from a backend re-deriving them.
+//
+// Operands that are NaN or infinite bail to the interpreter (see
+// emitDPairNonFiniteBailARM64), which buys the awkward half of the semantics for
+// free and, as a side effect, discharges every "!isInf(operand)" and
+// "!isNaN(operand)" clause in the rules: they are statically true on the paths
+// reached below. That is why the classifiers here only ever inspect the result.
+
+// emitDPairToDReg loads the binary64 bits of dpair fpIdx into dReg. Clobbers X0
+// and X1.
+func emitDPairToDReg(cb *CodeBuffer, dReg, fpIdx byte) {
+	emitLoadDPairBits(cb, 0, fpIdx)
+	cb.Emit32(arm64FMOV_XtoD(dReg, 0))
+}
+
+// emitDRegToDPair stores dReg's bits to dpair fpIdx and updates the FPSR
+// condition codes from the result, unless the block proved that write dead.
+// Clobbers X0-X3.
+func emitDRegToDPair(cb *CodeBuffer, dReg, fpIdx byte, ccDead bool) {
+	cb.Emit32(arm64FMOV_DtoX(0, dReg))
+	emitStoreDPairBits(cb, 0, fpIdx)
+	if !ccDead {
+		// Re-read from dReg rather than trusting X0 to have survived the store.
+		// It does today, but the amd64 twin had exactly this bug: its store uses
+		// RAX as a shift scratch, so classifying the leftover register read the
+		// high word alone and lost the sign and exponent of every result.
+		cb.Emit32(arm64FMOV_DtoX(0, dReg))
+		emitSetFPCondCodes64(cb)
+	}
+}
+
+// emitDPairNonFiniteBailARM64 emits, for each named dpair, a test for an
+// all-ones exponent and a forward branch taken when the operand is NaN or
+// infinite. The caller passes the returned skips to
+// patchFP64BailToInterpreterARM64. Clobbers X0-X2.
+func emitDPairNonFiniteBailARM64(cb *CodeBuffer, regs ...byte) []armSkip {
+	var skips []armSkip
+	for _, fpIdx := range regs {
+		emitLoadDPairBits(cb, 0, fpIdx)
+		cb.Emit32(arm64LSR_imm(2, 0, 52))
+		cb.Emit32(arm64AND_imm(2, 2, 0, 10, 1)) // X2 &= 0x7FF
+		cb.Emit32(arm64CMP_imm(2, 0x7FF))
+		off := cb.Len()
+		cb.Emit32(0)
+		skips = append(skips, armSkip{off: off, cond: arm64CondEQ})
+	}
+	return skips
+}
+
+// patchFP64BailToInterpreterARM64 lands the bail branches after the fast path,
+// so the common case falls straight through and never jumps.
+func patchFP64BailToInterpreterARM64(cb *CodeBuffer, skips []armSkip, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if len(skips) == 0 {
+		return
+	}
+	doneOff := cb.Len()
+	cb.Emit32(0)
+	patchArmSkips(cb, skips, cb.Len())
+	emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+	cb.PatchUint32(doneOff, arm64B(int32(cb.Len()-doneOff)))
+}
+
+// emitSetFPUExceptionARM64 ORs flag into FPSR. Sticky: never clears a flag that
+// is already set. Clobbers X3 and X4.
+func emitSetFPUExceptionARM64(cb *CodeBuffer, flag uint32) {
+	cb.Emit32(arm64LDR_W_imm(3, arm64RegFPUBase, fpuOffFPSR))
+	emitLoadImm32(cb, 4, flag)
+	cb.Emit32(arm64ORR_W(3, 3, 4))
+	cb.Emit32(arm64STR_W_imm(3, arm64RegFPUBase, fpuOffFPSR))
+}
+
+// emitDPairZeroSkipARM64 tests whether dpair fpIdx is +/-0.0 and returns a
+// forward branch taken on cond: pass arm64CondEQ for "is zero", arm64CondNE for
+// "is not zero". Clobbers X1 and X2.
+func emitDPairZeroSkipARM64(cb *CodeBuffer, fpIdx, cond byte) armSkip {
+	emitLoadDPairBits(cb, 2, fpIdx)
+	cb.Emit32(arm64LSL_imm(2, 2, 1)) // drop the sign bit: 0 iff +/-0.0
+	cb.Emit32(arm64CMP_imm(2, 0))
+	off := cb.Len()
+	cb.Emit32(0)
+	return armSkip{off: off, cond: cond}
+}
+
+// emitSetDPResultInfOrNaNFlagsARM64 raises IO for a NaN result and, when
+// overflowAllowed, OE for an infinite one. Both operands are finite on every
+// path that reaches this, so a special result can only have been produced by the
+// operation itself, which is precisely what the OE and IO rules ask about.
+//
+// overflowAllowed is false only for a division by zero, where an infinite
+// quotient is the divide-by-zero case and raises DZ alone.
+func emitSetDPResultInfOrNaNFlagsARM64(cb *CodeBuffer, dReg byte, overflowAllowed bool) {
+	cb.Emit32(arm64FMOV_DtoX(0, dReg))
+	cb.Emit32(arm64LSR_imm(2, 0, 52))
+	cb.Emit32(arm64AND_imm(2, 2, 0, 10, 1)) // X2 &= 0x7FF
+	cb.Emit32(arm64CMP_imm(2, 0x7FF))
+	notSpecialOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64LSL_imm(2, 0, 12)) // fraction; sign and exponent shifted out
+	nanOff := cb.Len()
+	cb.Emit32(0)
+
+	if overflowAllowed {
+		emitSetFPUExceptionARM64(cb, IE64_FPU_EX_OE)
+	}
+	doneOff := cb.Len()
+	cb.Emit32(0)
+
+	nanPC := cb.Len()
+	cb.PatchUint32(nanOff, arm64CBNZ(2, int32(nanPC-nanOff)))
+	emitSetFPUExceptionARM64(cb, IE64_FPU_EX_IO)
+
+	donePC := cb.Len()
+	cb.PatchUint32(notSpecialOff, arm64Bcond(arm64CondNE, int32(donePC-notSpecialOff)))
+	cb.PatchUint32(doneOff, arm64B(int32(donePC-doneOff)))
+}
+
+// emitSetDPResultUnderflowIfZeroARM64 raises UE when a zero result came from two
+// non-zero operands. DDIV's rule adds "&& !isInf(t)", which is already true
+// here: an infinite divisor would have bailed.
+func emitSetDPResultUnderflowIfZeroARM64(cb *CodeBuffer, dReg byte, ji *JITInstr) {
+	cb.Emit32(arm64FMOV_DtoX(0, dReg))
+	cb.Emit32(arm64LSL_imm(2, 0, 1))
+	notZeroOff := cb.Len()
+	cb.Emit32(0)
+
+	skips := []armSkip{
+		emitDPairZeroSkipARM64(cb, ji.rs, arm64CondEQ),
+		emitDPairZeroSkipARM64(cb, ji.rt, arm64CondEQ),
+	}
+	emitSetFPUExceptionARM64(cb, IE64_FPU_EX_UE)
+
+	donePC := cb.Len()
+	cb.PatchUint32(notZeroOff, arm64CBNZ(2, int32(donePC-notZeroOff)))
+	patchArmSkips(cb, skips, donePC)
+}
+
+// emitSetDPDivideByZeroIfNeededARM64 raises DZ for a non-zero numerator over a
+// zero divisor. IE64FPU.DDIV also requires !isNaN(s), which a NaN numerator
+// would have bailed on.
+func emitSetDPDivideByZeroIfNeededARM64(cb *CodeBuffer, ji *JITInstr) {
+	skips := []armSkip{
+		emitDPairZeroSkipARM64(cb, ji.rt, arm64CondNE),
+		emitDPairZeroSkipARM64(cb, ji.rs, arm64CondEQ),
+	}
+	emitSetFPUExceptionARM64(cb, IE64_FPU_EX_DZ)
+	patchArmSkips(cb, skips, cb.Len())
+}
+
+func emitDMOV_ARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rd) || !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	// A pure bit copy: the interpreter's DMOV sets neither condition codes nor
+	// exception flags, so there is nothing to classify and NaN payloads pass
+	// through untouched.
+	emitLoadDPairBits(cb, 0, ji.rs)
+	emitStoreDPairBits(cb, 0, ji.rd)
+}
+
+func emitDPBinaryARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32, fpOp func(dd, dn, dm byte) uint32) {
+	if !isValidDPairReg(ji.rd) || !isValidDPairReg(ji.rs) || !isValidDPairReg(ji.rt) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	skips := emitDPairNonFiniteBailARM64(cb, ji.rs, ji.rt)
+
+	emitDPairToDReg(cb, 0, ji.rs)
+	emitDPairToDReg(cb, 1, ji.rt)
+	if ji.opcode == OP_DDIV {
+		// Before the divide: IE64FPU.DDIV tests the operands, not the quotient.
+		emitSetDPDivideByZeroIfNeededARM64(cb, ji)
+	}
+	cb.Emit32(fpOp(2, 0, 1))
+	if ji.opcode == OP_DDIV {
+		tZeroOff := emitDPairZeroSkipARM64(cb, ji.rt, arm64CondNE)
+		emitSetDPResultInfOrNaNFlagsARM64(cb, 2, false)
+		doneOff := cb.Len()
+		cb.Emit32(0)
+		patchArmSkips(cb, []armSkip{tZeroOff}, cb.Len())
+		emitSetDPResultInfOrNaNFlagsARM64(cb, 2, true)
+		cb.PatchUint32(doneOff, arm64B(int32(cb.Len()-doneOff)))
+	} else {
+		emitSetDPResultInfOrNaNFlagsARM64(cb, 2, true)
+	}
+	if ji.opcode == OP_DMUL || ji.opcode == OP_DDIV {
+		emitSetDPResultUnderflowIfZeroARM64(cb, 2, ji)
+	}
+	emitDRegToDPair(cb, 2, ji.rd, ji.fpsrCCDead)
+	patchFP64BailToInterpreterARM64(cb, skips, ji, instrPC, br, writtenSoFar)
+}
+
+func emitDINT_ARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rd) || !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	emitDPairToDReg(cb, 0, ji.rs)
+
+	// Dispatch on the guest rounding mode held in FPCR, not the host's: the
+	// interpreter picks its rounding function from these two bits explicitly, so
+	// FRINTI (round per host FPCR) would answer a different question. DINT raises
+	// no exception flags and needs no operand check.
+	cb.Emit32(arm64LDR_W_imm(2, arm64RegFPUBase, fpuOffFPCR))
+	emitLoadImm32(cb, 3, 0x03)
+	cb.Emit32(arm64AND_W(2, 2, 3))
+
+	modeIs := func(mode uint8) armSkip {
+		emitLoadImm32(cb, 3, uint32(mode))
+		cb.Emit32(arm64CMP_W(2, 3))
+		off := cb.Len()
+		cb.Emit32(0)
+		return armSkip{off: off, cond: arm64CondEQ}
+	}
+	nearestSkip := modeIs(IE64_FPU_RND_NEAREST)
+	truncSkip := modeIs(IE64_FPU_RND_ZERO)
+	floorSkip := modeIs(IE64_FPU_RND_FLOOR)
+
+	// Fallthrough is ceil, matching the interpreter's remaining mode.
+	cb.Emit32(arm64FRINTP_D(1, 0))
+	done1Off := cb.Len()
+	cb.Emit32(0)
+
+	patchArmSkips(cb, []armSkip{floorSkip}, cb.Len())
+	cb.Emit32(arm64FRINTM_D(1, 0))
+	done2Off := cb.Len()
+	cb.Emit32(0)
+
+	patchArmSkips(cb, []armSkip{truncSkip}, cb.Len())
+	cb.Emit32(arm64FRINTZ_D(1, 0))
+	done3Off := cb.Len()
+	cb.Emit32(0)
+
+	patchArmSkips(cb, []armSkip{nearestSkip}, cb.Len())
+	cb.Emit32(arm64FRINTN_D(1, 0))
+
+	donePC := cb.Len()
+	cb.PatchUint32(done1Off, arm64B(int32(donePC-done1Off)))
+	cb.PatchUint32(done2Off, arm64B(int32(donePC-done2Off)))
+	cb.PatchUint32(done3Off, arm64B(int32(donePC-done3Off)))
+
+	emitDRegToDPair(cb, 1, ji.rd, ji.fpsrCCDead)
+}
+
+func emitDCMP_ARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rs) || !isValidDPairReg(ji.rt) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	skips := emitDPairNonFiniteBailARM64(cb, ji.rs, ji.rt)
+
+	emitDPairToDReg(cb, 0, ji.rs)
+	emitDPairToDReg(cb, 1, ji.rt)
+
+	// Seed the accumulator with the surviving sticky flags before the compare:
+	// IE64FPU.DCMP clears the CC field and keeps the exception flags.
+	cb.Emit32(arm64LDR_W_imm(2, arm64RegFPUBase, fpuOffFPSR))
+	cb.Emit32(arm64UBFX_W(2, 2, 0, 4))
+
+	cb.Emit32(arm64FCMP_D(0, 1))
+	ltOff := cb.Len()
+	cb.Emit32(0)
+	eqOff := cb.Len()
+	cb.Emit32(0)
+
+	// Greater than (fallthrough). Non-finite operands bail above, so neither
+	// IE64FPU.DCMP's +Inf CC_I rule nor its unordered path can be reached: the
+	// only outcomes left are less-than, equal and greater-than between finites.
+	cb.Emit32(arm64MOVZ_W(3, 1, 0)) // result = 1
+	done1Off := cb.Len()
+	cb.Emit32(0)
+
+	ltPC := cb.Len()
+	cb.PatchUint32(ltOff, arm64Bcond(arm64CondMI, int32(ltPC-ltOff)))
+	emitLoadImm32(cb, 3, 0xFFFFFFFF)
+	cb.Emit32(arm64SXTW(3, 3)) // X3 = -1
+	emitLoadImm32(cb, 4, IE64_FPU_CC_N)
+	cb.Emit32(arm64ORR_W(2, 2, 4))
+	done2Off := cb.Len()
+	cb.Emit32(0)
+
+	eqPC := cb.Len()
+	cb.PatchUint32(eqOff, arm64Bcond(arm64CondEQ, int32(eqPC-eqOff)))
+	cb.Emit32(arm64MOVZ_W(3, 0, 0)) // result = 0
+	emitLoadImm32(cb, 4, IE64_FPU_CC_Z)
+	cb.Emit32(arm64ORR_W(2, 2, 4))
+
+	donePC := cb.Len()
+	cb.PatchUint32(done1Off, arm64B(int32(donePC-done1Off)))
+	cb.PatchUint32(done2Off, arm64B(int32(donePC-done2Off)))
+
+	cb.Emit32(arm64STR_W_imm(2, arm64RegFPUBase, fpuOffFPSR))
+	if ji.rd != 0 {
+		dstReg, mapped := ie64ToARM64Reg(ji.rd)
+		if mapped {
+			cb.Emit32(arm64MOV(dstReg, 3))
+		} else {
+			emitStoreSpilledReg(cb, 3, ji.rd)
+		}
+	}
+	patchFP64BailToInterpreterARM64(cb, skips, ji, instrPC, br, writtenSoFar)
+}
+
+func emitDCVTIF_ARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rd) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	// int64 -> float64 cannot raise anything: every int64 has a float64 image,
+	// exactly or rounded. The interpreter agrees, and only sets condition codes.
+	rsReg := resolveReg(cb, ji.rs, 0)
+	cb.Emit32(arm64SCVTF_XD(0, rsReg))
+	emitDRegToDPair(cb, 0, ji.rd, ji.fpsrCCDead)
+}
+
+func emitDCVTFI_ARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	skips := emitDPairNonFiniteBailARM64(cb, ji.rs)
+	emitDPairToDReg(cb, 0, ji.rs)
+
+	// Saturate where IE64FPU.DCVTFI saturates. FCVTZS clamps on its own, but
+	// silently, and the IO flag on an out-of-range operand is ours to raise. The
+	// NaN arm of the interpreter's rule is unreachable: a NaN operand bails.
+	emitLoadImm64(cb, 2, math.Float64bits(fp64MaxInt64))
+	cb.Emit32(arm64FMOV_XtoD(1, 2))
+	cb.Emit32(arm64FCMP_D(0, 1))
+	highOff := cb.Len()
+	cb.Emit32(0)
+
+	emitLoadImm64(cb, 2, math.Float64bits(fp64MinInt64))
+	cb.Emit32(arm64FMOV_XtoD(1, 2))
+	cb.Emit32(arm64FCMP_D(0, 1))
+	lowOff := cb.Len()
+	cb.Emit32(0)
+
+	cb.Emit32(arm64FCVTZS_DX(0, 0))
+	storeOff := cb.Len()
+	cb.Emit32(0)
+
+	highPC := cb.Len()
+	cb.PatchUint32(highOff, arm64Bcond(arm64CondGT, int32(highPC-highOff)))
+	emitLoadImm64(cb, 0, uint64(math.MaxInt64))
+	emitSetFPUInvalid(cb)
+	highDoneOff := cb.Len()
+	cb.Emit32(0)
+
+	lowPC := cb.Len()
+	cb.PatchUint32(lowOff, arm64Bcond(arm64CondMI, int32(lowPC-lowOff)))
+	emitLoadImm64(cb, 0, uint64(1)<<63)
+	emitSetFPUInvalid(cb)
+
+	storePC := cb.Len()
+	cb.PatchUint32(storeOff, arm64B(int32(storePC-storeOff)))
+	cb.PatchUint32(highDoneOff, arm64B(int32(storePC-highDoneOff)))
+
+	if ji.rd != 0 {
+		dstReg, mapped := ie64ToARM64Reg(ji.rd)
+		if mapped {
+			cb.Emit32(arm64MOV(dstReg, 0))
+		} else {
+			emitStoreSpilledReg(cb, 0, ji.rd)
+		}
+	}
+	patchFP64BailToInterpreterARM64(cb, skips, ji, instrPC, br, writtenSoFar)
 }
 
 // ===========================================================================

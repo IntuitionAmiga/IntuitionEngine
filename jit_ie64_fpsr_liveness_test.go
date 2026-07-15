@@ -1,4 +1,4 @@
-//go:build amd64 && (linux || windows || darwin)
+//go:build (amd64 || arm64) && (linux || windows || darwin)
 
 package main
 
@@ -89,6 +89,37 @@ func TestIE64MarkFPSRCCDead_FP64(t *testing.T) {
 	ie64MarkFPSRCCDead(load)
 	if load[0].fpsrCCDead {
 		t.Errorf("FMOVI before faulting DLOAD must stay CC-live")
+	}
+}
+
+// TestIE64CompileBlockRunsFPSRCCLiveness pins that compileBlock actually runs the
+// liveness pass, on whichever backend is being built.
+//
+// Every other test here would still pass if the pass were never called: eliding
+// nothing is always correct, just slower. So dropping the ie64MarkFPSRCCDead call
+// from a backend's compileBlock would silently forfeit the optimisation with a
+// fully green suite. compileBlock marks in place, which is what makes this
+// observable at all.
+func TestIE64CompileBlockRunsFPSRCCLiveness(t *testing.T) {
+	instrs := []JITInstr{
+		{opcode: OP_FMOVI, rd: 1, rs: 1}, // 0: CC overwritten by #1 -> must be marked dead
+		{opcode: OP_FMOVI, rd: 1, rs: 2}, // 1: observed by FMOVSR -> must stay live
+		{opcode: OP_FMOVSR, rd: 3},       // 2: observer
+	}
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Skipf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+
+	if _, err := compileBlock(instrs, PROG_START, execMem); err != nil {
+		t.Fatalf("compileBlock: %v", err)
+	}
+	if !instrs[0].fpsrCCDead {
+		t.Errorf("compileBlock did not mark the dead CC write: the liveness pass is not wired in")
+	}
+	if instrs[1].fpsrCCDead {
+		t.Errorf("compileBlock marked an observed CC write dead")
 	}
 }
 

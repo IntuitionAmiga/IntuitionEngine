@@ -1,5 +1,5 @@
 // jit_ie64_fpsr_liveness.go - backward FPSR condition-code liveness for the
-// IE64 amd64 JIT (Technique 3 of IE64_JIT_PERFORMANCE_PLAN.md).
+// IE64 amd64 and arm64 JITs (Technique 3 of IE64_JIT_PERFORMANCE_PLAN.md).
 //
 // Several IE64 FP instructions update the FPSR condition-code field
 // (bits 27:24) after producing their result. That update is dead when a
@@ -10,8 +10,15 @@
 // Sticky exception flags (bits 3:0) are never touched here: the plan
 // keeps them eager, and only the CC field is analysed.
 //
-// Observability model matches the rest of the IE64 amd64 JIT: a native
-// block runs to completion, so interrupts and traps are only serviced at
+// Both backends emit the same set of CC writers and share this analysis.
+// They differ only in what they do with the result: amd64 honours both
+// fpsrCCDead and fpsrCCSink, arm64 honours fpsrCCDead alone (it has no exit
+// -funnel materialisation, so a sunk write falls back to an inline update).
+// The two flags are set on disjoint cases, so honouring one without the
+// other is sound.
+//
+// Observability model matches the rest of the IE64 JIT on both backends: a
+// native block runs to completion, so interrupts and traps are only serviced at
 // block boundaries. The only in-block FPSR reader is FMOVSR. Any
 // instruction that can fault/trap/bail (memory FP ops, transcendentals,
 // system opcodes) is treated as an observer because a resulting trap
@@ -20,14 +27,16 @@
 // pass runs per sub-block, so cross-block CC elision is simply forgone,
 // never mis-applied.
 
-//go:build amd64 && (linux || windows || darwin)
+//go:build (amd64 || arm64) && (linux || windows || darwin)
 
 package main
 
-// ie64FPSRCCWriterElidable reports whether the amd64 emitter appends an
+// ie64FPSRCCWriterElidable reports whether the emitter appends an
 // emitSetFPCondCodes* update to this opcode that can be skipped when the
-// CC write is proven dead. These are exactly the FP opcodes whose
-// emitters call emitSetFPCondCodes(64)AMD64 as their final step.
+// CC write is proven dead. These are exactly the FP opcodes whose emitters
+// call emitSetFPCondCodes(64)AMD64, or emitFPCondCodes(64)ARM64, as their
+// final step. The two backends' lists are identical; if they ever diverge,
+// this predicate has to be split per backend rather than widened.
 func ie64FPSRCCWriterElidable(op byte) bool {
 	switch op {
 	case OP_FABS, OP_FNEG, OP_FMOVI, OP_FMOVECR, OP_FSQRT, OP_FINT, OP_FCVTIF, OP_FLOAD,
@@ -50,9 +59,13 @@ func ie64FPSRCCWriterElidable(op byte) bool {
 func ie64FPSRCCKiller(op byte) bool {
 	switch op {
 	case OP_FABS, OP_FNEG, OP_FMOVI, OP_FMOVECR, OP_FSQRT, OP_FINT, OP_FCVTIF, OP_FMOVSC,
-		// FP32 binary ops qualify: SSE runs with exceptions masked so ADDSS,
-		// SUBSS, MULSS and DIVSS cannot fault, and each unconditionally rewrites
-		// the whole CC field. Their sticky exception updates are emitted eagerly
+		// FP32 binary ops qualify on both backends: each unconditionally
+		// rewrites the whole CC field and cannot fault. On amd64 because SSE
+		// runs with exceptions masked, so ADDSS/SUBSS/MULSS/DIVSS cannot trap;
+		// on arm64 because neither the JIT nor the guest can enable an FP trap
+		// — the emitter never writes the host FPCR (FMOVSC writes the guest's
+		// FPCR field in the IE64FPU struct), so the host default of untrapped
+		// exceptions stands. Their sticky exception updates are emitted eagerly
 		// and are unaffected by CC elision.
 		OP_FADD, OP_FSUB, OP_FMUL, OP_FDIV:
 		return true
@@ -92,10 +105,15 @@ func ie64FPSRTransparent(op byte) bool {
 	return false
 }
 
-// ie64FPSRCCSinkable reports whether the emitter can defer this opcode's CC
+// ie64FPSRCCSinkable reports whether an emitter can defer this opcode's CC
 // update to the block's exit funnels. These are exactly the FP32 writers
 // routed through emitFPCCUpdate32AMD64, whose classified value is the FP32
 // register ji.rd and so can be reconstructed at an exit by re-reading it.
+//
+// Only amd64 acts on the resulting fpsrCCSink; arm64 has no funnel
+// materialisation and emits those updates inline instead. That costs arm64
+// performance, not correctness: sinking is an optimisation, and declining it
+// leaves the ordinary in-place update.
 //
 // FLOAD and the FP64 writers are excluded: they still emit their CC update in
 // place. Both are inline observers in this analysis anyway (they can fault or
