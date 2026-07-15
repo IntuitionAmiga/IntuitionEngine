@@ -885,9 +885,34 @@ func emitPrologue(cb *CodeBuffer, blockPC uint64, br *blockRegs) {
 		cb.Emit32(arm64MOVZ(arm64RegLoopCount, 0, 0))
 	}
 
-	// Load only IE64 registers that are read by the block
+	// Load every IE64 register the block reads *or* writes (br.used), not just
+	// the ones it reads. A write-only register still has to arrive holding its
+	// canonical value, because the epilogue stores it back unconditionally and
+	// would otherwise publish whatever the host register happened to contain.
+	//
+	// Two ways that bites, both of which loading br.read alone gets wrong:
+	//
+	//   - Mixed JIT/interpreter handoff. A helper-exiting LOAD bails, the Go
+	//     dispatcher writes the result into cpu.regs[rd], and the block resumes
+	//     through emitResumeEntryARM64 -> emitPrologue. If rd is write-only the
+	//     resume would not reload it, and the next epilogue would store the
+	//     stale host register straight over the helper's result. (The Go runtime
+	//     runs in between, so the stale value is typically one of its heap
+	//     pointers.)
+	//   - A loop that exits before reaching a register it writes later. A
+	//     conditional-branch exit normally stores writtenSoFar, so a
+	//     forward-only block is unaffected; but in a block with a backward edge
+	//     the emitter widens that to br.written, because a prior iteration may
+	//     have written registers appearing after the branch. On the first
+	//     iteration those writes have not run yet.
+	//
+	// br.used is exactly the set whose callee-saved pairs are preserved above,
+	// so this cannot load a register the frame has not saved. amd64 solves the
+	// same problem by loading every mapped register unconditionally; its
+	// resident set is 4 registers wide, where this backend maps 14, so it takes
+	// the analysis rather than the blanket load.
 	for ie64Reg := byte(ie64FirstMapped); ie64Reg <= ie64LastMapped; ie64Reg++ {
-		if br.read&(1<<ie64Reg) != 0 {
+		if br.used&(1<<ie64Reg) != 0 {
 			arm64Reg, _ := ie64ToARM64Reg(ie64Reg)
 			cb.Emit32(arm64LDR_imm(arm64Reg, arm64RegBase, uint32(ie64Reg)))
 		}
