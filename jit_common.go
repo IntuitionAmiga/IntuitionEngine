@@ -247,6 +247,7 @@ type JITInstr struct {
 	rt         byte
 	mmuBail    bool  // when true, emit bail-to-interpreter instead of native memory access
 	fpsrCCDead bool  // when true, elide the trailing FPSR condition-code update (dead write)
+	fpsrCCSink bool  // when true, defer the FPSR condition-code update to the block's exit funnels
 	fusedFlag  uint8 // see ie64Fused* constants
 	imm32      uint32
 	pcOffset   uint32 // byte offset from block start

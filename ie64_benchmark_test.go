@@ -125,9 +125,17 @@ func buildFPUProgram(iterations uint32) (instrs [][]byte, totalInstrs int) {
 		ie64Instr(OP_FMOVECR, 3, 0, 0, 0, 0, 0),                  // F3 = pi
 		ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, iterations), // R10 = iterations
 		// Loop body (5 FP + 1 SUB + 1 BNE = 7 per iteration)
+		//
+		// The recurrence must stay inside the normal range for the whole run.
+		// FMUL takes F2 rather than F1 precisely so that it does not: with
+		// F6 = F5 * F1 the recurrence carries an F1*F1/2 term and overflows to
+		// +Inf within a handful of iterations, after which every remaining
+		// iteration is arithmetic on infinities and the benchmark stops
+		// measuring anything representative. As written it reduces to
+		// F1 = F1 + F2, which climbs linearly and stays normal.
 		ie64Instr(OP_FADD, 4, 0, 0, 1, 2, 0),            // F4 = F1 + F2
 		ie64Instr(OP_FSUB, 5, 0, 0, 4, 3, 0),            // F5 = F4 - F3
-		ie64Instr(OP_FMUL, 6, 0, 0, 5, 1, 0),            // F6 = F5 * F1
+		ie64Instr(OP_FMUL, 6, 0, 0, 5, 2, 0),            // F6 = F5 * F2
 		ie64Instr(OP_FDIV, 7, 0, 0, 6, 2, 0),            // F7 = F6 / F2
 		ie64Instr(OP_FADD, 1, 0, 0, 7, 3, 0),            // F1 = F7 + F3
 		ie64Instr(OP_SUB, 10, IE64_SIZE_Q, 1, 10, 0, 1), // R10 -= 1
@@ -229,9 +237,15 @@ func buildMixedProgram(iterations uint32) (instrs [][]byte, totalInstrs int) {
 		ie64Instr(OP_MOVE, 10, IE64_SIZE_Q, 1, 0, 0, iterations),
 		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, benchDataAddr),
 		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, 0),
-		ie64Instr(OP_FMOVECR, 1, 0, 0, 0, 0, 8), // F1 = 1.0
-		ie64Instr(OP_FMOVECR, 2, 0, 0, 0, 0, 9), // F2 = 2.0
+		ie64Instr(OP_FMOVECR, 1, 0, 0, 0, 0, 8),  // F1 = 1.0
+		ie64Instr(OP_FMOVECR, 2, 0, 0, 0, 0, 13), // F2 = 0.5
 		// Loop body
+		//
+		// F2 is 0.5, not 2.0, so that F1 = (F1 + F2) * F2 contracts to a fixed
+		// point at 0.5 and stays in the normal range. With F2 = 2.0 the
+		// recurrence doubles every iteration and saturates to +Inf within about
+		// thirty of the ten thousand iterations, leaving the benchmark
+		// measuring arithmetic on infinities rather than on ordinary floats.
 		ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 1, 0, 0),
 		ie64Instr(OP_ADD, 3, IE64_SIZE_Q, 1, 3, 0, 1),
 		ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 1, 0, 0),

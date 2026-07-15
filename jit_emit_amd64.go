@@ -945,6 +945,11 @@ func emitMMUMicroTLBProbeAMD64(cb *CodeBuffer, prefixOff int32) int {
 // emitEpilogue but does not pop the stack frame or restore callee-saved.
 // On entry RDI = RegsPtr (current convention inside the JIT body).
 func emitLightweightStoreRegs(cb *CodeBuffer) {
+	// Materialise any sunk FPSR CC update before the spill: the chained target
+	// re-enters through its own chainEntry and has no knowledge of this
+	// block's pending CC state (Technique 3).
+	emitMaterializeFPCCAMD64(cb)
+
 	// Spill FP residents so the chained target re-loads canonical FP state via
 	// its own chainEntry (Technique 3, B1). Idempotent with the epilogue spill
 	// on the unchained fall-through.
@@ -1076,6 +1081,10 @@ func emitChainExit(cb *CodeBuffer, br *blockRegs, targetPC uint64, instrCount ui
 //   - storeRegs: IE64 register bitmask - which registers to store back
 //   - calleeSaved: IE64 register bitmask - which callee-saved pairs to restore (unused on amd64, we always restore all)
 func emitEpilogue(cb *CodeBuffer, storeRegs uint32, _ uint32) {
+	// Materialise any sunk FPSR CC update before the spill, so the classified
+	// value is still sourced from its residency binding (Technique 3).
+	emitMaterializeFPCCAMD64(cb)
+
 	// Spill FP residents to canonical memory before any exit (Technique 3, B1).
 	// Every emitEpilogue site is a terminal RET, so this covers block-end,
 	// mid-block helper bails and dispatcher exits uniformly.
@@ -1158,6 +1167,12 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 	}
 
 	ie64MarkFPSRCCDead(instrs)
+	ie64PendingFPCC = ie64FPCCPending{}
+	ie64PendingColdFP = ie64PendingColdFP[:0]
+	defer func() {
+		ie64PendingFPCC = ie64FPCCPending{}
+		ie64PendingColdFP = ie64PendingColdFP[:0]
+	}()
 
 	cb := NewCodeBuffer(len(instrs) * 384) // x86-64 instructions are variable length
 
@@ -1212,6 +1227,10 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 		emitPackedPCAndCount(cb, endPC, uint32(len(instrs)), &br)
 		emitEpilogue(cb, br.written, br.used)
 	}
+
+	// Cold FP sticky-flag classifiers live past the block body, out of the
+	// hot path's uop-cache footprint. Each jumps back to its continuation.
+	emitFPStickyColdBlocksAMD64(cb)
 
 	cb.Resolve()
 	code := cb.Bytes()
@@ -1385,6 +1404,13 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		return nil, errIE64RegionTooSmall
 	}
 
+	ie64PendingFPCC = ie64FPCCPending{}
+	ie64PendingColdFP = ie64PendingColdFP[:0]
+	defer func() {
+		ie64PendingFPCC = ie64FPCCPending{}
+		ie64PendingColdFP = ie64PendingColdFP[:0]
+	}()
+
 	plan := ie64PlanRegion(region)
 	globalIE64JITStats.spills.Add(uint64(plan.spillOps))
 	globalIE64JITStats.fpuSpills.Add(uint64(plan.fpuSpillOps))
@@ -1458,8 +1484,13 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 
 		// FPSR CC liveness is computed per sub-block: each sub-block end is
 		// treated as an observer, so cross-block CC elision is forgone but
-		// never mis-applied.
+		// never mis-applied. CC sinking is likewise per sub-block, so no CC
+		// update may be left pending across a block boundary: every edge out
+		// of a block materialises it first (the exit funnels for terminators,
+		// the direct-JMP intercepts below for in-region edges, and the
+		// fall-through flush after this loop).
 		ie64MarkFPSRCCDead(blk)
+		ie64PendingFPCC = ie64FPCCPending{}
 
 		for i := range blk {
 			ji := &blk[i]
@@ -1482,6 +1513,12 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 					if targetBI, in := pcToBlock[target]; in {
 						instrOffsets[i] = cb.Len()
 						staticCount := uint32(i + 1)
+						// This edge stays in native code and never reaches an
+						// exit funnel, and the target block was analysed on
+						// its own. Settle any sunk CC here, before the loop
+						// counter sequence clobbers RAX.
+						emitMaterializeFPCCAMD64(cb)
+						ie64PendingFPCC = ie64FPCCPending{}
 						if targetBI <= bi {
 							// Back-edge - emit budget-checked native loop.
 							// bodySize = instructions retired per iteration =
@@ -1523,6 +1560,15 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 			emitInstruction(cb, ji, region.blockPCs[bi], isLast, &br, writtenSoFar, i, instrOffsets, &pendingChains)
 			writtenSoFar |= instrWrittenRegs(ji)
 		}
+		// A block that does not end in a terminator falls through to the next
+		// one, which was analysed independently and knows nothing of a pending
+		// CC. Settle it on the fall-through edge. After a terminator the
+		// pending slot is already spent at the exit funnel and anything here
+		// would be unreachable.
+		if last := &blk[len(blk)-1]; !isBlockTerminator(last.opcode) {
+			emitMaterializeFPCCAMD64(cb)
+		}
+		ie64PendingFPCC = ie64FPCCPending{}
 		totalInstrCount += len(blk)
 	}
 
@@ -1544,6 +1590,8 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		emitPackedPCAndCount(cb, endPC, uint32(totalInstrCount), &br)
 		emitEpilogue(cb, br.written, br.used)
 	}
+
+	emitFPStickyColdBlocksAMD64(cb)
 
 	cb.Resolve()
 	code := cb.Bytes()
@@ -4199,6 +4247,62 @@ func emitFPResidencySpill(cb *CodeBuffer) {
 }
 
 // ===========================================================================
+// FPU Condition Code Sinking
+// ===========================================================================
+
+// ie64FPCCPending records a CC update that the liveness pass proved is
+// unobservable inside the block (fpsrCCSink) and so was not emitted where the
+// instruction ran. reg is the FP register holding the value to classify; the
+// update is reconstructed from it at each exit funnel.
+//
+// At most one CC update can ever be pending. A sunk writer is by construction
+// followed only by transparent instructions and exit edges: any later CC
+// writer is either a killer (which would have marked the earlier write dead
+// instead) or a non-killer such as FLOAD or an FP64 op (which the pass treats
+// as an inline observer, forcing the earlier write to be emitted in place).
+type ie64FPCCPending struct {
+	valid bool
+	reg   byte
+}
+
+var ie64PendingFPCC ie64FPCCPending
+
+// emitMaterializeFPCCAMD64 emits a pending sunk CC update. It is called from
+// the block's exit funnels — emitEpilogue and emitLightweightStoreRegs —
+// which between them cover every path that leaves a block: block end, the
+// terminators, mid-block helper bails and dispatcher exits.
+//
+// Only RAX, RCX, RDX and R11 are touched, all of which are scratch and dead
+// at an exit (emitFPResidencySpill already relies on RAX and R11 being free
+// at these same two sites). The pending slot is deliberately not cleared: the
+// funnel sits on one exit path, and the fall-through may reach another.
+//
+// Reading the value back through emitLoadFPRegAMD64 keeps this correct under
+// FP residency, which sources the register from its host XMM binding rather
+// than from the stale canonical FPRegs image.
+func emitMaterializeFPCCAMD64(cb *CodeBuffer) {
+	if !ie64PendingFPCC.valid {
+		return
+	}
+	emitLoadFPRegAMD64(cb, amd64RAX, ie64PendingFPCC.reg)
+	emitSetFPCondCodesAMD64(cb)
+}
+
+// emitFPCCUpdate32AMD64 applies the liveness pass's decision for an FP32 CC
+// writer whose classified value is in EAX and whose destination is ji.rd.
+func emitFPCCUpdate32AMD64(cb *CodeBuffer, ji *JITInstr) {
+	if ji.fpsrCCDead {
+		return
+	}
+	if ji.fpsrCCSink {
+		ie64PendingFPCC = ie64FPCCPending{valid: true, reg: ji.rd}
+		return
+	}
+	ie64PendingFPCC.valid = false
+	emitSetFPCondCodesAMD64(cb)
+}
+
+// ===========================================================================
 // FPU Condition Code Setter
 // ===========================================================================
 
@@ -4357,9 +4461,7 @@ func emitFABS_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	emitLoadFPRegAMD64(cb, amd64RAX, ji.rs)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, 0x7FFFFFFF) // AND EAX, 0x7FFFFFFF
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	if !ji.fpsrCCDead {
-		emitSetFPCondCodesAMD64(cb)
-	}
+	emitFPCCUpdate32AMD64(cb, ji)
 }
 
 func emitFNEG_AMD64(cb *CodeBuffer, ji *JITInstr) {
@@ -4367,18 +4469,14 @@ func emitFNEG_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	emitLoadImm32AMD64(cb, amd64RCX, 0x80000000)
 	amd64ALU_reg_reg32(cb, 0x31, amd64RAX, amd64RCX) // XOR EAX, ECX
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	if !ji.fpsrCCDead {
-		emitSetFPCondCodesAMD64(cb)
-	}
+	emitFPCCUpdate32AMD64(cb, ji)
 }
 
 func emitFMOVI_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
 	amd64MOV_reg_reg32(cb, amd64RAX, rsReg)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	if !ji.fpsrCCDead {
-		emitSetFPCondCodesAMD64(cb)
-	}
+	emitFPCCUpdate32AMD64(cb, ji)
 }
 
 func emitFMOVO_AMD64(cb *CodeBuffer, ji *JITInstr) {
@@ -4403,9 +4501,7 @@ func emitFMOVECR_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	}
 	emitLoadImm32AMD64(cb, amd64RAX, bits)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	if !ji.fpsrCCDead {
-		emitSetFPCondCodesAMD64(cb)
-	}
+	emitFPCCUpdate32AMD64(cb, ji)
 }
 
 func emitFMOVSR_AMD64(cb *CodeBuffer, ji *JITInstr) {
@@ -4500,6 +4596,202 @@ func amd64CVTTSD2SI_reg64(cb *CodeBuffer, gpr, xmm byte) {
 	cb.EmitBytes(0x0F, 0x2C, modRM(3, gpr, xmm))
 }
 
+// emitFPAbsBits32AMD64 sets dst (32-bit) to the sign-stripped bits of src, the
+// value every IE64 FP32 classifier predicate is expressed over.
+func emitFPAbsBits32AMD64(cb *CodeBuffer, dst, src byte) {
+	amd64MOV_reg_reg32(cb, dst, src)
+	amd64ALU_reg_imm32_32bit(cb, 4, dst, 0x7FFFFFFF) // AND dst, 0x7FFFFFFF
+}
+
+// fp32AbsInf is |+Inf| in IEEE-754 binary32. Over sign-stripped bits:
+// x is infinite iff abs == fp32AbsInf, NaN iff abs > fp32AbsInf, and both
+// (that is, "special") iff abs >= fp32AbsInf. Zero iff abs == 0.
+const fp32AbsInf = 0x7F800000
+
+// emitFP32StickyFlagsAMD64 emits the IE64 sticky exception-flag updates for an
+// FP32 binary op, mirroring IE64FPU.FADD/FSUB/FMUL/FDIV bit for bit. These
+// updates are eager: unlike the condition-code field they are never elided,
+// because a sticky flag stays observable indefinitely.
+//
+// On entry EAX = result bits, R10d = fs bits, ECX = ft bits. EDX and R11 are
+// scratch and EAX is preserved for the caller's register store and CC update;
+// ECX is dead once the flags are computed and is reused for the FPSR read.
+//
+// The caller only reaches this path once it has proven the result is special or
+// zero, which is a necessary condition of every flag below, so it is cold.
+func emitFP32StickyFlagsAMD64(cb *CodeBuffer, op byte) {
+	var res, s, t byte = amd64RAX, amd64R10, amd64RCX
+
+	// skipIf emits "|src| CMP imm; Jcc away" and returns the branch to patch.
+	skipIf := func(src byte, imm int32, cond byte) int {
+		emitFPAbsBits32AMD64(cb, amd64R11, src)
+		amd64ALU_reg_imm32_32bit(cb, 7, amd64R11, imm) // CMP R11d, imm
+		return amd64Jcc_rel32(cb, cond)
+	}
+	isInf := func(src byte) int { return skipIf(src, fp32AbsInf, amd64CondNE) }
+	notInf := func(src byte) int { return skipIf(src, fp32AbsInf, amd64CondE) }
+	isNaN := func(src byte) int { return skipIf(src, fp32AbsInf, amd64CondBE) }
+	notNaN := func(src byte) int { return skipIf(src, fp32AbsInf, amd64CondA) }
+	isZero := func(src byte) int { return skipIf(src, 0, amd64CondNE) }
+	notZero := func(src byte) int { return skipIf(src, 0, amd64CondE) }
+
+	// EDX accumulates the flags to OR into FPSR.
+	amd64XOR_reg_reg32(cb, amd64RDX, amd64RDX)
+
+	// raise emits the conjunction of checks; each check jumps past the OR when
+	// its clause fails, so the OR runs only when every clause holds.
+	raise := func(flag uint32, checks ...func() int) {
+		skips := make([]int, 0, len(checks))
+		for _, c := range checks {
+			skips = append(skips, c())
+		}
+		amd64ALU_reg_imm32_32bit(cb, 1, amd64RDX, int32(flag)) // OR EDX, flag
+		done := cb.Len()
+		for _, sk := range skips {
+			patchRel32(cb, sk, done)
+		}
+	}
+
+	if op == OP_FDIV {
+		// DZ: isZero(t) && !isZero(s) && !isNaN(s)
+		raise(IE64_FPU_EX_DZ,
+			func() int { return isZero(t) },
+			func() int { return notZero(s) },
+			func() int { return notNaN(s) })
+		// OE: isInf(res) && !isInf(s) && !isZero(t)
+		raise(IE64_FPU_EX_OE,
+			func() int { return isInf(res) },
+			func() int { return notInf(s) },
+			func() int { return notZero(t) })
+	} else {
+		// OE: isInf(res) && !isInf(s) && !isInf(t)
+		raise(IE64_FPU_EX_OE,
+			func() int { return isInf(res) },
+			func() int { return notInf(s) },
+			func() int { return notInf(t) })
+	}
+
+	// IO: isNaN(res) && !isNaN(s) && !isNaN(t). Identical for all four ops.
+	raise(IE64_FPU_EX_IO,
+		func() int { return isNaN(res) },
+		func() int { return notNaN(s) },
+		func() int { return notNaN(t) })
+
+	switch op {
+	case OP_FMUL:
+		// UE: isZero(res) && !isZero(s) && !isZero(t)
+		raise(IE64_FPU_EX_UE,
+			func() int { return isZero(res) },
+			func() int { return notZero(s) },
+			func() int { return notZero(t) })
+	case OP_FDIV:
+		// UE: isZero(res) && !isZero(s) && !isZero(t) && !isInf(t)
+		raise(IE64_FPU_EX_UE,
+			func() int { return isZero(res) },
+			func() int { return notZero(s) },
+			func() int { return notZero(t) },
+			func() int { return notInf(t) })
+	}
+
+	// FPSR |= EDX. Sticky: never clears an existing flag.
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64R11, 68)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RCX, amd64RDX) // OR ECX, EDX
+	amd64MOV_mem_reg32(cb, amd64R11, 68, amd64RCX)
+}
+
+// emitFPBinarySSE emits an FP32 binary op (ADDSS/SUBSS/MULSS/DIVSS) together
+// with its full FPSR side effects, matching the interpreter's IE64FPU methods:
+// eager sticky exception flags first, then the condition-code field (elided when
+// the CC write is proven dead).
+//
+// SSE arithmetic runs with exceptions masked, so none of these ops can fault;
+// that is what lets the FPSR liveness pass treat them as CC killers.
+// amd64LEA_scaled32 emits LEA dst32, [index*2 + disp]. The 32-bit operand
+// size truncates the result, which is exactly the modular arithmetic the
+// sticky-flag gate below relies on.
+func amd64LEA_scaled32(cb *CodeBuffer, dst, index byte, disp int32) {
+	rex := byte(0x40)
+	if dst >= 8 {
+		rex |= 0x04 // REX.R
+	}
+	if index >= 8 {
+		rex |= 0x02 // REX.X
+	}
+	if rex != 0x40 {
+		cb.EmitBytes(rex)
+	}
+	cb.EmitBytes(0x8D, modRM(0, dst&7, 4)) // mod=00, rm=100 -> SIB follows
+	cb.EmitBytes(sibByte(1, index&7, 5))   // scale=*2, no base -> disp32
+	cb.EmitBytes(byte(disp), byte(disp>>8), byte(disp>>16), byte(disp>>24))
+}
+
+// ie64PendingColdFP records an FP32 sticky-flag classifier that was displaced
+// out of the block body. Each entry patches its guard branch to the cold
+// block and jumps back to the instruction's continuation.
+type ie64ColdFPSticky struct {
+	guardOff int  // rel32 field of the guard Jcc to patch to the cold block
+	retPC    int  // continuation to jump back to (the FP register store)
+	op       byte // FP opcode, selects the sticky rules
+	rs       byte // fs operand, reloaded in the cold block
+}
+
+var ie64PendingColdFP []ie64ColdFPSticky
+
+// emitFPStickyGate32AMD64 emits the fast-path guard for an FP32 binary op's
+// sticky exception flags and queues the cold classifier for out-of-line
+// emission.
+//
+// No sticky flag is reachable unless the result is infinite, NaN, or — for the
+// ops carrying an underflow rule — zero. Testing D = bits*2 folds the sign
+// away for free: the sign bit shifts out, so D >= 0xFF000000 is exactly
+// "infinite or NaN" and D == 0 is exactly "zero". For the underflow ops both
+// conditions collapse into a single unsigned compare on D-1, which wraps a
+// zero D to 0xFFFFFFFF and so lands above the same threshold.
+//
+// The classifier itself is cold: on this benchmark's data it never runs. It is
+// emitted after the block body so the loop's uop-cache footprint holds only
+// the three instructions here, and the fast path falls straight through
+// without a taken jump over it.
+func emitFPStickyGate32AMD64(cb *CodeBuffer, ji *JITInstr) {
+	var cond byte
+	if ji.opcode == OP_FMUL || ji.opcode == OP_FDIV {
+		amd64LEA_scaled32(cb, amd64R11, amd64RAX, -1) // R11d = bits*2 - 1
+		amd64ALU_reg_imm32_32bit(cb, 7, amd64R11, int32(-0x1000001))
+		cond = amd64CondAE // special or zero
+	} else {
+		amd64LEA_scaled32(cb, amd64R11, amd64RAX, 0) // R11d = bits*2
+		amd64ALU_reg_imm32_32bit(cb, 7, amd64R11, int32(-0x1000000))
+		cond = amd64CondAE // special
+	}
+	guardOff := amd64Jcc_rel32(cb, cond)
+	ie64PendingColdFP = append(ie64PendingColdFP, ie64ColdFPSticky{
+		guardOff: guardOff,
+		retPC:    cb.Len(),
+		op:       ji.opcode,
+		rs:       ji.rs,
+	})
+}
+
+// emitFPStickyColdBlocksAMD64 flushes the queued cold classifiers. It must be
+// called once per compiled buffer, after the body and before Resolve.
+//
+// On entry to a cold block EAX still holds the result and ECX still holds ft
+// (nothing between the operand load and the guard touches RCX). fs is reloaded
+// rather than kept live in R10, so the fast path spends no instruction
+// preserving a value only the cold path wants; the reload is correct because
+// the destination store happens at retPC, after the cold block returns.
+func emitFPStickyColdBlocksAMD64(cb *CodeBuffer) {
+	for _, c := range ie64PendingColdFP {
+		patchRel32(cb, c.guardOff, cb.Len())
+		emitLoadFPRegAMD64(cb, amd64R10, c.rs)
+		emitFP32StickyFlagsAMD64(cb, c.op)
+		back := amd64JMP_rel32(cb)
+		patchRel32(cb, back, c.retPC)
+	}
+	ie64PendingColdFP = ie64PendingColdFP[:0]
+}
+
 func emitFPBinarySSE(cb *CodeBuffer, ji *JITInstr, sseOpcode byte) {
 	emitLoadFPRegAMD64(cb, amd64RAX, ji.rs)
 	emitLoadFPRegAMD64(cb, amd64RCX, ji.rt)
@@ -4507,7 +4799,10 @@ func emitFPBinarySSE(cb *CodeBuffer, ji *JITInstr, sseOpcode byte) {
 	amd64MOVD_xmm_reg(cb, 1, amd64RCX)
 	amd64SSE_scalar(cb, sseOpcode, 0, 1)
 	amd64MOVD_reg_xmm(cb, amd64RAX, 0)
+
+	emitFPStickyGate32AMD64(cb, ji)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
+	emitFPCCUpdate32AMD64(cb, ji)
 }
 
 func emitFSQRT_AMD64(cb *CodeBuffer, ji *JITInstr) {
@@ -4516,9 +4811,7 @@ func emitFSQRT_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	amd64SSE_scalar(cb, 0x51, 1, 0) // SQRTSS XMM1, XMM0
 	amd64MOVD_reg_xmm(cb, amd64RAX, 1)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	if !ji.fpsrCCDead {
-		emitSetFPCondCodesAMD64(cb)
-	}
+	emitFPCCUpdate32AMD64(cb, ji)
 }
 
 func emitFINT_AMD64(cb *CodeBuffer, ji *JITInstr) {
@@ -4561,9 +4854,7 @@ func emitFINT_AMD64(cb *CodeBuffer, ji *JITInstr) {
 
 	amd64MOVD_reg_xmm(cb, amd64RAX, 1)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	if !ji.fpsrCCDead {
-		emitSetFPCondCodesAMD64(cb)
-	}
+	emitFPCCUpdate32AMD64(cb, ji)
 }
 
 // emitFCMP_AMD64 handles FCMP using UCOMISS.
@@ -4653,9 +4944,7 @@ func emitFCVTIF_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	cb.EmitBytes(0x0F, 0x2A, modRM(3, 0, amd64RAX))
 	amd64MOVD_reg_xmm(cb, amd64RAX, 0)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
-	if !ji.fpsrCCDead {
-		emitSetFPCondCodesAMD64(cb)
-	}
+	emitFPCCUpdate32AMD64(cb, ji)
 }
 
 func emitSetFPUInvalidAMD64(cb *CodeBuffer) {
