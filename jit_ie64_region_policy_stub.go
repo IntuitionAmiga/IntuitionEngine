@@ -4,16 +4,41 @@
 
 package main
 
-import "sync/atomic"
+import (
+	"os"
+	"runtime"
+	"strings"
+	"sync/atomic"
+)
 
 const (
 	ie64JITTier1      = 0
 	ie64JITTierRegion = 1
 )
 
-func ie64RegionPromotionEnabled() bool { return false }
+func ie64RegionPromotionEnabled() bool {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("IE64_JIT_REGIONS"))) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
+}
 
-func ie64RegionMMUEnabled() bool { return false }
+func ie64RegionMMUEnabled() bool {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("IE64_JIT_REGION_MMU"))) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
+}
 
 func ie64JITStatsEnabled() bool { return false }
 

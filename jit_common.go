@@ -906,14 +906,20 @@ type CodeBuffer struct {
 	//
 	// The amd64 backend instead uses a package global guarded by
 	// ie64CompileMu, because its region compiler carries the state across
-	// several blocks and their shared funnels. arm64 has no region tier, so
-	// the buffer-scoped form is both sufficient and race-free.
+	// several blocks and their shared funnels. ARM64 keeps region state on the
+	// buffer, so concurrent compilations remain independent without a lock.
 	pendingFPCC ie64FPCCPending
 
 	// fpPlan is buffer-scoped ARM64 FP residency state. ARM64 compilation can
 	// run concurrently, so unlike amd64's region-scoped global this ownership
 	// map must travel with the CodeBuffer that consumes it.
 	fpPlan *ie64FPResidencyPlan
+
+	// instrCountBase is the number of guest instructions preceding the current
+	// sub-block in an ARM64 region. Exit and helper-resume counts add it to their
+	// local instruction index. Keeping it per buffer avoids cross-CPU compile
+	// races while regions are promoted concurrently.
+	instrCountBase uint32
 }
 
 func NewCodeBuffer(capacity int) *CodeBuffer {

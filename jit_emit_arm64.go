@@ -813,6 +813,7 @@ const jitBudget = 4095 // max ARM64 CMP imm12
 // pointer. Neither is a stable IE64 register file mapping, so clobbering
 // them at block-exit time is safe.
 func emitStoreRetCount(cb *CodeBuffer, staticCount uint32, br *blockRegs) {
+	staticCount += cb.instrCountBase
 	// X2 = ctx ptr (reloaded from [SP, #96]).
 	cb.Emit32(arm64LDR_imm(2, 31, 96/8))
 	if br.hasBackwardBranch {
@@ -2368,7 +2369,7 @@ func emitLOADHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *b
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
-	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
+	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, cb.instrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
 	return resumePatch
 }
@@ -2534,7 +2535,7 @@ func emitSTOREHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcR
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
-	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
+	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, cb.instrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
 	return resumePatch
 }
@@ -2981,7 +2982,7 @@ func emitPUSHHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, srcRe
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
-	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
+	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, cb.instrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
 	return resumePatch
 }
@@ -3047,7 +3048,7 @@ func emitPOPHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *bl
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
-	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, ie64CurrentInstrCountBase+bailCount+1, br)
+	resumePatch := emitHelperResumeFieldsARM64(cb, 1, instrPC+IE64_INSTR_SIZE, cb.instrCountBase+bailCount+1, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
 	return resumePatch
 }
@@ -4730,27 +4731,61 @@ func emitBailToInterpreter(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blo
 }
 
 // ===========================================================================
-// IE64 Region Compilation — arm64 stubs
+// IE64 Region Compilation
 // ===========================================================================
-//
-// Region promotion (closure-plan B.2.b) is amd64-only today: the
-// in-region direct-JMP rel32 + chain-exit interception live in
-// jit_emit_amd64.go. The arm64 backend keeps these symbols as stubs so
-// jit_exec.go (built for both architectures) compiles cleanly. The
-// exec-loop promotion path consults ie64FormRegion which returns nil
-// here, so the promotion branch is statically disabled on arm64 with
-// no behavioral change.
 
 type ie64Region struct {
 	blocks   [][]JITInstr
-	blockPCs []uint32
-	entryPC  uint32
+	blockPCs []uint64
+	entryPC  uint64
 }
 
-var ie64CurrentInstrCountBase uint32
+const (
+	ie64ARM64RegionMaxBlocks       = 8
+	ie64ARM64RegionMaxInstructions = 512
+)
 
 func ie64FormRegion(hotPC uint64, memory []byte) *ie64Region {
-	return nil
+	pc := hotPC
+	totalInstrs := 0
+	visited := make(map[uint64]struct{})
+	region := &ie64Region{entryPC: hotPC}
+	for len(region.blockPCs) < ie64ARM64RegionMaxBlocks && totalInstrs < ie64ARM64RegionMaxInstructions {
+		if _, seen := visited[pc]; seen || pc >= uint64(len(memory)) {
+			break
+		}
+		instrs := scanBlock(memory, pc)
+		if len(instrs) == 0 || needsFallback(instrs) {
+			break
+		}
+		if len(region.blocks) > 0 && totalInstrs+len(instrs) > ie64ARM64RegionMaxInstructions {
+			break
+		}
+		for _, ji := range instrs {
+			if ji.fusedFlag != 0 {
+				return nil
+			}
+		}
+		visited[pc] = struct{}{}
+		region.blockPCs = append(region.blockPCs, pc)
+		region.blocks = append(region.blocks, instrs)
+		totalInstrs += len(instrs)
+
+		last := &instrs[len(instrs)-1]
+		if !isBlockTerminator(last.opcode) || last.fusedFlag&ie64FusedRTSLeafReturn != 0 {
+			break
+		}
+		instrPC := pc + uint64(last.pcOffset)
+		target, ok := ie64ResolveTerminatorTarget(last.opcode, last.rs, last.imm32, instrPC)
+		if !ok {
+			break
+		}
+		pc = target
+	}
+	if len(region.blocks) < 2 {
+		return nil
+	}
+	return region
 }
 
 func ie64FormRegionMMU(cpu *CPU64, hotPC uint64) *ie64Region {
@@ -4758,7 +4793,123 @@ func ie64FormRegionMMU(cpu *CPU64, hotPC uint64) *ie64Region {
 }
 
 func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JITBlock, error) {
-	return nil, errIE64RegionNotSupportedARM64
+	if region == nil || len(region.blocks) < 2 {
+		return nil, errIE64RegionTooSmall
+	}
+
+	var allInstrs []JITInstr
+	for _, block := range region.blocks {
+		allInstrs = append(allInstrs, block...)
+	}
+	br := analyzeBlockRegs(allInstrs)
+	br.hasBackwardBranch = true
+
+	cb := NewCodeBuffer(len(allInstrs) * 256)
+	if br.hasFPU && ie64FPResidencyEnabled() {
+		if plan, ok := ie64BuildBlockFPPlan(allInstrs); ok {
+			cb.fpPlan = &plan
+		}
+	}
+	emitPrologue(cb, region.entryPC, &br)
+
+	pcToBlock := make(map[uint64]int, len(region.blockPCs))
+	for i, pc := range region.blockPCs {
+		pcToBlock[pc] = i
+	}
+	blockLabels := make([]int, len(region.blocks))
+	instrCountAtBlock := make([]int, len(region.blocks))
+	type forwardFixup struct {
+		branchOffset int
+		targetBlock  int
+	}
+	var fixups []forwardFixup
+	totalInstrCount := 0
+	regionWrittenSoFar := uint32(0)
+	for blockIndex, block := range region.blocks {
+		blockLabels[blockIndex] = cb.Len()
+		instrCountAtBlock[blockIndex] = totalInstrCount
+		cb.instrCountBase = uint32(totalInstrCount)
+		cb.pendingFPCC = ie64FPCCPending{}
+		ie64MarkFPSRCCDead(block)
+		instrOffsets := make([]int, len(block))
+		writtenSoFar := regionWrittenSoFar
+		for i := range block {
+			ji := &block[i]
+			isLast := i == len(block)-1
+			if isLast && (ji.opcode == OP_BRA || ji.opcode == OP_JMP) {
+				instrPC := region.blockPCs[blockIndex] + uint64(ji.pcOffset)
+				if target, ok := ie64ResolveTerminatorTarget(ji.opcode, ji.rs, ji.imm32, instrPC); ok {
+					if targetBlock, internal := pcToBlock[target]; internal {
+						instrOffsets[i] = cb.Len()
+						emitMaterializeFPCCARM64(cb)
+						if targetBlock <= blockIndex {
+							bodySize := uint32(totalInstrCount + i + 1 - instrCountAtBlock[targetBlock])
+							cb.Emit32(arm64ADD_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
+							cb.Emit32(arm64CMP_imm(arm64RegLoopCount, jitBudget))
+							budgetExitOffset := cb.Len()
+							cb.Emit32(0)
+							cb.Emit32(arm64B(int32(blockLabels[targetBlock] - cb.Len())))
+							budgetExitPC := cb.Len()
+							cb.PatchUint32(budgetExitOffset, arm64Bcond(arm64CondHS, int32(budgetExitPC-budgetExitOffset)))
+							cb.Emit32(arm64SUB_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
+							emitPackedPCAndCount(cb, target, uint32(i+1), &br)
+							emitEpilogue(cb, br.written, br.used)
+						} else {
+							branchOffset := cb.Len()
+							cb.Emit32(0)
+							fixups = append(fixups, forwardFixup{branchOffset: branchOffset, targetBlock: targetBlock})
+						}
+						writtenSoFar |= instrWrittenRegs(ji)
+						continue
+					}
+				}
+			}
+			instrOffsets[i] = cb.Len()
+			emitInstruction(cb, ji, region.blockPCs[blockIndex], isLast, &br, writtenSoFar, i, instrOffsets)
+			writtenSoFar |= instrWrittenRegs(ji)
+		}
+		if !isBlockTerminator(block[len(block)-1].opcode) {
+			emitMaterializeFPCCARM64(cb)
+		}
+		cb.pendingFPCC = ie64FPCCPending{}
+		regionWrittenSoFar = writtenSoFar
+		totalInstrCount += len(block)
+	}
+	for _, fixup := range fixups {
+		cb.PatchUint32(fixup.branchOffset, arm64B(int32(blockLabels[fixup.targetBlock]-fixup.branchOffset)))
+	}
+
+	cb.instrCountBase = 0
+	lastBlock := region.blocks[len(region.blocks)-1]
+	lastInstr := &lastBlock[len(lastBlock)-1]
+	if !isBlockTerminator(lastInstr.opcode) {
+		endPC := region.blockPCs[len(region.blocks)-1] + uint64(lastInstr.pcOffset) + IE64_INSTR_SIZE
+		emitPackedPCAndCount(cb, endPC, uint32(totalInstrCount), &br)
+		emitEpilogue(cb, br.written, br.used)
+	}
+
+	code := cb.Bytes()
+	addr, err := execMem.Write(code)
+	if err != nil {
+		return nil, err
+	}
+	covered := make([][2]uint64, 0, len(region.blocks))
+	for i, block := range region.blocks {
+		last := &block[len(block)-1]
+		covered = append(covered, [2]uint64{
+			region.blockPCs[i],
+			region.blockPCs[i] + uint64(last.pcOffset) + IE64_INSTR_SIZE,
+		})
+	}
+	endPC := covered[len(covered)-1][1]
+	return &JITBlock{
+		startPC:       region.entryPC,
+		endPC:         endPC,
+		instrCount:    totalInstrCount,
+		execAddr:      addr,
+		execSize:      len(code),
+		coveredRanges: covered,
+	}, nil
 }
 
-var errIE64RegionNotSupportedARM64 = errors.New("ie64CompileRegion: arm64 backend has no region compile yet")
+var errIE64RegionTooSmall = errors.New("ie64CompileRegion: region has fewer than 2 blocks")
