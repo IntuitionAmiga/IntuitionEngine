@@ -1178,6 +1178,9 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 
 	br := analyzeBlockRegs(instrs)
 	br.hasBackwardBranch = detectBackwardBranches(instrs, startPC)
+	prevLoopPlan := ie64ActiveLoopPlan
+	ie64ActiveLoopPlan = ie64AnalyseLoop(instrs, startPC)
+	defer func() { ie64ActiveLoopPlan = prevLoopPlan }()
 
 	// FP register residency (Technique 3, B1): keep the block's hottest FP32
 	// registers in host XMM8..XMM15 across the block. Only eligible when the
@@ -3500,7 +3503,7 @@ func emitAtomic_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 // emitIOBail emits the I/O bail path.
 func emitIOBail(cb *CodeBuffer, instrPC uint64, pcOffset uint32, br *blockRegs, writtenSoFar uint32) {
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
-	amd64MOV_mem_imm32(cb, amd64RCX, int32(jitCtxOffNeedIOFallback), 1)
+	amd64MOV_mem_imm32(cb, amd64RCX, int32(jitCtxOffNeedIOFallback), jitFallbackMemory)
 	bailCount := pcOffset / IE64_INSTR_SIZE
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
@@ -3572,6 +3575,15 @@ func emitBcc_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, cond byte, br *
 			skipOff := amd64Jcc_rel32(cb, invertCond(cond))
 
 			bodySize := uint32(instrIdx - targetIdx + 1)
+			if ie64ActiveLoopPlan != nil && ie64ActiveLoopPlan.bounded && ie64ActiveLoopPlan.back == instrIdx {
+				amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(amd64OffLoopCount))
+				amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(bodySize))
+				amd64MOV_mem_reg32(cb, amd64RSP, int32(amd64OffLoopCount), amd64RAX)
+				backOff := amd64JMP_rel32(cb)
+				patchRel32(cb, backOff, instrOffsets[targetIdx])
+				patchRel32(cb, skipOff, cb.Len())
+				return
+			}
 			amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(amd64OffLoopCount))
 			amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(bodySize))
 			amd64MOV_mem_reg32(cb, amd64RSP, int32(amd64OffLoopCount), amd64RAX)

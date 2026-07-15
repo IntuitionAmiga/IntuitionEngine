@@ -720,6 +720,12 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 		}
 		ctx.NeedHelper = 0
 	}
+	if ctx.NeedIOFallback == jitFallbackLoopPrecheck {
+		ctx.NeedIOFallback = 0
+		if cpu.StepOne() != 0 {
+			executed++
+		}
+	}
 	if ctx.NeedInval != 0 {
 		addr, size := ctx.InvalAddr, ctx.InvalSize
 		ctx.NeedInval = 0

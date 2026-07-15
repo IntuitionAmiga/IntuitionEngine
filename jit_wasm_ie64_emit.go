@@ -406,7 +406,17 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 		localBase += uint32(len(fpPlan.bindings))
 	}
 	retCountLocal := localBase
-	e := &wasmBlockEmitter{b: &wasmBody{}, needsMem: needsMem, needsSMC: needsSMC, needsFP: hasFP, gprPlan: gprPlan, fpPlan: fpPlan}
+	loopPlan := (*ie64LoopPlan)(nil)
+	if len(blocks) == 1 {
+		loopPlan = ie64AnalyseLoop(instrs, startPC)
+		if loopPlan != nil && !loopPlan.bounded {
+			loopPlan = nil
+		}
+	}
+	e := &wasmBlockEmitter{b: &wasmBody{}, needsMem: needsMem, needsSMC: needsSMC, needsFP: hasFP, gprPlan: gprPlan, fpPlan: fpPlan, loopPlan: loopPlan}
+	if loopPlan != nil {
+		e.retCountLocal = retCountLocal
+	}
 
 	loopBlockIdx := -1
 	if len(blocks) > 1 {
@@ -453,6 +463,9 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 		}
 		for i := range block.instrs {
 			ins := &block.instrs[i]
+			if loopPlan != nil && int(idx) == loopPlan.head {
+				e.b.loop()
+			}
 			instrPC := block.pc + uint64(ins.pcOffset)
 			internalBRA := i == len(block.instrs)-1 && ins.opcode == OP_BRA && blockIdx+1 < len(blocks) &&
 				uint64(int64(instrPC)+int64(int32(ins.imm32))) == blocks[blockIdx+1].pc
@@ -492,6 +505,9 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 			idx++
 		}
 	}
+	if loopPlan != nil {
+		e.b.end()
+	}
 	if loopBlockIdx >= 0 {
 		e.b.end()
 	}
@@ -512,7 +528,7 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 			locals = append(locals, wasmTypeF64)
 		}
 	}
-	if loopBlockIdx >= 0 {
+	if loopBlockIdx >= 0 || loopPlan != nil {
 		locals = append(locals, wasmTypeI32)
 	}
 	fn := m.addFunc(typ, locals, e.b.code)
@@ -543,6 +559,7 @@ type wasmBlockEmitter struct {
 	fpPlan        *wasmFPPlan
 	emitFPCC      bool
 	retCountLocal uint32
+	loopPlan      *ie64LoopPlan
 }
 
 func (e *wasmBlockEmitter) prologue() {
@@ -811,6 +828,16 @@ func (e *wasmBlockEmitter) emitCondBranch(ins *JITInstr, idx uint32, instrPC uin
 		b.op(wasmOpI64GtU)
 	case OP_BLS:
 		b.op(wasmOpI64LeU)
+	}
+	if e.loopPlan != nil && e.loopPlan.bounded && int(idx) == e.loopPlan.back {
+		b.ifVoid()
+		b.localGet(e.retCountLocal)
+		b.i32Const(int32(e.loopPlan.bodySize))
+		b.op(wasmOpI32Add)
+		b.localSet(e.retCountLocal)
+		b.br(1) // leave the if and re-enter the surrounding loop
+		b.end()
+		return
 	}
 	b.ifVoid()
 	e.exit(uint64(int64(instrPC)+int64(int32(ins.imm32))), idx+1)

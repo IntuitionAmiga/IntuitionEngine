@@ -704,7 +704,9 @@ func (cpu *CPU64) ExecuteJIT() {
 			break
 		}
 
-		ioBail := cpu.jitCtx.NeedIOFallback != 0
+		fallback := cpu.jitCtx.NeedIOFallback
+		ioBail := fallback == jitFallbackMemory
+		loopPrecheckBail := fallback == jitFallbackLoopPrecheck
 		if helperHandled {
 			// Helper already advanced past the offending instruction;
 			// avoid double-handling via the I/O fallback path.
@@ -718,6 +720,15 @@ func (cpu *CPU64) ExecuteJIT() {
 				globalIE64JITStats.ioBailOpcodes[cpu.memory[cpu.PC]].Add(1)
 			}
 			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
+		}
+		if loopPrecheckBail {
+			cpu.jitCtx.NeedIOFallback = 0
+			interpretFallback(DeoptNone)
+			executed++
+			diagFallbackInstr++
+			if !cpu.running.Load() {
+				break
+			}
 		}
 		diagBlocksExec++
 		diagBlockInstrs += uint64(block.instrCount)

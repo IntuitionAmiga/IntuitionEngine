@@ -1032,6 +1032,9 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 
 	br := analyzeBlockRegs(instrs)
 	br.hasBackwardBranch = detectBackwardBranches(instrs, startPC)
+	prevLoopPlan := ie64ActiveLoopPlan
+	ie64ActiveLoopPlan = ie64AnalyseLoop(instrs, startPC)
+	defer func() { ie64ActiveLoopPlan = prevLoopPlan }()
 	if br.hasFPU && ie64FPResidencyEnabled() {
 		if plan, ok := ie64BuildBlockFPPlan(instrs); ok {
 			cb.fpPlan = &plan
@@ -2785,6 +2788,12 @@ func emitBcc(cb *CodeBuffer, ji *JITInstr, instrPC uint64, cond byte, br *blockR
 			cb.Emit32(0) // placeholder
 
 			bodySize := uint32(instrIdx - targetIdx + 1)
+			if ie64ActiveLoopPlan != nil && ie64ActiveLoopPlan.bounded && ie64ActiveLoopPlan.back == instrIdx {
+				cb.Emit32(arm64ADD_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
+				cb.Emit32(arm64B(int32(instrOffsets[targetIdx] - cb.Len())))
+				cb.PatchUint32(skipOffset, arm64Bcond(cond^1, int32(cb.Len()-skipOffset)))
+				return
+			}
 			// ADD X7, X7, #bodySize (tentatively count re-execution)
 			cb.Emit32(arm64ADD_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
 			// CMP X7, #jitBudget
