@@ -94,12 +94,21 @@ compile, and DevTools' "Disable cache" defeats it entirely.
   poll service).
   Block-to-block dispatch chains inside wasm through a driver module and a
   shared function table (about 5.3 times interpreter speed on the node
-  hot-loop benchmark). While the MMU is enabled, blocks are neither
-  compiled nor entered. Stores into compiled code pages are detected in
-  generated code, refined by per-page code extents: a store into data that
+  hot-loop benchmark). Promoted static BRA chains compile as one structured
+  wasm function, including a bounded back edge. Hot GPRs remain in `i64`
+  locals and hot FP64 pairs remain in `f64` locals across internal edges;
+  FPSR condition-code liveness is analysed across the whole region. Helper,
+  SMC, external-branch and budget exits commit state and the dynamic retired
+  count. While the architectural timer is enabled, wasm JIT blocks are neither
+  compiled nor entered, and every instruction runs in the interpreter so the
+  timer advances correctly. The same applies while the MMU is enabled. Stores
+  into compiled code pages are detected in
+  generated code, refined by exact disjoint member ranges: a store into data that
   merely shares a 256-byte page with compiled code does not even exit the
   chain, and a genuine overlap drops only the blocks whose bytes were
-  written. The block table holds up to 65536 blocks before a compacting
+  written. Regions whose disjoint members share one 256-byte page with a data
+  gap fall back to a single block, avoiding a widened page extent and repeated
+  false SMC exits. The block table holds up to 65536 blocks before a compacting
   flush; sustained RUN AOT workloads install several thousand. The backend is on by default and `IE64_WASM_JIT=0` (or
   `/demo/?jit=0`) disables it, and `IE64_WASM_JIT_DIAG=1` (or
   `/demo/?jitdiag=1`) publishes dispatcher counters to `__ieJITDiag` and

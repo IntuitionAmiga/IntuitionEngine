@@ -80,12 +80,12 @@ IE64 Machine Code (at PROG_START)
 | `jit_region_backends.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Region scanners, including `ScanRegionIE64` |
 | `jit_chain_ordering.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Advisory chain-slot ordering invariant for AMD64 backends |
 | `jit_ie64_region_policy.go` | `amd64 && (linux \|\| windows \|\| darwin)` | IE64 region-tier policy, statistics, and planning metadata |
-| `jit_ie64_region_policy_stub.go` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 IE64 region-tier stubs; region compilation is disabled on ARM64 |
+| `jit_ie64_region_policy_stub.go` | non-amd64 | Linux ARM64 region policy and inactive stubs for unsupported hosts |
 | `jit_mmio_poll_common.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Shared MMIO-poll loop matcher |
 | `jit_mmio_poll_backends.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Per-backend MMIO-poll pattern descriptors, including IE64 |
 | `jit_mmio_poll_wiring.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Runtime MMIO-poll predicate wiring from each CPU/bus |
 | `jit_mmio_poll_exec_amd64.go` | `amd64 && (linux \|\| windows \|\| darwin)` | AMD64 MMIO-poll execution helpers, including IE64 |
-| `jit_mmio_poll_exec_arm64_stub.go` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 MMIO-poll execution stubs |
+| `jit_mmio_poll_exec_native.go` | `(amd64 \|\| arm64) && (linux \|\| windows \|\| darwin)` | Shared native IE64 MMIO-poll execution |
 | `jit_fastpath_bitmaps.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Shared bitmap-probe shape metadata used by AMD64 emitters |
 | `jit_fastpath_backends.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Audit registry for per-backend fast-path bitmap usage, including IE64 |
 | `jit_exec_protect_darwin_arm64.go` | `darwin && arm64` | macOS arm64 `MAP_JIT` write-protection transitions |
@@ -164,11 +164,11 @@ Maps a dispatcher key to `*JITBlock` for O(1) lookup. In non-MMU mode the key is
 
 ### Region Tier
 
-On AMD64, hot IE64 blocks can be promoted from Tier 1 single-block JIT code to a compiled region. The dispatcher increments `JITBlock.execCount` on cache hits and asks the shared `TierController` whether the block is hot enough to promote. The default threshold is 64 re-entries, with promotion suppressed when the block is already promoted, was already attempted, or has an I/O-bail rate of 25% or higher.
+On AMD64 and Linux ARM64, hot IE64 blocks can be promoted from Tier 1 single-block JIT code to a compiled region. The dispatcher increments `JITBlock.execCount` on cache hits and asks the shared `TierController` whether the block is hot enough to promote. The default threshold is 64 re-entries, with promotion suppressed when the block is already promoted, was already attempted, or has an I/O-bail rate of 25% or higher.
 
 `ie64FormRegion()` scans `cpu.memory` at flat physical indices and follows statically-known BRA/JMP terminators. Under MMU each virtual successor needs its own page-table walk before the scanner can read the correct physical bytes, so that case has a separate page-bounded former, `ie64FormRegionMMU()`. The dispatcher picks between them on `cpu.mmuEnabled`.
 
-The AMD64 region compiler emits one native `JITBlock` for two or more IE64 blocks. Internal BRA/JMP targets become direct `JMP rel32` transfers inside the native region; external targets still use the normal chain-exit machinery. Back-edges inside a region keep the loop-budget and retired-count checks so native code cannot spin without returning to the dispatcher. Promoted regions bind their hottest guest registers to callee-saved hosts for the whole region (`ie64PlanRegion` / `ie64BuildRegionRegMap`); the fixed Tier-1 mapping governs single blocks only.
+Both native region compilers emit one `JITBlock` for two or more IE64 blocks. Internal BRA/JMP targets transfer directly inside the region; external targets use the normal exit machinery. Back edges retain loop-budget and retired-count checks so native code cannot spin without returning to the dispatcher. AMD64 regions bind their four hottest guest registers to RBX, RBP, R12 and R13. Linux ARM64 regions bind their fourteen hottest registers to X12 through X17 and X19 through X26, never X18. Dirty GPR and floating-point state is retained across internal edges and spilled at helper, bail and dispatcher exits. MMU region formation remains opt-in on both native backends.
 
 Environment gates:
 
@@ -179,7 +179,7 @@ Environment gates:
 | `IE64_JIT_REGION_MAX_SPILLS` | policy default | spill-pressure ceiling for accepting a region plan |
 | `IE64_JIT_STATS` | off | `1` prints region and spill statistics |
 
-ARM64 builds include the tier controller and stub symbols, but `ie64RegionPromotionEnabled()` is false and `ie64CompileRegion()` returns an unsupported error. There is no ARM64 IE64 region compiler today.
+Linux ARM64 enables non-MMU region promotion by default. Other ARM64 operating systems retain the single-block tier.
 
 ### ExecMem
 
@@ -365,7 +365,7 @@ The direct `[memBase+addr]` fast path is taken only when the MMU is off **and** 
 
 ### Fast MMIO Poll Shortcut
 
-On AMD64 only, the IE64 dispatcher tries `tryFastIE64MMIOPollLoop()` before normal block-cache lookup. This is a Go-side shortcut for tight MMIO polling loops, not emitted native code. It is disabled when the MMU is enabled, when the CPU or bus is nil, or when the current PC is outside `cpu.memory`.
+On AMD64 and ARM64, the IE64 dispatcher tries `tryFastIE64MMIOPollLoop()` before normal block-cache lookup. This is a Go-side shortcut for tight MMIO polling loops, not emitted native code. It is disabled when the MMU is enabled, when the CPU or bus is nil, or when the current PC is outside `cpu.memory`.
 
 The recognised IE64 shape is three instructions at the current PC:
 
@@ -375,7 +375,7 @@ The recognised IE64 shape is three instructions at the current PC:
 
 The shortcut computes the effective address with current IE64 address semantics, rejects addresses above `0xFFFFFFFF`, and requires `MachineBus.IsIOAddress(uint32(addr))`. When it matches, it repeatedly performs the MMIO load through `cpu.loadMem`, applies the mask, writes the masked value back to `rd`, and advances PC past the three-instruction loop when the branch condition becomes false. If the loop remains taken, it stops at `DefaultPollIterationCap`, leaves PC at the loop head, and reports `iterations * 3` retired instructions.
 
-ARM64 provides stubs for the shared MMIO-poll entry points. It does not execute the IE64 fast poll shortcut today.
+Countdown and equality variants use the same interrupt, trap and retired-count rules on both native backends.
 
 ---
 
@@ -398,7 +398,7 @@ FADD, FSUB, FMUL, FDIV, FSQRT, FINT, FCMP, FCVTIF, FCVTFI (native on both platfo
 
 Category B arithmetic maintains the full FPSR, matching the interpreter bit for bit:
 
-- **Condition codes** (bits 27:24) may be deferred but never dropped. The backward liveness pass (`jit_ie64_fpsr_liveness.go`) runs on amd64 and arm64, and both backends honour both of its marks. An update is elided outright only when a later non-faulting FP instruction overwrites the whole field before any observer (`fpsrCCDead`); an update no observer inside the block can reach is instead deferred to the block's exit funnels and rebuilt there by re-reading the writer's destination register (`fpsrCCSink`). Sinking is what takes the classifier out of hot loop bodies: a loop whose only CC observers are its exits pays once on the way out rather than once per iteration. The backends differ only in the plumbing: amd64 has two funnels (`emitEpilogue` and `emitLightweightStoreRegs`, the latter for chain exits) plus in-region JMP edges, and holds the pending slot in a package global under `ie64CompileMu` because its region compiler spans blocks; arm64 has no chaining or region tier, so `emitEpilogue` is its only funnel and the slot rides on the per-compile `CodeBuffer`, needing no lock.
+- **Condition codes** (bits 27:24) may be deferred but never dropped. The backward liveness pass (`jit_ie64_fpsr_liveness.go`) runs on amd64 and arm64, and both backends honour both of its marks. An update is elided outright only when a later non-faulting FP instruction overwrites the whole field before any observer (`fpsrCCDead`); an update no observer inside the block can reach is instead deferred to the block's exit funnels and rebuilt there by re-reading the writer's destination register (`fpsrCCSink`). Sinking takes the classifier out of hot loop bodies. Region compilers carry liveness across internal edges, clear pending materialisation state at sub-block boundaries and materialise the newest architectural condition state at every external exit.
 - **Sticky exception flags** (bits 3:0: IO, DZ, OE, UE) are eager and never elided: a raised flag stays observable until software clears it. They cannot be sunk, because each rule depends on that operation's own operands rather than on the final register value. A fast-path gate skips the classifier when the result is neither infinite, NaN, nor (for the ops with an underflow rule) zero.
 - `FSQRT` raises IO for a negative operand, excluding -0.0 and NaN.
 - `FCMP` raises IO on an unordered compare, and reports infinity through CC_I.
@@ -525,14 +525,11 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 - Shortest instruction forms (reg-imm ALU, direct base+disp spills)
 - 32-bit host ops for IE64 `.L` size where semantics match
 - Fast-path fall-through for normal RAM; I/O in slow-path branch
-- Non-MMU AMD64 hot-region promotion for IE64 blocks with static BRA/JMP successors
+- Native hot-region promotion for IE64 blocks with static BRA/JMP successors
 
 ### Deferred
 - Direct (non-helper) native fast path for high-physical data/stack access: high addresses currently route through the JITContext helper exit; inlining the sparse-backing / MMU translation into native code is a future perf item
 - Native `DMOD`, `DABS`, `DNEG`, `DSQRT`, `FCVTSD`, `FCVTDS` on both backends
-- ARM64 IE64 region compilation (`ie64FormRegion`/`ie64CompileRegion` are stubs there; `ie64RegionPromotionEnabled` is hardcoded false off-amd64)
-- ARM64 MMIO poll acceleration (`tryFastIE64MMIOPollLoop` is a stub returning false)
-- ARM64 FP register residency (`jit_ie64_fpu_residency.go` is amd64-tagged). The FPSR condition-code liveness pass is no longer on this list: it runs on both backends and both act on both of its marks.
 - Memory operands for spilled-source ALU
 - Peephole patterns (MOVE imm, ADD/SUB imm, compare against zero)
 - Profiling-driven register residency tuning
@@ -553,6 +550,49 @@ go test -tags headless -run='^$' -bench BenchmarkIE64_ -benchtime 3s ./...
 ```
 
 Each benchmark reports ns/op and instructions/op. MIPS can be derived: `MIPS = instructions/op / ns/op * 1000`. See the file for detailed documentation of each workload's instruction mix.
+
+### Performance-technique inventory
+
+This inventory closes the M68K/x86 comparison for the Linux and browser IE64 backends.
+
+| Technique | Linux amd64 | Linux ARM64 | js/wasm |
+|-----------|-------------|-------------|---------|
+| Dirty resident-register exits and cold bailout tails | Implemented | Implemented | Implemented through local writeback and shared exits |
+| Bounded static-JMP chase with timer and retired-count accounting | Implemented | Implemented through the shared native dispatcher | Implemented, with timer-enabled execution returning to normal dispatch |
+| Proven constant RAM/MMIO access check elision with SMC retained | Implemented | Implemented | Implemented |
+| Multi-block regions with internal edges and bounded back edges | Implemented | Implemented, including opt-in MMU regions | Implemented as one structured wasm function |
+| Hot GPR residency across region edges | Four callee-saved hosts | Fourteen callee-saved hosts | `i64` locals |
+| FP32 and FP64 residency | XMM8 through XMM15 | V16 through V31 | FP64 pairs in `f64` locals; FP32 is inapplicable |
+| Backward FPSR condition-code liveness | Implemented | Implemented | Implemented across blocks and regions |
+| MMIO poll acceleration | Implemented | Implemented | Implemented as a cooperative parking poll service |
+| Integer flag liveness and compare-branch fusion | Inapplicable: IE64 branches compare GPR operands directly | Inapplicable | Inapplicable |
+| x87 constant pooling | Inapplicable: IE64 constants use immediate materialisation | Inapplicable | Inapplicable |
+| MMU JIT support | Implemented | Implemented, with region promotion opt-in | Inapplicable to this backend scope |
+
+### Plan-closure measurement
+
+The completed plan was measured on 15 July 2026 against pre-plan commit
+`814e9149`, using the established ALU, FPU, memory, MMIO, mixed and call
+benchmarks. Baseline and candidate used Linux amd64, the headless tag, a 500 ms
+benchtime and ten samples. Benchstat reported these JIT changes in `sec/op`:
+
+| Workload | Change |
+|----------|--------|
+| ALU | -1.11% |
+| FPU | +25.06% |
+| Memory | -5.20% |
+| MMIO | no significant change |
+| Mixed | +3.52% |
+| Call | -1.95% |
+
+The memory improvement is statistically significant. The FPU and mixed
+results do not satisfy the original aggregate regression threshold. The FPU
+comparison spans the architectural FPSR correctness repairs made during the
+plan, so the old faster result is not a valid implementation to restore: it
+omits required condition-code and exception behaviour. The individual
+optimisation-shape tests and interpreter parity gates remain the acceptance
+authority for those correctness-constrained paths. Retired instruction counts
+were identical in every baseline and candidate sample.
 
 #### Reference Results
 

@@ -499,6 +499,13 @@ flowchart LR
   accounting avoids atomic hot-path updates. Deopt reasons are `unsupported`,
   `helper`, `mmio`, `smc`, `interrupt`, `cache_pressure`, and `debug`. These
   counters are diagnostics only and do not change guest-visible execution.
+- **IE64 JIT tiers** - Linux amd64 and Linux arm64 promote hot static control-flow
+  chains into bounded multi-block regions. Regions retain selected GPR and FPU
+  state across internal edges, preserve budget and retired-count accounting on
+  back edges, and spill architectural state at every helper or dispatcher exit.
+  MMU region promotion remains opt-in through `IE64_JIT_REGION_MMU=1`. The
+  browser backend emits the same bounded region shape as one structured wasm
+  function and keeps exact disjoint code ranges for SMC invalidation.
 
 ## Platform JIT Matrix
 
@@ -565,6 +572,12 @@ shape and reuses its shared front end:
   flags replicated bit-exactly). A hot block is compiled up to its longest
   supported prefix; anything else, including the FP64 transcendentals,
   stays on the interpreter.
+- **Regions and residency.** Hot static BRA chains compile as one bounded wasm
+  function. Forward edges and one structured back edge retain hot GPRs in
+  `i64` locals and FP64 pairs in `f64` locals. Every external, helper, SMC and
+  budget exit commits the corresponding architectural state and dynamic
+  retired count. Exact disjoint member ranges drive code-page indexing and SMC
+  invalidation; same-page regions with data gaps fall back conservatively.
 - **MMU gate.** While `cpu.mmuEnabled` is true the runtime neither enqueues
   compiles nor enters installed blocks; both halves of the gate are tested
   under node.
