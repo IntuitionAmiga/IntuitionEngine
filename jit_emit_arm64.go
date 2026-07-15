@@ -878,6 +878,7 @@ func emitPrologue(cb *CodeBuffer, blockPC uint64, br *blockRegs) {
 	// Load FPU base pointer if this block uses FPU instructions
 	if br.hasFPU {
 		cb.Emit32(arm64LDR_imm(arm64RegFPUBase, arm64RegCtx, uint32(jitCtxOffFPUPtr/8)))
+		emitFPResidencyLoadARM64(cb)
 	}
 
 	// Zero X7 (loop iteration counter) for blocks with backward branches
@@ -972,6 +973,7 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, calleeSaved uint32) {
 	// funnel, so it has to happen here for every path that leaves. It must come
 	// before the callee-saved restores below, which retire X6 (the FPU base).
 	emitMaterializeFPCCARM64(cb)
+	emitFPResidencySpillARM64(cb)
 
 	// Store only the IE64 registers that were written
 	for ie64Reg := byte(ie64FirstMapped); ie64Reg <= ie64LastMapped; ie64Reg++ {
@@ -1029,6 +1031,11 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 
 	br := analyzeBlockRegs(instrs)
 	br.hasBackwardBranch = detectBackwardBranches(instrs, startPC)
+	if br.hasFPU && ie64FPResidencyEnabled() {
+		if plan, ok := ie64BuildBlockFPPlan(instrs); ok {
+			cb.fpPlan = &plan
+		}
+	}
 	emitPrologue(cb, startPC, &br)
 
 	// Track ARM64 code offsets for each IE64 instruction (for backward branches)
@@ -3136,11 +3143,65 @@ const (
 )
 
 func emitLoadFPReg(cb *CodeBuffer, armReg, fpIdx byte) {
+	if v, ok := ie64FPResidentSingleARM64(cb, fpIdx); ok {
+		cb.Emit32(arm64FMOV_StoW(armReg, v))
+		return
+	}
 	cb.Emit32(arm64LDR_W_imm(armReg, arm64RegFPUBase, uint32(fpIdx&0x0F)))
 }
 
 func emitStoreFPReg(cb *CodeBuffer, armReg, fpIdx byte) {
+	if v, ok := ie64FPResidentSingleARM64(cb, fpIdx); ok {
+		cb.Emit32(arm64FMOV_WtoS(v, armReg))
+		return
+	}
 	cb.Emit32(arm64STR_W_imm(armReg, arm64RegFPUBase, uint32(fpIdx&0x0F)))
+}
+
+func ie64FPResidentSingleARM64(cb *CodeBuffer, fpIdx byte) (byte, bool) {
+	if cb.fpPlan == nil {
+		return 0, false
+	}
+	b, ok := cb.fpPlan.resident(fpIdx & 0x0F)
+	return b.xmm, ok && b.kind == ie64FPResSingle
+}
+
+func ie64FPResidentPairARM64(cb *CodeBuffer, fpIdx byte) (byte, bool) {
+	if cb.fpPlan == nil {
+		return 0, false
+	}
+	b, ok := cb.fpPlan.resident(fpIdx & 0x0E)
+	return b.xmm, ok && b.kind == ie64FPResPair
+}
+
+func emitFPResidencyLoadARM64(cb *CodeBuffer) {
+	if cb.fpPlan == nil {
+		return
+	}
+	for _, b := range cb.fpPlan.bindings {
+		if b.kind == ie64FPResSingle {
+			cb.Emit32(arm64LDR_W_imm(0, arm64RegFPUBase, uint32(b.baseSlot)))
+			cb.Emit32(arm64FMOV_WtoS(b.xmm, 0))
+		} else {
+			cb.Emit32(arm64LDR_imm(0, arm64RegFPUBase, uint32(b.baseSlot/2)))
+			cb.Emit32(arm64FMOV_XtoD(b.xmm, 0))
+		}
+	}
+}
+
+func emitFPResidencySpillARM64(cb *CodeBuffer) {
+	if cb.fpPlan == nil {
+		return
+	}
+	for _, b := range cb.fpPlan.bindings {
+		if b.kind == ie64FPResSingle {
+			cb.Emit32(arm64FMOV_StoW(0, b.xmm))
+			cb.Emit32(arm64STR_W_imm(0, arm64RegFPUBase, uint32(b.baseSlot)))
+		} else {
+			cb.Emit32(arm64FMOV_DtoX(0, b.xmm))
+			cb.Emit32(arm64STR_imm(0, arm64RegFPUBase, uint32(b.baseSlot/2)))
+		}
+	}
 }
 
 // emitSetFPCondCodes classifies IEEE-754 bits in W0 and updates FPSR condition
@@ -4247,6 +4308,10 @@ func emitDSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, wri
 }
 
 func emitStoreDPairBits(cb *CodeBuffer, srcReg byte, fpIdx byte) {
+	if v, ok := ie64FPResidentPairARM64(cb, fpIdx); ok {
+		cb.Emit32(arm64FMOV_XtoD(v, srcReg))
+		return
+	}
 	base := fpIdx & 0x0E
 	cb.Emit32(arm64STR_W_imm(srcReg, arm64RegFPUBase, uint32(base)))
 	cb.Emit32(arm64LSR_imm(1, srcReg, 32))
@@ -4254,6 +4319,10 @@ func emitStoreDPairBits(cb *CodeBuffer, srcReg byte, fpIdx byte) {
 }
 
 func emitLoadDPairBits(cb *CodeBuffer, dstReg byte, fpIdx byte) {
+	if v, ok := ie64FPResidentPairARM64(cb, fpIdx); ok {
+		cb.Emit32(arm64FMOV_DtoX(dstReg, v))
+		return
+	}
 	base := fpIdx & 0x0E
 	cb.Emit32(arm64LDR_W_imm(dstReg, arm64RegFPUBase, uint32(base)))
 	cb.Emit32(arm64LDR_W_imm(1, arm64RegFPUBase, uint32(base+1)))

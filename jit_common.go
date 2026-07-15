@@ -909,6 +909,11 @@ type CodeBuffer struct {
 	// several blocks and their shared funnels. arm64 has no region tier, so
 	// the buffer-scoped form is both sufficient and race-free.
 	pendingFPCC ie64FPCCPending
+
+	// fpPlan is buffer-scoped ARM64 FP residency state. ARM64 compilation can
+	// run concurrently, so unlike amd64's region-scoped global this ownership
+	// map must travel with the CodeBuffer that consumes it.
+	fpPlan *ie64FPResidencyPlan
 }
 
 func NewCodeBuffer(capacity int) *CodeBuffer {

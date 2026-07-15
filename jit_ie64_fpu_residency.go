@@ -36,8 +36,6 @@
 // This file is analysis metadata only: it produces a tested ownership contract
 // that the region emitter consumes. It changes no code generation on its own.
 
-//go:build amd64 && (linux || windows || darwin)
-
 package main
 
 import (
@@ -53,6 +51,9 @@ import (
 // above). The plan scopes Technique 3 amd64 to Linux, so Windows keeps the
 // memory-backed FP path until that save/restore lands.
 func ie64FPResidencySysV() bool {
+	if runtime.GOARCH == "arm64" {
+		return true
+	}
 	return runtime.GOOS == "linux" || runtime.GOOS == "darwin"
 }
 
@@ -128,7 +129,12 @@ func ie64BuildBlockFPPlan(instrs []JITInstr) (ie64FPResidencyPlan, bool) {
 // ie64FPResidentHostXMMs are the host XMM registers a promoted region may bind
 // to its hottest FP registers, ordered hottest-first. XMM0..XMM7 stay free as
 // JIT scratch for the memory/helper/CC paths; XMM8..XMM15 carry residents.
-var ie64FPResidentHostXMMs = []byte{8, 9, 10, 11, 12, 13, 14, 15}
+var ie64FPResidentHostXMMs = func() []byte {
+	if runtime.GOARCH == "arm64" {
+		return []byte{16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}
+	}
+	return []byte{8, 9, 10, 11, 12, 13, 14, 15}
+}()
 
 // ie64FPResidentKind classifies what an ownership-map slot holds.
 type ie64FPResidentKind uint8
