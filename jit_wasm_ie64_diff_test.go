@@ -74,6 +74,13 @@ type wasmDiffResult struct {
 // tweak, when non-nil, runs after the ctx image is populated and before the
 // block executes (e.g. to plant a code-page bitmap for SMC tests).
 func runWasmDiffBlock(t *testing.T, program []byte, initRegs map[int]uint64, tweak func(api.Memory)) wasmDiffResult {
+	return runWasmDiffCompiled(t, program, initRegs, tweak, nil)
+}
+
+// runWasmDiffCompiled is runWasmDiffBlock with an optional region compiler.
+// The callback receives the donor guest memory after the program and sentinel
+// have been installed.
+func runWasmDiffCompiled(t *testing.T, program []byte, initRegs map[int]uint64, tweak func(api.Memory), compile func([]byte) ([]byte, error)) wasmDiffResult {
 	t.Helper()
 
 	// Donor machine: provides guest RAM image, the IO page bitmap, and the
@@ -90,11 +97,17 @@ func runWasmDiffBlock(t *testing.T, program []byte, initRegs map[int]uint64, twe
 	if n := len(instrs); n > 0 && instrs[n-1].opcode == OP_HALT64 && n*8 > len(program) {
 		instrs = instrs[:n-1]
 	}
-	if len(instrs)*8 != len(program) {
+	if compile == nil && len(instrs)*8 != len(program) {
 		t.Fatalf("scanBlock decoded %d instrs, program has %d", len(instrs), len(program)/8)
 	}
 
-	modBytes, err := wasmCompileBlock(instrs, PROG_START)
+	var modBytes []byte
+	var err error
+	if compile != nil {
+		modBytes, err = compile(cpu.memory)
+	} else {
+		modBytes, err = wasmCompileBlock(instrs, PROG_START)
+	}
 	if err != nil {
 		t.Fatalf("wasmCompileBlock: %v", err)
 	}

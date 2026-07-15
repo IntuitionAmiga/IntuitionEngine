@@ -227,6 +227,124 @@ func wasmSupportedOpcode(op byte) bool {
 // wasmCompileBlock translates a scanned block into a single-function wasm
 // module. The module imports env.mem and exports "block": (ctx i32) -> ().
 func wasmCompileBlock(instrs []JITInstr, startPC uint64) ([]byte, error) {
+	return wasmCompileBlocks([]wasmRegionBlock{{pc: startPC, instrs: instrs}})
+}
+
+const (
+	wasmRegionMaxBlocks       = 8
+	wasmRegionMaxInstructions = 512
+)
+
+type wasmRegionBlock struct {
+	pc     uint64
+	instrs []JITInstr
+}
+
+// wasmFormRegion follows statically resolved BRA edges. Forward edges add new
+// blocks; a backward edge closes the region only when it targets a block that
+// is already present, allowing wasmCompileBlocks to emit one structured loop.
+// Dynamic and out-of-region edges remain ordinary external exits.
+func wasmFormRegion(memory []byte, startPC uint64) []wasmRegionBlock {
+	pc := startPC
+	total := 0
+	seen := make(map[uint64]struct{}, wasmRegionMaxBlocks)
+	blocks := make([]wasmRegionBlock, 0, wasmRegionMaxBlocks)
+	for len(blocks) < wasmRegionMaxBlocks && total < wasmRegionMaxInstructions {
+		if _, ok := seen[pc]; ok || pc >= uint64(len(memory)) {
+			break
+		}
+		instrs := scanBlock(memory, pc)
+		if len(instrs) == 0 || total+len(instrs) > wasmRegionMaxInstructions {
+			break
+		}
+		valid := true
+		for i := range instrs {
+			if !wasmInstructionSupported(&instrs[i]) {
+				valid = false
+				break
+			}
+		}
+		if !valid {
+			break
+		}
+		seen[pc] = struct{}{}
+		blocks = append(blocks, wasmRegionBlock{pc: pc, instrs: instrs})
+		total += len(instrs)
+		last := &instrs[len(instrs)-1]
+		instrPC := pc + uint64(last.pcOffset)
+		if last.opcode != OP_BRA {
+			break
+		}
+		next := uint64(int64(instrPC) + int64(int32(last.imm32)))
+		if next <= pc {
+			if _, ok := seen[next]; ok {
+				break
+			}
+			break
+		}
+		pc = next
+	}
+	if len(blocks) < 2 {
+		return nil
+	}
+	return blocks
+}
+
+func wasmInstructionSupported(ins *JITInstr) bool {
+	return wasmSupportedOpcode(ins.opcode) && !ins.mmuBail && ins.fusedFlag == 0 &&
+		(!isIE64FPUOpcode(ins.opcode) || validIE64FPUEncoding(ins.opcode, ins.rd, ins.rs, ins.rt))
+}
+
+func wasmFPCCSetter(ins *JITInstr) bool {
+	switch ins.opcode {
+	case OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DABS, OP_DNEG, OP_DSQRT,
+		OP_DINT, OP_DCVTIF, OP_DLOAD:
+		return true
+	case OP_DCMP:
+		return ins.rd != 0
+	}
+	return false
+}
+
+// wasmFPSRCCLive marks condition-code writes that reach an observable exit.
+// Register-only FP64 setters cannot fault, so an earlier write is dead when a
+// later setter overwrites it first. Memory operations and control transfers
+// are barriers because they may leave the function before that overwrite.
+func wasmFPSRCCLive(instrs []JITInstr) []bool {
+	emit := make([]bool, len(instrs))
+	live := true
+	for i := len(instrs) - 1; i >= 0; i-- {
+		ins := &instrs[i]
+		if wasmFPCCSetter(ins) {
+			emit[i] = live
+			live = false
+		}
+		switch ins.opcode {
+		case OP_LOAD, OP_STORE, OP_DLOAD, OP_DSTORE, OP_PUSH64, OP_POP64,
+			OP_JSR64, OP_JSR_IND, OP_RTS64, OP_BEQ, OP_BNE, OP_BLT, OP_BGE,
+			OP_BGT, OP_BLE, OP_BHI, OP_BLS, OP_BRA, OP_JMP, OP_HALT64:
+			live = true
+		}
+	}
+	return emit
+}
+
+// wasmCompileBlocks emits one wasm function for a static region. The
+// flattened residency plans are loaded once in the prologue and spilled only
+// at external exits, retaining GPR and FP64 mappings across internal edges and
+// structured back edges.
+func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
+	if len(blocks) == 0 {
+		return nil, fmt.Errorf("wasm JIT: empty region")
+	}
+	instrs := make([]JITInstr, 0)
+	for _, block := range blocks {
+		if len(block.instrs) == 0 {
+			return nil, fmt.Errorf("wasm JIT: empty block at %#x", block.pc)
+		}
+		instrs = append(instrs, block.instrs...)
+	}
+	startPC := blocks[0].pc
 	if len(instrs) == 0 {
 		return nil, fmt.Errorf("wasm JIT: empty block at %#x", startPC)
 	}
@@ -284,19 +402,103 @@ func wasmCompileBlock(instrs []JITInstr, startPC uint64) ([]byte, error) {
 		localBase += uint32(len(gprPlan.bindings))
 	}
 	fpPlan := wasmBuildFPPlan(instrs, localBase)
+	if fpPlan != nil {
+		localBase += uint32(len(fpPlan.bindings))
+	}
+	retCountLocal := localBase
 	e := &wasmBlockEmitter{b: &wasmBody{}, needsMem: needsMem, needsSMC: needsSMC, needsFP: hasFP, gprPlan: gprPlan, fpPlan: fpPlan}
+
+	loopBlockIdx := -1
+	if len(blocks) > 1 {
+		lastBlock := &blocks[len(blocks)-1]
+		last := &lastBlock.instrs[len(lastBlock.instrs)-1]
+		if last.opcode == OP_BRA {
+			instrPC := lastBlock.pc + uint64(last.pcOffset)
+			target := uint64(int64(instrPC) + int64(int32(last.imm32)))
+			for i := range blocks {
+				if blocks[i].pc == target {
+					loopBlockIdx = i
+					e.retCountLocal = retCountLocal
+					break
+				}
+			}
+		}
+	}
+	livenessInstrs := append([]JITInstr(nil), instrs...)
+	flatIdx := 0
+	for blockIdx := range blocks {
+		block := &blocks[blockIdx]
+		last := &block.instrs[len(block.instrs)-1]
+		instrPC := block.pc + uint64(last.pcOffset)
+		target := uint64(int64(instrPC) + int64(int32(last.imm32)))
+		internalForward := blockIdx+1 < len(blocks) && target == blocks[blockIdx+1].pc
+		internalBack := blockIdx == len(blocks)-1 && loopBlockIdx >= 0 && target == blocks[loopBlockIdx].pc
+		if last.opcode == OP_BRA && (internalForward || internalBack) {
+			livenessInstrs[flatIdx+len(block.instrs)-1].opcode = OP_NOP64
+		}
+		flatIdx += len(block.instrs)
+	}
+	fpCCLive := wasmFPSRCCLive(livenessInstrs)
 	if hasFP {
 		// Internal helper first, so the block function can call it.
 		ccType := m.addType([]byte{wasmTypeI32, wasmTypeI64}, nil)
 		e.ccFunc = m.addFunc(ccType, []byte{wasmTypeI32}, wasmEmitCCUpdate64())
 	}
 	e.prologue()
-	for i := range instrs {
-		e.instr(&instrs[i], uint32(i), startPC+uint64(instrs[i].pcOffset))
+	idx := uint32(0)
+	for blockIdx := range blocks {
+		block := &blocks[blockIdx]
+		if blockIdx == loopBlockIdx {
+			e.b.loop()
+		}
+		for i := range block.instrs {
+			ins := &block.instrs[i]
+			instrPC := block.pc + uint64(ins.pcOffset)
+			internalBRA := i == len(block.instrs)-1 && ins.opcode == OP_BRA && blockIdx+1 < len(blocks) &&
+				uint64(int64(instrPC)+int64(int32(ins.imm32))) == blocks[blockIdx+1].pc
+			if internalBRA {
+				idx++
+				continue
+			}
+			internalBack := i == len(block.instrs)-1 && ins.opcode == OP_BRA && blockIdx == len(blocks)-1 && loopBlockIdx >= 0
+			if internalBack {
+				// If the dispatch budget is exhausted, expose the loop target and
+				// accumulated retired count to the outer driver. Otherwise consume
+				// one transition, advance the dynamic count base by the number of
+				// instructions in the repeated suffix, and branch to the loop head.
+				e.b.localGet(wasmLocCtx)
+				e.b.i32Load(2, jitCtxOffChainBudget)
+				e.b.op(wasmOpI32Eqz)
+				e.b.ifVoid()
+				e.exit(blocks[loopBlockIdx].pc, idx+1)
+				e.b.op(wasmOpReturn)
+				e.b.end()
+				e.b.localGet(wasmLocCtx)
+				e.b.localGet(wasmLocCtx)
+				e.b.i32Load(2, jitCtxOffChainBudget)
+				e.b.i32Const(1)
+				e.b.op(wasmOpI32Sub)
+				e.b.i32Store(2, jitCtxOffChainBudget)
+				e.b.localGet(retCountLocal)
+				e.b.i32Const(int32(idx + 1 - uint32(flatBlockStart(blocks, loopBlockIdx))))
+				e.b.op(wasmOpI32Add)
+				e.b.localSet(retCountLocal)
+				e.b.br(0)
+				idx++
+				continue
+			}
+			e.emitFPCC = fpCCLive[idx]
+			e.instr(ins, idx, instrPC)
+			idx++
+		}
+	}
+	if loopBlockIdx >= 0 {
+		e.b.end()
 	}
 	// Fall-off-the-end exit: the block retired every instruction and the
 	// next PC is the byte after the last one.
-	e.exit(startPC+uint64(len(instrs))*8, uint32(len(instrs)))
+	lastBlock := blocks[len(blocks)-1]
+	e.exit(lastBlock.pc+uint64(len(lastBlock.instrs))*8, uint32(len(instrs)))
 	e.b.end()
 
 	locals := append([]byte(nil), wasmBlockLocals...)
@@ -310,9 +512,20 @@ func wasmCompileBlock(instrs []JITInstr, startPC uint64) ([]byte, error) {
 			locals = append(locals, wasmTypeF64)
 		}
 	}
+	if loopBlockIdx >= 0 {
+		locals = append(locals, wasmTypeI32)
+	}
 	fn := m.addFunc(typ, locals, e.b.code)
 	m.exportFunc("block", fn)
 	return m.build(), nil
+}
+
+func flatBlockStart(blocks []wasmRegionBlock, blockIdx int) int {
+	start := 0
+	for i := 0; i < blockIdx; i++ {
+		start += len(blocks[i].instrs)
+	}
+	return start
 }
 
 // wasmBlockEmitter emits the body of one block function.
@@ -323,11 +536,13 @@ type wasmBlockEmitter struct {
 	// Prologue trimming: context fields are only loaded into locals when
 	// the block contains instructions that read them. Chained dispatch
 	// re-enters blocks thousands of times, so the prologue is hot.
-	needsMem bool
-	needsSMC bool
-	needsFP  bool
-	gprPlan  *wasmGPRPlan
-	fpPlan   *wasmFPPlan
+	needsMem      bool
+	needsSMC      bool
+	needsFP       bool
+	gprPlan       *wasmGPRPlan
+	fpPlan        *wasmFPPlan
+	emitFPCC      bool
+	retCountLocal uint32
 }
 
 func (e *wasmBlockEmitter) prologue() {
@@ -390,8 +605,18 @@ func (e *wasmBlockEmitter) exit(retPC uint64, retCount uint32) {
 	b.i64Const(int64(retPC))
 	b.i64Store(3, jitCtxOffRetPC)
 	b.localGet(wasmLocCtx)
-	b.i32Const(int32(retCount))
+	e.pushRetCount(retCount)
 	b.i32Store(2, jitCtxOffRetCount)
+}
+
+func (e *wasmBlockEmitter) pushRetCount(retCount uint32) {
+	if e.retCountLocal != 0 {
+		e.b.localGet(e.retCountLocal)
+		e.b.i32Const(int32(retCount))
+		e.b.op(wasmOpI32Add)
+		return
+	}
+	e.b.i32Const(int32(retCount))
 }
 
 // loadReg pushes regs[r] as i64; R0 reads as zero.
@@ -559,7 +784,7 @@ func (e *wasmBlockEmitter) exitDyn(pcLocal uint32, retCount uint32) {
 	b.localGet(pcLocal)
 	b.i64Store(3, jitCtxOffRetPC)
 	b.localGet(wasmLocCtx)
-	b.i32Const(int32(retCount))
+	e.pushRetCount(retCount)
 	b.i32Store(2, jitCtxOffRetCount)
 }
 
@@ -1463,6 +1688,9 @@ func (e *wasmBlockEmitter) storePairBitsFrom(idx byte, local uint32) {
 
 // callCC invokes the condition-code helper with the bits in the given local.
 func (e *wasmBlockEmitter) callCC(local uint32) {
+	if !e.emitFPCC {
+		return
+	}
 	e.b.localGet(wasmLocFpu)
 	e.b.localGet(local)
 	e.b.call(e.ccFunc)

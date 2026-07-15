@@ -36,7 +36,8 @@ const wasmJITHotThreshold = 8
 
 type wasmJITBlock struct {
 	fn     js.Value // exported "block" function
-	endPC  uint64   // first byte after the compiled range
+	endPC  uint64   // first byte after the final compiled region member
+	ranges []wasmCodeRange
 	module js.Value // keeps the instance alive explicitly
 	slot   int      // chain-driver table slot
 	execs  uint64   // per-block execution counter (tests, stats)
@@ -108,8 +109,56 @@ type wasmJITRuntime struct {
 // wasmPendingCompile is an inFlight entry: the pending block's end and the
 // ownership token its callbacks must present to retire it.
 type wasmPendingCompile struct {
-	endPC uint64
-	token uint64
+	endPC  uint64
+	token  uint64
+	ranges []wasmCodeRange
+}
+
+type wasmCodeRange struct {
+	start uint64
+	end   uint64
+}
+
+func wasmRegionCodeRanges(blocks []wasmRegionBlock) []wasmCodeRange {
+	ranges := make([]wasmCodeRange, len(blocks))
+	for i, block := range blocks {
+		ranges[i] = wasmCodeRange{start: block.pc, end: block.pc + uint64(len(block.instrs))*IE64_INSTR_SIZE}
+	}
+	return ranges
+}
+
+func wasmRangesOverlap(ranges []wasmCodeRange, start, end uint64) bool {
+	for _, r := range ranges {
+		if r.start < end && r.end > start {
+			return true
+		}
+	}
+	return false
+}
+
+// wasmRangesSharePageGap reports whether the compact per-page [min,max]
+// metadata would merge two disjoint code extents across non-code bytes. Such
+// a region would make every store into the gap take an avoidable SMC exit.
+func wasmRangesSharePageGap(ranges []wasmCodeRange) bool {
+	for i := range ranges {
+		for j := i + 1; j < len(ranges); j++ {
+			a, b := ranges[i], ranges[j]
+			firstPage := max(a.start>>8, b.start>>8)
+			lastPage := min((a.end-1)>>8, (b.end-1)>>8)
+			if firstPage > lastPage {
+				continue
+			}
+			for page := firstPage; page <= lastPage; page++ {
+				pageStart, pageEnd := page<<8, (page+1)<<8
+				aStart, aEnd := max(a.start, pageStart), min(a.end, pageEnd)
+				bStart, bEnd := max(b.start, pageStart), min(b.end, pageEnd)
+				if aEnd < bStart || bEnd < aStart {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // claimInFlight retires pc's pending entry if the caller still owns it and
@@ -305,12 +354,34 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 		rt.blacklist[pc] = true
 		return
 	}
-	modBytes, err := wasmCompileBlock(instrs, pc)
+	blocks := []wasmRegionBlock{{pc: pc, instrs: instrs}}
+	if region := wasmFormRegion(cpu.memory, pc); len(region) > 1 {
+		usable := true
+		if cpu.FPU == nil {
+			for _, block := range region {
+				for i := range block.instrs {
+					if isIE64FPUOpcode(block.instrs[i].opcode) {
+						usable = false
+						break
+					}
+				}
+			}
+		}
+		if wasmRangesSharePageGap(wasmRegionCodeRanges(region)) {
+			usable = false
+		}
+		if usable {
+			blocks = region
+		}
+	}
+	modBytes, err := wasmCompileBlocks(blocks)
 	if err != nil {
 		rt.blacklist[pc] = true
 		return
 	}
-	endPC := pc + uint64(len(instrs))*8
+	lastBlock := blocks[len(blocks)-1]
+	endPC := lastBlock.pc + uint64(len(lastBlock.instrs))*8
+	ranges := wasmRegionCodeRanges(blocks)
 
 	global := js.Global()
 	u8 := global.Get("Uint8Array").New(len(modBytes))
@@ -322,13 +393,13 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 
 	rt.compileSeq++
 	myToken := rt.compileSeq
-	rt.inFlight[pc] = wasmPendingCompile{endPC: endPC, token: myToken}
+	rt.inFlight[pc] = wasmPendingCompile{endPC: endPC, token: myToken, ranges: ranges}
 	rt.enqueues++
 	// Mark the pending range's pages now, not at install: a guest store into
 	// bytes being compiled must trip the generated-store probe even when no
 	// installed block shares the page, or the asynchronous install would
 	// bring up a module built from the pre-store bytes.
-	rt.markCodePages(pc, endPC)
+	rt.markCodeRanges(ranges)
 	myGen := rt.gen
 	var onOK, onErr js.Func
 	release := func() {
@@ -369,6 +440,7 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 		rt.blocks[pc] = &wasmJITBlock{
 			fn:     fn,
 			endPC:  endPC,
+			ranges: ranges,
 			module: instance,
 			slot:   slot,
 		}
@@ -377,8 +449,8 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 		}
 		rt.table.Call("set", slot, fn)
 		rt.cacheStore(pc, slot)
-		rt.markCodePages(pc, endPC)
-		rt.indexBlock(pc, endPC)
+		rt.markCodeRanges(ranges)
+		rt.indexBlock(pc, ranges)
 		rt.compiles++
 		if rt.compiles == 1 {
 			// One-shot diagnostic; the browser e2e harness greps for it.
@@ -434,6 +506,12 @@ func (rt *wasmJITRuntime) markCodePages(startPC, endPC uint64) {
 	}
 }
 
+func (rt *wasmJITRuntime) markCodeRanges(ranges []wasmCodeRange) {
+	for _, r := range ranges {
+		rt.markCodePages(r.start, r.end)
+	}
+}
+
 // wasmResetCodePageSpans restores every span to the empty sentinel
 // (min 0xFF, max 0x00), matching a cleared bitmap.
 func wasmResetCodePageSpans(spans []byte) {
@@ -467,7 +545,7 @@ func (rt *wasmJITRuntime) invalidateRange(addr uint64, size uint32) {
 	var drops []uint64
 	for page := addr >> 8; page <= (end-1)>>8; page++ {
 		for _, pc := range rt.pageBlocks[page] {
-			if blk, ok := rt.blocks[pc]; ok && pc < end && blk.endPC > addr {
+			if blk, ok := rt.blocks[pc]; ok && wasmRangesOverlap(blk.ranges, addr, end) {
 				drops = append(drops, pc)
 			}
 		}
@@ -480,14 +558,14 @@ func (rt *wasmJITRuntime) invalidateRange(addr uint64, size uint32) {
 		rt.rangeDrops++
 		delete(rt.blocks, pc)
 		rt.cacheDrop(pc)
-		rt.unindexBlock(pc, blk.endPC)
+		rt.unindexBlock(pc, blk.ranges)
 	}
 	// In-flight compiles were scanned from the pre-store bytes. One whose
 	// range the store overlaps would install stale guest code from its
 	// asynchronous callback; the map is at most a handful of entries.
 	staleInFlight := false
-	for pc, pending := range rt.inFlight {
-		if pc < end && pending.endPC > addr {
+	for _, pending := range rt.inFlight {
+		if wasmRangesOverlap(pending.ranges, addr, end) {
 			staleInFlight = true
 			break
 		}
@@ -510,27 +588,31 @@ func (rt *wasmJITRuntime) invalidateRange(addr uint64, size uint32) {
 }
 
 // indexBlock records the block in the page index used by invalidateRange.
-func (rt *wasmJITRuntime) indexBlock(pc, endPC uint64) {
-	for page := pc >> 8; page <= (endPC-1)>>8; page++ {
-		rt.pageBlocks[page] = append(rt.pageBlocks[page], pc)
+func (rt *wasmJITRuntime) indexBlock(pc uint64, ranges []wasmCodeRange) {
+	for _, r := range ranges {
+		for page := r.start >> 8; page <= (r.end-1)>>8; page++ {
+			rt.pageBlocks[page] = append(rt.pageBlocks[page], pc)
+		}
 	}
 }
 
 // unindexBlock removes the block from the page index.
-func (rt *wasmJITRuntime) unindexBlock(pc, endPC uint64) {
-	for page := pc >> 8; page <= (endPC-1)>>8; page++ {
-		list := rt.pageBlocks[page]
-		for i, p := range list {
-			if p == pc {
-				list[i] = list[len(list)-1]
-				list = list[:len(list)-1]
-				break
+func (rt *wasmJITRuntime) unindexBlock(pc uint64, ranges []wasmCodeRange) {
+	for _, r := range ranges {
+		for page := r.start >> 8; page <= (r.end-1)>>8; page++ {
+			list := rt.pageBlocks[page]
+			for i, p := range list {
+				if p == pc {
+					list[i] = list[len(list)-1]
+					list = list[:len(list)-1]
+					break
+				}
 			}
-		}
-		if len(list) == 0 {
-			delete(rt.pageBlocks, page)
-		} else {
-			rt.pageBlocks[page] = list
+			if len(list) == 0 {
+				delete(rt.pageBlocks, page)
+			} else {
+				rt.pageBlocks[page] = list
+			}
 		}
 	}
 }
@@ -551,13 +633,13 @@ func (rt *wasmJITRuntime) cacheDrop(pc uint64) {
 func (rt *wasmJITRuntime) rebuildCodePageBitmap() {
 	clear(rt.cpu.jitCodePageBitmap)
 	wasmResetCodePageSpans(rt.cpu.jitCodePageSpans)
-	for pc, blk := range rt.blocks {
-		rt.markCodePages(pc, blk.endPC)
+	for _, blk := range rt.blocks {
+		rt.markCodeRanges(blk.ranges)
 	}
 	// Pending compiles keep their marks too: a store into a range still
 	// being compiled must go on tripping the probe.
-	for pc, pending := range rt.inFlight {
-		rt.markCodePages(pc, pending.endPC)
+	for _, pending := range rt.inFlight {
+		rt.markCodeRanges(pending.ranges)
 	}
 }
 

@@ -131,6 +131,106 @@ func TestWasmJIT_Node_StaticJumpChase(t *testing.T) {
 	}
 }
 
+func TestWasmJIT_Node_ForwardRegionParity(t *testing.T) {
+	program := make([]byte, 0x148)
+	copy(program[0x00:], ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 3))
+	copy(program[0x08:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0x118))
+	copy(program[0x120:], ie64Instr(OP_EOR, 1, IE64_SIZE_Q, 1, 1, 0, 5))
+	copy(program[0x128:], ie64Instr(OP_JMP, 0, 0, 0, 0, 0, uint32(PROG_START+0x140)))
+	copy(program[0x140:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+
+	ref := newWasmNodeMachine(t, program)
+	ref.regs[1] = 7
+	for ref.running.Load() {
+		if ref.StepOne() == 0 {
+			break
+		}
+	}
+
+	cpu := newWasmNodeMachine(t, program)
+	cpu.regs[1] = 7
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	rt.enqueueCompile(PROG_START)
+	if !waitForInstall(rt, PROG_START) {
+		t.Fatal("forward region did not install")
+	}
+	blk := rt.blocks[PROG_START]
+	if blk.endPC != PROG_START+0x130 {
+		t.Fatalf("region endPC = %#x, want %#x", blk.endPC, uint64(PROG_START+0x130))
+	}
+	rt.runBlock(blk)
+	if cpu.regs[1] != ref.regs[1] {
+		t.Fatalf("region R1 = %#x, interpreter %#x", cpu.regs[1], ref.regs[1])
+	}
+	if cpu.PC != PROG_START+0x140 || cpu.InstructionCount != 4 {
+		t.Fatalf("region exit PC/count = %#x/%d, want %#x/4", cpu.PC, cpu.InstructionCount, uint64(PROG_START+0x140))
+	}
+}
+
+func TestWasmJIT_Node_ForwardRegionRejectsSharedPageGap(t *testing.T) {
+	program := make([]byte, 0x38)
+	copy(program[0x00:], ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 3))
+	copy(program[0x08:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 0x18))
+	copy(program[0x20:], ie64Instr(OP_EOR, 1, IE64_SIZE_Q, 1, 1, 0, 5))
+	copy(program[0x28:], ie64Instr(OP_JMP, 0, 0, 0, 0, 0, uint32(PROG_START+0x30)))
+
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	rt.enqueueCompile(PROG_START)
+	pending, ok := rt.inFlight[PROG_START]
+	if !ok {
+		t.Fatal("single-block fallback was not submitted")
+	}
+	if len(pending.ranges) != 1 || pending.endPC != PROG_START+0x10 {
+		t.Fatalf("shared-page gap compiled as region: ranges=%v endPC=%#x", pending.ranges, pending.endPC)
+	}
+	page := PROG_START >> 8
+	if cpu.jitCodePageSpans[page*2] != byte(PROG_START&0xff) || cpu.jitCodePageSpans[page*2+1] != byte((PROG_START+0x0f)&0xff) {
+		t.Fatalf("single-block page span widened across gap: [%#x,%#x]", cpu.jitCodePageSpans[page*2], cpu.jitCodePageSpans[page*2+1])
+	}
+	if !waitForInstall(rt, PROG_START) {
+		t.Fatal("single-block fallback did not install")
+	}
+}
+
+func TestWasmJIT_Node_ForwardRegionMarksDisjointRanges(t *testing.T) {
+	const targetOff = 0x20000
+	program := make([]byte, targetOff+16)
+	copy(program[0:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, targetOff))
+	copy(program[targetOff:], ie64Instr(OP_JMP, 0, 0, 0, 0, 0, uint32(PROG_START+targetOff+8)))
+
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	rt.enqueueCompile(PROG_START)
+	middle := uint64(PROG_START + targetOff/2)
+	if cpu.jitCodePageBitmap[middle>>8] != 0 {
+		t.Fatal("forward-region gap was marked as compiled code")
+	}
+	if _, ok := rt.pageBlocks[middle>>8]; ok {
+		t.Fatal("forward-region gap was added to the invalidation index")
+	}
+	gen := rt.gen
+	rt.invalidateRange(middle, 8)
+	if rt.gen != gen {
+		t.Fatal("write in forward-region gap invalidated the pending compile")
+	}
+	if !waitForInstall(rt, PROG_START) {
+		t.Fatal("gap write prevented the region from installing")
+	}
+	if cpu.jitCodePageBitmap[middle>>8] != 0 {
+		t.Fatal("installed region marked its intervening gap")
+	}
+}
+
 func TestWasmJIT_Node_TimerDisablesStaticJumpChase(t *testing.T) {
 	program := bytes.Join([][]byte{
 		ie64Instr(OP_BRA, 0, 0, 0, 0, 0, 8),
@@ -426,7 +526,11 @@ func TestWasmJIT_Node_FalseShareStoreLoop(t *testing.T) {
 	//	1028: SUB   R2, R2, #1
 	//	1030: BNE   R2, R0, -0x18  ; back to 1018
 	//	1038: HALT
-	const iters = 20_000
+	// Leave enough wall time for asynchronous WebAssembly.instantiate to
+	// resolve even on fast hosts. The assertion is specifically end-to-end
+	// JIT engagement, so a loop that can finish in one yield slice is not a
+	// meaningful workload for this test.
+	const iters = 200_000
 	program := bytes.Join([][]byte{
 		ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 1, 0, 0, PROG_START+0xC0),
 		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0),
