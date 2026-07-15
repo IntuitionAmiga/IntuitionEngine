@@ -32,6 +32,11 @@ func ie64FPSRCCWriterElidable(op byte) bool {
 	switch op {
 	case OP_FABS, OP_FNEG, OP_FMOVI, OP_FMOVECR, OP_FSQRT, OP_FINT, OP_FCVTIF, OP_FLOAD:
 		return true
+	// FP64: emitXMMToDPairAMD64 appends the CC update to these, and DLOAD's
+	// native success path sets it directly. Unlike FP32 binary ops, FP64
+	// binary ops do update the CC field in the amd64 JIT.
+	case OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DINT, OP_DCVTIF, OP_DLOAD:
+		return true
 	}
 	return false
 }
@@ -47,6 +52,12 @@ func ie64FPSRCCKiller(op byte) bool {
 	case OP_FABS, OP_FNEG, OP_FMOVI, OP_FMOVECR, OP_FSQRT, OP_FINT, OP_FCVTIF, OP_FMOVSC:
 		return true
 	}
+	// No FP64 op qualifies as a killer. Every native FP64 CC writer also has a
+	// runtime non-finite (or compile-time invalid-register) bail to the
+	// interpreter. On bail the interpreter loop delivers any pending external
+	// interrupt *before* re-executing the bailed PC, so its handler could
+	// observe an earlier CC field. Treating an FP64 op as an unconditional
+	// killer would let us wrongly elide that earlier, observable write.
 	return false
 }
 
@@ -69,6 +80,10 @@ func ie64FPSRTransparent(op byte) bool {
 	case OP_FMOV, OP_FMOVO, OP_FMOVCR, OP_FMOVCC:
 		return true
 	}
+	// FP64 ops are deliberately absent. Even CC-neutral ones such as DMOV can
+	// bail (invalid register pair), and a bail hands control to the interpreter
+	// which may deliver an interrupt before continuing. A transparent op must
+	// never break that way, so FP64 ops stay barriers.
 	return false
 }
 

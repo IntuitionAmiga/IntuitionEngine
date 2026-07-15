@@ -52,6 +52,46 @@ func TestIE64MarkFPSRCCDead_ObserverBarrier(t *testing.T) {
 	}
 }
 
+// TestIE64MarkFPSRCCDead_FP64 checks the FP64 opcodes participate as elidable CC
+// writers but never as killers or transparent ops (each can bail, and a bail lets
+// the interpreter deliver an interrupt that observes the CC field).
+func TestIE64MarkFPSRCCDead_FP64(t *testing.T) {
+	// DADD writes CC; a later FP32 killer (FABS) overwrites it before the
+	// FMOVSR observer, so DADD's CC is dead.
+	instrs := []JITInstr{
+		{opcode: OP_DADD, rd: 4, rs: 0, rt: 2}, // 0: CC write, overwritten -> dead
+		{opcode: OP_FABS, rd: 6, rs: 6},        // 1: FP32 killer overwrites CC
+		{opcode: OP_FMOVSR, rd: 3},             // 2: observer
+	}
+	ie64MarkFPSRCCDead(instrs)
+	if !instrs[0].fpsrCCDead {
+		t.Errorf("DADD overwritten by later FABS before observer should be CC-dead")
+	}
+
+	// An FP64 op must not kill an earlier CC write: a DADD between an elidable
+	// writer and the observer leaves that writer live (DADD could bail).
+	noKill := []JITInstr{
+		{opcode: OP_FMOVI, rd: 6, rs: 1}, // 0: must stay live (DADD is not a killer)
+		{opcode: OP_DADD, rd: 4, rs: 0, rt: 2},
+		{opcode: OP_FMOVSR, rd: 3},
+	}
+	ie64MarkFPSRCCDead(noKill)
+	if noKill[0].fpsrCCDead {
+		t.Errorf("FMOVI before non-killer DADD must stay CC-live")
+	}
+
+	// DLOAD is elidable but is not a killer: an earlier writer survives it.
+	load := []JITInstr{
+		{opcode: OP_FMOVI, rd: 6, rs: 1}, // 0: DLOAD can fault -> stays live
+		{opcode: OP_DLOAD, rd: 4, rs: 5},
+		{opcode: OP_FMOVSR, rd: 3},
+	}
+	ie64MarkFPSRCCDead(load)
+	if load[0].fpsrCCDead {
+		t.Errorf("FMOVI before faulting DLOAD must stay CC-live")
+	}
+}
+
 // buildFPSRDeadCCProgram writes a straight-line FP block with a dead CC write
 // (first FMOVI, overwritten before observation) followed by a live CC write whose
 // result is read back into a GPR via FMOVSR, then HALT. Parity must hold whether
@@ -65,6 +105,48 @@ func buildFPSRDeadCCProgram(mem []byte) {
 	put(0x18, ie64Instr(OP_FMOVI, 1, 0, 0, 2, 0, 0))                   // F1 = R2 (CC N) -> live
 	put(0x20, ie64Instr(OP_FMOVSR, 3, 0, 0, 0, 0, 0))                  // R3 = FPSR (observer)
 	put(0x28, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+}
+
+// buildFPSRDeadCC64Program builds an FP64 block whose DADD CC update is dead
+// (overwritten by a later FP32 FABS before the FMOVSR observer). Parity must hold
+// whether or not the JIT elides the DADD CC write.
+func buildFPSRDeadCC64Program(mem []byte) {
+	base := uint64(PROG_START)
+	put := func(off uint64, b []byte) { copy(mem[base+off:], b) }
+	put(0x00, ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 3)) // R1 = 3
+	put(0x08, ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, 5)) // R2 = 5
+	put(0x10, ie64Instr(OP_DCVTIF, 0, 0, 0, 1, 0, 0))         // D0 = 3.0
+	put(0x18, ie64Instr(OP_DCVTIF, 2, 0, 0, 2, 0, 0))         // D2 = 5.0
+	put(0x20, ie64Instr(OP_DADD, 4, IE64_SIZE_L, 0, 0, 2, 0)) // D4 = 8.0 (CC -> dead)
+	put(0x28, ie64Instr(OP_FABS, 6, 0, 0, 6, 0, 0))           // FP32 F6 = |F6| (kills CC)
+	put(0x30, ie64Instr(OP_FMOVSR, 3, 0, 0, 0, 0, 0))         // R3 = FPSR (observer)
+	put(0x38, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+}
+
+// TestJIT_vs_Interpreter_FPSRDeadCC64 is the FP64 parity gate for CC liveness.
+func TestJIT_vs_Interpreter_FPSRDeadCC64(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available on this platform")
+	}
+	jitCPU := runToHaltAt(t, true, buildFPSRDeadCC64Program)
+	interpCPU := runToHaltAt(t, false, buildFPSRDeadCC64Program)
+
+	if jitCPU.PC != interpCPU.PC {
+		t.Fatalf("PC mismatch: JIT 0x%X, interp 0x%X", jitCPU.PC, interpCPU.PC)
+	}
+	for i := range jitCPU.regs {
+		if jitCPU.regs[i] != interpCPU.regs[i] {
+			t.Fatalf("R%d mismatch: JIT 0x%X, interp 0x%X", i, jitCPU.regs[i], interpCPU.regs[i])
+		}
+	}
+	if jitCPU.FPU.FPSR != interpCPU.FPU.FPSR {
+		t.Fatalf("FPSR mismatch: JIT 0x%08X, interp 0x%08X", jitCPU.FPU.FPSR, interpCPU.FPU.FPSR)
+	}
+	for i := range jitCPU.FPU.FPRegs {
+		if jitCPU.FPU.FPRegs[i] != interpCPU.FPU.FPRegs[i] {
+			t.Fatalf("F%d mismatch: JIT 0x%08X, interp 0x%08X", i, jitCPU.FPU.FPRegs[i], interpCPU.FPU.FPRegs[i])
+		}
+	}
 }
 
 // TestJIT_vs_Interpreter_FPSRDeadCC runs the dead-CC FP block under the JIT (which

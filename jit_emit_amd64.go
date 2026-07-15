@@ -4598,10 +4598,12 @@ func emitDPairToXMMAMD64(cb *CodeBuffer, xmm, fpIdx, scratch byte) {
 	amd64MOVQ_xmm_reg(cb, xmm, scratch)
 }
 
-func emitXMMToDPairAMD64(cb *CodeBuffer, xmm, fpIdx byte) {
+func emitXMMToDPairAMD64(cb *CodeBuffer, xmm, fpIdx byte, ccDead bool) {
 	amd64MOVQ_reg_xmm(cb, amd64RAX, xmm)
 	emitStoreDPairBitsAMD64(cb, amd64RAX, fpIdx)
-	emitSetFPCondCodes64AMD64(cb)
+	if !ccDead {
+		emitSetFPCondCodes64AMD64(cb)
+	}
 }
 
 func emitDMOV_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
@@ -4720,7 +4722,7 @@ func emitDPBinarySSE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	if ji.opcode == OP_DMUL || ji.opcode == OP_DDIV {
 		emitSetDPResultUnderflowIfZeroAMD64(cb, 0, ji)
 	}
-	emitXMMToDPairAMD64(cb, 0, ji.rd)
+	emitXMMToDPairAMD64(cb, 0, ji.rd, ji.fpsrCCDead)
 	patchFP64BailToInterpreterAMD64(cb, bailOffs, ji, instrPC, br, writtenSoFar)
 }
 
@@ -4764,7 +4766,7 @@ func emitDINT_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	patchRel32(cb, doneOff2, donePC)
 	patchRel32(cb, doneOff3, donePC)
 
-	emitXMMToDPairAMD64(cb, 1, ji.rd)
+	emitXMMToDPairAMD64(cb, 1, ji.rd, ji.fpsrCCDead)
 }
 
 func emitDPairNonFiniteBailAMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32, regs ...byte) []int {
@@ -4856,7 +4858,7 @@ func emitDCVTIF_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 		amd64MOV_reg_reg(cb, amd64RAX, rsReg)
 	}
 	amd64CVTSI2SD_reg64(cb, 0, amd64RAX)
-	emitXMMToDPairAMD64(cb, 0, ji.rd)
+	emitXMMToDPairAMD64(cb, 0, ji.rd, ji.fpsrCCDead)
 }
 
 func emitDCVTFI_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
@@ -5074,8 +5076,10 @@ func emitDLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	patchRel32(cb, doneOff2, donePC)
 
 	emitStoreDPairBitsAMD64(cb, amd64RDX, ji.rd)
-	amd64MOV_reg_reg(cb, amd64RAX, amd64RDX)
-	emitSetFPCondCodes64AMD64(cb)
+	if !ji.fpsrCCDead {
+		amd64MOV_reg_reg(cb, amd64RAX, amd64RDX)
+		emitSetFPCondCodes64AMD64(cb)
+	}
 }
 
 func emitDSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
