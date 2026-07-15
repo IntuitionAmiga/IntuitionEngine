@@ -2246,6 +2246,46 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 	mmuHelperOff := cb.Len()
 	cb.Emit32(0) // placeholder CBNZ X1, helperLabel
 
+	// R0 is hardwired zero, so a non-negative displacement whose complete
+	// access lies below IO_REGION_START is immutable low RAM. ARM64 has no
+	// native MMU micro-TLB path: MMU-on execution always takes the helper above.
+	// The MMU-off fallthrough may therefore omit the I/O comparison, window
+	// bound and I/O-page bitmap probe entirely. Keep the helper after the hot
+	// direct load so the only hot-path branch skips a cold bailout and resume
+	// entry.
+	if _, ok := ie64ConstLowRAMAccess(ji.rs, ji.imm32, ji.size); ok {
+		dstReg, mapped := ie64ToARM64Reg(ji.rd)
+		if !mapped {
+			dstReg = 2
+		}
+		switch ji.size {
+		case IE64_SIZE_B:
+			cb.Emit32(arm64LDRB_reg(dstReg, arm64RegMemBase, 0))
+		case IE64_SIZE_W:
+			cb.Emit32(arm64LDRH_reg(dstReg, arm64RegMemBase, 0))
+		case IE64_SIZE_L:
+			cb.Emit32(arm64LDR_W_reg(dstReg, arm64RegMemBase, 0))
+		case IE64_SIZE_Q:
+			cb.Emit32(arm64LDR_reg(dstReg, arm64RegMemBase, 0))
+		}
+		if !mapped {
+			emitStoreSpilledReg(cb, dstReg, ji.rd)
+		}
+		doneOff := cb.Len()
+		cb.Emit32(0)
+
+		helperPC := cb.Len()
+		cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+		resumePatch := emitLOADHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
+		resumeOff := cb.Len()
+		patchResumeADRARM64(cb, resumePatch, resumeOff)
+		emitResumeEntryARM64(cb, instrPC+IE64_INSTR_SIZE, br)
+
+		donePC := cb.Len()
+		cb.PatchUint32(doneOff, arm64B(int32(donePC-doneOff)))
+		return
+	}
+
 	// Compare with IO_REGION_START (64-bit CMP).
 	cb.Emit32(arm64CMP(0, arm64RegIOStart))
 
@@ -2428,6 +2468,37 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
 	mmuHelperOff := cb.Len()
 	cb.Emit32(0) // CBNZ X1, helperLabel
+
+	// The shared constant-address proof covers the complete access and low RAM
+	// is always inside the direct window. With the MMU-on case already routed
+	// to the helper, the MMU-off hot path can store directly without I/O,
+	// bounds or bitmap checks. The helper and resume entry remain cold and the
+	// direct store branches around them.
+	if _, ok := ie64ConstLowRAMAccess(ji.rs, ji.imm32, ji.size); ok {
+		switch ji.size {
+		case IE64_SIZE_B:
+			cb.Emit32(arm64STRB_reg(srcReg, arm64RegMemBase, 0))
+		case IE64_SIZE_W:
+			cb.Emit32(arm64STRH_reg(srcReg, arm64RegMemBase, 0))
+		case IE64_SIZE_L:
+			cb.Emit32(arm64STR_W_reg(srcReg, arm64RegMemBase, 0))
+		case IE64_SIZE_Q:
+			cb.Emit32(arm64STR_reg(srcReg, arm64RegMemBase, 0))
+		}
+		doneOff := cb.Len()
+		cb.Emit32(0)
+
+		helperPC := cb.Len()
+		cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+		resumePatch := emitSTOREHelperExitARM64(cb, ji, instrPC, srcReg, br, writtenSoFar)
+		resumeOff := cb.Len()
+		patchResumeADRARM64(cb, resumePatch, resumeOff)
+		emitResumeEntryARM64(cb, instrPC+IE64_INSTR_SIZE, br)
+
+		donePC := cb.Len()
+		cb.PatchUint32(doneOff, arm64B(int32(donePC-doneOff)))
+		return
+	}
 
 	// Compare address with IO_REGION_START
 	cb.Emit32(arm64CMP(0, arm64RegIOStart))
