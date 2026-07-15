@@ -10,12 +10,14 @@
 // Sticky exception flags (bits 3:0) are never touched here: the plan
 // keeps them eager, and only the CC field is analysed.
 //
-// Both backends emit the same set of CC writers and share this analysis.
-// They differ only in what they do with the result: amd64 honours both
-// fpsrCCDead and fpsrCCSink, arm64 honours fpsrCCDead alone (it has no exit
-// -funnel materialisation, so a sunk write falls back to an inline update).
-// The two flags are set on disjoint cases, so honouring one without the
-// other is sound.
+// Both backends emit the same set of CC writers, share this analysis, and act
+// on both fpsrCCDead and fpsrCCSink. They differ only in where the sunk update
+// is materialised and in how the pending slot is carried: amd64 has two exit
+// funnels (emitEpilogue and emitLightweightStoreRegs, the latter for chain
+// exits) plus in-region JMP edges, and keeps the slot in a package global under
+// ie64CompileMu because its region compiler spans blocks; arm64 has no chaining
+// or region tier, so emitEpilogue is its only funnel and the slot rides on the
+// CodeBuffer, which is per-compile and needs no lock.
 //
 // Observability model matches the rest of the IE64 JIT on both backends: a
 // native block runs to completion, so interrupts and traps are only serviced at
@@ -107,13 +109,9 @@ func ie64FPSRTransparent(op byte) bool {
 
 // ie64FPSRCCSinkable reports whether an emitter can defer this opcode's CC
 // update to the block's exit funnels. These are exactly the FP32 writers
-// routed through emitFPCCUpdate32AMD64, whose classified value is the FP32
-// register ji.rd and so can be reconstructed at an exit by re-reading it.
-//
-// Only amd64 acts on the resulting fpsrCCSink; arm64 has no funnel
-// materialisation and emits those updates inline instead. That costs arm64
-// performance, not correctness: sinking is an optimisation, and declining it
-// leaves the ordinary in-place update.
+// routed through emitFPCCUpdate32AMD64 and emitFPCondCodesARM64, whose
+// classified value is the FP32 register ji.rd and so can be reconstructed at an
+// exit by re-reading it.
 //
 // FLOAD and the FP64 writers are excluded: they still emit their CC update in
 // place. Both are inline observers in this analysis anyway (they can fault or

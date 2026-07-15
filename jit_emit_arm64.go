@@ -968,6 +968,11 @@ func patchResumeADRARM64(cb *CodeBuffer, adrOff int, resumeOff int) {
 //   - storeRegs: IE64 registers to store back (writtenRegs for normal, writtenSoFar for bail)
 //   - calleeSaved: which callee-saved pairs to restore (must match what prologue saved)
 func emitEpilogue(cb *CodeBuffer, storeRegs uint32, calleeSaved uint32) {
+	// Materialise any sunk FPSR CC update. This is the block's only exit
+	// funnel, so it has to happen here for every path that leaves. It must come
+	// before the callee-saved restores below, which retire X6 (the FPU base).
+	emitMaterializeFPCCARM64(cb)
+
 	// Store only the IE64 registers that were written
 	for ie64Reg := byte(ie64FirstMapped); ie64Reg <= ie64LastMapped; ie64Reg++ {
 		if storeRegs&(1<<ie64Reg) != 0 {
@@ -1013,9 +1018,13 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, calleeSaved uint32) {
 func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBlock, error) {
 	cb := NewCodeBuffer(len(instrs) * 256) // FPU ops can emit 30-60 ARM64 instructions with CC setting
 
-	// Mark FP condition-code writes that no observer can reach, so the FP
-	// emitters can drop the classifier entirely. Per sub-block, so nothing is
-	// elided across a block boundary.
+	// Decide, for each FP condition-code write, whether no observer can reach it
+	// (drop the classifier entirely) or only the block's exits can (defer it to
+	// emitEpilogue). Per sub-block, so nothing is elided or deferred across a
+	// block boundary.
+	//
+	// The sink slot needs no reset: it lives on the CodeBuffer just allocated,
+	// so it starts empty and cannot outlive this compilation.
 	ie64MarkFPSRCCDead(instrs)
 
 	br := analyzeBlockRegs(instrs)
@@ -3208,28 +3217,73 @@ func emitSetFPCondCodes(cb *CodeBuffer) {
 	cb.Emit32(arm64STR_W_imm(1, arm64RegFPUBase, fpuOffFPSR))
 }
 
-// emitFPCondCodesARM64 appends an FP32 condition-code update, unless the
-// liveness pass in jit_ie64_fpsr_liveness.go proved this particular write dead:
-// a later non-faulting FP32 killer overwrites the whole CC field before anything
-// can read it.
+// emitMaterializeFPCCARM64 emits a pending sunk CC update. It is called from
+// emitEpilogue, which on this backend is the block's only exit funnel: every
+// arm64 RET is emitted there, so block end, the terminators and every mid-block
+// helper bail all pass through it. amd64 needs a second funnel
+// (emitLightweightStoreRegs) for its chain exits; arm64 has no chaining tier.
 //
-// Only the CC field is elided. Sticky exception flags stay eager on every path,
-// because a raised flag remains observable until software clears it.
+// Only X0-X3 are touched. All four are scratch and dead at an exit: the return
+// channel is memory (ctx.RetPC), none of them carries a mapped IE64 register
+// (X12-X17, X19-X26), and X7 holds the loop counter only when
+// hasBackwardBranch.
 //
-// The pass's fpsrCCSink is deliberately not honoured here. Sinking needs the
-// exit-funnel materialisation the amd64 backend has and this one does not, so a
-// sunk write simply falls through to an ordinary inline update: slower than
-// amd64, never wrong. fpsrCCDead and fpsrCCSink are set on disjoint cases, so
-// ignoring one cannot disturb the other.
+// X6 (the FPU base) has to be live for the re-read, and is, on two counts. The
+// prologue loads it only when blockRegs.hasFPU, but hasFPU is set for every FPU
+// opcode (0x60-0x7C), a superset of the sinkable writers in
+// ie64FPSRCCSinkable — so an update can only be pending in a block that loaded
+// it. And materialising happens at the top of emitEpilogue, before the
+// callee-saved restores retire it.
+//
+// The pending slot is deliberately not cleared: the funnel sits on one exit
+// path, and the fall-through may reach another.
+//
+// Reading the value back through emitLoadFPReg rather than trusting a register
+// to have survived is what keeps this correct once FP residency lands on this
+// backend, and mirrors the amd64 twin.
+func emitMaterializeFPCCARM64(cb *CodeBuffer) {
+	if !cb.pendingFPCC.valid {
+		return
+	}
+	emitLoadFPReg(cb, 0, cb.pendingFPCC.reg)
+	emitSetFPCondCodes(cb)
+}
+
+// emitFPCondCodesARM64 applies the liveness pass's decision for an FP32 CC
+// writer whose classified value is in W0 and whose destination is ji.rd.
+//
+// Three outcomes, from jit_ie64_fpsr_liveness.go:
+//   - fpsrCCDead: a later non-faulting FP32 killer overwrites the whole CC
+//     field before anything can read it, so drop the update entirely.
+//   - fpsrCCSink: nothing inside the block can read it, so defer it to the exit
+//     funnel. This is what takes the classifier out of hot loop bodies: a loop
+//     whose only CC observers are its exits pays once on the way out rather
+//     than once per iteration.
+//   - neither: emit in place.
+//
+// Only the CC field is elided or deferred. Sticky exception flags stay eager on
+// every path, because a raised flag remains observable until software clears
+// it.
 func emitFPCondCodesARM64(cb *CodeBuffer, ji *JITInstr) {
 	if ji.fpsrCCDead {
 		return
 	}
+	if ji.fpsrCCSink {
+		cb.pendingFPCC = ie64FPCCPending{valid: true, reg: ji.rd}
+		return
+	}
+	cb.pendingFPCC.valid = false
 	emitSetFPCondCodes(cb)
 }
 
 // emitFPCondCodes64ARM64 is emitFPCondCodesARM64 for a binary64 result already
 // in X0.
+//
+// There is no sink case: ie64FPSRCCSinkable covers the FP32 writers only, whose
+// value can be reconstructed at a funnel by re-reading the single FP32 slot
+// ji.rd. It also needs no interaction with a pending FP32 update, because the
+// pass treats every FP64 op as an inline observer (they can bail), so an
+// earlier writer is never sunk across one and nothing can be pending here.
 func emitFPCondCodes64ARM64(cb *CodeBuffer, ji *JITInstr) {
 	if ji.fpsrCCDead {
 		return

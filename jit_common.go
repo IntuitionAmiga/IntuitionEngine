@@ -877,10 +877,38 @@ type fixup struct {
 	pcBase int // base PC for PC-relative calculations
 }
 
+// ie64FPCCPending records an FPSR condition-code update that the liveness pass
+// proved is unobservable inside the block (fpsrCCSink) and so was not emitted
+// where the instruction ran. reg is the FP register holding the value to
+// classify; the update is reconstructed from it at each exit funnel.
+//
+// At most one CC update can ever be pending. A sunk writer is by construction
+// followed only by transparent instructions and exit edges: any later CC writer
+// is either a killer (which would have marked the earlier write dead instead)
+// or a non-killer such as FLOAD or an FP64 op (which the pass treats as an
+// inline observer, forcing the earlier write to be emitted in place).
+type ie64FPCCPending struct {
+	valid bool
+	reg   byte
+}
+
 type CodeBuffer struct {
 	buf    []byte
 	labels map[string]int // label name -> byte offset
 	fixups []fixup
+
+	// pendingFPCC carries IE64 FPSR condition-code sinking state across the
+	// emitters for backends that hang it off the buffer rather than off a
+	// package global. One CodeBuffer is created per compilation, so this is
+	// per-compile state by construction: concurrent IE64 compiles (each
+	// coprocessor worker runs its own jitExecute on its own goroutine) cannot
+	// alias it, and no lock is needed to protect it.
+	//
+	// The amd64 backend instead uses a package global guarded by
+	// ie64CompileMu, because its region compiler carries the state across
+	// several blocks and their shared funnels. arm64 has no region tier, so
+	// the buffer-scoped form is both sufficient and race-free.
+	pendingFPCC ie64FPCCPending
 }
 
 func NewCodeBuffer(capacity int) *CodeBuffer {

@@ -4250,21 +4250,14 @@ func emitFPResidencySpill(cb *CodeBuffer) {
 // FPU Condition Code Sinking
 // ===========================================================================
 
-// ie64FPCCPending records a CC update that the liveness pass proved is
-// unobservable inside the block (fpsrCCSink) and so was not emitted where the
-// instruction ran. reg is the FP register holding the value to classify; the
-// update is reconstructed from it at each exit funnel.
+// ie64PendingFPCC is the amd64 backend's sunk CC slot. The type and the
+// invariant that at most one update is ever pending are documented on
+// ie64FPCCPending in jit_common.go.
 //
-// At most one CC update can ever be pending. A sunk writer is by construction
-// followed only by transparent instructions and exit edges: any later CC
-// writer is either a killer (which would have marked the earlier write dead
-// instead) or a non-killer such as FLOAD or an FP64 op (which the pass treats
-// as an inline observer, forcing the earlier write to be emitted in place).
-type ie64FPCCPending struct {
-	valid bool
-	reg   byte
-}
-
+// This is a package global rather than CodeBuffer-scoped state (the shape
+// arm64 uses) because the region compiler carries it across several blocks and
+// their shared exit funnels. It is written during code generation only, under
+// ie64CompileMu.
 var ie64PendingFPCC ie64FPCCPending
 
 // emitMaterializeFPCCAMD64 emits a pending sunk CC update. It is called from

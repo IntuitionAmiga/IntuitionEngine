@@ -1,4 +1,4 @@
-//go:build amd64 && (linux || windows || darwin)
+//go:build (amd64 || arm64) && (linux || windows || darwin)
 
 package main
 
@@ -7,6 +7,10 @@ import "testing"
 // The FPSR CC sinking pass (Technique 3) defers a condition-code update to the
 // block's exit funnels, where it is rebuilt by re-reading the writer's
 // destination register. These tests cover the two ways that can go wrong.
+//
+// Both backends sink, so these run on both. Nothing here is arch-specific: they
+// build guest programs and compare JIT against interpreter, so they gate
+// whichever emitter is being built.
 //
 // The first reproduces a real divergence: without the ie64CCSinkSafe guard it
 // fails with JIT FPSR 0x08000000 (CC_N) against interpreter 0x04000000 (CC_Z).
@@ -17,6 +21,35 @@ import "testing"
 // as a demonstrated bug. It is kept because the reasoning that makes it
 // dangerous is sound, and a change to block formation could make it reachable
 // without anything else noticing.
+
+// TestFPSRSink_Materializes covers the sink actually being taken: the FADD's CC
+// update is deferred to the exit funnel and has to be rebuilt there.
+//
+// The other two tests in this file both describe programs that ie64CCSinkSafe
+// rejects, so they exercise the guard and never reach materialisation. Deleting
+// the funnel's materialisation call leaves them green, which is what this test
+// exists to stop.
+//
+// F1 = -1.0 + 1.0 = +0.0 (CC_Z). Nothing after the FADD writes F1 or reads
+// FPSR, so the update sinks to the exit. If it is never materialised, FPSR
+// keeps the CC left by the last FMOVI (1.0, so CC = 0) instead of CC_Z.
+func TestFPSRSink_Materializes(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available on this platform")
+	}
+	build := func(mem []byte) {
+		base := uint64(PROG_START)
+		put := func(off uint64, ins []byte) { copy(mem[base+off:], ins) }
+		put(0x00, ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, fp32NegOne))
+		put(0x08, ie64Instr(OP_FMOVI, 2, 0, 0, 1, 0, 0)) // F2 = -1.0
+		put(0x10, ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, fp32One))
+		put(0x18, ie64Instr(OP_FMOVI, 3, 0, 0, 1, 0, 0)) // F3 = 1.0
+
+		put(0x20, ie64Instr(OP_FADD, 1, 0, 0, 2, 3, 0)) // F1 = +0.0 -> CC_Z, sunk
+		put(0x28, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	}
+	assertFPParity(t, "sink/materializes", build)
+}
 
 // TestFPSRSink_ClobberedDestination covers a CC-transparent instruction
 // overwriting the sunk writer's destination before the exit.

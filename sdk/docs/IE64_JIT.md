@@ -398,7 +398,7 @@ FADD, FSUB, FMUL, FDIV, FSQRT, FINT, FCMP, FCVTIF, FCVTFI (native on both platfo
 
 Category B arithmetic maintains the full FPSR, matching the interpreter bit for bit:
 
-- **Condition codes** (bits 27:24) may be deferred but never dropped. The backward liveness pass (`jit_ie64_fpsr_liveness.go`) runs on amd64 and arm64 and elides an update only when a later non-faulting FP instruction overwrites the whole field before any observer (`fpsrCCDead`). Only amd64 additionally sinks a live update to the block's exit funnels (`fpsrCCSink`); arm64 emits those in place. The two marks are made on disjoint cases, so honouring one without the other is sound — declining to sink costs speed, never correctness.
+- **Condition codes** (bits 27:24) may be deferred but never dropped. The backward liveness pass (`jit_ie64_fpsr_liveness.go`) runs on amd64 and arm64, and both backends honour both of its marks. An update is elided outright only when a later non-faulting FP instruction overwrites the whole field before any observer (`fpsrCCDead`); an update no observer inside the block can reach is instead deferred to the block's exit funnels and rebuilt there by re-reading the writer's destination register (`fpsrCCSink`). Sinking is what takes the classifier out of hot loop bodies: a loop whose only CC observers are its exits pays once on the way out rather than once per iteration. The backends differ only in the plumbing: amd64 has two funnels (`emitEpilogue` and `emitLightweightStoreRegs`, the latter for chain exits) plus in-region JMP edges, and holds the pending slot in a package global under `ie64CompileMu` because its region compiler spans blocks; arm64 has no chaining or region tier, so `emitEpilogue` is its only funnel and the slot rides on the per-compile `CodeBuffer`, needing no lock.
 - **Sticky exception flags** (bits 3:0: IO, DZ, OE, UE) are eager and never elided: a raised flag stays observable until software clears it. They cannot be sunk, because each rule depends on that operation's own operands rather than on the final register value. A fast-path gate skips the classifier when the result is neither infinite, NaN, nor (for the ops with an underflow rule) zero.
 - `FSQRT` raises IO for a negative operand, excluding -0.0 and NaN.
 - `FCMP` raises IO on an unordered compare, and reports infinity through CC_I.
@@ -530,10 +530,9 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 ### Deferred
 - Direct (non-helper) native fast path for high-physical data/stack access: high addresses currently route through the JITContext helper exit; inlining the sparse-backing / MMU translation into native code is a future perf item
 - Native `DMOD`, `DABS`, `DNEG`, `DSQRT`, `FCVTSD`, `FCVTDS` on both backends
-- FPSR condition-code *sinking* on arm64 (`fpsrCCSink`). The liveness pass runs on both backends and both honour `fpsrCCDead`, but only amd64 defers a live CC update to its exit funnels; arm64 emits those inline. Sinking is what removes the classifier from hot loop bodies, so this is the larger of the two wins still outstanding on arm64.
 - ARM64 IE64 region compilation (`ie64FormRegion`/`ie64CompileRegion` are stubs there; `ie64RegionPromotionEnabled` is hardcoded false off-amd64)
 - ARM64 MMIO poll acceleration (`tryFastIE64MMIOPollLoop` is a stub returning false)
-- ARM64 FP register residency and FPSR condition-code liveness (both passes are amd64-tagged)
+- ARM64 FP register residency (`jit_ie64_fpu_residency.go` is amd64-tagged). The FPSR condition-code liveness pass is no longer on this list: it runs on both backends and both act on both of its marks.
 - Memory operands for spilled-source ALU
 - Peephole patterns (MOVE imm, ADD/SUB imm, compare against zero)
 - Profiling-driven register residency tuning
