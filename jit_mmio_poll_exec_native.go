@@ -1,8 +1,11 @@
-//go:build amd64 && (linux || windows || darwin)
+//go:build (amd64 || arm64) && (linux || windows || darwin)
 
 package main
 
-import "encoding/binary"
+import (
+	"encoding/binary"
+	"runtime"
+)
 
 func ie64InstrFields(mem []byte, pc uint64) (op, rd, size, xbit, rs, rt byte, imm uint32, ok bool) {
 	if pc+IE64_INSTR_SIZE > uint64(len(mem)) {
@@ -275,6 +278,9 @@ func (cpu *CPU64) tryFastIE64EqualityCountdownMMIOPollLoop(pc, addr uint64, valu
 }
 
 func (cpu *M68KCPU) tryFastM68KMMIOPollLoop() (bool, uint32) {
+	if runtime.GOARCH != "amd64" {
+		return false, 0
+	}
 	if cpu == nil {
 		return false, 0
 	}
@@ -718,6 +724,9 @@ func poll6502PageIsMMIO(adapter *Bus6502Adapter, addr uint16) bool {
 }
 
 func (cpu *CPU_6502) tryFast6502MMIOPollLoop(adapter *Bus6502Adapter) (bool, uint32) {
+	if runtime.GOARCH != "amd64" {
+		return false, 0
+	}
 	if adapter == nil {
 		return false, 0
 	}
@@ -781,6 +790,9 @@ func (cpu *CPU_6502) tryFast6502MMIOPollLoop(adapter *Bus6502Adapter) (bool, uin
 }
 
 func (cpu *CPU_Z80) tryFastZ80MMIOPollLoop(adapter *Z80BusAdapter) (bool, uint32, uint32) {
+	if runtime.GOARCH != "amd64" {
+		return false, 0, 0
+	}
 	if adapter == nil || adapter.bus == nil {
 		return false, 0, 0
 	}
