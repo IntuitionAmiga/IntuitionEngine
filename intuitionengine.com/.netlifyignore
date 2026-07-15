@@ -1,5 +1,6 @@
 .netlify/
 .git/
+bin/
 .gitignore
 .netlifyignore
 *.md
