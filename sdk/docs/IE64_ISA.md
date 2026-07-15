@@ -1329,7 +1329,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: single precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` encode `f0`-`f15`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `fs + ft` and writes the result to `fd`.
+**Description:** The processor evaluates `fs + ft` and writes the result to `fd`. An infinite result from operands that are not themselves infinite sets overflow. A NaN result from operands that are not themselves NaN sets invalid operation.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1349,7 +1349,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: single precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` encode `f0`-`f15`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `fs - ft` and writes the result to `fd`.
+**Description:** The processor evaluates `fs - ft` and writes the result to `fd`. An infinite result from operands that are not themselves infinite sets overflow. A NaN result from operands that are not themselves NaN sets invalid operation.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1369,7 +1369,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: single precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` encode `f0`-`f15`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `fs * ft` and writes the result to `fd`.
+**Description:** The processor evaluates `fs * ft` and writes the result to `fd`. An infinite result from operands that are not themselves infinite sets overflow. A NaN result from operands that are not themselves NaN sets invalid operation. A zero result from operands that are not themselves zero sets underflow.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1389,7 +1389,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: single precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` encode `f0`-`f15`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `fs / ft` and writes the result to `fd`.
+**Description:** The processor evaluates `fs / ft` and writes the result to `fd`. A zero divisor with a dividend that is neither zero nor NaN sets divide by zero. An infinite result, where the dividend is not infinite and the divisor is not zero, sets overflow. A NaN result from operands that are not themselves NaN sets invalid operation. A zero result from non-zero operands, where the divisor is not infinite, sets underflow.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1409,7 +1409,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: single precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` encode `f0`-`f15`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `fs % ft` and writes the result to `fd`.
+**Description:** The processor evaluates `fs % ft` and writes the result to `fd`. A NaN result from operands that are not themselves NaN sets invalid operation.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1469,7 +1469,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: single precision. Privilege: unprivileged. FP operands: `fd` and `fs` encode `f0`-`f15`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `sqrt(fs)` and writes the result to `fd`.
+**Description:** The processor evaluates `sqrt(fs)` and writes the result to `fd`. A negative non-zero non-NaN input, including negative infinity, sets invalid operation. Negative zero and NaN inputs set no exception flag.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1695,7 +1695,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: single precision source to 32-bit signed integer result. Privilege: unprivileged. FP operands: `fs` encodes `f0`-`f15`; `rd` receives the integer result. FPSR/FPCR: may set the FPSR IO sticky flag for NaN or saturation; FPCR is not read.
 
-**Description:** The processor converts `fs` to a signed 32-bit integer with saturation and writes the result to `rd`.
+**Description:** The processor converts `fs` to a signed 32-bit integer with saturation and writes the result to `rd`. A NaN input sets invalid operation and writes zero. An input beyond the signed 32-bit range sets invalid operation and writes the nearest rail, `0x7FFFFFFF` or `-0x80000000`.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1915,7 +1915,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `fs + ft` and writes the result to `fd`.
+**Description:** The processor evaluates `fs + ft` and writes the result to `fd`. An infinite result from operands that are not themselves infinite sets overflow. A NaN result from operands that are not themselves NaN sets invalid operation.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1935,7 +1935,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `fs - ft` and writes the result to `fd`.
+**Description:** The processor evaluates `fs - ft` and writes the result to `fd`. An infinite result from operands that are not themselves infinite sets overflow. A NaN result from operands that are not themselves NaN sets invalid operation.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1955,7 +1955,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `fs * ft` and writes the result to `fd`.
+**Description:** The processor evaluates `fs * ft` and writes the result to `fd`. An infinite result from operands that are not themselves infinite sets overflow. A NaN result from operands that are not themselves NaN sets invalid operation. A zero result from operands that are not themselves zero sets underflow.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1975,7 +1975,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `fs / ft` and writes the result to `fd`.
+**Description:** The processor evaluates `fs / ft` and writes the result to `fd`. A zero divisor with a dividend that is neither zero nor NaN sets divide by zero. An infinite result, where the dividend is not infinite and the divisor is not zero, sets overflow. A NaN result from operands that are not themselves NaN sets invalid operation. A zero result from non-zero operands, where the divisor is not infinite, sets underflow.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -1995,7 +1995,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd`, `fs`, and `ft` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `fmod(fs, ft)` and writes the result to `fd`.
+**Description:** The processor evaluates `fmod(fs, ft)` and writes the result to `fd`. A NaN result from operands that are not themselves NaN sets invalid operation.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -2055,7 +2055,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: double precision. Privilege: unprivileged. FP operands: `fd` and `fs` must encode even registers from `f0` through `f14`. FPSR/FPCR: writes FPSR condition-code bits from the result and may set FPSR sticky exception flags; FPCR is not read.
 
-**Description:** The processor evaluates `sqrt(fs)` and writes the result to `fd`.
+**Description:** The processor evaluates `sqrt(fs)` and writes the result to `fd`. A negative non-zero non-NaN input, including negative infinity, sets invalid operation. Negative zero and NaN inputs set no exception flag.
 
 **Condition Codes:** No integer condition-code register is modified.
 
@@ -2135,7 +2135,7 @@ are invalid. Writing a double clobbers both halves of the pair.
 
 **Attributes:** Memory: none. Operand size: double precision source to 64-bit signed integer result. Privilege: unprivileged. FP operands: `fs` must encode an even register from `f0` through `f14`; `rd` receives the integer result. FPSR/FPCR: may set FPSR IO for NaN or saturation; FPCR is not read.
 
-**Description:** The processor converts `fs` to a signed 64-bit integer with saturation and writes the result to `rd`.
+**Description:** The processor converts `fs` to a signed 64-bit integer with saturation and writes the result to `rd`. A NaN input sets invalid operation and writes zero. An input beyond the signed 64-bit range sets invalid operation and writes the nearest rail, `0x7FFFFFFFFFFFFFFF` or `-0x8000000000000000`.
 
 **Condition Codes:** No integer condition-code register is modified.
 

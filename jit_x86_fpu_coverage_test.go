@@ -5,7 +5,11 @@
 // emitter ends the compiled prefix, leaving FPU state untouched, so
 // these tests fail until the emitter exists.
 
-//go:build !js
+// Matches the constraint on the x86 JIT emitter under test
+// (jit_x86_emit_amd64.go) and on the shared rig in jit_x86_emit_amd64_test.go.
+// A broader constraint such as !js pulls this file into arm64 builds, where the
+// rig does not exist.
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 

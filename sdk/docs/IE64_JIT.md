@@ -8,7 +8,7 @@ Technical reference for the IE64 Just-In-Time compiler. Covers the shared infras
 
 The IE64 JIT compiler translates blocks of IE64 machine code into native ARM64 or x86-64 instructions at runtime, executing them directly on the host CPU. This bypasses the Go interpreter loop and yields significant performance improvements for compute-heavy workloads.
 
-The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64`; there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the authoritative contract). `DLOAD`/`DSTORE` use native low-window fast paths and helper exits for MMU/high/MMIO cases. FP64 transcendentals (`DSIN` through `DPOW`) compile to a helper-exit path that calls the same FPU methods as the interpreter, writes FP register pairs and FPSR, and resumes at the next PC. The remaining interpreter fallbacks are: atomics outside aligned non-MMU low-window RAM, fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` for `emitBailToInterpreter`), MMU/privilege opcodes, FP32 transcendentals, other double-precision arithmetic/conversion opcodes not covered by helper exits, and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`). The high-PC stack-op case is a Phase-4 safety boundary, because the fused/raw stack fast path addresses `[memBase+SP]` directly and a high SP in such a high-PC block could escape `cpu.memory[]`. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)`; all full-machine modes, including the IE64 family, cap it at the full 32-bit range (`busMemMaxBytes`), clamped on non-mmap hosts. Addresses above it cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
+The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64`; there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the authoritative contract). `DLOAD`/`DSTORE` use native low-window fast paths and helper exits for MMU/high/MMIO cases. FP64 transcendentals (`DSIN` through `DPOW`) compile to a helper-exit path that calls the same FPU methods as the interpreter, writes FP register pairs and FPSR, and resumes at the next PC. The remaining interpreter fallbacks are: atomics outside aligned non-MMU low-window RAM, fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` for `emitBailToInterpreter`), MMU/privilege opcodes, FP32 transcendentals, the double-precision arithmetic/conversion opcodes each backend does not emit (see "Category D: Double precision, per backend" below; amd64 emits the FP64 core natively and bails only for `DMOD`/`DABS`/`DNEG`/`DSQRT`/`FCVTSD`/`FCVTDS`, whereas arm64 bails for the whole FP64 arithmetic and conversion set), and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`). The high-PC stack-op case is a Phase-4 safety boundary, because the fused/raw stack fast path addresses `[memBase+SP]` directly and a high SP in such a high-PC block could escape `cpu.memory[]`. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)`; all full-machine modes, including the IE64 family, cap it at the full 32-bit range (`busMemMaxBytes`), clamped on non-mmap hosts. Addresses above it cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
 
 **Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64/Linux, x86-64/macOS, x86-64/Windows (x86-64 requires SSE4.1; release builds target x86-64-v3)
 
@@ -166,9 +166,18 @@ Maps a dispatcher key to `*JITBlock` for O(1) lookup. In non-MMU mode the key is
 
 On AMD64, hot IE64 blocks can be promoted from Tier 1 single-block JIT code to a compiled region. The dispatcher increments `JITBlock.execCount` on cache hits and asks the shared `TierController` whether the block is hot enough to promote. The default threshold is 64 re-entries, with promotion suppressed when the block is already promoted, was already attempted, or has an I/O-bail rate of 25% or higher.
 
-IE64 region promotion is currently non-MMU only. `ie64FormRegion()` scans `cpu.memory` at flat physical indices and follows statically-known BRA/JMP terminators; under MMU, each virtual successor would need its own page-table walk before the scanner could read the correct physical bytes. The dispatcher therefore gates region promotion with `!cpu.mmuEnabled`.
+`ie64FormRegion()` scans `cpu.memory` at flat physical indices and follows statically-known BRA/JMP terminators. Under MMU each virtual successor needs its own page-table walk before the scanner can read the correct physical bytes, so that case has a separate page-bounded former, `ie64FormRegionMMU()`. The dispatcher picks between them on `cpu.mmuEnabled`.
 
-The AMD64 region compiler emits one native `JITBlock` for two or more IE64 blocks. Internal BRA/JMP targets become direct `JMP rel32` transfers inside the native region; external targets still use the normal chain-exit machinery. Back-edges inside a region keep the loop-budget and retired-count checks so native code cannot spin without returning to the dispatcher. Region promotion can be disabled with `IE64_JIT_REGIONS=0`, and statistics print when `IE64_JIT_STATS=1`.
+The AMD64 region compiler emits one native `JITBlock` for two or more IE64 blocks. Internal BRA/JMP targets become direct `JMP rel32` transfers inside the native region; external targets still use the normal chain-exit machinery. Back-edges inside a region keep the loop-budget and retired-count checks so native code cannot spin without returning to the dispatcher. Promoted regions bind their hottest guest registers to callee-saved hosts for the whole region (`ie64PlanRegion` / `ie64BuildRegionRegMap`); the fixed Tier-1 mapping governs single blocks only.
+
+Environment gates:
+
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `IE64_JIT_REGIONS` | on | `0`/`false`/`off`/`no` disables region promotion entirely |
+| `IE64_JIT_REGION_MMU` | off | `1`/`true`/`on`/`yes` enables MMU region formation |
+| `IE64_JIT_REGION_MAX_SPILLS` | policy default | spill-pressure ceiling for accepting a region plan |
+| `IE64_JIT_STATS` | off | `1` prints region and spill statistics |
 
 ARM64 builds include the tier controller and stub symbols, but `ie64RegionPromotionEnabled()` is false and `ie64CompileRegion()` returns an unsupported error. There is no ARM64 IE64 region compiler today.
 
@@ -252,14 +261,18 @@ X8       --      &cpu.regs[0] (register file base)
 X9       --      &cpu.memory[0] (memory base)
 X10      --      IO_REGION_START
 X11      --      Scratch
-X12-X26  R1-R15  Mapped IE64 registers (15 GPRs resident)
+X12-X17  R1-R6   Mapped IE64 registers
+X18      --      Never allocated (AAPCS64 platform register)
+X19-X26  R7-R14  Mapped IE64 registers (callee-saved)
 X27      R31     IE64 SP (always resident)
 X28      --      IE64 PC / return channel
 XZR      R0      Hardwired zero
 X29/X30  --      Go FP/LR (saved/restored)
 ```
 
-15 IE64 registers are resident in ARM64 registers. R16-R30 are spilled to the register file in memory.
+14 IE64 registers are resident in ARM64 registers. R15-R30 are spilled to the register file in memory.
+
+X18 is the AAPCS64 platform register and is never allocated: Darwin reserves it for the kernel and Windows/ARM64 keeps the thread environment block pointer in it. Excluding it costs one resident slot, which is why R15 spills. `ie64ToARM64Reg` is the single source of truth for the mapping; `arm64CalleeSavedPairs` names the IE64 registers living in each callee-saved pair, and `TestARM64RegMap_CalleeSavedPairsMatchMapping` pins the two together.
 
 ### Prologue/Epilogue
 
@@ -381,15 +394,36 @@ FADD, FSUB, FMUL, FDIV, FSQRT, FINT, FCMP, FCVTIF, FCVTFI (native on both platfo
 - **ARM64:** Uses S-register instructions (FADD, FSUB, FRINTN/M/Z/P for FINT, FCVTZS for FCVTFI) via FMOV W<->S transfers
 - **x86-64:** Uses SSE scalar instructions (ADDSS, SUBSS, ROUNDSS, UCOMISS, CVTSI2SS, CVTTSS2SI, etc.) via MOVD XMM<->GPR transfers. SSE4.1 (ROUNDSS) is the runtime baseline for the amd64 JIT: `initJIT` checks for it (`checkJITHostFeatures`) and, if absent, falls back to the interpreter instead of enabling the JIT. Release builds still target x86-64-v3 (`GOAMD64=v3`) for codegen quality, but lower `GOAMD64` levels build and run fine. FCVTFI emits saturating and NaN checks around CVTTSS2SI to preserve interpreter exception behaviour.
 
+### FPSR semantics
+
+Category B arithmetic maintains the full FPSR, matching the interpreter bit for bit:
+
+- **Condition codes** (bits 27:24) may be deferred but never dropped. The backward liveness pass elides an update only when a later FP instruction overwrites it before any observer, and sinks a live update to the block's exit funnels.
+- **Sticky exception flags** (bits 3:0: IO, DZ, OE, UE) are eager and never elided: a raised flag stays observable until software clears it. They cannot be sunk, because each rule depends on that operation's own operands rather than on the final register value. A fast-path gate skips the classifier when the result is neither infinite, NaN, nor (for the ops with an underflow rule) zero.
+- `FSQRT` raises IO for a negative operand, excluding -0.0 and NaN.
+- `FCMP` raises IO on an unordered compare, and reports infinity through CC_I.
+
+The host FP status registers (MXCSR, ARM64 FPSR) cannot stand in for the classifier: hardware raises the invalid flag for signalling-NaN *operands* and underflow for *denormal results*, and the IE64 rules exclude both.
+
+`jit_ie64_fp_parity_common_test.go` and `jit_ie64_fp_audit_test.go` drive every FP opcode through an IEEE-754 special-value matrix and compare the whole architectural state, FPSR included, against the interpreter. They are architecture-neutral by design: an FP correctness gate compiled for only one backend cannot see the others.
+
 ### Category C: Helper Exit
 DSIN, DCOS, DTAN, DATAN, DLOG, DEXP, DPOW
 
 The FP64 transcendental opcodes are emitted as helper exits rather than whole-block fallbacks. The dispatcher calls the same Go FPU method used by the interpreter, so result bits, pair validation, PC advance, and FPSR side effects stay deterministic across backends.
 
-### Category D: Interpreter Bail
-FMOD, FSIN, FCOS, FTAN, FATAN, FLOG, FEXP, FPOW, and double-precision arithmetic/conversion opcodes other than `DLOAD`, `DSTORE`, and `DSIN` through `DPOW`
+### Category D: Double precision, per backend
 
-The remaining double-precision arithmetic/conversion ISA is implemented by the interpreter; the JIT emitters bail for those opcodes rather than duplicating interpreter FPU status, conversion, and memory semantics. `DLOAD` and `DSTORE` are JIT-emitted with native low-window fast paths and helper exits (`HELPER_DLOAD`/`HELPER_DSTORE`) for MMU, high-address, MMIO, or invalid-pair cases. They are no longer in `needsFallback()` and no longer force whole-block fallback.
+The FP64 core is emitted natively on amd64 and bails to the interpreter on arm64.
+
+**amd64** emits `DMOV`, `DADD`, `DSUB`, `DMUL`, `DDIV`, `DINT`, `DCMP`, `DCVTIF`, `DCVTFI` natively, and bails only for `DMOD`, `DABS`, `DNEG`, `DSQRT`, `FCVTSD`, `FCVTDS`. The native FP64 arithmetic bails to the interpreter whenever an operand is non-finite (`emitDPairNonFiniteBailAMD64`), so NaN and infinity operands take interpreter semantics by construction and the native path only has to account for overflow, underflow and divide-by-zero on finite inputs.
+
+**arm64** emits only `DLOAD`/`DSTORE` natively plus the Category C helper exits; the whole FP64 arithmetic and conversion set bails to the interpreter.
+
+`DLOAD` and `DSTORE` are JIT-emitted on both backends with native low-window fast paths and helper exits (`HELPER_DLOAD`/`HELPER_DSTORE`) for MMU, high-address, MMIO, or invalid-pair cases. They are not in `needsFallback()` and do not force whole-block fallback.
+
+### Category E: Interpreter Bail
+FMOD, FSIN, FCOS, FTAN, FATAN, FLOG, FEXP, FPOW on both backends.
 
 ---
 
@@ -406,7 +440,9 @@ The JIT falls back to the interpreter in these cases:
 | High-PC block containing a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`) | `highPhys && containsStackOp`, so the dispatcher runs the block via `interpretOne()` |
 | High address or MMU-on data/stack/FP/control op | JITContext helper exit (serviced by the dispatcher) - **not** a whole-instruction bail |
 | I/O page memory access | Dual-path: bail to interpreter on I/O bitmap hit |
-| FP32 FMOD/transcendentals and double-precision arithmetic/conversion FPU opcodes without helper exits | Bail to interpreter (`DLOAD`/`DSTORE` and `DSIN` through `DPOW` are JIT-emitted via helper exit, not bailed) |
+| FP32 FMOD/transcendentals | Bail to interpreter on both backends |
+| Double-precision arithmetic/conversion | Backend dependent: amd64 emits the FP64 core natively and bails only for `DMOD`/`DABS`/`DNEG`/`DSQRT`/`FCVTSD`/`FCVTDS`; arm64 bails for the whole set. `DLOAD`/`DSTORE` and `DSIN` through `DPOW` are JIT-emitted via helper exit on both, not bailed |
+| Non-finite operand to native FP64 arithmetic (amd64) | Bail to interpreter (`emitDPairNonFiniteBailAMD64`), so NaN/infinity operands take interpreter semantics |
 | Atomic RMW (CAS, XCHG, FAA, FAND, FOR, FXOR) | Native only for aligned non-MMU low-window RAM; MMU-on, high-address, MMIO, or unaligned cases bail to interpreter |
 | SEI64, CLI64 | Emitted as bail-to-interpreter (`emitBailToInterpreter`) so `interruptEnabled` is mutated; compiling them as NOPs silently dropped the state change under timer-off native execution |
 | MMU/privilege opcodes (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE, SUAEN, SUADIS) | Block terminators; first-instruction fallback in `needsFallback()`, otherwise emitted as bail-to-interpreter |
@@ -491,9 +527,11 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 
 ### Deferred
 - Direct (non-helper) native fast path for high-physical data/stack access: high addresses currently route through the JITContext helper exit; inlining the sparse-backing / MMU translation into native code is a future perf item
-- Native double-precision FPU emission
-- MMU-aware IE64 region scanning and native region compilation
-- ARM64 IE64 region compilation
+- Native double-precision FPU emission on arm64 (done on amd64; arm64 still bails for the whole FP64 arithmetic and conversion set)
+- Native `DMOD`, `DABS`, `DNEG`, `DSQRT`, `FCVTSD`, `FCVTDS` on amd64
+- ARM64 IE64 region compilation (`ie64FormRegion`/`ie64CompileRegion` are stubs there; `ie64RegionPromotionEnabled` is hardcoded false off-amd64)
+- ARM64 MMIO poll acceleration (`tryFastIE64MMIOPollLoop` is a stub returning false)
+- ARM64 FP register residency and FPSR condition-code liveness (both passes are amd64-tagged)
 - Memory operands for spilled-source ALU
 - Peephole patterns (MOVE imm, ADD/SUB imm, compare against zero)
 - Profiling-driven register residency tuning

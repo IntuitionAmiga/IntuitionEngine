@@ -122,29 +122,8 @@ func buildFP32ResidencyRegionLoop(mem []byte) {
 	put(0x210, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
 }
 
-// assertFPParity runs a builder under JIT and interpreter and asserts identical
-// architectural state.
-func assertFPParity(t *testing.T, name string, build func(mem []byte)) {
-	t.Helper()
-	jitCPU := runToHaltAt(t, true, build)
-	interpCPU := runToHaltAt(t, false, build)
-	if jitCPU.PC != interpCPU.PC {
-		t.Fatalf("%s: PC mismatch: JIT 0x%X, interp 0x%X", name, jitCPU.PC, interpCPU.PC)
-	}
-	for i := range jitCPU.regs {
-		if jitCPU.regs[i] != interpCPU.regs[i] {
-			t.Fatalf("%s: R%d mismatch: JIT 0x%X, interp 0x%X", name, i, jitCPU.regs[i], interpCPU.regs[i])
-		}
-	}
-	if jitCPU.FPU.FPSR != interpCPU.FPU.FPSR {
-		t.Fatalf("%s: FPSR mismatch: JIT 0x%08X, interp 0x%08X", name, jitCPU.FPU.FPSR, interpCPU.FPU.FPSR)
-	}
-	for i := range jitCPU.FPU.FPRegs {
-		if jitCPU.FPU.FPRegs[i] != interpCPU.FPU.FPRegs[i] {
-			t.Fatalf("%s: F%d mismatch: JIT 0x%08X, interp 0x%08X", name, i, jitCPU.FPU.FPRegs[i], interpCPU.FPU.FPRegs[i])
-		}
-	}
-}
+// assertFPParity now lives in jit_ie64_fp_parity_common_test.go so that every
+// backend, not just amd64, can use it.
 
 // TestJIT_vs_Interpreter_FP32Residency is the parity gate for FP32 register
 // residency (Technique 3, B1). With residency enabled the JIT keeps F2..F5 in

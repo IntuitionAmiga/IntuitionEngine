@@ -1,6 +1,11 @@
 // jit_x86_emit_amd64_test.go - Tests for x86 JIT x86-64 host emitter
 
-//go:build amd64 && linux
+// This file hosts the shared x86 JIT test rig (x86JITTestRig,
+// newX86JITTestRig, enableNativeStackOpsForTest). It must stay at least as
+// broad as its consumers (jit_x86_exec_test.go, jit_x86_moffs8_test.go,
+// jit_x86_fpu_coverage_test.go) and as the emitter under test
+// (jit_x86_emit_amd64.go), all of which are amd64 on linux, windows or darwin.
+//go:build amd64 && (linux || windows || darwin)
 
 package main
 

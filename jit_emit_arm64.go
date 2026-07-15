@@ -18,11 +18,15 @@ import "errors"
 // X9       &cpu.memory[0] — memory base
 // X10      IO_REGION_START constant
 // X11      Scratch for address computation
-// X12-X26  IE64 R1-R15 (15 most-used GPRs)
+// X12-X17  IE64 R1-R6
+// X18      NEVER USED — AAPCS64 platform register (see arm64PlatformReg)
+// X19-X26  IE64 R7-R14 (callee-saved; prologue saves the pairs in use)
 // X27      IE64 R31 (SP) — always resident
 // X28      Current IE64 PC
 // XZR      IE64 R0 (reads=0, writes=discard)
 // X29/X30  Go FP/LR — saved/restored
+//
+// IE64 R15-R30 are spilled to the register file.
 
 const (
 	arm64RegCtx       = 0  // X0: JITContext pointer on entry
@@ -38,12 +42,45 @@ const (
 	arm64RegFP        = 29 // X29: Go frame pointer
 	arm64RegLR        = 30 // X30: Go link register
 
-	// IE64 R1-R15 mapped to ARM64 X12-X26
+	// arm64PlatformReg is the AAPCS64 platform register. It is reserved by the
+	// ABI and must never be allocated: Darwin reserves it for the kernel and
+	// Windows/ARM64 holds the thread environment block pointer in it. The Go
+	// toolchain declines to allocate it on every platform, which is the only
+	// reason Linux tolerated it being clobbered here historically. The mapping
+	// skips it, which costs one resident slot.
+	arm64PlatformReg = 18
+
+	// IE64 R1-R14 mapped to ARM64 X12-X17 and X19-X26, skipping X18.
 	arm64FirstMapped = 12
 	arm64LastMapped  = 26
 	ie64FirstMapped  = 1
-	ie64LastMapped   = 15
+	ie64LastMapped   = 14
 )
+
+// arm64CalleeSavedPairs enumerates the callee-saved host register pairs the
+// prologue may save and the epilogue restore, together with the IE64 registers
+// resident in each. The prologue saves a pair only when the block uses one of
+// its IE64 registers, so this table must agree with ie64ToARM64Reg exactly;
+// TestARM64RegMap_CalleeSavedPairsMatchMapping pins the two together. They were
+// previously kept in sync by hand, which is how IE64 R7 came to live in X18
+// unnoticed.
+var arm64CalleeSavedPairs = [...]struct {
+	loHost, hiHost byte // host pair saved by a single STP/LDP
+	slot           int  // STP/LDP scaled offset from SP
+	loIE64, hiIE64 byte // IE64 registers resident in loHost/hiHost
+}{
+	{19, 20, 0, 7, 8},
+	{21, 22, 2, 9, 10},
+	{23, 24, 4, 11, 12},
+	{25, 26, 6, 13, 14},
+}
+
+// arm64CalleeSavedMask is the set of IE64 registers living in callee-saved host
+// registers, as a bitmask over IE64 register numbers.
+func arm64CalleeSavedMask(pairIdx int) uint32 {
+	p := arm64CalleeSavedPairs[pairIdx]
+	return (1 << p.loIE64) | (1 << p.hiIE64)
+}
 
 // ie64ToARM64Reg maps an IE64 register index (0-31) to an ARM64 register.
 // Returns the ARM64 register number and whether it's a "mapped" register
@@ -53,12 +90,19 @@ func ie64ToARM64Reg(ie64Reg byte) (arm64Reg byte, mapped bool) {
 		return 31, true // XZR
 	}
 	if ie64Reg >= ie64FirstMapped && ie64Reg <= ie64LastMapped {
-		return arm64FirstMapped + (ie64Reg - ie64FirstMapped), true
+		host := arm64FirstMapped + (ie64Reg - ie64FirstMapped)
+		// Step over the platform register rather than allocating it: IE64 R7
+		// onwards shift up by one, so R1-R6 occupy X12-X17 and R7-R14 occupy
+		// X19-X26.
+		if host >= arm64PlatformReg {
+			host++
+		}
+		return host, true
 	}
 	if ie64Reg == 31 {
 		return arm64RegIE64SP, true
 	}
-	return 0, false // spilled: R16-R30
+	return 0, false // spilled: R15-R30
 }
 
 // ===========================================================================
@@ -738,18 +782,10 @@ func emitPrologue(cb *CodeBuffer, blockPC uint64, br *blockRegs) {
 	cb.Emit32(arm64SUB_imm(31, 31, 112))
 
 	// Save callee-saved pairs only if the block uses the corresponding IE64 regs.
-	// X19/X20 = R8/R9, X21/X22 = R10/R11, X23/X24 = R12/R13, X25/X26 = R14/R15
-	if br.used&((1<<8)|(1<<9)) != 0 {
-		cb.Emit32(arm64STP_offset(19, 20, 31, 0))
-	}
-	if br.used&((1<<10)|(1<<11)) != 0 {
-		cb.Emit32(arm64STP_offset(21, 22, 31, 2))
-	}
-	if br.used&((1<<12)|(1<<13)) != 0 {
-		cb.Emit32(arm64STP_offset(23, 24, 31, 4))
-	}
-	if br.used&((1<<14)|(1<<15)) != 0 {
-		cb.Emit32(arm64STP_offset(25, 26, 31, 6))
+	for i, p := range arm64CalleeSavedPairs {
+		if br.used&arm64CalleeSavedMask(i) != 0 {
+			cb.Emit32(arm64STP_offset(p.loHost, p.hiHost, 31, p.slot))
+		}
 	}
 	// X27/X28 (SP/PC) and X29/X30 (FP/LR) — always saved
 	cb.Emit32(arm64STP_offset(27, 28, 31, 8))
@@ -777,7 +813,7 @@ func emitPrologue(cb *CodeBuffer, blockPC uint64, br *blockRegs) {
 	// Load only IE64 registers that are read by the block
 	for ie64Reg := byte(ie64FirstMapped); ie64Reg <= ie64LastMapped; ie64Reg++ {
 		if br.read&(1<<ie64Reg) != 0 {
-			arm64Reg := arm64FirstMapped + (ie64Reg - ie64FirstMapped)
+			arm64Reg, _ := ie64ToARM64Reg(ie64Reg)
 			cb.Emit32(arm64LDR_imm(arm64Reg, arm64RegBase, uint32(ie64Reg)))
 		}
 	}
@@ -835,7 +871,7 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, calleeSaved uint32) {
 	// Store only the IE64 registers that were written
 	for ie64Reg := byte(ie64FirstMapped); ie64Reg <= ie64LastMapped; ie64Reg++ {
 		if storeRegs&(1<<ie64Reg) != 0 {
-			arm64Reg := arm64FirstMapped + (ie64Reg - ie64FirstMapped)
+			arm64Reg, _ := ie64ToARM64Reg(ie64Reg)
 			cb.Emit32(arm64STR_imm(arm64Reg, arm64RegBase, uint32(ie64Reg)))
 		}
 	}
@@ -857,17 +893,10 @@ func emitEpilogue(cb *CodeBuffer, storeRegs uint32, calleeSaved uint32) {
 	cb.Emit32(arm64STR_imm(arm64RegIE64PC, arm64RegBase, 0))
 
 	// Restore callee-saved pairs that were saved in prologue
-	if calleeSaved&((1<<8)|(1<<9)) != 0 {
-		cb.Emit32(arm64LDP_offset(19, 20, 31, 0))
-	}
-	if calleeSaved&((1<<10)|(1<<11)) != 0 {
-		cb.Emit32(arm64LDP_offset(21, 22, 31, 2))
-	}
-	if calleeSaved&((1<<12)|(1<<13)) != 0 {
-		cb.Emit32(arm64LDP_offset(23, 24, 31, 4))
-	}
-	if calleeSaved&((1<<14)|(1<<15)) != 0 {
-		cb.Emit32(arm64LDP_offset(25, 26, 31, 6))
+	for i, p := range arm64CalleeSavedPairs {
+		if calleeSaved&arm64CalleeSavedMask(i) != 0 {
+			cb.Emit32(arm64LDP_offset(p.loHost, p.hiHost, 31, p.slot))
+		}
 	}
 	cb.Emit32(arm64LDP_offset(27, 28, 31, 8))
 	cb.Emit32(arm64LDP_offset(29, 30, 31, 10))
@@ -3216,6 +3245,157 @@ func emitFMOVCC(cb *CodeBuffer, ji *JITInstr) {
 // FPU — Category B: Native ARM64 FP instructions
 // ===========================================================================
 
+// armSkip is a forward conditional branch awaiting its target.
+type armSkip struct {
+	off  int
+	cond byte
+}
+
+// patchArmSkips points every queued forward branch at target.
+func patchArmSkips(cb *CodeBuffer, skips []armSkip, target int) {
+	for _, s := range skips {
+		cb.PatchUint32(s.off, arm64Bcond(s.cond, int32(target-s.off)))
+	}
+}
+
+// emitFPStickyFlags32ARM64 emits the IE64 sticky exception-flag updates for an
+// FP32 binary op, mirroring IE64FPU.FADD/FSUB/FMUL/FDIV and the amd64 backend's
+// emitFP32StickyFlagsAMD64 rule for rule. The two backends and the interpreter
+// must agree exactly; the shared special-value matrix in
+// jit_ie64_fp_parity_common_test.go is the gate.
+//
+// Sticky flags cannot be elided the way condition codes can: unlike the CC
+// field, a raised exception flag stays observable until software clears it, so
+// these updates are eager.
+//
+// Entry: W0 = result bits, W1 = ft bits, S0 = fs bits (left there by the
+// arithmetic). W0 is preserved for the caller's register store and CC update.
+// W1-W4 and W11 are clobbered.
+func emitFPStickyFlags32ARM64(cb *CodeBuffer, op byte) {
+	const (
+		res   byte = 0
+		ftReg byte = 1
+		fsReg byte = 2
+		acc   byte = 3
+		tmp   byte = 4
+	)
+	// Recover fs from S0: the arithmetic overwrote W0 with the result, but the
+	// source vector register still holds the original bits.
+	cb.Emit32(arm64FMOV_StoW(fsReg, 0))
+	cb.Emit32(arm64MOVZ_W(acc, 0, 0)) // W3 = flags accumulator = 0
+
+	// skipIf emits "CMP |src|, imm" and a forward branch taken when the clause
+	// fails, so the caller's OR runs only when every clause holds.
+	skipIf := func(src byte, imm uint32, cond byte) armSkip {
+		emitLoadImm32(cb, arm64RegScratch, 0x7FFFFFFF)
+		cb.Emit32(arm64AND_W(tmp, src, arm64RegScratch)) // W4 = |src|
+		emitLoadImm32(cb, arm64RegScratch, imm)
+		cb.Emit32(arm64CMP_W(tmp, arm64RegScratch))
+		off := cb.Len()
+		cb.Emit32(0)
+		return armSkip{off: off, cond: cond}
+	}
+	isInf := func(src byte) armSkip { return skipIf(src, fp32AbsInf, arm64CondNE) }
+	notInf := func(src byte) armSkip { return skipIf(src, fp32AbsInf, arm64CondEQ) }
+	isNaN := func(src byte) armSkip { return skipIf(src, fp32AbsInf, arm64CondLS) }
+	notNaN := func(src byte) armSkip { return skipIf(src, fp32AbsInf, arm64CondHI) }
+	isZero := func(src byte) armSkip { return skipIf(src, 0, arm64CondNE) }
+	notZero := func(src byte) armSkip { return skipIf(src, 0, arm64CondEQ) }
+
+	// raise emits the conjunction of checks; each check branches past the OR
+	// when its clause fails.
+	raise := func(flag uint32, checks ...func() armSkip) {
+		skips := make([]armSkip, 0, len(checks))
+		for _, c := range checks {
+			skips = append(skips, c())
+		}
+		emitLoadImm32(cb, arm64RegScratch, flag)
+		cb.Emit32(arm64ORR_W(acc, acc, arm64RegScratch))
+		patchArmSkips(cb, skips, cb.Len())
+	}
+
+	if op == OP_FDIV {
+		// DZ: isZero(t) && !isZero(s) && !isNaN(s)
+		raise(IE64_FPU_EX_DZ,
+			func() armSkip { return isZero(ftReg) },
+			func() armSkip { return notZero(fsReg) },
+			func() armSkip { return notNaN(fsReg) })
+		// OE: isInf(res) && !isInf(s) && !isZero(t)
+		raise(IE64_FPU_EX_OE,
+			func() armSkip { return isInf(res) },
+			func() armSkip { return notInf(fsReg) },
+			func() armSkip { return notZero(ftReg) })
+	} else {
+		// OE: isInf(res) && !isInf(s) && !isInf(t)
+		raise(IE64_FPU_EX_OE,
+			func() armSkip { return isInf(res) },
+			func() armSkip { return notInf(fsReg) },
+			func() armSkip { return notInf(ftReg) })
+	}
+
+	// IO: isNaN(res) && !isNaN(s) && !isNaN(t). Identical for all four ops.
+	raise(IE64_FPU_EX_IO,
+		func() armSkip { return isNaN(res) },
+		func() armSkip { return notNaN(fsReg) },
+		func() armSkip { return notNaN(ftReg) })
+
+	switch op {
+	case OP_FMUL:
+		// UE: isZero(res) && !isZero(s) && !isZero(t)
+		raise(IE64_FPU_EX_UE,
+			func() armSkip { return isZero(res) },
+			func() armSkip { return notZero(fsReg) },
+			func() armSkip { return notZero(ftReg) })
+	case OP_FDIV:
+		// UE: isZero(res) && !isZero(s) && !isZero(t) && !isInf(t)
+		raise(IE64_FPU_EX_UE,
+			func() armSkip { return isZero(res) },
+			func() armSkip { return notZero(fsReg) },
+			func() armSkip { return notZero(ftReg) },
+			func() armSkip { return notInf(ftReg) })
+	}
+
+	// FPSR |= W3. Sticky: never clears an existing flag.
+	cb.Emit32(arm64LDR_W_imm(arm64RegScratch, arm64RegFPUBase, fpuOffFPSR))
+	cb.Emit32(arm64ORR_W(arm64RegScratch, arm64RegScratch, acc))
+	cb.Emit32(arm64STR_W_imm(arm64RegScratch, arm64RegFPUBase, fpuOffFPSR))
+}
+
+// emitFPStickyGate32ARM64 wraps the classifier in a fast-path test. No flag can
+// be raised unless the result is infinite, NaN, or (for the ops with an
+// underflow rule) zero, so an ordinary finite non-zero result skips the whole
+// classifier.
+//
+// The gate gets away with inspecting only the result because every rule that
+// does not mention res implies a special res: a divide by zero always yields
+// infinity or NaN.
+func emitFPStickyGate32ARM64(cb *CodeBuffer, op byte) {
+	emitLoadImm32(cb, arm64RegScratch, 0x7FFFFFFF)
+	cb.Emit32(arm64AND_W(4, 0, arm64RegScratch)) // W4 = |res|
+	emitLoadImm32(cb, arm64RegScratch, fp32AbsInf)
+	cb.Emit32(arm64CMP_W(4, arm64RegScratch))
+	runOff := cb.Len()
+	cb.Emit32(0) // B.HS classifier (result is inf or NaN)
+
+	zeroOff := -1
+	if op == OP_FMUL || op == OP_FDIV {
+		zeroOff = cb.Len()
+		cb.Emit32(0) // CBZ W4, classifier (result is zero: underflow rule)
+	}
+
+	skipOff := cb.Len()
+	cb.Emit32(0) // B past the classifier
+
+	runPC := cb.Len()
+	cb.PatchUint32(runOff, arm64Bcond(arm64CondHS, int32(runPC-runOff)))
+	if zeroOff >= 0 {
+		// AND_W zero-extends into X4, so the 64-bit CBZ tests the same value.
+		cb.PatchUint32(zeroOff, arm64CBZ(4, int32(runPC-zeroOff)))
+	}
+	emitFPStickyFlags32ARM64(cb, op)
+	cb.PatchUint32(skipOff, arm64B(int32(cb.Len()-skipOff)))
+}
+
 func emitFPBinaryArith(cb *CodeBuffer, ji *JITInstr, fpOp func(sd, sn, sm byte) uint32) {
 	emitLoadFPReg(cb, 0, ji.rs)
 	cb.Emit32(arm64FMOV_WtoS(0, 0))
@@ -3223,6 +3403,9 @@ func emitFPBinaryArith(cb *CodeBuffer, ji *JITInstr, fpOp func(sd, sn, sm byte) 
 	cb.Emit32(arm64FMOV_WtoS(1, 1))
 	cb.Emit32(fpOp(2, 0, 1))
 	cb.Emit32(arm64FMOV_StoW(0, 2))
+	// Sticky flags before the store: the classifier needs W0 = result and
+	// S0 = fs, and emitSetFPCondCodes preserves the sticky bits it finds.
+	emitFPStickyGate32ARM64(cb, ji.opcode)
 	emitStoreFPReg(cb, 0, ji.rd)
 	emitSetFPCondCodes(cb)
 }
@@ -3232,10 +3415,58 @@ func emitFSUB(cb *CodeBuffer, ji *JITInstr) { emitFPBinaryArith(cb, ji, arm64FSU
 func emitFMUL(cb *CodeBuffer, ji *JITInstr) { emitFPBinaryArith(cb, ji, arm64FMUL_S) }
 func emitFDIV(cb *CodeBuffer, ji *JITInstr) { emitFPBinaryArith(cb, ji, arm64FDIV_S) }
 
+// emitFPSqrtSticky32ARM64 emits the IE64 sticky exception update for FSQRT,
+// mirroring IE64FPU.FSQRT and the amd64 backend's emitFPSqrtSticky32AMD64: IO is
+// raised when the operand is negative, excluding -0.0 and NaN. FSQRT has no
+// other exception rule.
+//
+// The clauses are ordered so the common case (a non-negative operand) leaves
+// after one compare and one not-taken branch.
+//
+// On entry W0 = fs bits, and is preserved for the caller. W4 and W11 are
+// clobbered.
+func emitFPSqrtSticky32ARM64(cb *CodeBuffer) {
+	var condSkips []armSkip
+
+	// Sign clear -> no IO. Unsigned: the sign bit is set iff bits >= 0x80000000.
+	emitLoadImm32(cb, arm64RegScratch, 0x80000000)
+	cb.Emit32(arm64CMP_W(0, arm64RegScratch))
+	signOff := cb.Len()
+	cb.Emit32(0)
+	condSkips = append(condSkips, armSkip{off: signOff, cond: arm64CondLO})
+
+	// -0.0 -> no IO.
+	emitLoadImm32(cb, arm64RegScratch, 0x7FFFFFFF)
+	cb.Emit32(arm64AND_W(4, 0, arm64RegScratch)) // W4 = |fs|
+	zeroOff := cb.Len()
+	cb.Emit32(0) // CBZ W4, done
+
+	// NaN -> no IO (a negative NaN still has the sign bit set).
+	emitLoadImm32(cb, arm64RegScratch, fp32AbsInf)
+	cb.Emit32(arm64CMP_W(4, arm64RegScratch))
+	nanOff := cb.Len()
+	cb.Emit32(0)
+	condSkips = append(condSkips, armSkip{off: nanOff, cond: arm64CondHI})
+
+	// FPSR |= IO. Sticky: never clears an existing flag.
+	cb.Emit32(arm64LDR_W_imm(arm64RegScratch, arm64RegFPUBase, fpuOffFPSR))
+	emitLoadImm32(cb, 4, IE64_FPU_EX_IO)
+	cb.Emit32(arm64ORR_W(arm64RegScratch, arm64RegScratch, 4))
+	cb.Emit32(arm64STR_W_imm(arm64RegScratch, arm64RegFPUBase, fpuOffFPSR))
+
+	done := cb.Len()
+	patchArmSkips(cb, condSkips, done)
+	// AND_W zero-extends into X4, so the 64-bit CBZ tests the same value.
+	cb.PatchUint32(zeroOff, arm64CBZ(4, int32(done-zeroOff)))
+}
+
 func emitFSQRT(cb *CodeBuffer, ji *JITInstr) {
 	emitLoadFPReg(cb, 0, ji.rs)
 	cb.Emit32(arm64FMOV_WtoS(0, 0))
 	cb.Emit32(arm64FSQRT_S(1, 0))
+	// Classify before W0 is overwritten: the rule is over the operand, not the
+	// result.
+	emitFPSqrtSticky32ARM64(cb)
 	cb.Emit32(arm64FMOV_StoW(0, 1))
 	emitStoreFPReg(cb, 0, ji.rd)
 	emitSetFPCondCodes(cb)
@@ -3327,8 +3558,21 @@ func emitFCMP(cb *CodeBuffer, ji *JITInstr) {
 	eqOff := cb.Len()
 	cb.Emit32(0)
 
+	// W0 still holds the fs bits, and W1 the ft bits: the CC constants below go
+	// through W4 so the greater-than and equal paths can inspect fs and
+	// reproduce IE64FPU.FCMP's infinity rules.
+
 	// Greater than (fallthrough)
 	cb.Emit32(arm64MOVZ_W(3, 1, 0)) // result = 1
+	// CC_I when fs is +Inf. IE64FPU.FCMP raises it here only for +Inf, which is
+	// the only infinity that can be the greater operand.
+	emitLoadImm32(cb, 4, fp32AbsInf)
+	cb.Emit32(arm64CMP_W(0, 4))
+	gtNotInfOff := cb.Len()
+	cb.Emit32(0)
+	emitLoadImm32(cb, 4, IE64_FPU_CC_I)
+	cb.Emit32(arm64ORR_W(2, 2, 4))
+	cb.PatchUint32(gtNotInfOff, arm64Bcond(arm64CondNE, int32(cb.Len()-gtNotInfOff)))
 	doneOff1 := cb.Len()
 	cb.Emit32(0)
 
@@ -3355,6 +3599,24 @@ func emitFCMP(cb *CodeBuffer, ji *JITInstr) {
 	cb.PatchUint32(eqOff, arm64Bcond(arm64CondEQ, int32(eqPC-eqOff)))
 	emitLoadImm32(cb, 4, IE64_FPU_CC_Z)
 	cb.Emit32(arm64ORR_W(2, 2, 4))
+	// Equal infinities: IE64FPU.FCMP adds CC_I, and CC_N as well for -Inf.
+	emitLoadImm32(cb, arm64RegScratch, 0x7FFFFFFF)
+	cb.Emit32(arm64AND_W(4, 0, arm64RegScratch)) // W4 = |fs|
+	emitLoadImm32(cb, arm64RegScratch, fp32AbsInf)
+	cb.Emit32(arm64CMP_W(4, arm64RegScratch))
+	eqNotInfOff := cb.Len()
+	cb.Emit32(0)
+	emitLoadImm32(cb, 4, IE64_FPU_CC_I)
+	cb.Emit32(arm64ORR_W(2, 2, 4))
+	emitLoadImm32(cb, arm64RegScratch, 0x80000000)
+	cb.Emit32(arm64CMP_W(0, arm64RegScratch))
+	eqNotNegOff := cb.Len()
+	cb.Emit32(0)
+	emitLoadImm32(cb, 4, IE64_FPU_CC_N)
+	cb.Emit32(arm64ORR_W(2, 2, 4))
+	eqCCDonePC := cb.Len()
+	cb.PatchUint32(eqNotNegOff, arm64Bcond(arm64CondLO, int32(eqCCDonePC-eqNotNegOff)))
+	cb.PatchUint32(eqNotInfOff, arm64Bcond(arm64CondNE, int32(eqCCDonePC-eqNotInfOff)))
 	// fall through
 
 	// done:

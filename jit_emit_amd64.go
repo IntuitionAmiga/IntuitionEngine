@@ -4603,10 +4603,8 @@ func emitFPAbsBits32AMD64(cb *CodeBuffer, dst, src byte) {
 	amd64ALU_reg_imm32_32bit(cb, 4, dst, 0x7FFFFFFF) // AND dst, 0x7FFFFFFF
 }
 
-// fp32AbsInf is |+Inf| in IEEE-754 binary32. Over sign-stripped bits:
-// x is infinite iff abs == fp32AbsInf, NaN iff abs > fp32AbsInf, and both
-// (that is, "special") iff abs >= fp32AbsInf. Zero iff abs == 0.
-const fp32AbsInf = 0x7F800000
+// fp32AbsInf now lives in jit_common.go: it is an IEEE-754 property, not an
+// amd64 one, and the arm64 backend classifies against the same boundary.
 
 // emitFP32StickyFlagsAMD64 emits the IE64 sticky exception-flag updates for an
 // FP32 binary op, mirroring IE64FPU.FADD/FSUB/FMUL/FDIV bit for bit. These
@@ -4805,10 +4803,50 @@ func emitFPBinarySSE(cb *CodeBuffer, ji *JITInstr, sseOpcode byte) {
 	emitFPCCUpdate32AMD64(cb, ji)
 }
 
+// emitFPSqrtSticky32AMD64 emits the IE64 sticky exception update for FSQRT,
+// mirroring IE64FPU.FSQRT: IO is raised when the operand is negative, excluding
+// -0.0 and NaN. FSQRT has no other exception rule.
+//
+// The clauses are ordered so the common case (a non-negative operand) leaves
+// after one compare and one not-taken branch.
+//
+// On entry EAX = fs bits, and is preserved for the caller. ECX and R11 are
+// clobbered.
+func emitFPSqrtSticky32AMD64(cb *CodeBuffer) {
+	var skips []int
+
+	// Sign clear -> no IO. Unsigned: the sign bit is set iff bits >= 0x80000000.
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RAX, int32(-0x80000000)) // CMP EAX, 0x80000000
+	skips = append(skips, amd64Jcc_rel32(cb, amd64CondB))
+
+	// -0.0 -> no IO.
+	emitFPAbsBits32AMD64(cb, amd64R11, amd64RAX)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64R11, 0) // CMP R11d, 0
+	skips = append(skips, amd64Jcc_rel32(cb, amd64CondE))
+
+	// NaN -> no IO (a negative NaN still has the sign bit set).
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64R11, int32(fp32AbsInf))
+	skips = append(skips, amd64Jcc_rel32(cb, amd64CondA))
+
+	// FPSR |= IO. Sticky: never clears an existing flag.
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64R11, 68)
+	amd64ALU_reg_imm32_32bit(cb, 1, amd64RCX, int32(IE64_FPU_EX_IO)) // OR ECX, IO
+	amd64MOV_mem_reg32(cb, amd64R11, 68, amd64RCX)
+
+	done := cb.Len()
+	for _, s := range skips {
+		patchRel32(cb, s, done)
+	}
+}
+
 func emitFSQRT_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	emitLoadFPRegAMD64(cb, amd64RAX, ji.rs)
 	amd64MOVD_xmm_reg(cb, 0, amd64RAX)
 	amd64SSE_scalar(cb, 0x51, 1, 0) // SQRTSS XMM1, XMM0
+	// Classify before EAX is overwritten: the rule is over the operand, not the
+	// result, and nothing between the load and here touches EAX.
+	emitFPSqrtSticky32AMD64(cb)
 	amd64MOVD_reg_xmm(cb, amd64RAX, 1)
 	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
 	emitFPCCUpdate32AMD64(cb, ji)
@@ -4883,16 +4921,27 @@ func emitFCMP_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	// Check ZF → equal
 	eqOff := amd64Jcc_rel32(cb, amd64CondE) // JE
 
-	// Greater than (fallthrough): result = 1
+	// EAX still holds the fs bits (nothing above overwrites it), and the CC
+	// constants below go through R10 so it stays that way: the greater-than and
+	// equal paths must inspect fs to reproduce IE64FPU.FCMP's infinity rules.
+
+	// Greater than (fallthrough): result = 1.
 	emitLoadImm32AMD64(cb, amd64RCX, 1)
+	// CC_I when fs is +Inf. IE64FPU.FCMP raises it here only for +Inf, not for
+	// -Inf, which cannot be the greater operand anyway.
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RAX, int32(fp32AbsInf)) // CMP EAX, +Inf
+	gtNotInfOff := amd64Jcc_rel32(cb, amd64CondNE)
+	emitLoadImm32AMD64(cb, amd64R10, IE64_FPU_CC_I)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R10)
+	patchRel32(cb, gtNotInfOff, cb.Len())
 	done1Off := amd64JMP_rel32(cb)
 
 	// nan: result = 0
 	nanPC := cb.Len()
 	patchRel32(cb, nanOff, nanPC)
 	amd64XOR_reg_reg32(cb, amd64RCX, amd64RCX) // result = 0 for NaN
-	emitLoadImm32AMD64(cb, amd64RAX, IE64_FPU_CC_NAN|IE64_FPU_EX_IO)
-	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64RAX) // OR EDX, CC_NAN|EX_IO
+	emitLoadImm32AMD64(cb, amd64R10, IE64_FPU_CC_NAN|IE64_FPU_EX_IO)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R10) // OR EDX, CC_NAN|EX_IO
 	done2Off := amd64JMP_rel32(cb)
 
 	// lt:
@@ -4901,16 +4950,29 @@ func emitFCMP_AMD64(cb *CodeBuffer, ji *JITInstr) {
 	// result = -1 (sign-extended)
 	amd64MOV_reg_imm32(cb, amd64RCX, 0xFFFFFFFF)
 	amd64MOVSXD(cb, amd64RCX, amd64RCX) // RCX = -1 (64-bit)
-	emitLoadImm32AMD64(cb, amd64RAX, IE64_FPU_CC_N)
-	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64RAX)
+	emitLoadImm32AMD64(cb, amd64R10, IE64_FPU_CC_N)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R10)
 	done3Off := amd64JMP_rel32(cb)
 
 	// eq: result = 0
 	eqPC := cb.Len()
 	patchRel32(cb, eqOff, eqPC)
 	amd64XOR_reg_reg32(cb, amd64RCX, amd64RCX) // result = 0
-	emitLoadImm32AMD64(cb, amd64RAX, IE64_FPU_CC_Z)
-	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64RAX)
+	emitLoadImm32AMD64(cb, amd64R10, IE64_FPU_CC_Z)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R10)
+	// Equal infinities: IE64FPU.FCMP adds CC_I, and CC_N as well when the
+	// operands are -Inf. EAX still holds the fs bits.
+	emitFPAbsBits32AMD64(cb, amd64R10, amd64RAX)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64R10, int32(fp32AbsInf)) // CMP R10d, |Inf|
+	eqNotInfOff := amd64Jcc_rel32(cb, amd64CondNE)
+	emitLoadImm32AMD64(cb, amd64R10, IE64_FPU_CC_I)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R10)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RAX, int32(-0x80000000)) // CMP EAX, sign
+	eqNotNegOff := amd64Jcc_rel32(cb, amd64CondB)
+	emitLoadImm32AMD64(cb, amd64R10, IE64_FPU_CC_N)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R10)
+	patchRel32(cb, eqNotNegOff, cb.Len())
+	patchRel32(cb, eqNotInfOff, cb.Len())
 	// fall through
 
 	// done:
@@ -5026,6 +5088,13 @@ func emitXMMToDPairAMD64(cb *CodeBuffer, xmm, fpIdx byte, ccDead bool) {
 	amd64MOVQ_reg_xmm(cb, amd64RAX, xmm)
 	emitStoreDPairBitsAMD64(cb, amd64RAX, fpIdx)
 	if !ccDead {
+		// Re-read the result: emitStoreDPairBitsAMD64 uses RAX as its shift
+		// scratch, so RAX now holds only the high 32 bits, zero-extended.
+		// Classifying that instead of the full double loses the sign bit and
+		// the exponent, so every negative result read as positive (no CC_N),
+		// every infinity as an ordinary number (no CC_I), and any result whose
+		// high word is zero as a zero (a wrong CC_Z on small denormals).
+		amd64MOVQ_reg_xmm(cb, amd64RAX, xmm)
 		emitSetFPCondCodes64AMD64(cb)
 	}
 }
@@ -5229,14 +5298,27 @@ func emitDCMP_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 
 	emitDPairToXMMAMD64(cb, 0, ji.rs, amd64RAX)
 	emitDPairToXMMAMD64(cb, 1, ji.rt, amd64RDX)
+
+	// Seed EDX with the surviving sticky flags before branching. Every path
+	// below ORs its condition code into EDX and the tail stores EDX to FPSR, so
+	// this must dominate all of them: loading it on the greater-than path alone
+	// left the less-than and equal paths ORing into whatever
+	// emitDPairToXMMAMD64 had left in RDX, which is the rt operand's bits. Any
+	// rt whose low word is non-zero (fp64Max ends 0xFFFFFFFF) then wrote
+	// garbage over the whole of FPSR, sticky exception flags included.
+	//
+	// The AND writes flags, so it has to precede UCOMISD.
+	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
+	amd64MOV_reg_mem32(cb, amd64RDX, amd64R11, 68)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 0x0F)
+
 	amd64UCOMISD_rr(cb, 0, 1)
 
 	ltOff := amd64Jcc_rel32(cb, amd64CondB)
 	eqOff := amd64Jcc_rel32(cb, amd64CondE)
 
-	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffFPUPtr))
-	amd64MOV_reg_mem32(cb, amd64RDX, amd64R11, 68)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 0x0F)
+	// Greater than: no condition code. Non-finite operands bail before here, so
+	// IE64FPU.DCMP's +Inf CC_I rule cannot apply.
 	emitLoadImm32AMD64(cb, amd64RCX, 1)
 	done1Off := amd64JMP_rel32(cb)
 
@@ -5562,6 +5644,14 @@ func emitDSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 	patchRel32(cb, doneOff2, donePC)
 }
 
+// emitStoreDPairBitsAMD64 writes the 64 bits in srcReg to the D-pair based at
+// fpIdx (even slot = low 32, odd slot = high 32).
+//
+// Clobbers RAX and R11. srcReg itself is preserved unless it is RAX: the
+// high-word store shifts a copy in RAX, so a caller passing RAX gets back only
+// the high 32 bits. Callers that still need the full value afterwards must keep
+// it elsewhere (emitDLOAD_AMD64 holds it in RDX) or re-read it
+// (emitXMMToDPairAMD64 re-reads the vector register).
 func emitStoreDPairBitsAMD64(cb *CodeBuffer, srcReg byte, fpIdx byte) {
 	if xmm, ok := ie64FPResidentPairXMM(fpIdx); ok {
 		amd64MOVQ_xmm_reg(cb, xmm, srcReg) // low64(XMMr) = srcReg

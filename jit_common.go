@@ -7,6 +7,14 @@ import (
 	"unsafe"
 )
 
+// fp32AbsInf is |+Inf| in IEEE-754 binary32. Over sign-stripped bits:
+// x is infinite iff abs == fp32AbsInf, NaN iff abs > fp32AbsInf, and both
+// (that is, "special") iff abs >= fp32AbsInf. Zero iff abs == 0.
+//
+// Shared by the amd64 and arm64 FP32 sticky-flag classifiers, which must agree
+// with each other and with the interpreter on these boundaries.
+const fp32AbsInf = 0x7F800000
+
 // ie64AccessBytes returns the byte count for an IE64 size encoding
 // (B=1, W=2, L=4, Q=8). Used by size-aware high-address bail checks on
 // both AMD64 and ARM64.
