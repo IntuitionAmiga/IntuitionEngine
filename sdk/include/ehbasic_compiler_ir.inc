@@ -3,6 +3,24 @@
 IR_RECORD_BYTES       equ 64
 IR_OP_BLOCK           equ 1
 IR_OP_TOKEN           equ 2
+IR_OP_CONST           equ 3
+IR_OP_MOVE            equ 4
+IR_OP_ADD             equ 5
+IR_OP_SUB             equ 6
+IR_OP_MUL             equ 7
+IR_OP_CONVERT         equ 8
+IR_OP_TAG_CHECK       equ 9
+IR_OP_BRANCH          equ 10
+IR_OP_BRANCH_FALSE    equ 11
+IR_OP_BOUNDS_CHECK    equ 12
+IR_OP_ADDRESS         equ 13
+IR_OP_LOAD_SCALAR     equ 14
+IR_OP_STORE_SCALAR    equ 15
+IR_OP_FOR             equ 16
+IR_OP_NEXT            equ 17
+IR_OP_DEAD            equ 18
+
+IR_OP_MAX             equ IR_OP_DEAD
 
 IR_TYPE_UNKNOWN       equ 0
 IR_TYPE_I64           equ 1
@@ -18,6 +36,16 @@ IR_EFFECT_CONTROL     equ 4
 IR_EFFECT_FULL        equ 5
 
 IR_FLAG_ARENA_ONLY    equ 1
+IR_FLAG_REMOVED       equ 2
+IR_FLAG_CONSTANT      equ 4
+IR_FLAG_LOOP_INVARIANT equ 8
+IR_FLAG_BOUNDS_PROVEN equ 16
+IR_FLAG_RESIDENT      equ 32
+IR_FLAG_REACHABLE     equ 64
+
+; Operand/result packing for the compact record. IDs are unsigned 16-bit
+; compiler values: result in bits 0..15, lhs in 16..31 and rhs in 32..47.
+IR_VALUE_MASK         equ 0xFFFF
 
 ; The temporary compiler context is reserved in ie64.inc so its ownership is
 ; visible beside the legacy AOT state with which it must coexist. Records and
@@ -48,7 +76,7 @@ compiler_ir_init:
 compiler_ir_append:
     move.q  r6, #IR_OP_BLOCK
     blt     r9, r6, .cia_invalid
-    move.q  r6, #IR_OP_TOKEN
+    move.q  r6, #IR_OP_MAX
     bgt     r9, r6, .cia_invalid
     blt     r10, r0, .cia_invalid
     move.q  r6, #IR_TYPE_ADDRESS

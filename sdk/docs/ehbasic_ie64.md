@@ -79,7 +79,7 @@ Release builds always include `embed_basic`, so packaged Linux, Windows, and mac
 On startup, IE64 BASIC displays a banner and the `Ready` prompt:
 
 ```
-IE64 BASIC v3.8
+IE64 BASIC v3.9
 (c) Zayn Otley, 2024-2026
 Inspired by 68k EhBASIC by the late great Lee Davison (RIP)
 Ready

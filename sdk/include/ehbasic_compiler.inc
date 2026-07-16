@@ -145,14 +145,8 @@ compiler_parse_program:
 .cpp_read_token:
     load.b  r14, (r23)
     beqz    r14, .cpp_next_line
-    move.q  r7, r0
-    move.q  r1, #TK_LOAD
-    bne     r14, r1, .cpp_flags_ready
-    move.q  r7, #IR_FLAG_ARENA_ONLY
-.cpp_flags_ready:
+    jsr     compiler_classify_token
     move.q  r9, #IR_OP_TOKEN
-    move.q  r10, #IR_TYPE_UNKNOWN
-    move.q  r11, #IR_EFFECT_FULL
     move.q  r12, r22
     move.q  r13, r24
     move.q  r15, r0
@@ -161,6 +155,7 @@ compiler_parse_program:
     add.q   r23, r23, #1
     add.q   r24, r24, #1
     bra     .cpp_token
+
 .cpp_next_line:
     beqz    r21, .cpp_done
     ble     r21, r18, .cpp_malformed_line
@@ -185,6 +180,74 @@ compiler_parse_program:
     move.q  r9, r0
     move.q  r10, r0
     move.q  r8, #1
+    rts
+
+; Classify a live token for typed parsing. R14=token. Returns R10=type,
+; R11=effect and R7=flags while preserving R14.
+compiler_classify_token:
+    move.q  r10, #IR_TYPE_UNKNOWN
+    move.q  r11, #IR_EFFECT_FULL
+    move.q  r7, r0
+    move.q  r1, #TK_LOAD
+    bne     r14, r1, .cct_not_load
+    move.q  r7, #IR_FLAG_ARENA_ONLY
+    rts
+.cct_not_load:
+    move.q  r1, #TK_PLUS
+    blt     r14, r1, .cct_statements
+    move.q  r1, #TK_LT
+    bgt     r14, r1, .cct_functions
+    move.q  r11, #IR_EFFECT_NONE
+    rts
+.cct_functions:
+    move.q  r1, #TK_USR
+    beq     r14, r1, .cct_full
+    move.q  r1, #TK_PEEK
+    beq     r14, r1, .cct_ram
+    move.q  r1, #TK_RND
+    beq     r14, r1, .cct_basic
+    move.q  r1, #TK_MIDS
+    bgt     r14, r1, .cct_hardware
+    move.q  r11, #IR_EFFECT_BASIC
+    rts
+.cct_hardware:
+    move.q  r1, #TK_SCREEN
+    blt     r14, r1, .cct_statements
+    move.q  r11, #IR_EFFECT_MMIO
+    rts
+.cct_statements:
+    move.q  r1, #TK_LET
+    beq     r14, r1, .cct_basic
+    move.q  r1, #TK_DIM
+    beq     r14, r1, .cct_basic
+    move.q  r1, #TK_READ
+    beq     r14, r1, .cct_basic
+    move.q  r1, #TK_RESTORE
+    beq     r14, r1, .cct_basic
+    move.q  r1, #TK_GOTO
+    beq     r14, r1, .cct_control
+    move.q  r1, #TK_GOSUB
+    beq     r14, r1, .cct_control
+    move.q  r1, #TK_RETURN
+    beq     r14, r1, .cct_control
+    move.q  r1, #TK_IF
+    beq     r14, r1, .cct_control
+    move.q  r1, #TK_FOR
+    beq     r14, r1, .cct_control
+    move.q  r1, #TK_NEXT
+    beq     r14, r1, .cct_control
+    rts
+.cct_basic:
+    move.q  r11, #IR_EFFECT_BASIC
+    rts
+.cct_ram:
+    move.q  r11, #IR_EFFECT_RAM
+    rts
+.cct_full:
+    move.q  r11, #IR_EFFECT_FULL
+    rts
+.cct_control:
+    move.q  r11, #IR_EFFECT_CONTROL
     rts
 
 ; Validate target-specific availability across the completed IR.

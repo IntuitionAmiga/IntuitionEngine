@@ -586,7 +586,7 @@ func TestEhBASIC_Boot(t *testing.T) {
     bra     test_done
 
 banner_msg:
-    dc.b    "IE64 BASIC v3.8", 0
+    dc.b    "IE64 BASIC v3.9", 0
 
     align 8
 ready_msg:
@@ -600,7 +600,7 @@ test_done:`
 	h.runCycles(100_000)
 
 	out := h.readOutput()
-	if !strings.Contains(out, "IE64 BASIC v3.8") {
+	if !strings.Contains(out, "IE64 BASIC v3.9") {
 		t.Fatalf("boot: missing banner, got %q", out)
 	}
 	if !strings.Contains(out, "Ready") {
@@ -9963,7 +9963,7 @@ func startREPLOnHarness(t *testing.T, h *ehbasicTestHarness) (*ehbasicTestHarnes
 func TestREPL_BootBanner(t *testing.T) {
 	_, bootOutput := startREPL(t)
 
-	if !strings.Contains(bootOutput, "IE64 BASIC v3.8") {
+	if !strings.Contains(bootOutput, "IE64 BASIC v3.9") {
 		t.Fatalf("expected boot banner, got: %q", bootOutput)
 	}
 	if !strings.Contains(bootOutput, "Lee Davison") {
@@ -10407,7 +10407,7 @@ func TestLaunch_BasicImage_LoadAndRun(t *testing.T) {
 	// Run until boot banner + Ready prompt
 	output := h.runUntilPrompt()
 
-	if !strings.Contains(output, "IE64 BASIC v3.8") {
+	if !strings.Contains(output, "IE64 BASIC v3.9") {
 		t.Fatalf("expected boot banner from -basic-image load, got: %q", output)
 	}
 	if !strings.Contains(output, "Ready") {
@@ -10428,7 +10428,7 @@ func TestLaunch_BasicImage_FileLoad(t *testing.T) {
 	}
 
 	output := h.runUntilPrompt()
-	if !strings.Contains(output, "IE64 BASIC v3.8") {
+	if !strings.Contains(output, "IE64 BASIC v3.9") {
 		t.Fatalf("expected boot banner from file load, got: %q", output)
 	}
 }

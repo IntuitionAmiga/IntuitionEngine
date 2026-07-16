@@ -6715,7 +6715,7 @@ func TestREPL_PrebuiltBasicImageRunsResonanceAOT(t *testing.T) {
 	h.loadBytes(bin)
 
 	boot := h.runUntilPrompt()
-	if !strings.Contains(boot, "IE64 BASIC v3.8") {
+	if !strings.Contains(boot, "IE64 BASIC v3.9") {
 		t.Fatalf("prebuilt BASIC image banner mismatch: %q", boot)
 	}
 	if out := h.runCommand(`LOAD "resonance.bas"`); strings.Contains(out, "ERROR") {

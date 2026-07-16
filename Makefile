@@ -883,7 +883,7 @@ gen-aot-consttab:
 
 # Build with embedded EhBASIC BASIC interpreter
 .PHONY: basic
-BASIC_BANNER := IE64 BASIC v3.8
+BASIC_BANNER := IE64 BASIC v3.9
 aot-runtime-blob: ie64asm
 	@echo "Generating standalone COMPILE runtime blob..."
 	@$(GO) run ./tools/gen_runtime_blob

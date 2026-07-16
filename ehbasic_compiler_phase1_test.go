@@ -22,6 +22,9 @@ test_entry:
     halt
 
 include "ehbasic_compiler_ir.inc"
+include "ehbasic_compiler_optimise.inc"
+include "ehbasic_compiler_helpers.inc"
+include "ehbasic_compiler_lower.inc"
 include "ehbasic_compiler.inc"
 `, body)
 	dir := t.TempDir()

@@ -2880,7 +2880,7 @@ bps_str_bytes:
 ; ============================================================================
 
 repl_str_banner:
-    dc.b    "IE64 BASIC v3.8", 0x0D, 0x0A
+    dc.b    "IE64 BASIC v3.9", 0x0D, 0x0A
     dc.b    "(c) Zayn Otley, 2024-2026", 0x0D, 0x0A
     dc.b    "Inspired by 68k EhBASIC by the late great Lee Davison (RIP)", 0
     align 4
@@ -2992,5 +2992,8 @@ include "ehbasic_file_io.inc"
 include "ehbasic_hw_coproc.inc"
 include "ie64_fp.inc"
 include "ehbasic_compiler_ir.inc"
+include "ehbasic_compiler_optimise.inc"
+include "ehbasic_compiler_helpers.inc"
+include "ehbasic_compiler_lower.inc"
 include "ehbasic_compiler.inc"
 include "ehbasic_aot.inc"
