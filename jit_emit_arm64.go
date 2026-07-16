@@ -4916,10 +4916,16 @@ func emitBailToInterpreter(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blo
 // IE64 Region Compilation
 // ===========================================================================
 
-type ie64Region struct {
-	blocks   [][]JITInstr
-	blockPCs []uint64
-	entryPC  uint64
+func ie64NativeObservedRegion(observed *ie64ObservedRegion) *ie64Region {
+	if observed == nil {
+		return nil
+	}
+	r := &ie64Region{entryPC: observed.entryPC, observed: observed.blocks}
+	for i := range observed.blocks {
+		r.blockPCs = append(r.blockPCs, observed.blocks[i].pc)
+		r.blocks = append(r.blocks, observed.blocks[i].instrs)
+	}
+	return r
 }
 
 const (
@@ -5086,6 +5092,77 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 			ji := &block[i]
 			ie64CurrentLoopInstr = totalInstrCount + i
 			isLast := i == len(block)-1
+			if isLast && blockIndex < len(region.observed) && region.observed[blockIndex].kind == ie64ObservedIndirectJMP {
+				targetBlock, internal := pcToBlock[region.observed[blockIndex].predictedTarget]
+				if !internal || ji.opcode != OP_JMP || ji.rs == 0 {
+					return nil, errIE64ObservedInvalid
+				}
+				instrOffsets[i] = cb.Len()
+				rsReg := resolveReg(cb, ji.rs, 0)
+				emitLoadImm32(cb, 1, ji.imm32)
+				cb.Emit32(arm64SXTW(1, 1))
+				cb.Emit32(arm64ADD(arm64RegIE64PC, rsReg, 1))
+				emitLoadImm64(cb, 0, region.observed[blockIndex].predictedTarget)
+				cb.Emit32(arm64CMP(arm64RegIE64PC, 0))
+				matchOffset := cb.Len()
+				cb.Emit32(0)
+				emitStoreRetCount(cb, uint32(i+1), &br)
+				emitEpilogue(cb, br.written, br.used)
+				cb.PatchUint32(matchOffset, arm64Bcond(arm64CondEQ, int32(cb.Len()-matchOffset)))
+				if targetBlock <= blockIndex {
+					bodySize := uint32(totalInstrCount + i + 1 - instrCountAtBlock[targetBlock])
+					cb.Emit32(arm64ADD_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
+					cb.Emit32(arm64CMP_imm(arm64RegLoopCount, jitBudget))
+					budgetExitOffset := cb.Len()
+					cb.Emit32(0)
+					cb.Emit32(arm64B(int32(loopBodyLabels[targetBlock] - cb.Len())))
+					cb.PatchUint32(budgetExitOffset, arm64Bcond(arm64CondHS, int32(cb.Len()-budgetExitOffset)))
+					cb.Emit32(arm64SUB_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
+					emitPackedPCAndCount(cb, region.observed[blockIndex].predictedTarget, uint32(i+1), &br)
+					emitEpilogue(cb, br.written, br.used)
+				} else {
+					branchOffset := cb.Len()
+					cb.Emit32(0)
+					fixups = append(fixups, forwardFixup{branchOffset: branchOffset, targetBlock: targetBlock})
+				}
+				writtenSoFar |= instrWrittenRegs(ji)
+				continue
+			}
+			if isLast && blockIndex < len(region.observed) && region.observed[blockIndex].kind == ie64ObservedConditional {
+				targetBlock, internal := pcToBlock[region.observed[blockIndex].hotTarget]
+				cond, ok := ie64ARM64Cond(ji.opcode)
+				if !internal || !ok {
+					return nil, errIE64ObservedInvalid
+				}
+				instrOffsets[i] = cb.Len()
+				rsReg := resolveReg(cb, ji.rs, 0)
+				rtReg := resolveReg(cb, ji.rt, 1)
+				cb.Emit32(arm64CMP(rsReg, rtReg))
+				hotOffset := cb.Len()
+				cb.Emit32(0)
+				emitPackedPCAndCount(cb, region.observed[blockIndex].coldTarget, uint32(i+1), &br)
+				emitEpilogue(cb, writtenSoFar, br.used)
+				cb.PatchUint32(hotOffset, arm64Bcond(cond, int32(cb.Len()-hotOffset)))
+				emitMaterializeFPCCARM64(cb)
+				if targetBlock <= blockIndex {
+					bodySize := uint32(totalInstrCount + i + 1 - instrCountAtBlock[targetBlock])
+					cb.Emit32(arm64ADD_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
+					cb.Emit32(arm64CMP_imm(arm64RegLoopCount, jitBudget))
+					budgetExitOffset := cb.Len()
+					cb.Emit32(0)
+					cb.Emit32(arm64B(int32(loopBodyLabels[targetBlock] - cb.Len())))
+					cb.PatchUint32(budgetExitOffset, arm64Bcond(arm64CondHS, int32(cb.Len()-budgetExitOffset)))
+					cb.Emit32(arm64SUB_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))
+					emitPackedPCAndCount(cb, region.observed[blockIndex].hotTarget, uint32(i+1), &br)
+					emitEpilogue(cb, br.written, br.used)
+				} else {
+					branchOffset := cb.Len()
+					cb.Emit32(0)
+					fixups = append(fixups, forwardFixup{branchOffset: branchOffset, targetBlock: targetBlock})
+				}
+				writtenSoFar |= instrWrittenRegs(ji)
+				continue
+			}
 			if isLast && (ji.opcode == OP_BRA || ji.opcode == OP_JMP) {
 				instrPC := region.blockPCs[blockIndex] + uint64(ji.pcOffset)
 				if target, ok := ie64ResolveTerminatorTarget(ji.opcode, ji.rs, ji.imm32, instrPC); ok {
@@ -5163,3 +5240,25 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 }
 
 var errIE64RegionTooSmall = errors.New("ie64CompileRegion: region has fewer than 2 blocks")
+
+func ie64ARM64Cond(op byte) (byte, bool) {
+	switch op {
+	case OP_BEQ:
+		return arm64CondEQ, true
+	case OP_BNE:
+		return arm64CondNE, true
+	case OP_BLT:
+		return arm64CondLT, true
+	case OP_BGE:
+		return arm64CondGE, true
+	case OP_BGT:
+		return arm64CondGT, true
+	case OP_BLE:
+		return arm64CondLE, true
+	case OP_BHI:
+		return arm64CondHI, true
+	case OP_BLS:
+		return arm64CondLS, true
+	}
+	return 0, false
+}

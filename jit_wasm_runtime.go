@@ -33,14 +33,17 @@ import (
 // before a compile is enqueued. Compiles are asynchronous, so the threshold
 // only filters cold code; the interpreter keeps running regardless.
 const wasmJITHotThreshold = 8
+const wasmObservedPromotionThreshold = 64
 
 type wasmJITBlock struct {
-	fn     js.Value // exported "block" function
-	endPC  uint64   // first byte after the final compiled region member
-	ranges []wasmCodeRange
-	module js.Value // keeps the instance alive explicitly
-	slot   int      // chain-driver table slot
-	execs  uint64   // per-block execution counter (tests, stats)
+	fn              js.Value // exported "block" function
+	endPC           uint64   // first byte after the final compiled region member
+	ranges          []wasmCodeRange
+	module          js.Value // keeps the instance alive explicitly
+	slot            int      // chain-driver table slot
+	execs           uint64   // per-block execution counter (tests, stats)
+	observedTrigger bool
+	staticFallback  bool
 }
 
 type wasmJITRuntime struct {
@@ -103,7 +106,8 @@ type wasmJITRuntime struct {
 	// and their async install callbacks compare it on resolution: a compile
 	// submitted before an SMC invalidation must not install afterwards, or
 	// stale guest code would run.
-	gen uint64
+	gen      uint64
+	observed ie64ObservedRecorder
 }
 
 // wasmPendingCompile is an inFlight entry: the pending block's end and the
@@ -296,6 +300,9 @@ func (rt *wasmJITRuntime) peek(pc uint64) *wasmJITBlock {
 func (rt *wasmJITRuntime) tryBlock(pc uint64) bool {
 	blk := rt.peek(pc)
 	if blk == nil {
+		if rt.observed.active {
+			rt.finishObserved(true)
+		}
 		return false
 	}
 	rt.runBlock(blk)
@@ -355,7 +362,10 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 		return
 	}
 	blocks := []wasmRegionBlock{{pc: pc, instrs: instrs}}
-	if region := wasmFormRegion(cpu.memory, pc); len(region) > 1 {
+	staticRegion := wasmFormRegion(cpu.memory, pc)
+	blockEnd := pc + uint64(instrs[len(instrs)-1].pcOffset) + IE64_INSTR_SIZE
+	triggered := ie64ObservedTrigger(instrs, pc, blockEnd) != ie64ObservedNone
+	if region := staticRegion; !triggered && len(region) > 1 {
 		usable := true
 		if cpu.FPU == nil {
 			for _, block := range region {
@@ -438,11 +448,13 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 		slot := rt.nextSlot
 		rt.nextSlot++
 		rt.blocks[pc] = &wasmJITBlock{
-			fn:     fn,
-			endPC:  endPC,
-			ranges: ranges,
-			module: instance,
-			slot:   slot,
+			fn:              fn,
+			endPC:           endPC,
+			ranges:          ranges,
+			module:          instance,
+			slot:            slot,
+			observedTrigger: triggered,
+			staticFallback:  len(staticRegion) > 1,
 		}
 		if lenNow := rt.table.Get("length").Int(); slot >= lenNow {
 			rt.table.Call("grow", wasmJITTableInitial)
@@ -471,6 +483,96 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 		// enqueue-time page marks.
 		rt.rebuildCodePageBitmap()
 		wasmConsoleLog(fmt.Sprintf("IE64 wasm JIT: compile failed at %#x: %s", pc, args[0].Call("toString").String()))
+		return nil
+	})
+	global.Get("WebAssembly").Call("instantiate", u8, imports).Call("then", onOK, onErr)
+}
+
+func (rt *wasmJITRuntime) finishObserved(rejected bool) {
+	r := rt.observed
+	rt.observed.reset()
+	if rt.gen != r.generation {
+		return
+	}
+	old := rt.blocks[r.entryPC]
+	if old == nil {
+		return
+	}
+	var blocks []wasmRegionBlock
+	if !rejected {
+		scanned := make(map[uint64][]JITInstr, int(r.count))
+		for _, pc := range r.path() {
+			if blk := rt.blocks[pc]; blk == nil {
+				rejected = true
+				break
+			}
+			scanned[pc] = scanBlock(rt.cpu.memory, pc)
+		}
+		if !rejected {
+			if observed, err := ie64BuildObservedRegion(r.path(), scanned, uint64(len(rt.cpu.memory))); err == nil {
+				blocks = wasmObservedBlocks(observed)
+			} else {
+				rejected = true
+			}
+		}
+	}
+	if rejected && r.staticFallback {
+		blocks = wasmFormRegion(rt.cpu.memory, r.entryPC)
+	}
+	if len(blocks) < 2 {
+		return
+	}
+	rt.enqueuePromotion(r.entryPC, old, blocks, r.generation)
+}
+
+func (rt *wasmJITRuntime) enqueuePromotion(pc uint64, old *wasmJITBlock, blocks []wasmRegionBlock, generation uint64) {
+	modBytes, err := wasmCompileBlocks(blocks)
+	if err != nil {
+		return
+	}
+	ranges := wasmRegionCodeRanges(blocks)
+	last := blocks[len(blocks)-1]
+	endPC := last.pc + uint64(len(last.instrs))*IE64_INSTR_SIZE
+	global := js.Global()
+	u8 := global.Get("Uint8Array").New(len(modBytes))
+	js.CopyBytesToJS(u8, modBytes)
+	env := global.Get("Object").New()
+	env.Set("mem", rt.memObj)
+	imports := global.Get("Object").New()
+	imports.Set("env", env)
+	rt.compileSeq++
+	token := rt.compileSeq
+	rt.inFlight[pc] = wasmPendingCompile{endPC: endPC, token: token, ranges: ranges}
+	rt.markCodeRanges(ranges)
+	var onOK, onErr js.Func
+	release := func() { onOK.Release(); onErr.Release() }
+	onOK = js.FuncOf(func(this js.Value, args []js.Value) any {
+		defer release()
+		if !rt.claimInFlight(pc, token) {
+			return nil
+		}
+		if rt.gen != generation || rt.blocks[pc] != old {
+			rt.rebuildCodePageBitmap()
+			return nil
+		}
+		instance := args[0].Get("instance")
+		fn := instance.Get("exports").Get("block")
+		rt.unindexBlock(pc, old.ranges)
+		rt.cacheDrop(pc)
+		rt.blocks[pc] = &wasmJITBlock{fn: fn, endPC: endPC, ranges: ranges, module: instance, slot: old.slot, execs: old.execs}
+		rt.table.Call("set", old.slot, fn)
+		rt.cacheStore(pc, old.slot)
+		rt.rebuildCodePageBitmap()
+		rt.markCodeRanges(ranges)
+		rt.indexBlock(pc, ranges)
+		rt.compiles++
+		return nil
+	})
+	onErr = js.FuncOf(func(this js.Value, args []js.Value) any {
+		defer release()
+		if rt.claimInFlight(pc, token) {
+			rt.rebuildCodePageBitmap()
+		}
 		return nil
 	})
 	global.Get("WebAssembly").Call("instantiate", u8, imports).Call("then", onOK, onErr)
@@ -675,7 +777,10 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 	ctx.NeedIOFallback = 0
 	ctx.MMUEnabled = 0
 
-	if rt.driver.Truthy() {
+	recording := rt.observed.active
+	entryGen := rt.gen
+	direct := recording || blk.observedTrigger && blk.execs == wasmObservedPromotionThreshold-1
+	if rt.driver.Truthy() && !direct {
 		// Re-seat this block's pc cache entry: the cache is direct-mapped,
 		// so a later install whose PC collides on the same index evicts it.
 		// Without this the driver misses on its very first lookup, returns
@@ -688,6 +793,7 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 		rt.driver.Invoke(rt.ctxPtr)
 		rt.chainRuns++
 	} else {
+		ctx.ChainBudget = 0
 		blk.fn.Invoke(rt.ctxPtr)
 	}
 	blk.execs++
@@ -695,6 +801,7 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 
 	entryPC := cpu.PC
 	cpu.PC = ctx.RetPC
+	recordReject := ctx.NeedHelper != 0 || ctx.NeedIOFallback != 0 || ctx.NeedInval != 0 || cpu.PC >= uint64(len(cpu.memory))
 	executed := uint64(ctx.RetCount) + uint64(ctx.ChainCount)
 	if rt.diag && executed == 0 && ctx.RetPC == entryPC && ctx.NeedHelper == 0 && ctx.NeedInval == 0 {
 		rt.zeroProg++
@@ -732,6 +839,18 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 		ctx.InvalAddr = 0
 		ctx.InvalSize = 0
 		rt.invalidateRange(addr, size)
+	}
+	if direct {
+		if !recording {
+			rt.observed.start(entryPC, blk.staticFallback, entryGen)
+		}
+		done, rejected := false, recordReject
+		if !rejected {
+			done, rejected = rt.observed.appendSuccessor(cpu.PC)
+		}
+		if done || rejected {
+			rt.finishObserved(rejected)
+		}
 	}
 	cpu.InstructionCount += executed
 }

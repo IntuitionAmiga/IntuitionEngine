@@ -1272,10 +1272,16 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 // ie64Region is the compiled-region descriptor produced by ie64FormRegion.
 // blocks[i] is the pre-scanned instruction list for block i; blockPCs[i]
 // is the guest start PC of that block. entryPC == blockPCs[0].
-type ie64Region struct {
-	blocks   [][]JITInstr
-	blockPCs []uint64
-	entryPC  uint64
+func ie64NativeObservedRegion(observed *ie64ObservedRegion) *ie64Region {
+	if observed == nil {
+		return nil
+	}
+	r := &ie64Region{entryPC: observed.entryPC, observed: observed.blocks}
+	for i := range observed.blocks {
+		r.blockPCs = append(r.blockPCs, observed.blocks[i].pc)
+		r.blocks = append(r.blocks, observed.blocks[i].instrs)
+	}
+	return r
 }
 
 // ie64FormRegion is the cache-aware region builder consumed by the IE64
@@ -1487,12 +1493,13 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 	defer func() { ie64CurrentInstrCountBase = prevBase }()
 
 	totalInstrCount := 0
+	regionWrittenSoFar := uint32(0)
 	for bi, blk := range region.blocks {
 		blockLabels[bi] = cb.Len()
 		instrCountAtBlock[bi] = totalInstrCount
 		ie64CurrentInstrCountBase = uint32(totalInstrCount)
 		instrOffsets := make([]int, len(blk))
-		writtenSoFar := uint32(0)
+		writtenSoFar := regionWrittenSoFar
 		if regionLoopPlan != nil && region.blockPCs[bi] == regionLoopPlan.headPC && len(regionLoopPlan.accesses) != 0 {
 			saved := ie64CurrentInstrCountBase
 			ie64CurrentInstrCountBase = 0
@@ -1515,6 +1522,84 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 			ji := &blk[i]
 			ie64CurrentLoopInstr = totalInstrCount + i
 			isLast := i == len(blk)-1
+			if isLast && bi < len(region.observed) && region.observed[bi].kind == ie64ObservedIndirectJMP {
+				targetBI, in := pcToBlock[region.observed[bi].predictedTarget]
+				if !in || ji.opcode != OP_JMP || ji.rs == 0 {
+					return nil, errIE64ObservedInvalid
+				}
+				instrOffsets[i] = cb.Len()
+				rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
+				amd64MOV_reg_imm32(cb, amd64RCX, ji.imm32)
+				amd64MOVSXD(cb, amd64RCX, amd64RCX)
+				amd64MOV_reg_reg(cb, amd64RegIE64PC, rsReg)
+				amd64ALU_reg_reg(cb, 0x01, amd64RegIE64PC, amd64RCX)
+				emitLoadImm64AMD64(cb, amd64RAX, region.observed[bi].predictedTarget)
+				amd64ALU_reg_reg(cb, 0x39, amd64RegIE64PC, amd64RAX)
+				matchOff := amd64Jcc_rel32(cb, amd64CondE)
+				emitStoreRetCountAMD64(cb, uint32(i+1)+ie64CurrentInstrCountBase, &br)
+				emitEpilogue(cb, br.written, br.used)
+				patchRel32(cb, matchOff, cb.Len())
+				if targetBI <= bi {
+					bodySize := uint32(totalInstrCount + i + 1 - instrCountAtBlock[targetBI])
+					amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(amd64OffLoopCount))
+					amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(bodySize))
+					amd64MOV_mem_reg32(cb, amd64RSP, int32(amd64OffLoopCount), amd64RAX)
+					amd64ALU_reg_imm32_32bit(cb, 7, amd64RAX, int32(jitBudget))
+					budgetExitOff := amd64Jcc_rel32(cb, amd64CondAE)
+					backOff := amd64JMP_rel32(cb)
+					patchRel32(cb, backOff, loopBodyLabels[targetBI])
+					patchRel32(cb, budgetExitOff, cb.Len())
+					amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(amd64OffLoopCount))
+					amd64ALU_reg_imm32_32bit(cb, 5, amd64RAX, int32(bodySize))
+					amd64MOV_mem_reg32(cb, amd64RSP, int32(amd64OffLoopCount), amd64RAX)
+					emitPackedPCAndCount(cb, region.observed[bi].predictedTarget, uint32(i+1), &br)
+					emitEpilogue(cb, br.written, br.used)
+				} else {
+					jmpOff := amd64JMP_rel32(cb)
+					fwdFixups = append(fwdFixups, fwdFixup{jmpDispOff: jmpOff, targetBlock: targetBI})
+				}
+				writtenSoFar |= instrWrittenRegs(ji)
+				continue
+			}
+
+			if isLast && bi < len(region.observed) && region.observed[bi].kind == ie64ObservedConditional {
+				targetBI, in := pcToBlock[region.observed[bi].hotTarget]
+				cond, ok := ie64AMD64Cond(ji.opcode)
+				if !in || !ok {
+					return nil, errIE64ObservedInvalid
+				}
+				instrOffsets[i] = cb.Len()
+				rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
+				rtReg := resolveRegAMD64(cb, ji.rt, amd64RDX)
+				amd64ALU_reg_reg(cb, 0x39, rsReg, rtReg)
+				hotOff := amd64Jcc_rel32(cb, cond)
+				emitPackedPCAndCount(cb, region.observed[bi].coldTarget, uint32(i+1), &br)
+				emitEpilogue(cb, writtenSoFar, br.used)
+				patchRel32(cb, hotOff, cb.Len())
+				emitMaterializeFPCCAMD64(cb)
+				ie64PendingFPCC = ie64FPCCPending{}
+				if targetBI <= bi {
+					bodySize := uint32(totalInstrCount + i + 1 - instrCountAtBlock[targetBI])
+					amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(amd64OffLoopCount))
+					amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(bodySize))
+					amd64MOV_mem_reg32(cb, amd64RSP, int32(amd64OffLoopCount), amd64RAX)
+					amd64ALU_reg_imm32_32bit(cb, 7, amd64RAX, int32(jitBudget))
+					budgetExitOff := amd64Jcc_rel32(cb, amd64CondAE)
+					backOff := amd64JMP_rel32(cb)
+					patchRel32(cb, backOff, loopBodyLabels[targetBI])
+					patchRel32(cb, budgetExitOff, cb.Len())
+					amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(amd64OffLoopCount))
+					amd64ALU_reg_imm32_32bit(cb, 5, amd64RAX, int32(bodySize))
+					amd64MOV_mem_reg32(cb, amd64RSP, int32(amd64OffLoopCount), amd64RAX)
+					emitPackedPCAndCount(cb, region.observed[bi].hotTarget, uint32(i+1), &br)
+					emitEpilogue(cb, br.written, br.used)
+				} else {
+					jmpOff := amd64JMP_rel32(cb)
+					fwdFixups = append(fwdFixups, fwdFixup{jmpDispOff: jmpOff, targetBlock: targetBI})
+				}
+				writtenSoFar |= instrWrittenRegs(ji)
+				continue
+			}
 
 			// Intercept terminating BRA/JMP whose static target lands
 			// inside this region. Emit a direct JMP rel32 to the
@@ -1589,6 +1674,7 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 			emitMaterializeFPCCAMD64(cb)
 		}
 		ie64PendingFPCC = ie64FPCCPending{}
+		regionWrittenSoFar = writtenSoFar
 		totalInstrCount += len(blk)
 	}
 
@@ -1662,6 +1748,28 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 }
 
 var errIE64RegionTooSmall = errors.New("ie64CompileRegion: region has fewer than 2 blocks")
+
+func ie64AMD64Cond(op byte) (byte, bool) {
+	switch op {
+	case OP_BEQ:
+		return amd64CondE, true
+	case OP_BNE:
+		return amd64CondNE, true
+	case OP_BLT:
+		return amd64CondL, true
+	case OP_BGE:
+		return amd64CondGE, true
+	case OP_BGT:
+		return amd64CondG, true
+	case OP_BLE:
+		return amd64CondLE, true
+	case OP_BHI:
+		return amd64CondA, true
+	case OP_BLS:
+		return amd64CondBE, true
+	}
+	return 0, false
+}
 
 // emitInstruction emits x86-64 code for a single IE64 instruction.
 func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast bool, br *blockRegs, writtenSoFar uint32, instrIdx int, instrOffsets []int, pendingChains *[]ie64PendingChainSlot) {

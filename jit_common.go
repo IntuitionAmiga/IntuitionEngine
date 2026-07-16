@@ -1455,6 +1455,13 @@ func (cc *CodeCache) Invalidate() {
 	cc.dispatch.reset()
 }
 
+func (cc *CodeCache) Generation() uint64 {
+	if cc == nil {
+		return 0
+	}
+	return cc.generation
+}
+
 // InvalidateRange removes any blocks whose covered guest PC ranges
 // overlap [lo, hi). Region blocks may have multiple non-contiguous
 // covered ranges; iterating JITBlockCoveredRanges catches an SMC write

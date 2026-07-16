@@ -123,6 +123,47 @@ func TestWasmRegionBackEdgeDynamicExitCount(t *testing.T) {
 	}
 }
 
+func TestWasmObservedConditionalTakenAndColdExit(t *testing.T) {
+	program := make([]byte, 40)
+	putWasmRegionInstr(program, 0, OP_ADD, 1, 1, 2, 0)
+	putWasmRegionInstr(program, 8, OP_BEQ, 0, 3, 4, 24)
+	putWasmRegionInstr(program, 16, OP_ADD, 1, 1, 5, 0) // discarded tail
+	putWasmRegionInstr(program, 24, OP_ADD, 1, 1, 5, 0) // discarded tail
+	putWasmRegionInstr(program, 32, OP_ADD, 1, 1, 6, 0)
+	blocks := []wasmRegionBlock{
+		{pc: PROG_START, instrs: scanBlock(program, 0)[:2], kind: ie64ObservedConditional, hotTarget: PROG_START + 32, coldTarget: PROG_START + 16},
+		{pc: PROG_START + 32, instrs: []JITInstr{{opcode: OP_ADD, rd: 1, rs: 1, rt: 6}, {opcode: OP_BRA, pcOffset: 8, imm32: ^uint32(39)}}, hotTarget: PROG_START},
+	}
+	compile := func([]byte) ([]byte, error) { return wasmCompileBlocks(blocks) }
+	taken := runWasmDiffCompiled(t, program, map[int]uint64{2: 1, 3: 7, 4: 7, 5: 100, 6: 2}, nil, compile)
+	if taken.regs[1] != 3 || taken.retPC != PROG_START || taken.retCount != 4 {
+		t.Fatalf("taken=%+v", taken)
+	}
+	cold := runWasmDiffCompiled(t, program, map[int]uint64{2: 1, 3: 7, 4: 8, 5: 100, 6: 2}, nil, compile)
+	if cold.regs[1] != 1 || cold.retPC != PROG_START+16 || cold.retCount != 2 {
+		t.Fatalf("cold=%+v", cold)
+	}
+}
+
+func TestWasmObservedIndirectHitAndMismatch(t *testing.T) {
+	program := make([]byte, 24)
+	putWasmRegionInstr(program, 0, OP_JMP, 0, 3, 0, ^uint32(7))
+	putWasmRegionInstr(program, 16, OP_ADD, 1, 1, 2, 0)
+	blocks := []wasmRegionBlock{
+		{pc: PROG_START, instrs: []JITInstr{{opcode: OP_JMP, rs: 3, imm32: ^uint32(7)}}, kind: ie64ObservedIndirectJMP, hotTarget: PROG_START + 16, predictedTarget: PROG_START + 16},
+		{pc: PROG_START + 16, instrs: []JITInstr{{opcode: OP_ADD, rd: 1, rs: 1, rt: 2}, {opcode: OP_BRA, pcOffset: 8, imm32: ^uint32(23)}}, hotTarget: PROG_START},
+	}
+	compile := func([]byte) ([]byte, error) { return wasmCompileBlocks(blocks) }
+	hit := runWasmDiffCompiled(t, program, map[int]uint64{1: 1, 2: 2, 3: PROG_START + 24}, nil, compile)
+	if hit.regs[1] != 3 || hit.retPC != PROG_START {
+		t.Fatalf("hit=%+v", hit)
+	}
+	mismatch := runWasmDiffCompiled(t, program, map[int]uint64{1: 1, 2: 2, 3: 0x1_0000_0010}, nil, compile)
+	if mismatch.regs[1] != 1 || mismatch.retPC != 0x1_0000_0008 || mismatch.retCount != 1 {
+		t.Fatalf("mismatch=%+v", mismatch)
+	}
+}
+
 func TestWasmFPSRCCLivenessElidesOverwrittenNonFaultingUpdate(t *testing.T) {
 	instrs := []JITInstr{
 		{opcode: OP_DADD, rd: 2, rs: 2, rt: 4},

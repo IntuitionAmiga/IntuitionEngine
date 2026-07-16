@@ -320,11 +320,12 @@ type CPU64 struct {
 	execActive bool
 
 	// JIT compiler state (populated only when JIT is enabled)
-	jitEnabled bool
-	jitPersist bool // when true, freeJIT() is a no-op (used by benchmarks)
-	jitCache   *CodeCache
-	jitExecMem any // *ExecMem — uses any to avoid build tag dependency
-	jitCtx     *JITContext
+	jitEnabled     bool
+	jitPersist     bool // when true, freeJIT() is a no-op (used by benchmarks)
+	jitCache       *CodeCache
+	jitExecMem     any // *ExecMem — uses any to avoid build tag dependency
+	jitCtx         *JITContext
+	observedRegion ie64ObservedRecorder
 	// jitCodePageBitmap marks 256-byte guest pages that contain compiled IE64
 	// code. Native stores probe it to detect self-modifying writes without a
 	// Go-side map lookup on every RAM store.

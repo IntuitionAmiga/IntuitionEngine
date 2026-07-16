@@ -14,7 +14,7 @@ make wasm              # build intuitionengine.com/demo/ie.wasm (+ wasm_exec.js)
 make wasm-deploy       # build, then netlify deploy --prod on success
 make wasm-profile      # profiling build: keeps symbol names for devtools; do not deploy
 make test-wasm-build   # build gate: package compiles and links for js/wasm
-make web-demos         # restage the assets disk volume and its MANIFEST
+make web-demos         # rebuild the assets MANIFEST and restage demos when their source tree exists
 ```
 
 `make x64-live` also rebuilds the wasm demo, so a live-image build never
@@ -27,10 +27,12 @@ should touch production.
 installed (non-fatal if absent or incompatible). The artefact lands in
 `intuitionengine.com/demo/` alongside `index.html`, the loader page.
 
-`web-demos` mirrors the IESHARE `Demos/` tree (built by `make x64-live-demos`)
-into `intuitionengine.com/assets/Demos/`, copies `sdk/examples/basic` and
-`sdk/examples/assets` under `assets/sdk/examples/`, and writes a recursive
-`assets/MANIFEST` of relative paths. That assets folder is the disk volume the
+Run `make x64-live-demos` before `web-demos` when the browser demo set must be
+refreshed. If that staged IESHARE `Demos/` tree exists, `web-demos` mirrors it
+into `intuitionengine.com/assets/Demos/`. If it is absent, the target warns and
+keeps any existing browser demos. It also copies `sdk/examples/basic` and
+`sdk/examples/assets` under `assets/sdk/examples/`, then writes a recursive
+`assets/MANIFEST` of relative paths. Manifest entries form the disk volume the
 browser machine sees.
 
 ## Running
@@ -53,11 +55,12 @@ resulting module is not retained or passed to the demo page. This warming step
 is intended to populate the browser's HTTP and compiled-code caches before the
 demo opens. The demo page fetches `ie.wasm` normally and passes the response
 directly to `instantiateStreaming`. Both pages unregister the obsolete demo
-service worker where possible and remove its old CacheStorage entry when
-available. Cleanup failures do not stop the page from loading. A page that is
-still controlled by that worker may use it for one final fetch; the demo page
-detects this case and reloads after the cleanup. Cache reuse and the resulting
-start-up time remain browser-dependent.
+service worker where possible. The main page also removes its old CacheStorage
+entry. The demo page removes that entry when it finds a service-worker
+registration. Cleanup failures do not stop the page from loading. A page that
+is still controlled by that worker may use it for one final fetch; the demo
+page detects this case and reloads after the cleanup. Cache reuse and the
+resulting start-up time remain browser-dependent.
 
 ## What is different from native
 
@@ -68,6 +71,15 @@ start-up time remain browser-dependent.
   `/demo/?jit=0` disables it. The complete backend, helper, region, SMC,
   instruction-coverage and diagnostic contract is documented in
   [`IE64_JIT.md`](IE64_JIT.md).
+- **Observed promotion records direct invocation results.** For an eligible
+  conditional or register-indirect entry, invocation 64 bypasses the chain
+  driver and records the resulting successor. Later recording calls also
+  invoke the installed function directly rather than using the chain driver.
+  The triggered entry is initially compiled as one block, but a later
+  successor may already be a static multi-block region. A missing successor
+  rejects recording and rebuilds any static fallback. Asynchronous replacement
+  checks the invalidation generation and original entry identity, reuses the
+  existing function-table slot, and replaces the SMC ranges and PC-cache entry.
 - **VBlank remains observable to a parked poll.** The js build holds the VBlank
   status bit readable for a few milliseconds after each set edge
   (`videoVBlankHoldNs`). The compositor can otherwise set and clear VBlank in
@@ -82,20 +94,22 @@ start-up time remain browser-dependent.
   (`ehbasicMinRequiredRAM`).
 - **Cooperative yield.** Wasm has one cooperatively scheduled thread and no
   async preemption, so a tight interpreter loop would starve the JS event
-  loop: no requestAnimationFrame, no rendering, no keyboard events. Every CPU
-  interpreter loop calls `hostCooperativeYield()` (`cpu_yield_wasm.go`)
-  periodically (the JIT dispatcher every 64 dispatch iterations, since one
-  iteration there can be a whole chained run). After each guest slice
-  (default 16 ms, one display frame) the CPU goroutine parks until the
-  browser's next
-  requestAnimationFrame, resuming through a zero-delay timeout so the paint
-  happens first; a 50 ms timeout races the frame so hidden tabs (where rAF
-  stops) keep executing. Fixed-duration sleeps are not used by default: an
+  loop: no requestAnimationFrame, no rendering, no keyboard events. The IE64,
+  IE32, M68K, Z80 and 6502 interpreter loops call `hostCooperativeYield()`
+  (`cpu_yield_wasm.go`) periodically. The IE64 JIT dispatcher checks every 64
+  dispatch iterations, since one iteration there can be a whole chained run.
+  The browser x86 interpreter does not yet call this hook. On the yielding
+  paths, after each guest slice (default 16 ms, one display frame) the CPU
+  goroutine parks until the browser's next requestAnimationFrame, resuming
+  through a zero-delay timeout so the paint happens first; a 50 ms timeout
+  races the frame so hidden tabs (where rAF stops) keep executing.
+  Fixed-duration sleeps are not used by default: an
   expired Go timer callback often runs before the same turn's rendering
   step, so the guest re-blocks the thread and frames are skipped. The guest
   slice is overridable with `IE_WASM_YIELD_MS` (`/demo/?yield=N`), and
   `IE_WASM_YIELD_SLEEP_MS` (`/demo/?ysleep=N`) forces the legacy fixed-sleep
-  mode for A/B measurement.
+  mode for A/B measurement. Both values must be whole milliseconds from 1 to
+  1000; invalid values use the default.
 - **In-memory disk volume.** There is no host filesystem. The FileIO and
   BootstrapHostFS devices run against in-memory stores (`file_io_mem.go`,
   `bootstrap_hostfs_mem.go`). At boot the machine fetches `assets/MANIFEST`
@@ -105,7 +119,9 @@ start-up time remain browser-dependent.
   anywhere in the tree, so `RUN "iedoom.ie68"` finds `Demos/m68k/iedoom.ie68`.
   `SAVE` writes back into the in-memory volume for the life of the tab. The
   demo page can also import a visitor's file into that volume and export a
-  saved file as a download.
+  saved file as a download. One selection accepts at most 64 files, 64 MiB per
+  file and 128 MiB in total. The Go bridge also enforces the 64 MiB per-file
+  limit.
 - **Machine loading reads are indirected.** The Program Executor, machine
   loader, media loader and CPU flat-binary loaders use
   `hostReadFile`/`hostStatExists` (`file_read_native.go`,
@@ -152,9 +168,10 @@ VM. Hot IE64 code can use the wasm JIT; the other CPUs remain interpreted.
 
 - `/demo/?trace=1` sets `IE_TRACE_HOSTIO=1` in the Go environment, tracing
   FileIO, HostFS and media loader activity to the browser console.
-- `/demo/?yield=N` overrides the cooperative-yield interval in milliseconds.
+- `/demo/?yield=N` overrides the cooperative-yield interval with an integer
+  from 1 to 1000 milliseconds.
 - `/demo/?ysleep=N` forces fixed-duration cooperative yielding with an `N`
-  millisecond sleep for comparison testing.
+  millisecond sleep for comparison testing, where `N` is from 1 to 1000.
 - `/demo/?jitdiag=1` sets `IE64_WASM_JIT_DIAG=1`, publishing wasm JIT state to
   `globalThis.__ieJITDiag` and logging throttled dispatcher diagnostics.
 - `make wasm-profile` builds without symbol stripping so the devtools
@@ -169,6 +186,9 @@ VM. Hot IE64 code can use the wasm JIT; the other CPUs remain interpreted.
   changed.
 - Guest CPU speed: IE64 tiers up through the wasm JIT; IE32, M68K, Z80, 6502
   and x86 are interpreter-only in the browser.
+- The browser x86 interpreter does not call the cooperative-yield hook. A tight
+  x86 workload can therefore block rendering and input until it stops or
+  halts.
 - The IE64 wasm JIT has a deliberately narrower instruction surface than the
   native backends. Its exact coverage and fallback rules are documented in
   [`IE64_JIT.md`](IE64_JIT.md).

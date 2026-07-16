@@ -506,6 +506,12 @@ flowchart LR
   MMU region promotion remains opt-in through `IE64_JIT_REGION_MMU=1`. The
   browser backend emits the same bounded region shape as one structured wasm
   function and keeps exact disjoint code ranges for SMC invalidation.
+  MMU-off low-memory entries with an external conditional or register-indirect
+  jump can instead record the executed path one block at a time. Accepted paths
+  reuse the region compiler. Rejected paths rebuild any valid static fallback
+  after checking the invalidation generation. Conditional predecessors are
+  truncated after the hot branch and retain a cold side exit to the discarded
+  fall-through tail.
 - **IE64 loop specialisations** - invariant-address memory prechecks
   and bounded immediate-counter budget elision were implemented and tested for
   native blocks, native regions and structured wasm loops. Their conservative

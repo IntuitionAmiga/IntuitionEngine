@@ -236,8 +236,23 @@ const (
 )
 
 type wasmRegionBlock struct {
-	pc     uint64
-	instrs []JITInstr
+	pc              uint64
+	instrs          []JITInstr
+	kind            ie64ObservedTriggerKind
+	hotTarget       uint64
+	coldTarget      uint64
+	predictedTarget uint64
+}
+
+func wasmObservedBlocks(region *ie64ObservedRegion) []wasmRegionBlock {
+	if region == nil {
+		return nil
+	}
+	blocks := make([]wasmRegionBlock, 0, len(region.blocks))
+	for _, b := range region.blocks {
+		blocks = append(blocks, wasmRegionBlock{pc: b.pc, instrs: b.instrs, kind: b.kind, hotTarget: b.hotTarget, coldTarget: b.coldTarget, predictedTarget: b.predictedTarget})
+	}
+	return blocks
 }
 
 // wasmFormRegion follows statically resolved BRA edges. Forward edges add new
@@ -426,7 +441,15 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 	if len(blocks) > 1 {
 		lastBlock := &blocks[len(blocks)-1]
 		last := &lastBlock.instrs[len(lastBlock.instrs)-1]
-		if last.opcode == OP_BRA {
+		if lastBlock.kind != ie64ObservedNone {
+			target := lastBlock.hotTarget
+			for i := range blocks {
+				if blocks[i].pc == target {
+					loopBlockIdx, e.retCountLocal = i, retCountLocal
+					break
+				}
+			}
+		} else if last.opcode == OP_BRA {
 			instrPC := lastBlock.pc + uint64(last.pcOffset)
 			target := uint64(int64(instrPC) + int64(int32(last.imm32)))
 			for i := range blocks {
@@ -448,6 +471,8 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 		internalForward := blockIdx+1 < len(blocks) && target == blocks[blockIdx+1].pc
 		internalBack := blockIdx == len(blocks)-1 && loopBlockIdx >= 0 && target == blocks[loopBlockIdx].pc
 		if last.opcode == OP_BRA && (internalForward || internalBack) {
+			livenessInstrs[flatIdx+len(block.instrs)-1].opcode = OP_NOP64
+		} else if block.kind != ie64ObservedNone {
 			livenessInstrs[flatIdx+len(block.instrs)-1].opcode = OP_NOP64
 		}
 		flatIdx += len(block.instrs)
@@ -477,6 +502,51 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 				e.b.loop()
 			}
 			instrPC := block.pc + uint64(ins.pcOffset)
+			observedEdge := i == len(block.instrs)-1 && block.kind != ie64ObservedNone
+			if observedEdge {
+				if block.kind == ie64ObservedConditional {
+					e.emitObservedCondition(ins)
+					e.b.op(wasmOpI32Eqz)
+					e.b.ifVoid()
+					e.exit(block.coldTarget, idx+1)
+					e.b.op(wasmOpReturn)
+					e.b.end()
+				} else {
+					e.loadReg(ins.rs)
+					e.b.i64Const(int64(int32(ins.imm32)))
+					e.b.op(wasmOpI64Add)
+					e.b.localSet(wasmLocT0)
+					e.b.localGet(wasmLocT0)
+					e.b.i64Const(int64(block.predictedTarget))
+					e.b.op(wasmOpI64Ne)
+					e.b.ifVoid()
+					e.exitDyn(wasmLocT0, idx+1)
+					e.b.op(wasmOpReturn)
+					e.b.end()
+				}
+				if blockIdx == len(blocks)-1 && loopBlockIdx >= 0 {
+					e.b.localGet(wasmLocCtx)
+					e.b.i32Load(2, jitCtxOffChainBudget)
+					e.b.op(wasmOpI32Eqz)
+					e.b.ifVoid()
+					e.exit(blocks[loopBlockIdx].pc, idx+1)
+					e.b.op(wasmOpReturn)
+					e.b.end()
+					e.b.localGet(wasmLocCtx)
+					e.b.localGet(wasmLocCtx)
+					e.b.i32Load(2, jitCtxOffChainBudget)
+					e.b.i32Const(1)
+					e.b.op(wasmOpI32Sub)
+					e.b.i32Store(2, jitCtxOffChainBudget)
+					e.b.localGet(retCountLocal)
+					e.b.i32Const(int32(idx + 1 - uint32(flatBlockStart(blocks, loopBlockIdx))))
+					e.b.op(wasmOpI32Add)
+					e.b.localSet(retCountLocal)
+					e.b.br(0)
+				}
+				idx++
+				continue
+			}
 			internalBRA := i == len(block.instrs)-1 && ins.opcode == OP_BRA && blockIdx+1 < len(blocks) &&
 				uint64(int64(instrPC)+int64(int32(ins.imm32))) == blocks[blockIdx+1].pc
 			if internalBRA {
@@ -544,6 +614,29 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 	fn := m.addFunc(typ, locals, e.b.code)
 	m.exportFunc("block", fn)
 	return m.build(), nil
+}
+
+func (e *wasmBlockEmitter) emitObservedCondition(ins *JITInstr) {
+	e.loadReg(ins.rs)
+	e.loadReg(ins.rt)
+	switch ins.opcode {
+	case OP_BEQ:
+		e.b.op(wasmOpI64Eq)
+	case OP_BNE:
+		e.b.op(wasmOpI64Ne)
+	case OP_BLT:
+		e.b.op(wasmOpI64LtS)
+	case OP_BGE:
+		e.b.op(wasmOpI64GeS)
+	case OP_BGT:
+		e.b.op(wasmOpI64GtS)
+	case OP_BLE:
+		e.b.op(wasmOpI64LeS)
+	case OP_BHI:
+		e.b.op(wasmOpI64GtU)
+	case OP_BLS:
+		e.b.op(wasmOpI64LeU)
+	}
 }
 
 func flatBlockStart(blocks []wasmRegionBlock, blockIdx int) int {

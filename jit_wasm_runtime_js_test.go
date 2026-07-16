@@ -170,6 +170,93 @@ func TestWasmJIT_Node_ForwardRegionParity(t *testing.T) {
 	}
 }
 
+func TestWasmJIT_Node_ObservedConditionalPromotionReusesSlot(t *testing.T) {
+	program := make([]byte, 0x218)
+	copy(program[0x000:], ie64Instr(OP_BEQ, 0, 0, 0, 3, 4, 0x200))
+	copy(program[0x008:], ie64Instr(OP_JMP, 0, 0, 0, 0, 0, uint32(PROG_START+0x210)))
+	copy(program[0x200:], ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 1))
+	copy(program[0x208:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, ^uint32(0x207)))
+	copy(program[0x210:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	rt.enqueueCompile(PROG_START)
+	rt.enqueueCompile(PROG_START + 0x200)
+	if !waitForInstall(rt, PROG_START) || !waitForInstall(rt, PROG_START+0x200) {
+		t.Fatal("recording blocks did not install")
+	}
+	entry := rt.blocks[PROG_START]
+	if !entry.observedTrigger {
+		t.Fatal("external conditional was not marked for observed promotion")
+	}
+	oldSlot := entry.slot
+	cpu.regs[3], cpu.regs[4] = 7, 7
+	for entry.execs < wasmObservedPromotionThreshold {
+		cpu.PC = PROG_START
+		rt.runBlock(entry)
+	}
+	if !rt.observed.active || cpu.PC != PROG_START+0x200 {
+		t.Fatalf("threshold did not seed recording: active=%v PC=%#x", rt.observed.active, cpu.PC)
+	}
+	rt.runBlock(rt.blocks[PROG_START+0x200])
+	for i := 0; i < 400 && rt.blocks[PROG_START] == entry; i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	promoted := rt.blocks[PROG_START]
+	if promoted == entry {
+		t.Fatal("observed conditional region did not replace entry")
+	}
+	if promoted.slot != oldSlot {
+		t.Fatalf("promotion allocated slot %d, want reused %d", promoted.slot, oldSlot)
+	}
+	cpu.regs[3], cpu.regs[4], cpu.PC = 1, 2, PROG_START
+	rt.runBlock(promoted)
+	if cpu.PC != PROG_START+8 {
+		t.Fatalf("cold side exit PC=%#x, want %#x", cpu.PC, uint64(PROG_START+8))
+	}
+}
+
+func TestWasmJIT_Node_ObservedIndirectHitAndMiss(t *testing.T) {
+	program := make([]byte, 0x210)
+	copy(program[0x000:], ie64Instr(OP_JMP, 0, 0, 0, 3, 0, ^uint32(7)))
+	copy(program[0x200:], ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 1))
+	copy(program[0x208:], ie64Instr(OP_BRA, 0, 0, 0, 0, 0, ^uint32(0x207)))
+	cpu := newWasmNodeMachine(t, program)
+	rt := newWasmJITRuntime(cpu)
+	if rt == nil {
+		t.Fatal("runtime unavailable")
+	}
+	rt.enqueueCompile(PROG_START)
+	if !waitForInstall(rt, PROG_START) {
+		t.Fatal("entry did not install")
+	}
+	old := rt.blocks[PROG_START]
+	blocks := []wasmRegionBlock{
+		{pc: PROG_START, instrs: []JITInstr{{opcode: OP_JMP, rs: 3, imm32: ^uint32(7)}}, kind: ie64ObservedIndirectJMP, hotTarget: PROG_START + 0x200, predictedTarget: PROG_START + 0x200},
+		{pc: PROG_START + 0x200, instrs: []JITInstr{{opcode: OP_ADD, rd: 1, rs: 1, rt: 2, size: IE64_SIZE_Q}, {opcode: OP_BRA, pcOffset: 8, imm32: ^uint32(0x207)}}},
+	}
+	rt.enqueuePromotion(PROG_START, old, blocks, rt.gen)
+	for i := 0; i < 400 && rt.blocks[PROG_START] == old; i++ {
+		time.Sleep(5 * time.Millisecond)
+	}
+	promoted := rt.blocks[PROG_START]
+	if promoted == old {
+		t.Fatal("indirect observed region did not install")
+	}
+	cpu.PC, cpu.regs[2], cpu.regs[3] = PROG_START, 1, PROG_START+0x208
+	rt.runBlock(promoted)
+	if cpu.PC != PROG_START || cpu.regs[1] == 0 {
+		t.Fatalf("hit PC=%#x R1=%d", cpu.PC, cpu.regs[1])
+	}
+	cpu.PC, cpu.regs[3] = PROG_START, 0x1_0000_0010
+	rt.runBlock(promoted)
+	if cpu.PC != 0x1_0000_0008 {
+		t.Fatalf("mismatch PC=%#x", cpu.PC)
+	}
+}
+
 func TestWasmJIT_Node_ForwardRegionRejectsSharedPageGap(t *testing.T) {
 	program := make([]byte, 0x38)
 	copy(program[0x00:], ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 3))

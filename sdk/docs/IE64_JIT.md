@@ -29,7 +29,7 @@ loops, changing pointers and stack accesses retain the established checks.
 
 The IE64 JIT compiler translates blocks of IE64 machine code into native ARM64 or x86-64 instructions at runtime, executing them directly on the host CPU. This bypasses the Go interpreter loop and yields significant performance improvements for compute-heavy workloads.
 
-The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64`; there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the full contract). `DLOAD`/`DSTORE` use native low-window fast paths and helper exits for MMU/high/MMIO cases. FP64 transcendentals (`DSIN` through `DPOW`) compile to a helper-exit path that calls the same FPU methods as the interpreter, writes FP register pairs and FPSR, and resumes at the next PC. The remaining interpreter fallbacks are: atomics outside aligned non-MMU low-window RAM, fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` for `emitBailToInterpreter`), MMU/privilege opcodes, FP32 transcendentals, the double-precision arithmetic/conversion opcodes neither backend emits (see "Category D: Double precision" below; amd64 and arm64 both emit the FP64 core natively and bail only for `DMOD`/`DABS`/`DNEG`/`DSQRT`/`FCVTSD`/`FCVTDS`), and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`). The high-PC stack-op restriction prevents the fused raw stack path from indexing beyond `cpu.memory[]` when SP is high. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)`; all full-machine modes, including the IE64 family, cap it at the full 32-bit range (`busMemMaxBytes`), clamped on non-mmap hosts. Addresses above it cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
+The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64`; there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the full contract). `DLOAD`/`DSTORE` use native low-window fast paths and helper exits for MMU/high/MMIO cases. FP64 transcendentals (`DSIN` through `DPOW`) compile to a helper-exit path that calls the same FPU methods as the interpreter, writes FP register pairs and FPSR, and resumes at the next PC. The remaining interpreter fallbacks are: atomics outside aligned non-MMU low-window RAM, fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` for `emitBailToInterpreter`), MMU/privilege opcodes, FP32 transcendentals, the double-precision arithmetic/conversion opcodes neither backend emits (see "Category D: Double precision" below; amd64 and arm64 both emit the FP64 core natively and bail only for `DMOD`/`DABS`/`DNEG`/`DSQRT`/`FCVTSD`/`FCVTDS`), and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`). The high-PC stack-op restriction prevents the fused raw stack path from indexing beyond `cpu.memory[]` when SP is high. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)`. IE64-family modes cap this window at `busMemMaxBytes`, which is `0xFFFF0000`, rather than the complete 32-bit address range. The excluded top 64 KiB begins the M68K sign-extended alias window. Non-mmap hosts may clamp the window further. Addresses above the low window cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
 
 **Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64/Linux, x86-64/macOS, x86-64/Windows (x86-64 requires SSE4.1; release builds target x86-64-v3)
 
@@ -52,7 +52,7 @@ IE64 Machine Code (at PROG_START)
   compileBlock()          jit_emit_{arch}.go   Platform-specific code emission
         |
         v
-  ExecMem.Write()         jit_mmap.go      Copy via RW view + icache flush on RX view (W^X)
+  ExecMem.Write()         jit_mmap_*.go    Copy code into the platform executable-memory mapping
         |
         v
   CodeCache.Put()         jit_common.go    Cache by dispatcher key for O(1) lookup
@@ -64,7 +64,10 @@ IE64 Machine Code (at PROG_START)
   Dispatcher read         jit_exec.go      Read RetPC (uint64) + RetCount from JITContext
 ```
 
-### File Inventory
+### Selected File Inventory
+
+This table lists the main entry points and platform files. It is not an
+exhaustive list of JIT source files.
 
 | File | Build Tag | Purpose |
 |------|-----------|---------|
@@ -102,6 +105,11 @@ IE64 Machine Code (at PROG_START)
 | `jit_chain_ordering.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Advisory chain-slot ordering invariant for AMD64 backends |
 | `jit_ie64_region_policy.go` | `amd64 && (linux \|\| windows \|\| darwin)` | IE64 region-tier policy, statistics, and planning metadata |
 | `jit_ie64_region_policy_stub.go` | non-amd64 | Linux ARM64 region policy and inactive stubs for unsupported hosts |
+| `jit_ie64_observed_region.go` | (none) | Observed conditional and register-indirect path recording and validation |
+| `jit_ie64_loop_analysis.go` | (none) | Invariant-memory and bounded-counter loop analysis |
+| `jit_ie64_fpsr_liveness.go` | `(amd64 \|\| arm64) && (linux \|\| windows \|\| darwin)` | Native FPSR condition-code liveness analysis |
+| `jit_ie64_fpu_residency.go` | (none) | FP32 and FP64 residency planning and eligibility |
+| `jit_helper_resume_common.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Native helper continuation policy |
 | `jit_mmio_poll_common.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Shared MMIO-poll loop matcher |
 | `jit_mmio_poll_backends.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Per-backend MMIO-poll pattern descriptors, including IE64 |
 | `jit_mmio_poll_wiring.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Runtime MMIO-poll predicate wiring from each CPU/bus |
@@ -194,7 +202,12 @@ On AMD64 only, the scanner may replace a small register-only JSR leaf with fused
 
 ### Register Liveness
 
-`analyzeBlockRegs()` computes bitmasks of which IE64 registers are read and written by the block. This minimises prologue and epilogue overhead by loading only registers the block reads and storing only registers it writes.
+`analyzeBlockRegs()` computes bitmasks of which IE64 registers are read and
+written by the block. ARM64 uses the combined read/write mask to load and
+preserve only mapped registers used by the block, while loading SP
+unconditionally. AMD64 loads every resident Tier 1 or region register and SP
+unconditionally. Both backends use the write mask to limit normal exit
+writeback, widened where loops or cumulative region state require it.
 
 ### CodeBuffer
 
@@ -342,6 +355,22 @@ MMU regions when `IE64_JIT_REGION_MMU=1`. Region formation follows static BRA
 and JMP successors, with limits of 8 blocks and 512 guest instructions. Other
 ARM64 operating systems retain the single-block tier.
 
+For MMU-off low-memory code, a hot entry with a conditional branch to a target
+outside its Tier 1 block records the executed block path. Recording runs one
+compiled block at a time, accepts between two and eight distinct blocks, and
+stops on loop closure. The recorded predecessor ends immediately after the
+conditional. Its taken edge enters the recorded successor while the untaken
+edge exits to the following instruction, so the discarded cold tail remains
+available to ordinary dispatch. A valid static region is rebuilt and installed
+if recording is rejected and no invalidation occurred.
+
+An entry ending in `JMP rs, displacement`, where `rs` is not R0, uses the same
+recording path. The region compares the computed target with the single
+recorded target. A match keeps resident GPR state live across the internal
+edge. Eligible FP state also remains resident when `IE64_JIT_FP_RESIDENCY=1`;
+otherwise the FP register file remains memory-backed. A mismatch uses the
+normal dynamic-jump exit with the computed 64-bit PC and exact retired count.
+
 ---
 
 ## x86-64 Backend
@@ -399,6 +428,10 @@ No flush needed. x86-64 guarantees instruction cache coherency.
 
 Region formation uses `ScanRegionIE64()` and `ie64FormRegion()` to collect two or more statically-linked blocks within `IE64RegionProfile` limits (up to 8 blocks and 512 guest instructions). `ie64CompileRegion()` emits a single native block, preserves the normal chain-exit path for targets outside the region, and emits direct in-region jumps for BRA/JMP targets inside the region. Non-MMU promotion is enabled by default. When the MMU is active, `IE64_JIT_REGION_MMU=1` enables the page-bounded `ie64FormRegionMMU()` path.
 
+Observed conditional and register-indirect paths use the same compiler,
+residency plans, loop budget and external exits. Static BRA and `JMP R0`
+formation is unchanged.
+
 ---
 
 ## wasm Backend
@@ -423,6 +456,13 @@ across internal edges. FPSR condition-code liveness is analysed across the
 whole region. Helper, SMC, external-branch and budget exits commit dirty state
 and the dynamic retired count.
 
+Triggered entries initially remain single-block functions. Invocation 64 and
+each later recording step bypass the chain driver to expose one immediate
+successor. Promotion is submitted asynchronously. Installation checks the
+invalidation generation and the original entry block, removes its old SMC
+ranges, and replaces the function in its existing table slot. A stale result is
+discarded without changing the cache.
+
 The wasm tier is disabled while the architectural timer or MMU is enabled.
 Blocks are then neither compiled nor entered, and execution stays in the
 interpreter. The supported compiled surface is the MMU-off integer core,
@@ -441,13 +481,15 @@ recognised and transferred to a cooperative parking poll service. The service
 yields between reads because device state cannot advance while the single wasm
 thread is spinning.
 
-Generated stores check compiled-code coverage. The check uses exact disjoint
-member ranges within each marked 256-byte page, so a write to neighbouring data
-does not leave the chain. A genuine overlap invalidates only the blocks covering
-the written bytes. A region is reduced to a single block when disjoint members
-share a page with a data gap that would otherwise widen its tracked extent. The
-function table permits 65,536 allocated slots before a compacting flush. Slots
-left behind by range invalidation are reclaimed by that flush.
+Generated stores first check a merged `[min,max]` compiled-code span for each
+marked 256-byte page. A write outside that span stays in generated code. A
+write inside the span leaves the chain, after which the runtime checks exact
+disjoint block ranges and invalidates only blocks covering the written bytes.
+A gap between separately installed ranges can therefore cause an exit without
+causing invalidation. Region formation rejects disjoint members that share a
+page with such a gap, reducing that candidate to a single block. The function
+table permits 65,536 allocated slots before a compacting flush. Slots left
+behind by range invalidation are reclaimed by that flush.
 
 Structured wasm loops implement the same invariant-memory prechecks and bounded
 immediate-counter budget elision as the native backends. They cover single
@@ -625,10 +667,11 @@ Runs identical IE64 programs through both JIT and interpreter, comparing all reg
 ### Shared Infrastructure Tests
 
 ```bash
-go test -v -run TestJIT_ -tags headless ./...
+go test -v -run 'Test(ScanBlock|NeedsFallback|CodeBuffer|CodeCache|ExecMem|JITContext_|AMD64_RTI_RegisterLiveness|ARM64_RTI_RegisterLiveness)' -tags headless ./...
 ```
 
-Tests block scanning, register analysis, code cache, and ExecMem.
+Tests block scanning, fallback classification, register analysis, code-buffer
+and code-cache behaviour, the JITContext layout, and ExecMem.
 
 ### Test Rig
 
@@ -646,7 +689,7 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 ### Built In
 - Fixed guest-to-host register mapping in Tier 1 blocks
 - Weighted hot-register selection for promoted amd64 regions
-- Load only registers the block reads, store only those it writes
+- ARM64 loads mapped registers used by the block; AMD64 loads all resident registers; both limit normal exit writeback to registers that may have changed
 - Shortest instruction forms (reg-imm ALU, direct base+disp spills)
 - 32-bit host ops for IE64 `.L` size where semantics match
 - Fast-path fall-through for normal RAM; I/O in slow-path branch

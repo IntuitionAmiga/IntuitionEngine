@@ -539,64 +539,7 @@ func (cpu *CPU64) ExecuteJIT() {
 			// intra-region branch).
 			block.execCount++
 			if block.tier == ie64JITTier1 && ie64TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
-				globalIE64JITStats.regionCandidates.Add(1)
-				block.lastPromoteAt = block.execCount
-				if !ie64RegionPromotionEnabled() {
-					globalIE64JITStats.regionRejected.Add(1)
-				} else {
-					var region *ie64Region
-					if cpu.mmuEnabled {
-						if ie64RegionMMUEnabled() {
-							region = ie64FormRegionMMU(cpu, pcVirt)
-						}
-					} else if pcPhys <= memLen-IE64_INSTR_SIZE {
-						region = ie64FormRegion(pcPhys, cpu.memory)
-					}
-					if region != nil && ie64TierController.ShouldPromoteRegion(len(region.blocks)) {
-						newBlock, err := ie64CompileRegion(region, execMem, cpu.memory)
-						if err == nil {
-							newBlock.execCount = block.execCount
-							newBlock.tier = ie64JITTierRegion
-							if cpu.mmuEnabled {
-								newBlock.ptbr = cpu.ptbr
-							}
-							if cpu.mmuEnabled {
-								cpu.jitCache.PutMMU(cpu.ptbr, pcVirt, newBlock)
-							} else {
-								cpu.jitCache.Put(newBlock)
-							}
-							ie64MarkCodePagesForBlockContext(cpu.jitCodePageBitmap, cpu.jitCtx, newBlock)
-							if cpu.mmuEnabled {
-								ie64MarkPhysicalCodePagesForBlock(cpu.jitPhysCodePageBitmap, cpu.bus, newBlock)
-							}
-							if newBlock.chainEntry != 0 {
-								if cpu.mmuEnabled {
-									cpu.jitCache.PatchChainsToScoped(newBlock.startPC, newBlock.chainEntry, cpu.ptbr)
-								} else {
-									cpu.jitCache.PatchChainsTo(newBlock.startPC, newBlock.chainEntry)
-								}
-							}
-							for i := range newBlock.chainSlots {
-								slot := &newBlock.chainSlots[i]
-								var target *JITBlock
-								if cpu.mmuEnabled {
-									target = cpu.jitCache.GetMMU(cpu.ptbr, slot.targetPC)
-								} else {
-									target = cpu.jitCache.Get(slot.targetPC)
-								}
-								if target != nil && target.chainEntry != 0 {
-									PatchRel32At(slot.patchAddr, target.chainEntry)
-								}
-							}
-							block = newBlock
-							globalIE64JITStats.regions.Add(1)
-						} else {
-							globalIE64JITStats.regionRejected.Add(1)
-						}
-					} else {
-						globalIE64JITStats.regionRejected.Add(1)
-					}
-				}
+				block = ie64ChoosePromotion(cpu, block, pcVirt, pcPhys, memLen, execMem)
 			}
 		}
 
@@ -604,7 +547,7 @@ func (cpu *CPU64) ExecuteJIT() {
 		// run in the Go dispatcher, so keep native chaining disabled while a
 		// debug adapter is attached; otherwise a patched chain can jump over a
 		// script breakpoint such as the AB3D64 _Vid_Present landmark.
-		if cpu.debugBreakpointsActive != nil && cpu.debugBreakpointsActive() {
+		if cpu.observedRegion.active || cpu.debugBreakpointsActive != nil && cpu.debugBreakpointsActive() {
 			cpu.jitCtx.ChainBudget = 0
 		} else {
 			cpu.jitCtx.ChainBudget = ie64ChainBudget
@@ -748,6 +691,16 @@ func (cpu *CPU64) ExecuteJIT() {
 				break
 			}
 		}
+		if cpu.observedRegion.active {
+			rejected := cpu.PC >= uint64(len(cpu.memory)) || helperHandled || ioBail || loopPrecheckBail || cpu.jitCtx.NeedInval != 0
+			done := false
+			if !rejected {
+				done, rejected = cpu.observedRegion.appendSuccessor(cpu.PC)
+			}
+			if done || rejected {
+				ie64FinishObservedPromotion(cpu, execMem, rejected)
+			}
+		}
 
 		// Retired instruction count (uniform with interpreter)
 		cpu.InstructionCount += executed
@@ -782,4 +735,120 @@ func (cpu *CPU64) ExecuteJIT() {
 	if statsEnabled {
 		ie64JITStatsLoad().Sub(statsBase).Print()
 	}
+}
+
+func ie64InstallPromotedBlock(cpu *CPU64, old *JITBlock, region *ie64Region, execMem *ExecMem) *JITBlock {
+	if region == nil || !ie64TierController.ShouldPromoteRegion(len(region.blocks)) {
+		return old
+	}
+	newBlock, err := ie64CompileRegion(region, execMem, cpu.memory)
+	if err != nil {
+		return old
+	}
+	newBlock.execCount, newBlock.tier = old.execCount, ie64JITTierRegion
+	if cpu.mmuEnabled {
+		newBlock.ptbr = cpu.ptbr
+		cpu.jitCache.PutMMU(cpu.ptbr, region.entryPC, newBlock)
+		ie64MarkPhysicalCodePagesForBlock(cpu.jitPhysCodePageBitmap, cpu.bus, newBlock)
+	} else {
+		cpu.jitCache.Put(newBlock)
+	}
+	ie64MarkCodePagesForBlockContext(cpu.jitCodePageBitmap, cpu.jitCtx, newBlock)
+	if newBlock.chainEntry != 0 {
+		if cpu.mmuEnabled {
+			cpu.jitCache.PatchChainsToScoped(newBlock.startPC, newBlock.chainEntry, cpu.ptbr)
+		} else {
+			cpu.jitCache.PatchChainsTo(newBlock.startPC, newBlock.chainEntry)
+		}
+	}
+	for i := range newBlock.chainSlots {
+		slot := &newBlock.chainSlots[i]
+		var target *JITBlock
+		if cpu.mmuEnabled {
+			target = cpu.jitCache.GetMMU(cpu.ptbr, slot.targetPC)
+		} else {
+			target = cpu.jitCache.Get(slot.targetPC)
+		}
+		if target != nil && target.chainEntry != 0 {
+			PatchRel32At(slot.patchAddr, target.chainEntry)
+		}
+	}
+	globalIE64JITStats.regions.Add(1)
+	return newBlock
+}
+
+func ie64ChoosePromotion(cpu *CPU64, block *JITBlock, pcVirt, pcPhys, memLen uint64, execMem *ExecMem) *JITBlock {
+	globalIE64JITStats.regionCandidates.Add(1)
+	block.lastPromoteAt = block.execCount
+	if !ie64RegionPromotionEnabled() {
+		globalIE64JITStats.regionRejected.Add(1)
+		return block
+	}
+	var static *ie64Region
+	if cpu.mmuEnabled {
+		if ie64RegionMMUEnabled() {
+			static = ie64FormRegionMMU(cpu, pcVirt)
+		}
+		if static == nil {
+			globalIE64JITStats.regionRejected.Add(1)
+		}
+		return ie64InstallPromotedBlock(cpu, block, static, execMem)
+	}
+	if pcPhys > memLen-IE64_INSTR_SIZE {
+		globalIE64JITStats.regionRejected.Add(1)
+		return block
+	}
+	static = ie64FormRegion(pcPhys, cpu.memory)
+	instrs := scanBlock(cpu.memory, pcPhys)
+	end := pcPhys
+	if len(instrs) != 0 {
+		end += uint64(instrs[len(instrs)-1].pcOffset) + IE64_INSTR_SIZE
+	}
+	if ie64ObservedTrigger(instrs, pcPhys, end) != ie64ObservedNone && (cpu.debugBreakpointsActive == nil || !cpu.debugBreakpointsActive()) {
+		cpu.observedRegion.start(pcPhys, static != nil, cpu.jitCache.Generation())
+		return block
+	}
+	newBlock := ie64InstallPromotedBlock(cpu, block, static, execMem)
+	if newBlock == block {
+		globalIE64JITStats.regionRejected.Add(1)
+	}
+	return newBlock
+}
+
+func ie64FinishObservedPromotion(cpu *CPU64, execMem *ExecMem, rejected bool) {
+	r := cpu.observedRegion
+	cpu.observedRegion.reset()
+	if cpu.jitCache.Generation() != r.generation {
+		globalIE64JITStats.regionRejected.Add(1)
+		return
+	}
+	old := cpu.jitCache.Get(r.entryPC)
+	if old == nil || old.tier != ie64JITTier1 {
+		globalIE64JITStats.regionRejected.Add(1)
+		return
+	}
+	if !rejected {
+		scanned := make(map[uint64][]JITInstr, int(r.count))
+		for _, pc := range r.path() {
+			if pc >= uint64(len(cpu.memory)) {
+				rejected = true
+				break
+			}
+			scanned[pc] = scanBlock(cpu.memory, pc)
+		}
+		if !rejected {
+			observed, err := ie64BuildObservedRegion(r.path(), scanned, uint64(len(cpu.memory)))
+			if err == nil && ie64InstallPromotedBlock(cpu, old, ie64NativeObservedRegion(observed), execMem) != old {
+				return
+			}
+		}
+	}
+	if r.staticFallback && cpu.jitCache.Generation() == r.generation {
+		if static := ie64FormRegion(r.entryPC, cpu.memory); static != nil {
+			if ie64InstallPromotedBlock(cpu, old, static, execMem) != old {
+				return
+			}
+		}
+	}
+	globalIE64JITStats.regionRejected.Add(1)
 }
