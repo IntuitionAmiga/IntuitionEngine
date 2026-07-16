@@ -1,10 +1,12 @@
 # IE64 JIT Compiler
 
-Technical reference for the IE64 Just-In-Time compiler. Covers the shared infrastructure, dispatcher, and both platform-specific backends (ARM64 and x86-64).
+Technical reference for the IE64 Just-In-Time compiler. Covers the shared
+infrastructure, dispatcher, native ARM64 and x86-64 backends, and the browser
+wasm backend.
 
 ### Loop specialisations
 
-Two conservative loop specialisations were prototyped for amd64, ARM64 and
+Two conservative loop specialisations are implemented for amd64, ARM64 and
 wasm, across single blocks and promoted regions. The first hoisted deduplicated
 bounds and MMIO proofs for invariant `LOAD`, `STORE`, `DLOAD` and `DSTORE`
 addresses, while retaining every store-side SMC probe. It rejected MMU, stack,
@@ -13,21 +15,13 @@ budget comparison only for an immediate-seeded, non-zero `SUB.Q` and `BNE`
 counter loop whose integer-only body and exact retired count fitted within
 `jitBudget`. Both matchers selected at most one loop per compiled unit.
 
-The prototypes also separated ordinary memory fallback value 1 from speculative
+The specialisations also separate ordinary memory fallback value 1 from speculative
 precheck fallback value 2. A failed precheck returned to the loop head with the
 prefix retirement count, then the dispatcher interpreted one instruction
 without recording an MMIO deoptimisation. This protocol is internal to the JIT.
 
-Ten 500 ms Linux amd64 samples on an Intel Xeon W-11955M produced these medians:
-
-| Prototype | Baseline | Candidate | Change | Decision |
-|---|---:|---:|---:|---|
-| Bounded counter loop | 27,616.5 ns/op | 27,323.5 ns/op | -1.1% | Accepted |
-| Invariant memory loop | 52,994 ns/op | 52,840.5 ns/op | -0.3% | Accepted |
-
-Both positive median improvements are accepted. Qualifying loops use the
-specialised paths on native and wasm backends. MMU loops, changing pointers and
-stack accesses retain the established checks.
+Qualifying loops use the specialised paths on native and wasm backends. MMU
+loops, changing pointers and stack accesses retain the established checks.
 
 ---
 
@@ -35,7 +29,7 @@ stack accesses retain the established checks.
 
 The IE64 JIT compiler translates blocks of IE64 machine code into native ARM64 or x86-64 instructions at runtime, executing them directly on the host CPU. This bypasses the Go interpreter loop and yields significant performance improvements for compute-heavy workloads.
 
-The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64`; there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the authoritative contract). `DLOAD`/`DSTORE` use native low-window fast paths and helper exits for MMU/high/MMIO cases. FP64 transcendentals (`DSIN` through `DPOW`) compile to a helper-exit path that calls the same FPU methods as the interpreter, writes FP register pairs and FPSR, and resumes at the next PC. The remaining interpreter fallbacks are: atomics outside aligned non-MMU low-window RAM, fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` for `emitBailToInterpreter`), MMU/privilege opcodes, FP32 transcendentals, the double-precision arithmetic/conversion opcodes neither backend emits (see "Category D: Double precision" below; amd64 and arm64 both emit the FP64 core natively and bail only for `DMOD`/`DABS`/`DNEG`/`DSQRT`/`FCVTSD`/`FCVTDS`), and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`). The high-PC stack-op case is a Phase-4 safety boundary, because the fused/raw stack fast path addresses `[memBase+SP]` directly and a high SP in such a high-PC block could escape `cpu.memory[]`. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)`; all full-machine modes, including the IE64 family, cap it at the full 32-bit range (`busMemMaxBytes`), clamped on non-mmap hosts. Addresses above it cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
+The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64`; there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the full contract). `DLOAD`/`DSTORE` use native low-window fast paths and helper exits for MMU/high/MMIO cases. FP64 transcendentals (`DSIN` through `DPOW`) compile to a helper-exit path that calls the same FPU methods as the interpreter, writes FP register pairs and FPSR, and resumes at the next PC. The remaining interpreter fallbacks are: atomics outside aligned non-MMU low-window RAM, fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` for `emitBailToInterpreter`), MMU/privilege opcodes, FP32 transcendentals, the double-precision arithmetic/conversion opcodes neither backend emits (see "Category D: Double precision" below; amd64 and arm64 both emit the FP64 core natively and bail only for `DMOD`/`DABS`/`DNEG`/`DSQRT`/`FCVTSD`/`FCVTDS`), and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`). The high-PC stack-op restriction prevents the fused raw stack path from indexing beyond `cpu.memory[]` when SP is high. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)`; all full-machine modes, including the IE64 family, cap it at the full 32-bit range (`busMemMaxBytes`), clamped on non-mmap hosts. Addresses above it cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
 
 **Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64/Linux, x86-64/macOS, x86-64/Windows (x86-64 requires SSE4.1; release builds target x86-64-v3)
 
@@ -80,8 +74,8 @@ IE64 Machine Code (at PROG_START)
 | `jit_call_arm64.s` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 trampoline (`R0` receives `*jitCallArgs`; native block receives `JITContext*`) |
 | `jit_call_amd64.s` | `amd64 && (linux \|\| darwin)` | SysV x86-64 trampoline |
 | `jit_call_amd64_windows.s` | `amd64 && windows` | Windows x86-64 trampoline |
-| `jit_emit_arm64.go` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 code emitter (~2450 lines) |
-| `jit_emit_amd64.go` | `amd64 && (linux \|\| windows \|\| darwin)` | x86-64 code emitter (~1850 lines) |
+| `jit_emit_arm64.go` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 code emitter, including single blocks and regions |
+| `jit_emit_amd64.go` | `amd64 && (linux \|\| windows \|\| darwin)` | x86-64 code emitter, including single blocks and regions |
 | `jit_mmap.go` | `(amd64 \|\| arm64) && linux` | Linux dual-mapped executable memory (RW view + RX view) |
 | `jit_mmap_windows.go` | `(amd64 \|\| arm64) && windows` | Windows executable memory backend |
 | `jit_mmap_darwin_amd64.go` | `darwin && amd64` | macOS x86-64 executable memory backend |
@@ -117,6 +111,11 @@ IE64 Machine Code (at PROG_START)
 | `jit_fastpath_backends.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Audit registry for per-backend fast-path bitmap usage, including IE64 |
 | `jit_exec_protect_darwin_arm64.go` | `darwin && arm64` | macOS arm64 `MAP_JIT` write-protection transitions |
 | `jit_exec_protect_stub.go` | `!(darwin && arm64)` | No-op executable-memory protection hooks |
+| `jit_wasm_runtime.go` | `js && wasm` | Browser wasm JIT runtime and module cache |
+| `jit_wasm_ie64_emit.go` | (none) | IE64 wasm block and structured-region emitter |
+| `jit_wasm_encoder.go` | (none) | wasm binary encoder used by the browser backend and host tests |
+| `jit_exec_wasm.go` | `js && wasm` | Browser dispatch between the wasm JIT and interpreter |
+| `jit_mmio_poll_exec_wasm.go` | `js && wasm` | Cooperative wasm MMIO poll service |
 
 ---
 
@@ -164,6 +163,25 @@ Offset  Type      Field            Description
 192     uint64    HelperVal        Store/push value (input only); LOAD/POP -> integer reg via setReg, FLOAD/DLOAD -> FPU via FP setters. Never written back here
 200     uint64    HelperPC         PC of the requesting instruction (for trapFault.faultPC)
 208     uint64    LiveSP           SP flushed from the host register before helper exit
+216     uintptr   ResumeAddr       Native continuation entry
+224     uint64    ResumePC         Expected guest PC after helper completion
+232     uint64    ResumePTBR       PTBR captured before native entry
+240     uint32    ResumeCountBase  Instructions retired before the continuation
+244     uint32    ResumeMMUEnabled MMU mode captured by the helper exit
+248     uint32    ResumeValid      Non-zero when the continuation is usable
+256     uint64    MicroTLBReadPrefix  Read-access key prefix for the native micro-TLB
+264     uint64    MicroTLBWritePrefix Write-access key prefix for the native micro-TLB
+272     [4]uint64 MicroTLBKeys     Four valid-prefixed virtual page keys
+304     [4]uint64 MicroTLBPhys     Four translated physical page bases
+336     uintptr   CodePageBitmapPtr  Low virtual code-page bitmap
+344     uint64    InvalAddr        Start of a self-modifying write
+352     uint32    InvalSize        Size of a self-modifying write
+356     uint32    CodePageBitmapLen  Bounds the low virtual code-page bitmap
+360     uint64    CodeHighStartPage  First marked high virtual code page
+368     uint64    CodeHighEndPage    Last marked high virtual code page
+376     uintptr   PhysCodeBitmapPtr  Low physical code-page bitmap
+384     uint32    PhysCodeBitmapLen  Bounds the physical code-page bitmap
+392     uintptr   CodePageSpansPtr   Per-page compiled-byte spans used by wasm stores
 ```
 
 ### Block Scanner
@@ -176,7 +194,7 @@ On AMD64 only, the scanner may replace a small register-only JSR leaf with fused
 
 ### Register Liveness
 
-`analyzeBlockRegs()` computes bitmasks of which IE64 registers are read and written by the block. This minimises prologue/epilogue overhead -- only load registers the block reads, only store registers it writes.
+`analyzeBlockRegs()` computes bitmasks of which IE64 registers are read and written by the block. This minimises prologue and epilogue overhead by loading only registers the block reads and storing only registers it writes.
 
 ### CodeBuffer
 
@@ -195,7 +213,7 @@ On AMD64 and Linux ARM64, hot IE64 blocks can be promoted from Tier 1 single-blo
 
 `ie64FormRegion()` scans `cpu.memory` at flat physical indices and follows statically-known BRA/JMP terminators. Under MMU each virtual successor needs its own page-table walk before the scanner can read the correct physical bytes, so that case has a separate page-bounded former, `ie64FormRegionMMU()`. The dispatcher picks between them on `cpu.mmuEnabled`.
 
-Both native region compilers emit one `JITBlock` for two or more IE64 blocks. Internal BRA/JMP targets transfer directly inside the region; external targets use the normal exit machinery. Back edges retain loop-budget and retired-count checks so native code cannot spin without returning to the dispatcher. AMD64 regions bind their four hottest guest registers to RBX, RBP, R12 and R13. Linux ARM64 regions bind their fourteen hottest registers to X12 through X17 and X19 through X26, never X18. Dirty GPR and floating-point state is retained across internal edges and spilled at helper, bail and dispatcher exits. MMU region formation remains opt-in on both native backends.
+Both native region compilers emit one `JITBlock` for two or more IE64 blocks. Internal BRA/JMP targets transfer directly inside the region; external targets use the normal exit machinery. Back edges retain loop-budget and retired-count checks so native code cannot spin without returning to the dispatcher. AMD64 regions bind their four hottest guest registers to RBX, RBP, R12 and R13. Linux ARM64 regions retain the fixed R1-R14 mapping in X12 through X17 and X19 through X26, never X18. Dirty GPR and floating-point state is retained across internal edges and spilled at helper, bail and dispatcher exits. MMU region formation remains opt-in on both native backends.
 
 Environment gates:
 
@@ -203,16 +221,20 @@ Environment gates:
 |----------|---------|--------|
 | `IE64_JIT_REGIONS` | on | `0`/`false`/`off`/`no` disables region promotion entirely |
 | `IE64_JIT_REGION_MMU` | off | `1`/`true`/`on`/`yes` enables MMU region formation |
-| `IE64_JIT_REGION_MAX_SPILLS` | policy default | spill-pressure ceiling for accepting a region plan |
-| `IE64_JIT_STATS` | off | `1` prints region and spill statistics |
+| `IE64_JIT_REGION_MAX_SPILLS` | no ceiling | amd64 spill-pressure ceiling for accepting a region plan |
+| `IE64_JIT_STATS` | off | On amd64, `1` prints region and spill statistics |
+| `IE64_JIT_RESUME` | on | `0`/`false`/`off`/`no` disables native continuation after a clean helper exit |
+| `IE64_JIT_FP_RESIDENCY` | off | `1` enables eligible FP32 and FP64 residency on Linux/macOS amd64 and ARM64 |
 
 Linux ARM64 enables non-MMU region promotion by default. Other ARM64 operating systems retain the single-block tier.
 
 ### ExecMem
 
-16 MB executable-memory pool with bump allocator (16-byte aligned). Reset on cache invalidation.
+16 MB executable-memory pool with a 16-byte-aligned bump allocator. Full cache
+invalidations reset the pool. Range-based SMC invalidation resets it only when
+the invalidation removes the final cached block.
 
-M15.6 uses a W^X-safe dual mapping on Linux:
+Linux uses a W^X-safe dual mapping:
 
 - **Linux backing pages** are created once via `memfd_create` (with
   `MFD_EXEC|MFD_CLOEXEC` where available, falling back to plain
@@ -315,7 +337,10 @@ Required on ARM64. Uses DC CVAU + IC IVAU + DSB ISH + ISB per 64-byte cache line
 
 ### Region Promotion
 
-Not implemented on ARM64. The ARM64 backend provides IE64 region stubs so the shared dispatcher builds, but promotion is disabled and native region compilation is unsupported.
+Linux ARM64 promotes hot non-MMU code to native regions by default and supports
+MMU regions when `IE64_JIT_REGION_MMU=1`. Region formation follows static BRA
+and JMP successors, with limits of 8 blocks and 512 guest instructions. Other
+ARM64 operating systems retain the single-block tier.
 
 ---
 
@@ -372,7 +397,79 @@ No flush needed. x86-64 guarantees instruction cache coherency.
 
 ### Regions
 
-Implemented for non-MMU IE64 code. Region formation uses `ScanRegionIE64()` and `ie64FormRegion()` to collect two or more statically-linked blocks within `IE64RegionProfile` limits (up to 8 blocks and 512 guest instructions). `ie64CompileRegion()` emits a single native block, preserves the normal chain-exit path for targets outside the region, and emits direct in-region jumps for BRA/JMP targets inside the region.
+Region formation uses `ScanRegionIE64()` and `ie64FormRegion()` to collect two or more statically-linked blocks within `IE64RegionProfile` limits (up to 8 blocks and 512 guest instructions). `ie64CompileRegion()` emits a single native block, preserves the normal chain-exit path for targets outside the region, and emits direct in-region jumps for BRA/JMP targets inside the region. Non-MMU promotion is enabled by default. When the MMU is active, `IE64_JIT_REGION_MMU=1` enables the page-bounded `ie64FormRegionMMU()` path.
+
+---
+
+## wasm Backend
+
+The js/wasm build has no native executable-memory backend and leaves
+`jitAvailable` false. IE64 instead has a wasm bytecode tier. Other guest CPUs
+remain interpreter-only in the browser.
+
+`jit_exec_wasm.go` counts visits to block-start PCs. Once a block is hot,
+`jit_wasm_ie64_emit.go` translates the shared `JITInstr` stream into a wasm
+module and submits it to `WebAssembly.instantiate`. Compilation is asynchronous:
+the interpreter continues until the module is installed at a cooperative yield.
+Generated modules import the Go programme's linear memory through `__goMem` and
+update the register file, JITContext and guest RAM in place. Runtime-generated
+modules are not stored in the browser's compiled-wasm HTTP cache; that cache
+applies only to the main `ie.wasm` application module.
+
+Block-to-block dispatch uses a driver module and shared function table. Static
+BRA chains can be promoted into one structured wasm function with bounded back
+edges. Hot GPRs remain in `i64` locals and hot FP64 pairs remain in `f64` locals
+across internal edges. FPSR condition-code liveness is analysed across the
+whole region. Helper, SMC, external-branch and budget exits commit dirty state
+and the dynamic retired count.
+
+The wasm tier is disabled while the architectural timer or MMU is enabled.
+Blocks are then neither compiled nor entered, and execution stays in the
+interpreter. The supported compiled surface is the MMU-off integer core,
+including ALU, load/store, branches, subroutine and stack operations, plus
+FP64 arithmetic, moves, comparisons, conversions, DINT rounding modes, sticky
+exception flags and condition codes. FP64 transcendentals, FP32 and remaining
+system opcodes stay in the interpreter.
+
+The compiler stops a block before its first unsupported opcode, leaving that
+instruction for the interpreter. Supported instructions that need dispatcher
+work leave generated code through the wasm helper protocol. Stack operations
+serviced by the dispatcher use raw RAM, as they do in the interpreter, and do
+not invoke MMIO callbacks even if the stack lies on a bitmap-marked I/O page.
+Repeated exits from the canonical LOAD, AND, branch-back MMIO loop are
+recognised and transferred to a cooperative parking poll service. The service
+yields between reads because device state cannot advance while the single wasm
+thread is spinning.
+
+Generated stores check compiled-code coverage. The check uses exact disjoint
+member ranges within each marked 256-byte page, so a write to neighbouring data
+does not leave the chain. A genuine overlap invalidates only the blocks covering
+the written bytes. A region is reduced to a single block when disjoint members
+share a page with a data gap that would otherwise widen its tracked extent. The
+function table permits 65,536 allocated slots before a compacting flush. Slots
+left behind by range invalidation are reclaimed by that flush.
+
+Structured wasm loops implement the same invariant-memory prechecks and bounded
+immediate-counter budget elision as the native backends. They cover single
+blocks and promoted regions, retain store-side SMC probes, and reject MMU,
+stack, changing-pointer, helper-capable and alternate-entry loops.
+
+The wasm tier is enabled by default. `IE64_WASM_JIT=0` or `/demo/?jit=0`
+disables it. `IE64_WASM_JIT_DIAG=1` or `/demo/?jitdiag=1` publishes dispatcher
+counters to `__ieJITDiag` and reports livelock signatures in the browser
+console.
+
+The wasm differential suite executes generated modules under wazero and
+compares them with the interpreter:
+
+```bash
+go test -tags headless -run 'TestWasmJIT_|TestWasmEnc_' .
+make test-wasm-node
+```
+
+The Node suite covers the JITContext ABI, hot-loop parity, MMU gating, timer
+gating, stack access on MMIO-marked pages, cooperative MMIO polling and the kill
+switch.
 
 ---
 
@@ -394,13 +491,13 @@ The direct `[memBase+addr]` fast path is taken only when the MMU is off **and** 
 
 On AMD64 and ARM64, the IE64 dispatcher tries `tryFastIE64MMIOPollLoop()` before normal block-cache lookup. This is a Go-side shortcut for tight MMIO polling loops, not emitted native code. It is disabled when the MMU is enabled, when the CPU or bus is nil, or when the current PC is outside `cpu.memory`.
 
-The recognised IE64 shape is three instructions at the current PC:
+The native shortcut recognises three loop forms:
 
-1. `LOAD rd, disp(rs)` with `rd != R0`
-2. `AND rd, rd, #mask` at the same operand size
-3. `BEQ rd, r0, back_to_load` or `BNE rd, r0, back_to_load`
+1. A three-instruction bit test: `LOAD`, immediate `AND`, then `BEQ` or `BNE` back to the load.
+2. A bounded bit test: `LOAD`, optional register `EOR`, immediate or register `AND`, forward `BNE`, `SUB.Q #1` on a counter, then `BNE` back to the load.
+3. A bounded equality test: `LOAD`, `MOVE.Q #value` into a comparison register, forward `BNE`, `SUB.Q #1` on a counter, then `BNE` back to the load or its preceding setup instruction.
 
-The shortcut computes the effective address with current IE64 address semantics, rejects addresses above `0xFFFFFFFF`, and requires `MachineBus.IsIOAddress(uint32(addr))`. When it matches, it repeatedly performs the MMIO load through `cpu.loadMem`, applies the mask, writes the masked value back to `rd`, and advances PC past the three-instruction loop when the branch condition becomes false. If the loop remains taken, it stops at `DefaultPollIterationCap`, leaves PC at the loop head, and reports `iterations * 3` retired instructions.
+All three forms require a non-zero load destination, MMU-off execution and an address accepted by `MachineBus.IsIOAddress`. Addresses above `0xFFFFFFFF` are rejected. The shortcut performs each read through `cpu.loadMem`, reproduces the matched arithmetic and register writes, and reports the instructions retired by the selected form. When the three-instruction loop stops taking its back edge, execution continues after the loop. A successful bounded test branches to its forward target, while counter exhaustion continues at its timeout path. Reaching `DefaultPollIterationCap`, an external interrupt, or a stop request leaves the PC at the appropriate loop entry so normal dispatch can resume safely.
 
 Countdown and equality variants use the same interrupt, trap and retired-count rules on both native backends.
 
@@ -408,7 +505,7 @@ Countdown and equality variants use the same interrupt, trap and retired-count r
 
 ## FPU JIT
 
-IE64 FPU operations are classified into three categories:
+IE64 FPU operations are classified into five categories:
 
 ### Category A: Integer Bitwise on FP Registers
 FMOV, FABS, FNEG, FMOVI, FMOVO, FMOVECR, FMOVSR, FMOVCR, FMOVSC, FMOVCC
@@ -432,7 +529,7 @@ Category B arithmetic maintains the full FPSR, matching the interpreter bit for 
 
 The host FP status registers (MXCSR, ARM64 FPSR) cannot stand in for the classifier: hardware raises the invalid flag for signalling-NaN *operands* and underflow for *denormal results*, and the IE64 rules exclude both.
 
-`jit_ie64_fp_parity_common_test.go` and `jit_ie64_fp_audit_test.go` drive every FP opcode through an IEEE-754 special-value matrix and compare the whole architectural state, FPSR included, against the interpreter. They are architecture-neutral by design: an FP correctness gate compiled for only one backend cannot see the others.
+`jit_ie64_fp_parity_common_test.go` drives the native FP32 arithmetic through an IEEE-754 special-value matrix. `jit_ie64_fp_audit_test.go` adds parity coverage for FP comparisons, conversions, integer rounding, square root, modulo and native FP64 arithmetic. Both compare the relevant architectural state, including FPSR, with the interpreter and build for both native backends.
 
 ### Category C: Helper Exit
 DSIN, DCOS, DTAN, DATAN, DLOG, DEXP, DPOW
@@ -447,7 +544,7 @@ Native FP64 arithmetic bails to the interpreter whenever an operand is non-finit
 
 That bail also discharges every `!isInf(operand)` and `!isNaN(operand)` clause in the `IE64FPU` exception rules: those clauses are statically true on any path that reaches the native code. This is why the emitted classifiers only ever inspect the *result*, and why the emitters look shorter than the interpreter methods they mirror.
 
-`IE64FPU` (`fpu_ie64.go`) is the only specification for these rules. Both backends mirror its clause order deliberately so the pair can be diffed by eye; six of the FP correctness bugs fixed on this branch existed because a backend re-derived a rule instead of mirroring it.
+`IE64FPU` (`fpu_ie64.go`) defines these rules. Both native backends follow its clause order so their classifiers can be compared directly with the interpreter implementation.
 
 `DLOAD` and `DSTORE` are JIT-emitted on both backends with native low-window fast paths and helper exits (`HELPER_DLOAD`/`HELPER_DSTORE`) for MMU, high-address, MMIO, or invalid-pair cases. They are not in `needsFallback()` and do not force whole-block fallback.
 
@@ -476,7 +573,7 @@ The JIT falls back to the interpreter in these cases:
 | SEI64, CLI64 | Emitted as bail-to-interpreter (`emitBailToInterpreter`) so `interruptEnabled` is mutated; compiling them as NOPs silently dropped the state change under timer-off native execution |
 | MMU/privilege opcodes (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL, SMODE, SUAEN, SUADIS) | Block terminators; first-instruction fallback in `needsFallback()`, otherwise emitted as bail-to-interpreter |
 | ExecMem exhausted | `compileBlock` returns error, dispatcher calls `interpretOne()` |
-| Self-modifying code | `NeedInval` flag, cache + ExecMem reset |
+| Self-modifying code | `NeedInval` records one exact write range, or uses `InvalSize=0` to request a full invalidation when the range is unavailable. By default, exact ranges remove overlapping cached blocks. `IE_JIT_SMC_RANGE=0` makes native execution invalidate the full cache instead. ExecMem resets only for a full invalidation or when no cached block remains |
 
 ---
 
@@ -499,7 +596,7 @@ Poll sites, all before the next instruction or block fetch so the interrupt take
 - Interpreter `Execute()`: at the top of the loop, before PC translation and fetch.
 - `StepOne()`: at entry, before fetch. A delivered interrupt consumes the step.
 - JIT `ExecuteJIT()`: a single poll at the top of the dispatcher loop, reached only after a native block's helper, IO-bail, and retired-count handling have completed. The helper dispatcher (`handleJITHelper`) also polls before it services a bailed memory/stack/control op, so helper-exit blocks (DLOAD/DSTORE, MMU-on memory, high/IO helpers) take the interrupt at the bailing instruction's PC like the interpreter rather than after the op runs.
-- JIT fast paths (amd64): the MMIO poll-loop shortcut exits its spin when `pendingIRQMask` is set, leaving the PC at the loop head so the dispatcher delivers and resumes there. This watches `pendingIRQMask` because external IRQs no longer flip `inInterrupt`.
+- JIT fast paths (amd64 and ARM64): the MMIO poll-loop shortcut exits its spin when `pendingIRQMask` is set, leaving the PC at the loop head so the dispatcher delivers and resumes there. This watches `pendingIRQMask` because external IRQs no longer flip `inInterrupt`.
 
 IE64 native code can chain up to `ie64ChainBudget` (256) block transitions inside one `callNative` without returning to Go, so a pending interrupt raised mid-chain is observed when the chain returns to the dispatcher rather than between every guest instruction. This is a latency difference from the interpreter, not a correctness one, and is acceptable for the video-class interrupts in scope. Tighter latency would require a pending check in the chain-dispatch epilogue.
 
@@ -547,7 +644,8 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 ## Performance Guardrails
 
 ### Built In
-- Fixed guest-to-host register mapping (no dynamic allocation)
+- Fixed guest-to-host register mapping in Tier 1 blocks
+- Weighted hot-register selection for promoted amd64 regions
 - Load only registers the block reads, store only those it writes
 - Shortest instruction forms (reg-imm ALU, direct base+disp spills)
 - 32-bit host ops for IE64 `.L` size where semantics match
@@ -559,18 +657,16 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 - Native `DMOD`, `DABS`, `DNEG`, `DSQRT`, `FCVTSD`, `FCVTDS` on both backends
 - Memory operands for spilled-source ALU
 - Peephole patterns (MOVE imm, ADD/SUB imm, compare against zero)
-- Profiling-driven register residency tuning
 - Smaller prologue variants for simple blocks
 
 ### Not Planned
 - Full register allocation (linear scan, graph colouring, SSA)
-- Dynamic guest-to-host remapping
 - Instruction scheduling
 - CPU-feature-dependent tricks (LZCNT, BMI2, AVX)
 
 ### Benchmarking
 
-The benchmark suite in `ie64_benchmark_test.go` measures throughput for five workload categories through both the interpreter and JIT:
+The benchmark suite in `ie64_benchmark_test.go` measures throughput for seven workload categories through both the interpreter and JIT: ALU, FPU, memory, MMIO, MMU mixed, mixed and call/return.
 
 ```bash
 go test -tags headless -run='^$' -bench BenchmarkIE64_ -benchtime 3s ./...
@@ -580,7 +676,7 @@ Each benchmark reports ns/op and instructions/op. MIPS can be derived: `MIPS = i
 
 ### Performance-technique inventory
 
-This inventory closes the M68K/x86 comparison for the Linux and browser IE64 backends.
+This inventory summarises the techniques used by the Linux and browser IE64 backends.
 
 | Technique | Linux amd64 | Linux ARM64 | js/wasm |
 |-----------|-------------|-------------|---------|
@@ -588,69 +684,42 @@ This inventory closes the M68K/x86 comparison for the Linux and browser IE64 bac
 | Bounded static-JMP chase with timer and retired-count accounting | Implemented | Implemented through the shared native dispatcher | Implemented, with timer-enabled execution returning to normal dispatch |
 | Proven constant RAM/MMIO access check elision with SMC retained | Implemented | Implemented | Implemented |
 | Multi-block regions with internal edges and bounded back edges | Implemented | Implemented, including opt-in MMU regions | Implemented as one structured wasm function |
-| Hot GPR residency across region edges | Four callee-saved hosts | Fourteen callee-saved hosts | `i64` locals |
-| FP32 and FP64 residency | XMM8 through XMM15 | V16 through V31 | FP64 pairs in `f64` locals; FP32 is inapplicable |
+| Hot GPR residency across region edges | Four dynamically selected callee-saved hosts | Fixed R1-R14 mapping in X12-X17 and X19-X26 | `i64` locals |
+| FP32 and FP64 residency | XMM8 through XMM15 when `IE64_JIT_FP_RESIDENCY=1` on Linux/macOS | V16 through V31 when `IE64_JIT_FP_RESIDENCY=1` | FP64 pairs in `f64` locals; FP32 is inapplicable |
 | Backward FPSR condition-code liveness | Implemented | Implemented | Implemented across blocks and regions |
 | MMIO poll acceleration | Implemented | Implemented | Implemented as a cooperative parking poll service |
 | Integer flag liveness and compare-branch fusion | Inapplicable: IE64 branches compare GPR operands directly | Inapplicable | Inapplicable |
 | x87 constant pooling | Inapplicable: IE64 constants use immediate materialisation | Inapplicable | Inapplicable |
 | MMU JIT support | Implemented | Implemented, with region promotion opt-in | Inapplicable to this backend scope |
 
-### Plan-closure measurement
-
-The completed plan was measured on 15 July 2026 against pre-plan commit
-`814e9149`, using the established ALU, FPU, memory, MMIO, mixed and call
-benchmarks. Baseline and candidate used Linux amd64, the headless tag, a 500 ms
-benchtime and ten samples. Benchstat reported these JIT changes in `sec/op`:
-
-| Workload | Change |
-|----------|--------|
-| ALU | -1.11% |
-| FPU | +25.06% |
-| Memory | -5.20% |
-| MMIO | no significant change |
-| Mixed | +3.52% |
-| Call | -1.95% |
-
-The memory improvement is statistically significant. The FPU and mixed
-results do not satisfy the original aggregate regression threshold. The FPU
-comparison spans the architectural FPSR correctness repairs made during the
-plan, so the old faster result is not a valid implementation to restore: it
-omits required condition-code and exception behaviour. The individual
-optimisation-shape tests and interpreter parity gates remain the acceptance
-authority for those correctness-constrained paths. Retired instruction counts
-were identical in every baseline and candidate sample.
-
-#### Reference Results
-
-Measured on an Intel Core i5-8365U @ 1.60 GHz (4C/8T, Whiskey Lake, 2019) running Linux amd64, `benchtime 3s`:
-
-| Workload | Interpreter | JIT | Speedup | Interp MIPS | JIT MIPS |
-|---|---|---|---|---|---|
-| ALU (ADD/SUB/MUL/AND/OR/LSL) | 1,058 µs | 157 µs | **6.7x** | 85 | 574 |
-| FPU (FADD/FSUB/FMUL/FDIV) | 1,242 µs | 372 µs | **3.3x** | 56 | 188 |
-| Memory (LOAD/STORE sequential) | 813 µs | 105 µs | **7.7x** | 74 | 569 |
-| Mixed (ALU+FP+Memory) | 1,227 µs | 159 µs | **7.7x** | 65 | 503 |
-| Call (JSR/RTS loop) | 583 µs | 7,036 µs | **0.08x** | 86 | 7 |
-
-The Call workload is intentionally JIT-hostile: every JSR and RTS terminates the native block, so each iteration pays dispatcher unpack, cache lookup, and prologue/epilogue twice. This isolates block-transition overhead and represents the worst case for the JIT. All other workloads compile into a single native block with a backward branch loop, where the JIT delivers 3-8x speedup over the interpreter.
-
----
-
 ## MMU Integration
 
-When the IE64 MMU is enabled (MMU_CTRL bit 0 = 1), the JIT compiler keeps virtual-memory semantics correct by routing memory-touching work through the JITContext helper exit instead of inline `[memBase+addr]` accesses. The native emitters check `ctx.MMUEnabled` (refreshed by the dispatcher before every `callNative`); when it is set, non-atomic data, stack, FP, and control-flow memory operations take the helper exit, and the dispatcher services them through `cpu.loadMem`/`storeMem` and `cpu.mmuStackRead`/`mmuStackWrite`, the same code paths (and full virtual-address translation, permission checks, and fault semantics) the interpreter uses.
+When the IE64 MMU is enabled (MMU_CTRL bit 0 = 1), the native emitters check
+`ctx.MMUEnabled`, which the dispatcher refreshes before every `callNative`.
+ARM64 routes non-atomic data, stack, FP and control-flow memory operations
+through the JITContext helper exit. AMD64 first probes a four-entry native
+micro-TLB for ordinary LOAD and STORE operations. A hit translates the virtual
+page and continues through the native low-window RAM path. A miss uses the
+helper exit, which performs the canonical translation and may fill the entry.
+The remaining non-atomic amd64 memory operations use the helper exit directly;
+atomics retain their whole-instruction bail path.
 
 ### Helper Exit for Memory Operations Under MMU
 
-The following are routed through the helper exit when the MMU is on (and also when an address escapes the low window with the MMU off):
+The following use the helper exit when the MMU is on, except that amd64 LOAD
+and STORE may complete after a native micro-TLB hit. They also use the helper
+when an address escapes the low window with the MMU off:
 
 - **LOAD, STORE** (general-purpose memory access)
 - **PUSH, POP** (stack operations)
-- **JSR, RTS, JSR_IND** (subroutine call/return -- both touch the stack)
+- **JSR, RTS, JSR_IND** (subroutine call and return, all of which touch the stack)
 - **FLOAD, FSTORE, DLOAD, DSTORE** (FP / FP64 memory access)
 
-These do **not** re-execute through the interpreter as whole instructions; the dispatcher performs only the memory semantic via the shared helpers, advances PC, and re-enters the JIT (see the Return-Channel and `architecture.md` helper-exit description).
+These do **not** re-execute through the interpreter as whole instructions. The
+dispatcher performs only the requested semantic through the shared helpers and
+advances the PC. When `IE64_JIT_RESUME` is enabled, a clean helper completion
+may continue after the requesting instruction inside the same native block.
+Otherwise execution returns through the normal JIT dispatcher.
 
 Two cases still take a whole-instruction `mmuBail` path to `emitBailToInterpreter` under MMU rather than the helper exit:
 
@@ -690,7 +759,7 @@ All 9 MMU/privilege instructions (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL,
 - Cache invalidations (MTCR, TLBFLUSH, TLBINVAL) are processed by the dispatcher between blocks.
 - Control flow changes (ERET, SYSCALL) are handled correctly.
 
-### Future Stages
+### Future Work
 
-- **Stage 2: Inline TLB check.** Emit a TLB lookup directly in the native code for each memory access. On TLB hit, perform the access inline with no dispatcher overhead. On TLB miss, bail to the interpreter for a full page table walk. This would recover most of the JIT speedup for memory-heavy workloads under MMU.
-- **Stage 3: ASID-aware cache.** Tag code cache entries with an Address Space Identifier so that context switches between processes do not require a full cache flush. This would reduce the cost of MTCR to PTBR in multi-process scenarios.
+- Extend native micro-TLB probing beyond amd64 LOAD and STORE operations.
+- Add address-space identifiers if the architecture gains an ASID contract.

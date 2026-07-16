@@ -1,7 +1,7 @@
 # Intuition Engine in the Browser (js/wasm)
 
 The `make wasm` target compiles the whole VM to WebAssembly and produces the
-website's live demo: an interpreter-only IE64 BASIC that boots in a browser
+website's live demo: an IE64 BASIC machine that boots in a browser
 tab, renders through a WebGL canvas, plays audio through WebAudio, takes
 keyboard input, and serves a read/write disk volume of demos fetched over
 HTTP. It is the same Go source tree as the native build; the browser build is
@@ -35,96 +35,46 @@ browser machine sees.
 
 ## Running
 
-Serve `intuitionengine.com/` over HTTP (any static server) and open `/demo/`.
-The page downloads and compiles `ie.wasm`, then boots the machine as soon as
-instantiation finishes; no Launch click is needed. WebAudio still requires a
-user gesture before sound may play, and Oto resumes its AudioContext on the
-first keypress or click in the machine, so audio unlocks the moment the
-visitor starts typing. The page's Content-Security-Policy needs
+Serve `intuitionengine.com/` over HTTP and open `/demo/`. The server must send
+`.wasm` files as `application/wasm` because the page uses
+`WebAssembly.instantiateStreaming`. The page downloads and compiles `ie.wasm`,
+then boots the machine as soon as instantiation finishes; no Launch click is
+needed. WebAudio still requires a user gesture before sound may play, and Oto
+resumes its AudioContext on the first keypress or click in the machine, so
+audio unlocks when the visitor starts typing. The page's
+Content-Security-Policy needs
 `'wasm-unsafe-eval'` and `blob:` in `script-src` because Oto loads its
 AudioWorklet from a blob URL.
 
 When a visitor scrolls within 1200px of the main page's launch section, the
 page warms the demo: `wasm_exec.js` is fetched into the browser's HTTP cache,
-and `ie.wasm` goes through `WebAssembly.compileStreaming`, which both commits
-the download to the HTTP cache (a real fetch, not a droppable `rel=prefetch`
-hint) and gives the engine the chance to seed its URL-keyed compiled-wasm
-code cache while the visitor reads. The compiled Module is discarded; it
-cannot cross a navigation, but the caches can. The demo page's own fetch is
-then a cheap ETag revalidation, and its Response is handed to
-`instantiateStreaming` untouched, deliberately NOT served through a service
-worker or wrapped in a constructed Response: Chromium's compiled-wasm code
-cache only attaches to responses that come from the network stack's HTTP
-cache, so either indirection forces a full recompile on every load. Cold
-visits pay the wasm compile; warmed and repeat visits skip most of it. The
-code cache is written in the background, so two rapid reloads may both
-compile, and DevTools' "Disable cache" defeats it entirely.
+and `ie.wasm` is fetched and passed to `WebAssembly.compileStreaming`. The
+resulting module is not retained or passed to the demo page. This warming step
+is intended to populate the browser's HTTP and compiled-code caches before the
+demo opens. The demo page fetches `ie.wasm` normally and passes the response
+directly to `instantiateStreaming`. Both pages unregister the obsolete demo
+service worker where possible and remove its old CacheStorage entry when
+available. Cleanup failures do not stop the page from loading. A page that is
+still controlled by that worker may use it for one final fetch; the demo page
+detects this case and reloads after the cleanup. Cache reuse and the resulting
+start-up time remain browser-dependent.
 
 ## What is different from native
 
-- **IE64 has a wasm JIT tier; the other CPUs interpret.** The browser gives
-  Go no executable memory, so the native JIT backends are absent and
-  `jitAvailable` is false. IE64 instead carries a wasm bytecode backend: the
-  dispatcher (`jit_exec_wasm.go`) counts visits to block-start PCs, and hot
-  blocks are translated to WebAssembly (`jit_wasm_ie64_emit.go`, using the
-  same scanner and JITContext protocol as the native backends) and handed to
-  the browser's own engine through `WebAssembly.instantiate`. Compilation is
-  asynchronous; the interpreter keeps running and the block installs at the
-  next cooperative yield. Generated modules import the machine's own linear
-  memory (the page exposes it as `__goMem`), so they mutate CPU state in
-  place. MMIO accesses, stack faults and anything outside the supported
-  instruction set exit to the Go dispatcher through the helper protocol.
-  Stack operations serviced there (PUSH, POP, JSR, RTS) are raw RAM
-  accesses, exactly as in the interpreter and the native dispatcher: they
-  never fire MMIO callbacks, so a guest stack parked inside a bitmap-marked
-  aperture such as the Voodoo texture window at `0xD0000` behaves
-  identically under JIT and interpreter. Any future wasm backend for the
-  other CPUs must hold the same invariant
-  (`TestWasmJIT_Node_StackOnMMIOPage` pins it). A guest that busy-polls an
-  MMIO status register (the canonical LOAD, AND, branch-back spin) is
-  recognised after a streak of load exits and handed to a parking poll
-  service: the goroutine sleeps briefly between re-reads instead of
-  spinning, because on this single-threaded build the polled bit can only
-  advance while the CPU goroutine is parked. Paired with it, the VBlank
-  status bit is held readable for a few milliseconds after each set edge
-  (`videoVBlankHoldNs`, js builds only): the compositor sets and clears
-  VBlank within one tick while the guest is parked, so without the hold a
-  polling guest would never observe the set state and WAIT-VSYNC loops ran
-  at single-digit frame rates (`TestWasmJIT_Node_MMIOPollParks` pins the
-  poll service).
-  Block-to-block dispatch chains inside wasm through a driver module and a
-  shared function table (about 5.3 times interpreter speed on the node
-  hot-loop benchmark). Promoted static BRA chains compile as one structured
-  wasm function, including a bounded back edge. Hot GPRs remain in `i64`
-  locals and hot FP64 pairs remain in `f64` locals across internal edges;
-  FPSR condition-code liveness is analysed across the whole region. Helper,
-  SMC, external-branch and budget exits commit state and the dynamic retired
-  count. While the architectural timer is enabled, wasm JIT blocks are neither
-  compiled nor entered, and every instruction runs in the interpreter so the
-  timer advances correctly. Separately, while the MMU is enabled, wasm JIT
-  blocks are neither compiled nor entered. Stores into compiled code pages are
-  detected in generated code, refined by exact disjoint member ranges: a store
-  into data that merely shares a 256-byte page with compiled code does not even
-  exit the chain, and a genuine overlap drops only the blocks whose bytes were
-  written. Regions whose disjoint members share one 256-byte page with a data
-  gap fall back to a single block, avoiding a widened page extent and repeated
-  false SMC exits. The block table holds up to 65536 blocks before a compacting
-  flush; sustained RUN AOT workloads install several thousand. The backend is on by default and `IE64_WASM_JIT=0` (or
-  `/demo/?jit=0`) disables it, and `IE64_WASM_JIT_DIAG=1` (or
-  `/demo/?jitdiag=1`) publishes dispatcher counters to `__ieJITDiag` and
-  logs livelock signatures to the console. Runtime-generated modules are small and are
-  never cached by the browser; only the main `ie.wasm` participates in the
-  compiled-wasm code cache. The heavy pixel work in the showcase demos
-  (blitter, copper, Mode 7) is compiled Go and runs at full speed
-  regardless.
-- **Loop specialisations.** Structured wasm variants of invariant
-  memory prechecks and bounded immediate-counter budget elision were tested in
-  parallel with the native backends. They covered single blocks and promoted
-  regions, retained store-side SMC probes, and rejected MMU, stack,
-  changing-pointer, helper-capable and alternate-entry loops. The corresponding
-  Linux amd64 targeted medians improved by 0.3 per cent and 1.1 per cent. Both
-  positive results are accepted, so qualifying wasm loops use the specialised
-  structured paths.
+- **IE64 has a wasm JIT tier; the other CPUs interpret.** Hot IE64 blocks are
+  translated into runtime wasm modules and installed asynchronously while the
+  interpreter continues. The tier is enabled by default and is disabled while
+  the architectural timer or MMU is active. `IE64_WASM_JIT=0` or
+  `/demo/?jit=0` disables it. The complete backend, helper, region, SMC,
+  instruction-coverage and diagnostic contract is documented in
+  [`IE64_JIT.md`](IE64_JIT.md).
+- **VBlank remains observable to a parked poll.** The js build holds the VBlank
+  status bit readable for a few milliseconds after each set edge
+  (`videoVBlankHoldNs`). The compositor can otherwise set and clear VBlank in
+  one tick while the CPU goroutine is parked, leaving a WAIT-VSYNC loop unable
+  to observe it. `TestWasmJIT_Node_MMIOPollParks` covers the generic MMIO poll
+  parking service. It uses a synthetic status register rather than the VBlank
+  device path.
 - **No Vulkan.** The Voodoo uses the software rasteriser; Vulkan files carry
   `!js` build constraints, so the exclusion needs no `-tags novulkan`.
 - **Fixed 256 MiB guest RAM.** There is no `/proc/meminfo` and no mmap in the
@@ -153,27 +103,34 @@ compile, and DevTools' "Disable cache" defeats it entirely.
   first read, so large art and music only download when a demo uses them.
   Lookups are case-insensitive and resolve by path suffix, then by base name
   anywhere in the tree, so `RUN "iedoom.ie68"` finds `Demos/m68k/iedoom.ie68`.
-  `SAVE` writes back into the in-memory volume for the life of the tab.
-- **Host reads are indirected.** Every "load a file by path" site (the
-  Program Executor, machine loader, media loader, CPU flat-binary loaders)
-  goes through `hostReadFile`/`hostStatExists` (`file_read_native.go`,
-  `file_read_wasm.go`): `os.ReadFile` on native, the in-memory volume on
-  wasm. `RUN "file.iex"` from the BASIC prompt therefore reboots the machine
-  into the file's CPU mode exactly as on native.
+  `SAVE` writes back into the in-memory volume for the life of the tab. The
+  demo page can also import a visitor's file into that volume and export a
+  saved file as a download.
+- **Machine loading reads are indirected.** The Program Executor, machine
+  loader, media loader and CPU flat-binary loaders use
+  `hostReadFile`/`hostStatExists` (`file_read_native.go`,
+  `file_read_wasm.go`): `os.ReadFile` on native, the in-memory volume on wasm.
+  `RUN "file.iex"` from the BASIC prompt therefore reboots the machine into
+  the file's CPU mode as it does on native. Other runtime components may have
+  their own platform-specific file handling.
 - **Main-thread rendering.** Ebiten's `RunGame` must run on the programme's
   main goroutine on js. The wasm build reuses the Darwin main-thread pump
   (`mainthread_mainloop.go`, built for `darwin || wasm`): the machine runs in
   goroutines and the main goroutine drives the render loop.
-- **Desktop-only host integrations are stubbed.** Clipboard, host overlay and
-  similar host code follow the headless stubs on wasm.
+- **Browser host integrations are limited.** The clipboard MMIO device is
+  present, but its host clipboard backend reports that the platform is
+  unsupported. The normal Ebiten host overlay is compiled into the browser
+  build. `HOST` operations that require the external helper or a host process
+  are unavailable.
 
 ## Guest-visible contract
 
-Unchanged. The MMIO map, ISA, BASIC dialect and device registers are the
-reference surface; only host backends differ. A `.bas` or `.ie*` programme
-that runs on the native VM runs on the browser VM within the limits above
-(IE64 code reaches wasm-JIT speed once hot; the other CPUs run at interpreter
-speed).
+The ISA, MMIO addresses, BASIC dialect and device register layout remain the
+reference surface. The wasm build changes some observable host and device
+behaviour as described above, including RAM sizing, VBlank visibility, file
+storage and unavailable desktop integrations. Subject to those limits, a
+`.bas` or `.ie*` programme that runs on the native VM can run on the browser
+VM. Hot IE64 code can use the wasm JIT; the other CPUs remain interpreted.
 
 ## Testing
 
@@ -181,14 +138,12 @@ speed).
   test natively; run `go test -tags headless -run 'TestWasm' .`.
 - Layer B (build gate): `make test-wasm-build` builds the package for js/wasm
   both plain (Vulkan excluded by `!js`) and with `-tags novulkan`.
-- Layer C (runtime): `make test-wasm-node` runs the js/wasm test suite under
-  Node via the repo-local runner (`tools/wasm/go_js_wasm_exec`), which
-  exposes the module memory as `__goMem` exactly like the demo page. It
-  covers the JITContext ABI guard, end-to-end interpreter-versus-JIT parity
-  on a hot loop, both halves of the MMU gate and the kill switch. The wasm
-  JIT's differential suite (generated blocks executed under wazero against
-  the interpreter) runs natively:
-  `go test -tags headless -run 'TestWasmJIT_|TestWasmEnc_' .`
+- Layer C (runtime): `make test-wasm-node` runs the selected `TestWasmJIT_`
+  and `TestWasmFileBridge_` js/wasm tests under Node via the repo-local runner
+  (`tools/wasm/go_js_wasm_exec`). The runner exposes the module memory as
+  `__goMem`, matching the demo page. See [`IE64_JIT.md`](IE64_JIT.md) for the
+  wasm JIT test contract and native differential-test command. Wasm-only RAM
+  tests are not selected by this target.
   Browser verification: serve the site, open `/demo/` and `/demo/?jit=0`;
   the JIT variant logs `IE64 wasm JIT: first block installed` to the
   console, both boot to the BASIC Ready prompt.
@@ -198,24 +153,27 @@ speed).
 - `/demo/?trace=1` sets `IE_TRACE_HOSTIO=1` in the Go environment, tracing
   FileIO, HostFS and media loader activity to the browser console.
 - `/demo/?yield=N` overrides the cooperative-yield interval in milliseconds.
+- `/demo/?ysleep=N` forces fixed-duration cooperative yielding with an `N`
+  millisecond sleep for comparison testing.
+- `/demo/?jitdiag=1` sets `IE64_WASM_JIT_DIAG=1`, publishing wasm JIT state to
+  `globalThis.__ieJITDiag` and logging throttled dispatcher diagnostics.
 - `make wasm-profile` builds without symbol stripping so the devtools
   Performance tab shows Go function names. It overwrites `ie.wasm`; run
   `make wasm` again before deploying.
 
 ## Known limitations
 
-- 24 MB artefact (after `wasm-opt`), roughly 6 MB over the wire once the CDN
-  compresses it; first visit pays the download, and repeat visits revalidate
-  by ETag and reuse the browser's cached, already-compiled copy.
+- The wasm artefact is large. A first visit downloads and compiles it. The
+  production cache policy requires revalidation on every visit. The browser
+  may reuse its cached response when the server reports that the binary has not
+  changed.
 - Guest CPU speed: IE64 tiers up through the wasm JIT; IE32, M68K, Z80, 6502
   and x86 are interpreter-only in the browser.
-- The wasm JIT covers the MMU-off integer core (ALU, load/store, branches,
-  subroutine and stack operations) and FP64 (arithmetic, moves, compares,
-  converts, DINT rounding modes, sticky exception flags and condition
-  codes). FP64 transcendentals (DSIN and friends), FP32, MMU-on execution
-  and the remaining system opcodes stay on the interpreter; blocks
-  containing them are simply not compiled past that point.
+- The IE64 wasm JIT has a deliberately narrower instruction surface than the
+  native backends. Its exact coverage and fallback rules are documented in
+  [`IE64_JIT.md`](IE64_JIT.md).
 - The disk volume is per-tab and in-memory; `SAVE` does not persist across a
   reload.
-- No serial, no host shell (`HOST` command paths that spawn processes are
-  native-only).
+- The guest terminal serial stream remains available, but there is no bridge
+  to an external serial port. `HOST` command paths that require the external
+  helper or spawn host processes are native-only.
