@@ -269,6 +269,13 @@ AOT_EMIT_OVERFLOW equ 0x042C10             ; q: asm text emitter overflow latch
 AOT_NATIVE_TYPES_OFF equ 0x042C18          ; q: nonzero disables compile-time scalar typing
 AOT_NATIVE_TYPES_CHANGED equ 0x042C20       ; q: type scan cleared a flag this pass (fixpoint latch)
 
+; Replacement BASIC compiler context. Keep this range distinct while the
+; replacement and legacy AOT compilers coexist in the same BASIC session.
+COMPILER_IR_BASE      equ 0x042C40          ; q: first typed IR record
+COMPILER_IR_CURSOR    equ 0x042C48          ; q: next typed IR record
+COMPILER_IR_END       equ 0x042C50          ; q: exclusive typed IR bound
+COMPILER_IR_COUNT     equ 0x042C58          ; q: number of complete IR records
+
 ; Native AOT scalar variable segment. It uses the ordinary BASIC numeric segment
 ; layout so any remaining runtime helper can find the same variables. Generated
 ; native code addresses payload slots directly.
