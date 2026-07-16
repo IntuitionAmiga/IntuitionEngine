@@ -2,6 +2,33 @@
 
 Technical reference for the IE64 Just-In-Time compiler. Covers the shared infrastructure, dispatcher, and both platform-specific backends (ARM64 and x86-64).
 
+### Loop specialisations
+
+Two conservative loop specialisations were prototyped for amd64, ARM64 and
+wasm, across single blocks and promoted regions. The first hoisted deduplicated
+bounds and MMIO proofs for invariant `LOAD`, `STORE`, `DLOAD` and `DSTORE`
+addresses, while retaining every store-side SMC probe. It rejected MMU, stack,
+changing-pointer and alternate-entry loops. The second removed the back-edge
+budget comparison only for an immediate-seeded, non-zero `SUB.Q` and `BNE`
+counter loop whose integer-only body and exact retired count fitted within
+`jitBudget`. Both matchers selected at most one loop per compiled unit.
+
+The prototypes also separated ordinary memory fallback value 1 from speculative
+precheck fallback value 2. A failed precheck returned to the loop head with the
+prefix retirement count, then the dispatcher interpreted one instruction
+without recording an MMIO deoptimisation. This protocol is internal to the JIT.
+
+Ten 500 ms Linux amd64 samples on an Intel Xeon W-11955M produced these medians:
+
+| Prototype | Baseline | Candidate | Change | Decision |
+|---|---:|---:|---:|---|
+| Bounded counter loop | 27,616.5 ns/op | 27,323.5 ns/op | -1.1% | Accepted |
+| Invariant memory loop | 52,994 ns/op | 52,840.5 ns/op | -0.3% | Accepted |
+
+Both positive median improvements are accepted. Qualifying loops use the
+specialised paths on native and wasm backends. MMU loops, changing pointers and
+stack accesses retain the established checks.
+
 ---
 
 ## Overview

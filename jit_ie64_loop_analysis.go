@@ -15,8 +15,10 @@ type ie64LoopAccess struct {
 
 type ie64LoopPlan struct {
 	head, back int
+	headPC     uint64
 	prefix     uint32
 	accesses   []ie64LoopAccess
+	hoisted    map[int]bool
 	bounded    bool
 	count      uint64
 	bodySize   uint32
@@ -25,13 +27,14 @@ type ie64LoopPlan struct {
 // Compilers are serialised by ie64CompileMu, so the emit-time plan can remain
 // package-local state like the existing FP residency and count-base plans.
 var ie64ActiveLoopPlan *ie64LoopPlan
+var ie64CurrentLoopInstr = -1
 
 // ie64AnalyseLoop returns the first conservative, single-entry loop in a
 // flattened compilation unit. Both native emitters and wasm use this result.
 func ie64AnalyseLoop(instrs []JITInstr, startPC uint64) *ie64LoopPlan {
 	for back := range instrs {
 		br := &instrs[back]
-		if br.opcode != OP_BNE {
+		if br.opcode != OP_BNE && br.opcode != OP_BRA {
 			continue
 		}
 		pc := startPC + uint64(br.pcOffset)
@@ -39,16 +42,23 @@ func ie64AnalyseLoop(instrs []JITInstr, startPC uint64) *ie64LoopPlan {
 		if target < startPC || target >= pc || (target-startPC)%IE64_INSTR_SIZE != 0 {
 			continue
 		}
-		head := int((target - startPC) / IE64_INSTR_SIZE)
-		if head >= back || ie64LoopHasExtraEntry(instrs, startPC, head, back) {
+		head := -1
+		for i := range instrs {
+			if uint64(instrs[i].pcOffset) == target-startPC {
+				head = i
+				break
+			}
+		}
+		if head < 0 || head >= back || ie64LoopHasExtraEntry(instrs, startPC, head, back) {
 			continue
 		}
-		p := &ie64LoopPlan{head: head, back: back, prefix: uint32(head), bodySize: uint32(back - head + 1)}
+		p := &ie64LoopPlan{head: head, back: back, headPC: target, prefix: uint32(head), bodySize: uint32(back - head + 1)}
 		written := uint32(0)
 		for i := head; i <= back; i++ {
 			written |= instrWrittenRegs(&instrs[i])
 		}
 		seen := make(map[ie64LoopAccess]struct{})
+		p.hoisted = make(map[int]bool)
 		validMem := true
 		for i := head; i < back; i++ {
 			in := &instrs[i]
@@ -67,12 +77,14 @@ func ie64AnalyseLoop(instrs []JITInstr, startPC uint64) *ie64LoopPlan {
 					seen[a] = struct{}{}
 					p.accesses = append(p.accesses, a)
 				}
+				p.hoisted[i] = true
 			case OP_PUSH64, OP_POP64, OP_JSR64, OP_JSR_IND, OP_RTS64:
 				validMem = false
 			}
 		}
 		if !validMem {
 			p.accesses = nil
+			p.hoisted = nil
 		}
 		p.bounded, p.count = ie64BoundedCounterLoop(instrs, p)
 		if len(p.accesses) != 0 || p.bounded {
@@ -80,6 +92,31 @@ func ie64AnalyseLoop(instrs []JITInstr, startPC uint64) *ie64LoopPlan {
 		}
 	}
 	return nil
+}
+
+func ie64CurrentAccessHoisted() bool {
+	return ie64ActiveLoopPlan != nil && ie64ActiveLoopPlan.hoisted[ie64CurrentLoopInstr]
+}
+
+func ie64AnalyseRegionLoop(region *ie64Region) (*ie64LoopPlan, []JITInstr) {
+	flat := make([]JITInstr, 0)
+	for bi, block := range region.blocks {
+		for _, in := range block {
+			in.pcOffset = uint32(region.blockPCs[bi] + uint64(in.pcOffset) - region.entryPC)
+			flat = append(flat, in)
+		}
+	}
+	return ie64AnalyseLoop(flat, region.entryPC), flat
+}
+
+func regionWrittenMask(blocks [][]JITInstr) uint32 {
+	var w uint32
+	for _, b := range blocks {
+		for i := range b {
+			w |= instrWrittenRegs(&b[i])
+		}
+	}
+	return w
 }
 
 func ie64LoopHasExtraEntry(instrs []JITInstr, startPC uint64, head, back int) bool {
@@ -110,7 +147,7 @@ func ie64BoundedCounterLoop(instrs []JITInstr, p *ie64LoopPlan) (bool, uint64) {
 	seed, sub, br := &instrs[p.head-1], &instrs[p.back-1], &instrs[p.back]
 	if seed.opcode != OP_MOVE || seed.size != IE64_SIZE_Q || seed.xbit != 1 || seed.rd == 0 || seed.imm32 == 0 ||
 		sub.opcode != OP_SUB || sub.size != IE64_SIZE_Q || sub.xbit != 1 || sub.rd != seed.rd || sub.rs != seed.rd || sub.imm32 != 1 ||
-		br.rs != seed.rd || br.rt != 0 {
+		br.opcode != OP_BNE || br.rs != seed.rd || br.rt != 0 {
 		return false, 0
 	}
 	writes := 0

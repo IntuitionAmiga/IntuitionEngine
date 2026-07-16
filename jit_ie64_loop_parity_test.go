@@ -22,3 +22,20 @@ func TestJIT_vs_Interpreter_BoundedCounterLoop(t *testing.T) {
 		assertFPParity(t, "bounded", buildIE64BoundedLoop(count))
 	}
 }
+
+func TestJIT_vs_Interpreter_InvariantMemoryLoop(t *testing.T) {
+	build := func(mem []byte) {
+		pc := uint64(PROG_START)
+		put := func(x []byte) { copy(mem[pc:], x); pc += 8 }
+		put(ie64Instr(OP_MOVE, 5, IE64_SIZE_Q, 1, 0, 0, 0x3000))
+		put(ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, 3))
+		put(ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 5, 0, 0))
+		put(ie64Instr(OP_ADD, 3, IE64_SIZE_Q, 1, 3, 0, 1))
+		put(ie64Instr(OP_STORE, 3, IE64_SIZE_Q, 0, 5, 0, 0))
+		put(ie64Instr(OP_SUB, 2, IE64_SIZE_Q, 1, 2, 0, 1))
+		back := int32(-32)
+		put(ie64Instr(OP_BNE, 0, 0, 0, 2, 0, uint32(back)))
+		put(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	}
+	assertFPParity(t, "invariant-memory", build)
+}

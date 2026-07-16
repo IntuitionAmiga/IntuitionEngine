@@ -117,6 +117,14 @@ compile, and DevTools' "Disable cache" defeats it entirely.
   compiled-wasm code cache. The heavy pixel work in the showcase demos
   (blitter, copper, Mode 7) is compiled Go and runs at full speed
   regardless.
+- **Loop specialisations.** Structured wasm variants of invariant
+  memory prechecks and bounded immediate-counter budget elision were tested in
+  parallel with the native backends. They covered single blocks and promoted
+  regions, retained store-side SMC probes, and rejected MMU, stack,
+  changing-pointer, helper-capable and alternate-entry loops. The corresponding
+  Linux amd64 targeted medians improved by 0.3 per cent and 1.1 per cent. Both
+  positive results are accepted, so qualifying wasm loops use the specialised
+  structured paths.
 - **No Vulkan.** The Voodoo uses the software rasteriser; Vulkan files carry
   `!js` build constraints, so the exclusion needs no `-tags novulkan`.
 - **Fixed 256 MiB guest RAM.** There is no `/proc/meminfo` and no mmap in the

@@ -506,6 +506,15 @@ flowchart LR
   MMU region promotion remains opt-in through `IE64_JIT_REGION_MMU=1`. The
   browser backend emits the same bounded region shape as one structured wasm
   function and keeps exact disjoint code ranges for SMC invalidation.
+- **IE64 loop specialisations** - invariant-address memory prechecks
+  and bounded immediate-counter budget elision were implemented and tested for
+  native blocks, native regions and structured wasm loops. Their conservative
+  matchers rejected MMU, stack, changing-pointer, helper-capable and
+  alternate-entry cases, selected only one loop per compiled unit, and retained
+  store-side SMC probes. Ten Linux amd64 samples improved the targeted medians
+  by 0.3 per cent and 1.1 per cent respectively. Both positive results are
+  accepted. Failed speculative prechecks use internal fallback value 2 and
+  interpret one instruction without recording an MMIO deoptimisation.
 
 ## Platform JIT Matrix
 

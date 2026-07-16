@@ -1050,8 +1050,12 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 	// written by instructions preceding the bail point.
 	writtenSoFar := uint32(0)
 	for i := range instrs {
+		if ie64ActiveLoopPlan != nil && len(ie64ActiveLoopPlan.accesses) != 0 && i == ie64ActiveLoopPlan.head {
+			emitIE64LoopPrecheckARM64(cb, &br, writtenSoFar, ie64ActiveLoopPlan)
+		}
 		instrOffsets[i] = cb.Len()
 		ji := &instrs[i]
+		ie64CurrentLoopInstr = i
 		emitInstruction(cb, ji, startPC, i == len(instrs)-1, &br, writtenSoFar, i, instrOffsets)
 		writtenSoFar |= instrWrittenRegs(ji)
 	}
@@ -2226,6 +2230,60 @@ func emitBSWAP(cb *CodeBuffer, ji *JITInstr) {
 // Memory Access
 // ===========================================================================
 
+func emitIE64LoopPrecheckARM64(cb *CodeBuffer, br *blockRegs, writtenSoFar uint32, plan *ie64LoopPlan) {
+	var fail []int
+	// A cached block compiled with the MMU off may be entered after the MMU
+	// changes. Route that execution through the precheck fallback before any
+	// direct, untranslated access.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
+	mmuFail := cb.Len()
+	cb.Emit32(0)
+	for _, access := range plan.accesses {
+		rs := resolveReg(cb, access.base, 0)
+		emitLoadImm32(cb, 1, uint32(access.disp))
+		cb.Emit32(arm64SXTW(1, 1))
+		cb.Emit32(arm64ADD(0, rs, 1))
+		cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+		cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMemSize/4)))
+		if access.width > 1 {
+			cb.Emit32(arm64SUB_imm(1, 1, access.width-1))
+		}
+		cb.Emit32(arm64CMP(0, 1))
+		fail = append(fail, cb.Len())
+		cb.Emit32(0)
+		cb.Emit32(arm64CMP(0, arm64RegIOStart))
+		low := cb.Len()
+		cb.Emit32(0)
+		cb.Emit32(arm64LSR_imm(1, 0, 8))
+		cb.Emit32(arm64LDRB_reg(1, arm64RegIOBitmap, 1))
+		nonIO := cb.Len()
+		cb.Emit32(0)
+		fail = append(fail, cb.Len())
+		cb.Emit32(0)
+		next := cb.Len()
+		cb.PatchUint32(low, arm64Bcond(arm64CondLO, int32(next-low)))
+		cb.PatchUint32(nonIO, arm64CBZ(1, int32(next-nonIO)))
+	}
+	success := cb.Len()
+	cb.Emit32(0)
+	failPC := cb.Len()
+	cb.PatchUint32(mmuFail, arm64CBNZ(1, int32(failPC-mmuFail)))
+	for i, off := range fail {
+		if i%2 == 0 {
+			cb.PatchUint32(off, arm64Bcond(arm64CondHS, int32(failPC-off)))
+		} else {
+			cb.PatchUint32(off, arm64B(int32(failPC-off)))
+		}
+	}
+	cb.Emit32(arm64LDR_imm(0, 31, 96/8))
+	emitLoadImm32(cb, 1, jitFallbackLoopPrecheck)
+	cb.Emit32(arm64STR_W_imm(1, 0, uint32(jitCtxOffNeedIOFallback/4)))
+	emitPackedPCAndCount(cb, plan.headPC, plan.prefix, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
+	cb.PatchUint32(success, arm64B(int32(cb.Len()-success)))
+}
+
 // emitLOAD handles LOAD rd, disp(rs)
 func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	if ji.rd == 0 {
@@ -2239,6 +2297,26 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 	emitLoadImm32(cb, 1, ji.imm32) // W1 = imm32
 	cb.Emit32(arm64SXTW(1, 1))     // X1 = sign-extend
 	cb.Emit32(arm64ADD(0, rsReg, 1))
+	if ie64CurrentAccessHoisted() {
+		dst, mapped := ie64ToARM64Reg(ji.rd)
+		if !mapped {
+			dst = 2
+		}
+		switch ji.size {
+		case IE64_SIZE_B:
+			cb.Emit32(arm64LDRB_reg(dst, arm64RegMemBase, 0))
+		case IE64_SIZE_W:
+			cb.Emit32(arm64LDRH_reg(dst, arm64RegMemBase, 0))
+		case IE64_SIZE_L:
+			cb.Emit32(arm64LDR_W_reg(dst, arm64RegMemBase, 0))
+		default:
+			cb.Emit32(arm64LDR_reg(dst, arm64RegMemBase, 0))
+		}
+		if !mapped {
+			emitStoreSpilledReg(cb, dst, ji.rd)
+		}
+		return
+	}
 
 	// Phase 5 cycle 5.4: MMU-on check. ctx.MMUEnabled is refreshed by
 	// the Go dispatcher before every callNative; any non-zero value
@@ -2464,6 +2542,19 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 		cb.Emit32(arm64MOV(4, srcReg)) // X4 = src
 		emitSizeMask(cb, 4, ji.size)
 		srcReg = 4
+	}
+	if ie64CurrentAccessHoisted() {
+		switch ji.size {
+		case IE64_SIZE_B:
+			cb.Emit32(arm64STRB_reg(srcReg, arm64RegMemBase, 0))
+		case IE64_SIZE_W:
+			cb.Emit32(arm64STRH_reg(srcReg, arm64RegMemBase, 0))
+		case IE64_SIZE_L:
+			cb.Emit32(arm64STR_W_reg(srcReg, arm64RegMemBase, 0))
+		default:
+			cb.Emit32(arm64STR_reg(srcReg, arm64RegMemBase, 0))
+		}
+		return
 	}
 
 	// Phase 5 cycle 5.5: MMU-on check → helper exit.
@@ -4266,6 +4357,13 @@ func emitDLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 		emitFPMemHelperExitARM64(cb, ji, instrPC, HELPER_DLOAD, uint32(IE64_SIZE_Q), br, writtenSoFar)
 		return
 	}
+	if ie64CurrentAccessHoisted() {
+		cb.Emit32(arm64LDR_reg(2, arm64RegMemBase, 0))
+		emitStoreDPairBits(cb, 2, ji.rd)
+		cb.Emit32(arm64MOV(0, 2))
+		emitFPCondCodes64ARM64(cb, ji)
+		return
+	}
 
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
 	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
@@ -4335,6 +4433,10 @@ func emitDSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, wri
 	}
 
 	emitLoadDPairBits(cb, 3, ji.rd)
+	if ie64CurrentAccessHoisted() {
+		cb.Emit32(arm64STR_reg(3, arm64RegMemBase, 0))
+		return
+	}
 
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
 	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
@@ -4938,6 +5040,10 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 	}
 	br := analyzeBlockRegs(allInstrs)
 	br.hasBackwardBranch = true
+	regionLoopPlan, _ := ie64AnalyseRegionLoop(region)
+	prevLoopPlan := ie64ActiveLoopPlan
+	ie64ActiveLoopPlan = regionLoopPlan
+	defer func() { ie64ActiveLoopPlan = prevLoopPlan }()
 
 	cb := NewCodeBuffer(len(allInstrs) * 256)
 	if br.hasFPU && ie64FPResidencyEnabled() {
@@ -4952,6 +5058,7 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		pcToBlock[pc] = i
 	}
 	blockLabels := make([]int, len(region.blocks))
+	loopBodyLabels := make([]int, len(region.blocks))
 	instrCountAtBlock := make([]int, len(region.blocks))
 	type forwardFixup struct {
 		branchOffset int
@@ -4968,8 +5075,16 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		ie64MarkFPSRCCDead(block)
 		instrOffsets := make([]int, len(block))
 		writtenSoFar := regionWrittenSoFar
+		if regionLoopPlan != nil && region.blockPCs[blockIndex] == regionLoopPlan.headPC && len(regionLoopPlan.accesses) != 0 {
+			saved := cb.instrCountBase
+			cb.instrCountBase = 0
+			emitIE64LoopPrecheckARM64(cb, &br, writtenSoFar, regionLoopPlan)
+			cb.instrCountBase = saved
+		}
+		loopBodyLabels[blockIndex] = cb.Len()
 		for i := range block {
 			ji := &block[i]
+			ie64CurrentLoopInstr = totalInstrCount + i
 			isLast := i == len(block)-1
 			if isLast && (ji.opcode == OP_BRA || ji.opcode == OP_JMP) {
 				instrPC := region.blockPCs[blockIndex] + uint64(ji.pcOffset)
@@ -4983,7 +5098,7 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 							cb.Emit32(arm64CMP_imm(arm64RegLoopCount, jitBudget))
 							budgetExitOffset := cb.Len()
 							cb.Emit32(0)
-							cb.Emit32(arm64B(int32(blockLabels[targetBlock] - cb.Len())))
+							cb.Emit32(arm64B(int32(loopBodyLabels[targetBlock] - cb.Len())))
 							budgetExitPC := cb.Len()
 							cb.PatchUint32(budgetExitOffset, arm64Bcond(arm64CondHS, int32(budgetExitPC-budgetExitOffset)))
 							cb.Emit32(arm64SUB_imm(arm64RegLoopCount, arm64RegLoopCount, bodySize))

@@ -409,9 +409,13 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 	loopPlan := (*ie64LoopPlan)(nil)
 	if len(blocks) == 1 {
 		loopPlan = ie64AnalyseLoop(instrs, startPC)
-		if loopPlan != nil && !loopPlan.bounded {
-			loopPlan = nil
+	} else {
+		r := &ie64Region{entryPC: startPC}
+		for _, block := range blocks {
+			r.blockPCs = append(r.blockPCs, block.pc)
+			r.blocks = append(r.blocks, block.instrs)
 		}
+		loopPlan, _ = ie64AnalyseRegionLoop(r)
 	}
 	e := &wasmBlockEmitter{b: &wasmBody{}, needsMem: needsMem, needsSMC: needsSMC, needsFP: hasFP, gprPlan: gprPlan, fpPlan: fpPlan, loopPlan: loopPlan}
 	if loopPlan != nil {
@@ -459,11 +463,17 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 	for blockIdx := range blocks {
 		block := &blocks[blockIdx]
 		if blockIdx == loopBlockIdx {
+			if loopPlan != nil && len(loopPlan.accesses) != 0 {
+				e.emitLoopPrechecks()
+			}
 			e.b.loop()
 		}
 		for i := range block.instrs {
 			ins := &block.instrs[i]
-			if loopPlan != nil && int(idx) == loopPlan.head {
+			if len(blocks) == 1 && loopPlan != nil && int(idx) == loopPlan.head {
+				if len(loopPlan.accesses) != 0 {
+					e.emitLoopPrechecks()
+				}
 				e.b.loop()
 			}
 			instrPC := block.pc + uint64(ins.pcOffset)
@@ -505,7 +515,7 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 			idx++
 		}
 	}
-	if loopPlan != nil {
+	if len(blocks) == 1 && loopPlan != nil {
 		e.b.end()
 	}
 	if loopBlockIdx >= 0 {
@@ -829,8 +839,19 @@ func (e *wasmBlockEmitter) emitCondBranch(ins *JITInstr, idx uint32, instrPC uin
 	case OP_BLS:
 		b.op(wasmOpI64LeU)
 	}
-	if e.loopPlan != nil && e.loopPlan.bounded && int(idx) == e.loopPlan.back {
+	if e.loopPlan != nil && int(idx) == e.loopPlan.back {
 		b.ifVoid()
+		if !e.loopPlan.bounded {
+			b.localGet(e.retCountLocal)
+			b.i32Const(int32(e.loopPlan.bodySize))
+			b.op(wasmOpI32Add)
+			b.i32Const(ie64JITLoopBudget)
+			b.op(wasmOpI32GeU)
+			b.ifVoid()
+			e.exit(e.loopPlan.headPC, idx+1)
+			b.op(wasmOpReturn)
+			b.end()
+		}
 		b.localGet(e.retCountLocal)
 		b.i32Const(int32(e.loopPlan.bodySize))
 		b.op(wasmOpI32Add)
@@ -843,6 +864,23 @@ func (e *wasmBlockEmitter) emitCondBranch(ins *JITInstr, idx uint32, instrPC uin
 	e.exit(uint64(int64(instrPC)+int64(int32(ins.imm32))), idx+1)
 	b.op(wasmOpReturn)
 	b.end()
+}
+
+func (e *wasmBlockEmitter) loopAccessHoisted(idx uint32) bool {
+	return e.loopPlan != nil && e.loopPlan.hoisted[int(idx)]
+}
+
+func (e *wasmBlockEmitter) emitLoopPrechecks() {
+	for _, access := range e.loopPlan.accesses {
+		e.effAddr(&JITInstr{rs: access.base, imm32: uint32(access.disp)})
+		e.memChecks(access.width, func() {
+			e.exit(e.loopPlan.headPC, e.loopPlan.prefix)
+			e.b.localGet(wasmLocCtx)
+			e.b.i32Const(int32(jitFallbackLoopPrecheck))
+			e.b.i32Store(2, jitCtxOffNeedIOFallback)
+			e.b.op(wasmOpReturn)
+		})
+	}
 }
 
 // stackHelperExit is the helper-exit variant for stack operations: LiveSP
@@ -1092,7 +1130,7 @@ func (e *wasmBlockEmitter) emitLoad(ins *JITInstr, idx uint32, instrPC uint64) {
 	}
 	b := e.b
 	e.effAddr(ins)
-	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, ins.size); !proven {
+	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, ins.size); !proven && !e.loopAccessHoisted(idx) {
 		e.memChecks(ie64AccessBytes(ins.size), func() {
 			e.helperExit(HELPER_LOAD, ins.size, ins.rd, idx, instrPC, false)
 		})
@@ -1120,7 +1158,7 @@ func (e *wasmBlockEmitter) emitStore(ins *JITInstr, idx uint32, instrPC uint64) 
 	b.localSet(wasmLocB)
 	e.effAddr(ins)
 	n := ie64AccessBytes(ins.size)
-	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, ins.size); !proven {
+	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, ins.size); !proven && !e.loopAccessHoisted(idx) {
 		e.memChecks(n, func() {
 			e.helperExit(HELPER_STORE, ins.size, ins.rd, idx, instrPC, true)
 		})
@@ -2084,7 +2122,7 @@ func (e *wasmBlockEmitter) emitFP64(ins *JITInstr) {
 func (e *wasmBlockEmitter) emitDLoad(ins *JITInstr, idx uint32, instrPC uint64) {
 	b := e.b
 	e.effAddr(ins)
-	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, IE64_SIZE_Q); !proven {
+	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, IE64_SIZE_Q); !proven && !e.loopAccessHoisted(idx) {
 		e.memChecks(8, func() {
 			e.helperExit(HELPER_DLOAD, IE64_SIZE_Q, ins.rd, idx, instrPC, false)
 		})
@@ -2102,7 +2140,7 @@ func (e *wasmBlockEmitter) emitDStore(ins *JITInstr, idx uint32, instrPC uint64)
 	e.loadPairBits(ins.rd)
 	b.localSet(wasmLocB)
 	e.effAddr(ins)
-	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, IE64_SIZE_Q); !proven {
+	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, IE64_SIZE_Q); !proven && !e.loopAccessHoisted(idx) {
 		e.memChecks(8, func() {
 			e.helperExit(HELPER_DSTORE, IE64_SIZE_Q, ins.rd, idx, instrPC, true)
 		})

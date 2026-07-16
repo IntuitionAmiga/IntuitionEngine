@@ -1203,8 +1203,12 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 	var pendingChains []ie64PendingChainSlot
 
 	for i := range instrs {
+		if ie64ActiveLoopPlan != nil && len(ie64ActiveLoopPlan.accesses) != 0 && i == ie64ActiveLoopPlan.head {
+			emitIE64LoopPrecheckAMD64(cb, &br, writtenSoFar, ie64ActiveLoopPlan)
+		}
 		instrOffsets[i] = cb.Len()
 		ji := &instrs[i]
+		ie64CurrentLoopInstr = i
 		emitInstruction(cb, ji, startPC, i == len(instrs)-1, &br, writtenSoFar, i, instrOffsets, &pendingChains)
 		writtenSoFar |= instrWrittenRegs(ji)
 	}
@@ -1435,6 +1439,10 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		allInstrs = append(allInstrs, blk...)
 	}
 	br := analyzeBlockRegs(allInstrs)
+	regionLoopPlan, _ := ie64AnalyseRegionLoop(region)
+	prevLoopPlan := ie64ActiveLoopPlan
+	ie64ActiveLoopPlan = regionLoopPlan
+	defer func() { ie64ActiveLoopPlan = prevLoopPlan }()
 	// Conservative: cross-block back-edge detection is per-block today.
 	// Force-true so the prologue + counter machinery handles intra-region
 	// back-edges correctly.
@@ -1466,6 +1474,7 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 	}
 
 	blockLabels := make([]int, len(region.blocks))
+	loopBodyLabels := make([]int, len(region.blocks))
 	instrCountAtBlock := make([]int, len(region.blocks))
 	type fwdFixup struct {
 		jmpDispOff  int
@@ -1484,6 +1493,13 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		ie64CurrentInstrCountBase = uint32(totalInstrCount)
 		instrOffsets := make([]int, len(blk))
 		writtenSoFar := uint32(0)
+		if regionLoopPlan != nil && region.blockPCs[bi] == regionLoopPlan.headPC && len(regionLoopPlan.accesses) != 0 {
+			saved := ie64CurrentInstrCountBase
+			ie64CurrentInstrCountBase = 0
+			emitIE64LoopPrecheckAMD64(cb, &br, regionWrittenMask(region.blocks[:bi]), regionLoopPlan)
+			ie64CurrentInstrCountBase = saved
+		}
+		loopBodyLabels[bi] = cb.Len()
 
 		// FPSR CC liveness is computed per sub-block: each sub-block end is
 		// treated as an observer, so cross-block CC elision is forgone but
@@ -1497,6 +1513,7 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 
 		for i := range blk {
 			ji := &blk[i]
+			ie64CurrentLoopInstr = totalInstrCount + i
 			isLast := i == len(blk)-1
 
 			// Intercept terminating BRA/JMP whose static target lands
@@ -1535,7 +1552,7 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 							amd64ALU_reg_imm32_32bit(cb, 7, amd64RAX, int32(jitBudget))
 							budgetExitOff := amd64Jcc_rel32(cb, amd64CondAE)
 							backOff := amd64JMP_rel32(cb)
-							patchRel32(cb, backOff, blockLabels[targetBI])
+							patchRel32(cb, backOff, loopBodyLabels[targetBI])
 
 							// Budget exhausted: subtract the bodySize we
 							// just added (we are exiting before this
@@ -3095,6 +3112,17 @@ func emitLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	}
 
 	emitMemAddr(cb, ji) // RAX = effective addr (full 64-bit)
+	if ie64CurrentAccessHoisted() {
+		dstReg, mapped := ie64ToAMD64Reg(ji.rd)
+		if !mapped {
+			dstReg = amd64R10
+		}
+		emitMemLoad(cb, dstReg, ji.size)
+		if !mapped {
+			emitStoreSpilledRegAMD64(cb, dstReg, ji.rd)
+		}
+		return
+	}
 
 	// Phase 5 cycle 5.3: MMU-on check. The dispatcher refreshes
 	// ctx.MMUEnabled before every callNative, so any non-zero value here
@@ -3266,6 +3294,11 @@ func emitSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	if preserveSrcAcrossProbe {
 		amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(amd64OffCtxPtr))
 		amd64MOV_mem_reg(cb, amd64RDX, int32(jitCtxOffHelperVal), srcReg)
+	}
+	if ie64CurrentAccessHoisted() {
+		emitMemStore(cb, srcReg, ji.size)
+		emitIE64SMCStoreCheckAMD64(cb, ji.size, true)
+		return
 	}
 
 	// Phase 5 cycle 5.5: MMU-on check. Branch to helper exit if MMU is
@@ -3509,6 +3542,46 @@ func emitIOBail(cb *CodeBuffer, instrPC uint64, pcOffset uint32, br *blockRegs, 
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
+func emitIE64LoopPrecheckAMD64(cb *CodeBuffer, br *blockRegs, writtenSoFar uint32, plan *ie64LoopPlan) {
+	var fail []int
+	// Cached non-MMU blocks can survive an architectural MMU transition.
+	// Reject the speculative proof before any hoisted access when the
+	// dispatcher reports that translation is now enabled.
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
+	fail = append(fail, amd64Jcc_rel32(cb, amd64CondNE))
+	for _, access := range plan.accesses {
+		emitMemAddr(cb, &JITInstr{rs: access.base, imm32: uint32(access.disp)})
+		amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+		amd64MOV_reg_mem32(cb, amd64RCX, amd64RCX, int32(jitCtxOffMemSize))
+		if access.width > 1 {
+			amd64ALU_reg_imm32(cb, 5, amd64RCX, int32(access.width-1))
+		}
+		amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RCX)
+		fail = append(fail, amd64Jcc_rel32(cb, amd64CondAE))
+		amd64ALU_reg_reg(cb, 0x39, amd64RAX, amd64RegIOStart)
+		low := amd64Jcc_rel32(cb, amd64CondB)
+		nonIO, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapDenseRAM, amd64RegIOBitmap, amd64RAX, amd64RCX, amd64RCX, true)
+		if !ok {
+			panic("missing FPBitmapDenseRAM shape")
+		}
+		fail = append(fail, amd64JMP_rel32(cb))
+		next := cb.Len()
+		patchRel32(cb, low, next)
+		patchRel32(cb, nonIO, next)
+	}
+	success := amd64JMP_rel32(cb)
+	failPC := cb.Len()
+	for _, off := range fail {
+		patchRel32(cb, off, failPC)
+	}
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
+	amd64MOV_mem_imm32(cb, amd64RCX, int32(jitCtxOffNeedIOFallback), jitFallbackLoopPrecheck)
+	emitPackedPCAndCount(cb, plan.headPC, plan.prefix, br)
+	emitEpilogue(cb, writtenSoFar, br.used)
+	patchRel32(cb, success, cb.Len())
+}
+
 // emitBailToInterpreter is used for RTI, WAIT, and FPU transcendentals.
 func emitBailToInterpreter(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	emitIOBail(cb, instrPC, ji.pcOffset, br, writtenSoFar)
@@ -3612,7 +3685,7 @@ func emitBcc_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, cond byte, br *
 
 	if br.hasBackwardBranch {
 		emitLoadImm64AMD64(cb, amd64RegIE64PC, targetPC)
-		emitDynamicCountAMD64(cb, staticCount)
+		emitDynamicCountAMD64(cb, staticCount+ie64CurrentInstrCountBase)
 		emitEpilogue(cb, br.written, br.used)
 	} else {
 		emitPackedPCAndCount(cb, targetPC, staticCount, br)
@@ -5542,6 +5615,15 @@ func emitDLOAD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs
 	}
 
 	emitMemAddr(cb, ji) // address in RAX (full 64-bit)
+	if ie64CurrentAccessHoisted() {
+		emitMemOpSIB(cb, true, 0x8B, amd64RDX, amd64RegMemBase, amd64RAX, 0)
+		emitStoreDPairBitsAMD64(cb, amd64RDX, ji.rd)
+		if !ji.fpsrCCDead {
+			amd64MOV_reg_reg(cb, amd64RAX, amd64RDX)
+			emitSetFPCondCodes64AMD64(cb)
+		}
+		return
+	}
 
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
 	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
@@ -5602,6 +5684,11 @@ func emitDSTORE_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockReg
 
 	emitMemAddr(cb, ji) // address in RAX (full 64-bit)
 	emitLoadDPairBitsAMD64(cb, amd64R10, ji.rd)
+	if ie64CurrentAccessHoisted() {
+		emitMemOpSIB(cb, true, 0x89, amd64R10, amd64RegMemBase, amd64RAX, 0)
+		emitIE64SMCStoreCheckAMD64(cb, IE64_SIZE_Q, false)
+		return
+	}
 
 	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(amd64OffCtxPtr))
 	amd64CMP_mem32_imm0(cb, amd64RCX, int32(jitCtxOffMMUEnabled))
