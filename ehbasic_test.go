@@ -7,9 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1234,7 +1234,7 @@ func TestEhBASICDynamicLineBufferStaticContracts(t *testing.T) {
 		}
 	}
 
-	aot := read("sdk/include/ehbasic_aot.inc")
+	aot := read("sdk/include/ehbasic_compiler_driver.inc")
 	for _, want := range []string{
 		"move.l r2, #0x420D0",
 		"move.l r2, #0x420D8",
@@ -1392,7 +1392,7 @@ func TestEhBASICIfElseBoundaryStaticContracts(t *testing.T) {
 		}
 	}
 
-	aot := read("sdk/include/ehbasic_aot.inc")
+	aot := read("sdk/include/ehbasic_compiler_driver.inc")
 	if strings.Count(aot, "aot_str_store_q    ; store.q r2, (r1)") < 3 {
 		t.Fatal("ehbasic_aot.inc must emit qword IF/ELSE boundary stores")
 	}
@@ -13002,7 +13002,6 @@ func newEhbasicREPLHarnessWithFileIOOnHarness(t *testing.T, asmBin string, tmpDi
 	}
 
 	fio := NewFileIODevice(h.bus, tmpDir)
-	fio.SetRuntimeBlob(runtimeBlobForTests(t)) // mirror the host serving the embedded blob
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
 	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 	h.bus.MapIO64(FILE_DATA_PTR64, FILE_DATA_PTR64_END, fio.HandleRead64, fio.HandleWrite64)
@@ -13184,7 +13183,6 @@ func TestHW_JIT_LoadThenRun(t *testing.T) {
 
 	h := newEhbasicHarness(t)
 	fio := NewFileIODevice(h.bus, tmpDir)
-	fio.SetRuntimeBlob(runtimeBlobForTests(t)) // mirror the host serving the embedded blob
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
 	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 	h.cpu.jitEnabled = true

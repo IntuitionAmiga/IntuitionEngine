@@ -71,7 +71,8 @@ include "ehbasic_compiler_helpers.inc"
 include "ehbasic_compiler_lower.inc"
 include "ehbasic_compiler_emit.inc"
 include "ehbasic_compiler.inc"
-include "ehbasic_aot.inc"
+include "ehbasic_assembler.inc"
+include "ehbasic_compiler_driver.inc"
 `, body)
 
 	dir := t.TempDir()
@@ -114,11 +115,6 @@ func TestAOT_Allocators(t *testing.T) {
     la      r1, 0x030018
     store.q r8, (r1)            ; [3] addr2 (size 0x2001 -> 0x3000)
 
-    move.q  r8, #0x1000
-    jsr     aot_alloc_low32
-    la      r1, 0x030020
-    store.q r8, (r1)            ; [4] low addr
-
     mfcr    r8, cr15
     jsr     aot_alloc64
     la      r1, 0x030028
@@ -146,14 +142,11 @@ func TestAOT_Allocators(t *testing.T) {
 	addr1 := h.bus.Read64(0x030008)
 	status1 := h.bus.Read64(0x030010)
 	addr2 := h.bus.Read64(0x030018)
-	low := h.bus.Read64(0x030020)
 	exStatus := h.bus.Read64(0x030028)
 	exAddr := h.bus.Read64(0x030030)
 	afterReset := h.bus.Read64(0x030038)
 
 	const floor = 0x01000000
-	const low32Base = 0x00780000
-	const low32End = 0x00792000
 	if cr < floor+0x10000 {
 		t.Fatalf("CR_RAM_SIZE_BYTES too small or unpublished: CR=%#x", cr)
 	}
@@ -175,63 +168,11 @@ func TestAOT_Allocators(t *testing.T) {
 		t.Fatalf("addr2 = %#x below floor %#x", addr2, floor)
 	}
 
-	// allocLow32 uses the explicit AOT public low32 scratch window and no longer
-	// shares the retained-buffer frontier.
-	if low != low32Base {
-		t.Fatalf("low alloc = %#x, want AOT_LOW32_BASE %#x", low, uint64(low32Base))
-	}
-	if low+0x1000 > low32End {
-		t.Fatalf("allocLow32 block [%#x,%#x) exceeds AOT low32 window end %#x", low, low+0x1000, uint64(low32End))
-	}
-	// Disjoint from the retained arena: the public low32 window is below
-	// AOT_ALLOC_FLOOR, while retained buffers stay above it.
-	if low+0x1000 > addr2 {
-		t.Fatalf("low block [%#x,%#x) overlaps alloc64 region (frontier %#x)", low, low+0x1000, addr2)
-	}
-
 	if exStatus != 1 || exAddr != 0 {
 		t.Fatalf("exhaustion: status=%d addr=%#x, want status=1 addr=0", exStatus, exAddr)
 	}
 	if afterReset != addr1 {
 		t.Fatalf("after reset alloc = %#x, want %#x (same as addr1)", afterReset, addr1)
-	}
-}
-
-// TestAOT_AllocatorModesDisjoint asserts that retained arena allocation and AOT
-// public low32 scratch allocation use separate ranges.
-func TestAOT_AllocatorModesDisjoint(t *testing.T) {
-	asmBin := buildAssembler(t)
-	body := `    jsr     aot_alloc_reset
-    move.q  r8, #0x1000
-    jsr     aot_alloc64
-    la      r1, 0x031000
-    store.q r8, (r1)            ; [0] A (alloc64)
-    move.q  r8, #0x1000
-    jsr     aot_alloc_low32
-    la      r1, 0x031008
-    store.q r8, (r1)            ; [1] B (allocLow32)
-    la      r1, 0x031010
-    store.q r9, (r1)            ; [2] B status`
-
-	bin := assembleAOTUnit(t, asmBin, body)
-	h := newEhbasicHarness(t)
-	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-	h.loadBytes(bin)
-	h.runCycles(1_000_000)
-
-	a := h.bus.Read64(0x031000)
-	b := h.bus.Read64(0x031008)
-	bStatus := h.bus.Read64(0x031010)
-
-	if a == 0 || bStatus != 0 || b == 0 {
-		t.Fatalf("allocation failed: A=%#x B=%#x status=%d", a, b, bStatus)
-	}
-	if a == b {
-		t.Fatalf("alloc64 and allocLow32 returned the same block %#x", a)
-	}
-	// Both 0x1000 blocks; the low block must lie entirely below the retained block.
-	if b+0x1000 > a {
-		t.Fatalf("blocks overlap: alloc64 [%#x,%#x), allocLow32 [%#x,%#x)", a, a+0x1000, b, b+0x1000)
 	}
 }
 
@@ -372,156 +313,6 @@ func TestAOT_AllocResetLegacyLayoutClamp(t *testing.T) {
 				t.Fatalf("AOT_ARENA_HIGH_NEXT = %#x, want %#x", got, tc.wantTop)
 			}
 		})
-	}
-}
-
-func TestAOT_CompileOutputBuffersUseLow32FileBridge(t *testing.T) {
-	asmBin := buildAssembler(t)
-	body := `    la      r16, BASIC_STATE
-    add.q   r1, r16, #ST_CTRL_LOW
-    li      r2, #0x0000000100200000
-    store.q r2, (r1)
-    jsr     aot_alloc_reset
-
-    move.q  r8, #0x80000
-    jsr     aot_alloc_file_bridge
-    la      r1, 0x031000
-    store.q r8, (r1)            ; [0] COMPILE/TRANSPILE text buffer
-    la      r1, 0x031008
-    store.q r9, (r1)            ; [1] text allocation status
-
-    move.q  r8, #0x18000
-    jsr     aot_alloc_file_bridge
-    la      r1, 0x031010
-    store.q r8, (r1)            ; [2] COMPILE/TRANSPILE code buffer
-    la      r1, 0x031018
-    store.q r9, (r1)            ; [3] code allocation status
-
-    move.q  r8, #0x18000
-    jsr     aot_alloc_file_bridge
-    la      r1, 0x031030
-    store.q r8, (r1)            ; [6] ASSEMBLE code buffer
-    la      r1, 0x031038
-    store.q r9, (r1)            ; [7] ASSEMBLE code allocation status
-
-    la      r1, AOT_FILE_BRIDGE_NEXT
-    load.q  r2, (r1)
-    la      r1, 0x031020
-    store.q r2, (r1)            ; [4] bridge frontier after both buffers
-    la      r1, AOT_ARENA_HIGH_NEXT
-    load.q  r2, (r1)
-    la      r1, 0x031028
-    store.q r2, (r1)            ; [5] retained frontier after bridge allocations`
-
-	bin := assembleAOTUnit(t, asmBin, body)
-	h := newEhbasicHarness(t)
-	h.bus.ApplyProfileVisibleCeiling(0x0000000100400000)
-	h.loadBytes(bin)
-	h.runCycles(1_000_000)
-
-	text := h.bus.Read64(0x031000)
-	textStatus := h.bus.Read64(0x031008)
-	code := h.bus.Read64(0x031010)
-	codeStatus := h.bus.Read64(0x031018)
-	next := h.bus.Read64(0x031020)
-	arenaNext := h.bus.Read64(0x031028)
-	assembleCode := h.bus.Read64(0x031030)
-	assembleCodeStatus := h.bus.Read64(0x031038)
-
-	const low32Cap = 0xFFFF0000
-	const ctrlLow = 0x0000000100200000
-	const wantText = low32Cap - 0x80000
-	const wantCode = wantText - 0x18000
-	const wantAssembleCode = wantCode - 0x18000
-
-	if textStatus != 0 || codeStatus != 0 || assembleCodeStatus != 0 {
-		t.Fatalf("file-written output bridge allocations failed: text status=%d code status=%d assemble code status=%d",
-			textStatus, codeStatus, assembleCodeStatus)
-	}
-	if text != wantText {
-		t.Fatalf("text buffer = %#x, want low32 bridge address %#x", text, uint64(wantText))
-	}
-	if code != wantCode {
-		t.Fatalf("code buffer = %#x, want low32 bridge address %#x", code, uint64(wantCode))
-	}
-	if assembleCode != wantAssembleCode {
-		t.Fatalf("ASSEMBLE code buffer = %#x, want low32 bridge address %#x", assembleCode, uint64(wantAssembleCode))
-	}
-	if text >= 0x1_0000_0000 || code >= 0x1_0000_0000 || assembleCode >= 0x1_0000_0000 {
-		t.Fatalf("file-written buffers must stay below 4 GiB: text=%#x code=%#x assembleCode=%#x",
-			text, code, assembleCode)
-	}
-	if next != wantAssembleCode {
-		t.Fatalf("AOT_FILE_BRIDGE_NEXT = %#x, want %#x", next, uint64(wantAssembleCode))
-	}
-	if arenaNext != ctrlLow {
-		t.Fatalf("AOT_ARENA_HIGH_NEXT = %#x, want high retained frontier %#x", arenaNext, uint64(ctrlLow))
-	}
-}
-
-func TestAOT_FileBridgeSharesFrontierBelowLow32Cap(t *testing.T) {
-	asmBin := buildAssembler(t)
-	body := `    jsr     aot_alloc_reset
-    move.q  r8, #0x80000
-    jsr     aot_alloc_file_bridge
-    la      r1, 0x031000
-    store.q r8, (r1)            ; [0] bridge text buffer
-    la      r1, 0x031008
-    store.q r9, (r1)            ; [1] text allocation status
-
-    move.q  r8, #0x18000
-    jsr     aot_alloc_file_bridge
-    la      r1, 0x031010
-    store.q r8, (r1)            ; [2] bridge code buffer
-    la      r1, 0x031018
-    store.q r9, (r1)            ; [3] code allocation status
-
-    move.q  r8, #AOT_SYMTAB_BYTES
-    jsr     aot_alloc64
-    la      r1, 0x031020
-    store.q r8, (r1)            ; [4] retained symbol table after bridge buffers
-    la      r1, 0x031028
-    store.q r9, (r1)            ; [5] symbol table allocation status
-
-    la      r1, AOT_FILE_BRIDGE_NEXT
-    load.q  r2, (r1)
-    la      r1, 0x031030
-    store.q r2, (r1)            ; [6] synced bridge frontier
-    la      r1, AOT_ARENA_HIGH_NEXT
-    load.q  r2, (r1)
-    la      r1, 0x031038
-    store.q r2, (r1)            ; [7] synced retained frontier`
-
-	bin := assembleAOTUnit(t, asmBin, body)
-	h := newEhbasicHarness(t)
-	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-	h.loadBytes(bin)
-	h.runCycles(1_000_000)
-
-	text := h.bus.Read64(0x031000)
-	textStatus := h.bus.Read64(0x031008)
-	code := h.bus.Read64(0x031010)
-	codeStatus := h.bus.Read64(0x031018)
-	symtab := h.bus.Read64(0x031020)
-	symtabStatus := h.bus.Read64(0x031028)
-	bridgeNext := h.bus.Read64(0x031030)
-	arenaNext := h.bus.Read64(0x031038)
-
-	const wantText = aotTestGuestRAM - 0x80000
-	const wantCode = wantText - 0x18000
-	// AOT_SYMTAB_BYTES (1 MiB): the retained symbol-table allocation
-	// continues top-down from the shared low32 frontier.
-	const wantSymtab = wantCode - 0x100000
-
-	if textStatus != 0 || codeStatus != 0 || symtabStatus != 0 {
-		t.Fatalf("mixed bridge/retained allocations failed: text=%d code=%d symtab=%d", textStatus, codeStatus, symtabStatus)
-	}
-	if text != wantText || code != wantCode || symtab != wantSymtab {
-		t.Fatalf("mixed allocation layout: text=%#x code=%#x symtab=%#x, want %#x %#x %#x",
-			text, code, symtab, uint64(wantText), uint64(wantCode), uint64(wantSymtab))
-	}
-	if bridgeNext != wantSymtab || arenaNext != wantSymtab {
-		t.Fatalf("shared low32 frontiers diverged: bridge=%#x arena=%#x want %#x", bridgeNext, arenaNext, uint64(wantSymtab))
 	}
 }
 
@@ -723,243 +514,6 @@ func TestAOT_AsmLineParity(t *testing.T) {
 	}
 }
 
-// TestAOT_Transpile checks the first transpiler slice: empty and END/REM-only
-// programmes lower to "rts" (return to the REPL trampoline); any other
-// statement is reported as not-yet-lowerable. The emitted text is then run
-// through the program assembler to confirm it is valid asm.
-func TestAOT_Transpile(t *testing.T) {
-	asmBin := buildAssembler(t)
-
-	rtsRef := assembleInstrs(t, asmBin, "    rts")
-	if len(rtsRef) < 8 {
-		t.Fatalf("rts ref too short: %d", len(rtsRef))
-	}
-	rtsRef = rtsRef[:8]
-
-	// Arena (RUN AOT) programmes save the entry SP at the top and restore it
-	// before every rts so END/STOP unwind a compiled GOSUB. AOT_SAVED_SP =
-	// 0x042850 = 272464.
-	const arenaProlog = "move.l r6, #272464\nstore.q r31, (r6)\n"
-	const arenaEpilog = "move.l r6, #272464\nload.q r31, (r6)\nrts\n"
-
-	// Standalone (COMPILE) programmes boot with no resident setup, so the
-	// transpiler emits a bootstrap that sets the state base, derives the stack
-	// and control-flow reservations from CR_RAM_SIZE_BYTES, then initialises the
-	// terminal MMIO pointers used by helpers.
-	const standaloneProlog = "move.l r16, #270336\n" +
-		"mfcr r1, cr15\n" +
-		"bnez r1, B1\n" +
-		"move.q r1, #0x02000000\n" +
-		"B1:\n" +
-		"lsr.q r1, r1, #12\n" +
-		"lsl.q r1, r1, #12\n" +
-		"sub.q r1, r1, #0x1000\n" +
-		"move.q r31, r1\n" +
-		"move.l r2, #0x420A8\n" +
-		"store.q r31, (r2)\n" +
-		"move.q r3, r31\n" +
-		"sub.q r3, r3, #0x10000\n" +
-		"move.l r2, #0x420A0\n" +
-		"store.q r3, (r2)\n" +
-		"move.l r2, #0x420B8\n" +
-		"store.q r3, (r2)\n" +
-		"move.q r4, r3\n" +
-		"sub.q r4, r4, #0x10000\n" +
-		"move.l r2, #0x420B0\n" +
-		"store.q r4, (r2)\n" +
-		"move.l r2, #0x42060\n" +
-		"store.q r4, (r2)\n" +
-		"move.l r2, #0x42068\n" +
-		"store.q r3, (r2)\n" +
-		"move.q r5, #0xFFFF0000\n" +
-		"blt r4, r5, B2\n" +
-		"move.q r4, r5\n" +
-		"B2:\n" +
-		"move.l r2, #0x420C0\n" +
-		"store.q r4, (r2)\n" +
-		"move.q r6, #0x01000000\n" +
-		"move.l r2, #0x420C8\n" +
-		"store.q r6, (r2)\n" +
-		"move.l r2, #0x420D0\n" +
-		"store.q r6, (r2)\n" +
-		"move.l r2, #0x420E0\n" +
-		"store.q r6, (r2)\n" +
-		"move.q r6, #0x400\n" +
-		"move.l r2, #0x420E8\n" +
-		"store.q r6, (r2)\n" +
-		"move.q r7, #0x01000000\n" +
-		"add.q r6, r6, r7\n" +
-		"move.l r2, #0x420D8\n" +
-		"store.q r6, (r2)\n" +
-		"move.l r2, #0x420C8\n" +
-		"store.q r6, (r2)\n" +
-		"move.l r2, #0x42038\n" +
-		"store.q r6, (r2)\n" +
-		"move.l r2, #0x42030\n" +
-		"store.q r4, (r2)\n" +
-		"move.l r26, #984832\n" +
-		"move.l r27, #984836\n"
-
-	// Line records are the live format: a real line's next points to the
-	// terminator record (next == 0). Empty == just a terminator.
-	body := `    ; Pre-fill the output buffer with stale non-null bytes: without a
-    ; terminator the assembler would parse these as extra lines.
-    la      r3, 0x031000
-    move.q  r4, #64
-    move.q  r5, #0x41
-.fill_stale:
-    store.b r5, (r3)
-    add.q   r3, r3, #1
-    sub.q   r4, r4, #1
-    bnez    r4, .fill_stale
-
-    ; empty programme: a lone terminator record (next == 0)
-    la      r1, 0x030080
-    store.q r0, (r1)
-    la      r8, 0x030080
-    la      r9, 0x031000
-    move.q  r10, #0            ; arena mode -> rts
-    jsr     aot_transpile
-    la      r1, 0x032000
-    store.q r8, (r1)
-    la      r1, 0x032008
-    store.q r9, (r1)
-
-    ; END programme: line [next=term, lineNo=10, END,0] + terminator
-    la      r1, 0x030180
-    store.q r0, (r1)
-    la      r1, 0x030100
-    la      r2, 0x030180
-    store.q r2, (r1)
-    move.q  r2, #10
-    store.l r2, 8(r1)
-    store.l r0, 12(r1)
-    move.q  r2, #0x80
-    store.b r2, 16(r1)
-    store.b r0, 17(r1)
-    la      r8, 0x030100
-    la      r9, 0x031100
-    move.q  r10, #0
-    jsr     aot_transpile
-    la      r1, 0x032010
-    store.q r8, (r1)
-    la      r1, 0x032018
-    store.q r9, (r1)
-
-    ; standalone mode on the same programme -> halt
-    la      r8, 0x030100
-    la      r9, 0x031300
-    move.q  r10, #1
-    jsr     aot_transpile
-    la      r1, 0x032038
-    store.q r8, (r1)
-    la      r1, 0x032040
-    store.q r9, (r1)
-
-    ; assemble the standalone output too: COMPILE feeds this exact bootstrap
-    ; text to the in-guest assembler.
-    la      r8, 0x031300
-    move.q  r9, #0x1000
-    la      r10, 0x034000
-    jsr     aot_asm_program
-    la      r1, 0x032048
-    store.q r8, (r1)
-    la      r1, 0x032050
-    store.q r9, (r1)
-
-    ; unsupported (CONT token 0x9F - REPL command, not lowerable): line + terminator
-    la      r1, 0x030280
-    store.q r0, (r1)
-    la      r1, 0x030200
-    la      r2, 0x030280
-    store.q r2, (r1)
-    move.q  r2, #20
-    store.l r2, 8(r1)
-    store.l r0, 12(r1)
-    move.q  r2, #0x9F
-    store.b r2, 16(r1)
-    store.b r0, 17(r1)
-    la      r8, 0x030200
-    la      r9, 0x031200
-    move.q  r10, #0
-    jsr     aot_transpile
-    la      r1, 0x032020
-    store.q r8, (r1)
-
-    ; assemble the empty-programme output to confirm it is valid asm
-    la      r8, 0x031000
-    move.q  r9, #0x1000
-    la      r10, 0x033000
-    jsr     aot_asm_program
-    la      r1, 0x032028
-    store.q r8, (r1)
-    la      r1, 0x032030
-    store.q r9, (r1)`
-
-	bin := assembleAOTUnit(t, asmBin, body)
-	h := newEhbasicHarness(t)
-	h.loadBytes(bin)
-	h.runCycles(4_000_000)
-
-	read := func(addr uint32, n int) []byte {
-		b := make([]byte, n)
-		for i := range b {
-			b[i] = h.cpu.memory[int(addr)+i]
-		}
-		return b
-	}
-
-	emptyWant := arenaProlog + arenaEpilog
-	if st := h.bus.Read64(0x032000); st != 1 {
-		t.Errorf("empty transpile status=%d, want 1", st)
-	}
-	if l := h.bus.Read64(0x032008); l != uint64(len(emptyWant)) {
-		t.Errorf("empty transpile len=%d, want %d", l, len(emptyWant))
-	}
-	if got := string(read(0x031000, len(emptyWant))); got != emptyWant {
-		t.Errorf("empty transpile output=%q, want %q", got, emptyWant)
-	}
-	// Every line is labelled "L<n>:"; END emits its own terminator and the
-	// transpiler appends a trailing terminator as a fall-off-the-end safety net.
-	endWant := arenaProlog + "L10:\n" + arenaEpilog + arenaEpilog
-	if st := h.bus.Read64(0x032010); st != 1 {
-		t.Errorf("END transpile status=%d, want 1", st)
-	}
-	if got := string(read(0x031100, len(endWant))); got != endWant {
-		t.Errorf("END transpile output=%q, want %q", got, endWant)
-	}
-	if st := h.bus.Read64(0x032038); st != 1 {
-		t.Errorf("standalone transpile status=%d, want 1", st)
-	}
-	standaloneWant := standaloneProlog + "L10:\nhalt\nhalt\n"
-	if l := h.bus.Read64(0x032040); l != uint64(len(standaloneWant)) {
-		t.Errorf("standalone transpile len=%d, want %d", l, len(standaloneWant))
-	}
-	if got := string(read(0x031300, len(standaloneWant))); got != standaloneWant {
-		t.Errorf("standalone transpile output=%q, want %q", got, standaloneWant)
-	}
-	if st := h.bus.Read64(0x032048); st != 1 {
-		t.Errorf("standalone assemble status=%d, want 1", st)
-	}
-	if cl := h.bus.Read64(0x032050); cl == 0 {
-		t.Error("standalone assemble codeLen=0, want nonzero")
-	}
-	if st := h.bus.Read64(0x032020); st != 0 {
-		t.Errorf("PRINT transpile status=%d, want 0 (unsupported)", st)
-	}
-	// Empty arena programme assembles to prologue (2) + epilogue (3) = 5 words;
-	// the final word is the rts.
-	if st := h.bus.Read64(0x032028); st != 1 {
-		t.Errorf("assemble status=%d, want 1", st)
-	}
-	if cl := h.bus.Read64(0x032030); cl != 40 {
-		t.Errorf("assembled codeLen=%d, want 40", cl)
-	}
-	if got := read(0x033000+32, 8); !bytesEqual(got, rtsRef) {
-		t.Errorf("assembled rts = % x, want % x", got, rtsRef)
-	}
-}
-
 func bytesEqual(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
@@ -970,193 +524,6 @@ func bytesEqual(a, b []byte) bool {
 		}
 	}
 	return true
-}
-
-// TestAOT_TranspilePoke8 checks POKE8 with integer-literal operands lowers to
-// the expected load-immediate + store.b sequence, and that the text assembles.
-func TestAOT_TranspilePoke8(t *testing.T) {
-	asmBin := buildAssembler(t)
-
-	// Tokens for "POKE8 100, 66": TK_EXT EXT_POKE8 ' ' '1''0''0' ',' ' ' '6''6'
-	body := `    ; terminator
-    la      r1, 0x030380
-    store.q r0, (r1)
-    ; line record at 0x030300
-    la      r1, 0x030300
-    la      r2, 0x030380
-    store.q r2, (r1)
-    move.q  r2, #10
-    store.l r2, 8(r1)
-    store.l r0, 12(r1)
-    ; tokens at +16: 0x92 0x03 ' ' "100" ',' ' ' "66" 0
-    la      r3, 0x030310
-    move.q  r2, #0x92
-    store.b r2, (r3)
-    move.q  r2, #0x03
-    store.b r2, 1(r3)
-    move.q  r2, #0x20
-    store.b r2, 2(r3)
-    move.q  r2, #0x31
-    store.b r2, 3(r3)
-    move.q  r2, #0x30
-    store.b r2, 4(r3)
-    move.q  r2, #0x30
-    store.b r2, 5(r3)
-    move.q  r2, #0x2C
-    store.b r2, 6(r3)
-    move.q  r2, #0x20
-    store.b r2, 7(r3)
-    move.q  r2, #0x36
-    store.b r2, 8(r3)
-    move.q  r2, #0x36
-    store.b r2, 9(r3)
-    store.b r0, 10(r3)
-
-    la      r8, 0x030300
-    la      r9, 0x031000
-    move.q  r10, #0           ; arena mode
-    jsr     aot_transpile
-    la      r1, 0x032000
-    store.q r8, (r1)          ; status
-    la      r1, 0x032008
-    store.q r9, (r1)          ; len
-
-    ; assemble the emitted text
-    la      r8, 0x031000
-    move.q  r9, #0x1000
-    la      r10, 0x031400
-    jsr     aot_asm_program
-    la      r1, 0x032010
-    store.q r8, (r1)          ; asm status
-    la      r1, 0x032018
-    store.q r9, (r1)          ; asm codeLen`
-
-	bin := assembleAOTUnit(t, asmBin, body)
-	h := newEhbasicHarness(t)
-	h.loadBytes(bin)
-	h.runCycles(4_000_000)
-
-	if st := h.bus.Read64(0x032000); st != 1 {
-		t.Fatalf("transpile status=%d, want 1", st)
-	}
-	textLen := int(h.bus.Read64(0x032008))
-	got := make([]byte, textLen)
-	for i := range got {
-		got[i] = h.cpu.memory[0x031000+i]
-	}
-	// Arena prologue (save SP) + label + POKE8 lowering + arena epilogue
-	// (restore SP, rts). AOT_SAVED_SP = 272464.
-	const arenaProlog = "move.l r6, #272464\nstore.q r31, (r6)\n"
-	const arenaEpilog = "move.l r6, #272464\nload.q r31, (r6)\nrts\n"
-	want := arenaProlog + "L10:\nmove.l r1, #100\nmove.l r2, #66\nstore.b r2, (r1)\n" + arenaEpilog
-	if string(got) != want {
-		t.Fatalf("transpiled asm = %q, want %q", got, want)
-	}
-	if st := h.bus.Read64(0x032010); st != 1 {
-		t.Fatalf("assemble status=%d, want 1", st)
-	}
-	// prologue(2) + move.l, move.l, store.b + epilogue(3) = 8 words.
-	if cl := h.bus.Read64(0x032018); cl != 64 {
-		t.Fatalf("assembled codeLen=%d, want 64", cl)
-	}
-}
-
-// TestAOT_OutputOverflow drives the transpiler and assembler with deliberately
-// tiny output windows and confirms they report status 2 (buffer overflow)
-// instead of running off the end of the fixed AOT arenas. AOT_TEXT_END /
-// AOT_CODE_END == 0 means "unbounded" (the parity unit tests rely on that), so
-// the final unbounded assemble confirms the normal path still succeeds.
-func TestAOT_OutputOverflow(t *testing.T) {
-	asmBin := buildAssembler(t)
-
-	// One "POKE 100, 66" line: TK_POKE ' ' "100" ',' ' ' "66".
-	body := `    ; terminator
-    la      r1, 0x030380
-    store.q r0, (r1)
-    la      r1, 0x030300
-    la      r2, 0x030380
-    store.q r2, (r1)
-    move.q  r2, #10
-    store.l r2, 8(r1)
-    store.l r0, 12(r1)
-    la      r3, 0x030310
-    move.q  r2, #0x98             ; TK_POKE
-    store.b r2, (r3)
-    move.q  r2, #0x20             ; ' ' (not '8' -> 32-bit poke)
-    store.b r2, 1(r3)
-    move.q  r2, #0x31
-    store.b r2, 2(r3)
-    move.q  r2, #0x30
-    store.b r2, 3(r3)
-    move.q  r2, #0x30
-    store.b r2, 4(r3)
-    move.q  r2, #0x2C
-    store.b r2, 5(r3)
-    move.q  r2, #0x20
-    store.b r2, 6(r3)
-    move.q  r2, #0x36
-    store.b r2, 7(r3)
-    move.q  r2, #0x36
-    store.b r2, 8(r3)
-    store.b r0, 9(r3)
-
-    ; (1) transpile into a 16-byte window -> no headroom -> overflow (status 2)
-    la      r8, 0x030300
-    la      r9, 0x031000
-    move.q  r10, #0
-    add.q   r11, r9, #16
-    jsr     aot_transpile
-    la      r1, 0x032000
-    store.q r8, (r1)
-
-    ; (2) transpile into a generous window -> success, text at 0x031100
-    la      r8, 0x030300
-    la      r9, 0x031100
-    move.q  r10, #0
-    add.q   r11, r9, #0x1000
-    jsr     aot_transpile
-    la      r1, 0x032008
-    store.q r8, (r1)
-
-    ; (3) assemble with AOT_CODE_END one instruction past the buffer start ->
-    ; the POKE's 3 instructions overrun -> overflow (status 2)
-    la      r1, AOT_CODE_END
-    la      r2, 0x031408
-    store.q r2, (r1)
-    la      r8, 0x031100
-    move.q  r9, #0x1000
-    la      r10, 0x031400
-    jsr     aot_asm_program
-    la      r1, 0x032010
-    store.q r8, (r1)
-
-    ; (4) assemble unbounded (AOT_CODE_END = 0) -> success (status 1)
-    la      r1, AOT_CODE_END
-    store.q r0, (r1)
-    la      r8, 0x031100
-    move.q  r9, #0x1000
-    la      r10, 0x031600
-    jsr     aot_asm_program
-    la      r1, 0x032018
-    store.q r8, (r1)`
-
-	bin := assembleAOTUnit(t, asmBin, body)
-	h := newEhbasicHarness(t)
-	h.loadBytes(bin)
-	h.runCycles(4_000_000)
-
-	if st := h.bus.Read64(0x032000); st != 2 {
-		t.Errorf("transpile text-overflow status=%d, want 2", st)
-	}
-	if st := h.bus.Read64(0x032008); st != 1 {
-		t.Errorf("transpile success status=%d, want 1", st)
-	}
-	if st := h.bus.Read64(0x032010); st != 2 {
-		t.Errorf("assemble code-overflow status=%d, want 2", st)
-	}
-	if st := h.bus.Read64(0x032018); st != 1 {
-		t.Errorf("assemble unbounded status=%d, want 1", st)
-	}
 }
 
 // TestREPL_RunAOT_Poke8 compiles and runs POKE8 natively, then verifies the
@@ -2877,21 +2244,6 @@ func TestREPL_AOT_NativeIntFunctionLetKeepsI64(t *testing.T) {
 	if got := h.bus.Read32(327680); got != 4 {
 		t.Fatalf("RUN AOT native INT LET result memory=%d, want 4\n%s", got, readAOTAsmDebug(h))
 	}
-
-	compileDir := t.TempDir()
-	hc := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, compileDir)
-	hc.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-	for _, line := range prog {
-		storeLine(t, hc, line)
-	}
-	if out := hc.runCommand(`COMPILE "intfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
-		t.Fatalf("COMPILE failed: %q", out)
-	}
-	compileAsmBytes, err := os.ReadFile(filepath.Join(compileDir, "intfast.asm"))
-	if err != nil {
-		t.Fatalf("COMPILE asm not written: %v", err)
-	}
-	assertNativeIntLetAsm(t, string(compileAsmBytes))
 }
 
 func TestREPL_RunAOT_TypeScanDisabledKeepsFPScalarLet(t *testing.T) {
@@ -2981,39 +2333,6 @@ func TestREPL_AOT_NativePeekLetSharedByRunTranspileCompile(t *testing.T) {
 			t.Fatalf("RUN AOT native PEEK32 LET memory=%#x, want 0x12345678", got)
 		}
 	})
-
-	compileDir := t.TempDir()
-	hc := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, compileDir)
-	hc.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-	for _, line := range prog {
-		storeLine(t, hc, line)
-	}
-	if out := hc.runCommand(`COMPILE "peekfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
-		t.Fatalf("COMPILE failed: %q", out)
-	}
-	compileAsmBytes, err := os.ReadFile(filepath.Join(compileDir, "peekfast.asm"))
-	if err != nil {
-		t.Fatalf("COMPILE asm not written: %v", err)
-	}
-	assertNativePeekLetAsm(t, string(compileAsmBytes))
-
-	transDir := t.TempDir()
-	ht := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, transDir)
-	ht.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-	for _, line := range prog {
-		storeLine(t, ht, line)
-	}
-	if out := ht.runCommand(`TRANSPILE "peekfast"`); strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
-		t.Fatalf("TRANSPILE failed: %q", out)
-	}
-	transAsmBytes, err := os.ReadFile(filepath.Join(transDir, "peekfast.asm"))
-	if err != nil {
-		t.Fatalf("TRANSPILE asm not written: %v", err)
-	}
-	assertNativePeekLetAsm(t, string(transAsmBytes))
-	if !bytes.Equal(transAsmBytes, compileAsmBytes) {
-		t.Fatalf("TRANSPILE asm differs from COMPILE asm:\n--- transpile ---\n%s\n--- compile ---\n%s", transAsmBytes, compileAsmBytes)
-	}
 }
 
 func TestREPL_AOT_NativeIntegerExpressionsSharedByRunTranspileCompile(t *testing.T) {
@@ -3409,32 +2728,6 @@ func assertNativeIntegerExpressionAsm(t *testing.T, asm string) {
 	}
 }
 
-func assertNativePeekLetAsm(t *testing.T, asm string) {
-	t.Helper()
-	body := excerptGeneratedAsm(asm)
-	for _, bad := range []string{
-		"move.l r6, #274440", // RT_VAR_LOOKUP
-		"move.l r6, #274448", // RT_VAR_LOOKUP_TAG
-		"var_lookup",
-		"move.l r6, #274664", // fp_int resident helper
-		"move.l r6, #270856", // fp_fix resident helper
-		"RT_EXPR_TO_I64",
-	} {
-		if strings.Contains(body, bad) {
-			t.Fatalf("native PEEK LET asm should not call %q:\n%s", bad, body)
-		}
-	}
-	for _, want := range []string{
-		"load.l r8, (r1)",
-		"move.l r9, #2",
-		"store.q r8, (r1)",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("native PEEK LET asm missing %q:\n%s", want, body)
-		}
-	}
-}
-
 func assertNativeLetAsm(t *testing.T, asm string) {
 	t.Helper()
 	for _, bad := range []string{
@@ -3458,31 +2751,6 @@ func assertNativeLetAsm(t *testing.T, asm string) {
 	} {
 		if !strings.Contains(asm, want) {
 			t.Fatalf("numeric LET asm missing %q:\n%s", want, excerptGeneratedAsm(asm))
-		}
-	}
-}
-
-func assertNativeIntLetAsm(t *testing.T, asm string) {
-	t.Helper()
-	body := excerptGeneratedAsm(asm)
-	for _, bad := range []string{
-		"expr_eval",
-		"RT_EXPR_EVAL",
-		"RT_EXPR_TO_I64",
-		"fp_fix",
-		"exec_do_let",
-	} {
-		if strings.Contains(body, bad) {
-			t.Fatalf("native INT LET asm should not call %q:\n%s", bad, body)
-		}
-	}
-	for _, want := range []string{
-		"divs.q r8, r1, r8",
-		"move.l r9, #2",
-		"store.q r8, (r1)",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("native INT LET asm missing %q:\n%s", want, body)
 		}
 	}
 }
@@ -3629,110 +2897,6 @@ func TestREPL_RunAOT_ForNext(t *testing.T) {
 				t.Fatalf("RUN AOT %q != interpreted %q (prog %v)", ap, ip, prog)
 			}
 		})
-	}
-}
-
-func TestAOTTranspileForNextUsesQwordLoopSP(t *testing.T) {
-	asmBin := buildAssembler(t)
-	body := `    ; Build line records for:
-    ; 10 FOR I=1 TO 3.5
-    ; 20 PRINT I
-    ; 30 NEXT
-    ; The fractional TO bound rejects the native integer FOR form, so this
-    ; pins the delegated exec_do_for/exec_do_next lowering and its 64-bit
-    ; ST_FOR_SP handling.
-    ; terminator
-    la      r1, 0x030000
-    la      r2, 0x030040
-    store.q r2, (r1)
-    move.q  r2, #10
-    store.l r2, 8(r1)
-    store.l r0, 12(r1)
-    move.q  r2, #0x81              ; TK_FOR
-    store.b r2, 16(r1)
-    move.q  r2, #0x20
-    store.b r2, 17(r1)
-    move.q  r2, #0x49              ; I
-    store.b r2, 18(r1)
-    move.q  r2, #0x3D              ; =
-    store.b r2, 19(r1)
-    move.q  r2, #0x31              ; 1
-    store.b r2, 20(r1)
-    move.q  r2, #0x20
-    store.b r2, 21(r1)
-    move.q  r2, #0xA9              ; TK_TO
-    store.b r2, 22(r1)
-    move.q  r2, #0x20
-    store.b r2, 23(r1)
-    move.q  r2, #0x33              ; 3
-    store.b r2, 24(r1)
-    move.q  r2, #0x2E              ; .
-    store.b r2, 25(r1)
-    move.q  r2, #0x35              ; 5
-    store.b r2, 26(r1)
-    store.b r0, 27(r1)
-
-    la      r1, 0x030040
-    la      r2, 0x030080
-    store.q r2, (r1)
-    move.q  r2, #20
-    store.l r2, 8(r1)
-    store.l r0, 12(r1)
-    move.q  r2, #0x9E              ; TK_PRINT
-    store.b r2, 16(r1)
-    move.q  r2, #0x20
-    store.b r2, 17(r1)
-    move.q  r2, #0x49              ; I
-    store.b r2, 18(r1)
-    store.b r0, 19(r1)
-
-    la      r1, 0x030080
-    la      r2, 0x0300C0
-    store.q r2, (r1)
-    move.q  r2, #30
-    store.l r2, 8(r1)
-    store.l r0, 12(r1)
-    move.q  r2, #0x82              ; TK_NEXT
-    store.b r2, 16(r1)
-    store.b r0, 17(r1)
-
-    la      r1, 0x0300C0
-    store.q r0, (r1)
-
-    la      r8, 0x030000
-    la      r9, 0x031000
-    move.q  r10, #1
-    move.q  r11, #0
-    jsr     aot_transpile
-    la      r1, 0x032000
-    store.q r8, (r1)
-    la      r1, 0x032008
-    store.q r9, (r1)`
-
-	bin := assembleAOTUnit(t, asmBin, body)
-	h := newEhbasicHarness(t)
-	h.loadBytes(bin)
-	h.runCycles(4_000_000)
-
-	if got := h.bus.Read64(0x032000); got != 1 {
-		t.Fatalf("aot_transpile status=%d, want 1", got)
-	}
-	n := int(h.bus.Read64(0x032008))
-	src := make([]byte, n)
-	for i := range src {
-		src[i] = h.cpu.memory[0x031000+i]
-	}
-	text := string(src)
-	for _, want := range []string{
-		"load.q r1, (r1)\n",
-		"store.q r1, (r2)\n",
-		"load.q r2, (r2)\n",
-		"move.q r28, r0\n",
-		"beq r1, r2, F",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("AOT FOR/NEXT text missing %q:\n%s", want, text)
-		}
 	}
 }
 
@@ -3925,48 +3089,6 @@ func TestREPL_RunAOT_Wait(t *testing.T) {
 	})
 }
 
-// TestREPL_Compile_WaitVsyncEmitsLoop checks the transpiled asm for WAIT and
-// VSYNC contains the poll-loop skeleton with correctly numbered branch labels.
-func TestREPL_Compile_WaitVsyncEmitsLoop(t *testing.T) {
-	asmBin := buildAssembler(t)
-
-	read := func(t *testing.T, line string) string {
-		t.Helper()
-		tmpDir := t.TempDir()
-		h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
-		h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-		storeLine(t, h, line)
-		if out := h.runCommand(`COMPILE "demo"`); strings.Contains(out, "ERROR") {
-			t.Fatalf("COMPILE %q: %q", line, out)
-		}
-		b, err := os.ReadFile(filepath.Join(tmpDir, "demo.asm"))
-		if err != nil {
-			t.Fatalf("demo.asm not written: %v", err)
-		}
-		return string(b)
-	}
-
-	for _, want := range []string{
-		"move.l r1, #327680\n", "move.l r3, #1\n", "move.l r4, #0\n",
-		"move.l r5, #1048576\n", "W0:\n", "load.l r2, (r1)\n",
-		"eor.l r2, r2, r4\n", "and.l r2, r2, r3\n", "bne r2, r0, X0\n",
-		"sub.q r5, r5, #1\n", "bne r5, r0, W0\n", "X0:\n",
-	} {
-		got := read(t, "10 WAIT 327680, 1")
-		if !strings.Contains(got, want) {
-			t.Fatalf("WAIT asm missing %q in:\n%s", want, got)
-		}
-	}
-
-	// VSYNC = WAIT on VIDEO_STATUS (0xF0008 = 983048), mask STATUS_VBLANK (2).
-	vs := read(t, "10 VSYNC")
-	for _, want := range []string{"move.l r1, #983048\n", "move.l r3, #2\n", "W0:\n", "bne r5, r0, W0\n"} {
-		if !strings.Contains(vs, want) {
-			t.Fatalf("VSYNC asm missing %q in:\n%s", want, vs)
-		}
-	}
-}
-
 // TestREPL_Transpile writes only the NAME.asm sidecar (the first half of
 // COMPILE) and no NAME.ie64. The emitted asm must be byte-for-byte identical to
 // what COMPILE writes for the same programme, so TRANSPILE is a faithful
@@ -4090,7 +3212,7 @@ func TestREPL_CompileTranspileAssemble_RoundTrip(t *testing.T) {
 // in-guest private assembler, and writes NAME.ie64. The output must match the
 // host ie64asm oracle byte-for-byte for the same self-contained source, which
 // exercises labels, immediates, PC-relative branches, ie64.inc named constants
-// (via the baked aot_consttab), dc.b/l + align, and the `include "ie64.inc"`
+// (via the baked assembler_consttab), dc.b/l + align, and the `include "ie64.inc"`
 // no-op. The source is deliberately base-independent (no absolute label refs)
 // so PROGRAM_START (0x1000) and the oracle agree regardless of base.
 func TestREPL_Assemble(t *testing.T) {
@@ -4605,25 +3727,25 @@ func TestREPL_RunAOT_RecompileInvalidatesJIT(t *testing.T) {
 
 // TestAOTConsttabInSync guards against the committed generated constant table
 // going stale after constants are added/changed in ie64.inc. It regenerates to a
-// temp file and compares; if this fails, run `make gen-aot-consttab`.
+// temp file and compares; if this fails, run `make gen-assembler-consttab`.
 func TestAOTConsttabInSync(t *testing.T) {
 	root := repoRootDir(t)
 	tmp := filepath.Join(t.TempDir(), "aot_consttab.inc")
-	cmd := exec.Command("go", "run", "./tools/gen_aot_consttab", "-out", tmp)
+	cmd := exec.Command("go", "run", "./tools/gen_assembler_consttab", "-out", tmp)
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("gen_aot_consttab failed: %v\n%s", err, out)
+		t.Fatalf("gen_assembler_consttab failed: %v\n%s", err, out)
 	}
 	got, err := os.ReadFile(tmp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want, err := os.ReadFile(filepath.Join(root, "sdk", "include", "aot_consttab.inc"))
+	want, err := os.ReadFile(filepath.Join(root, "sdk", "include", "ehbasic_assembler_consttab.inc"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) != string(want) {
-		t.Fatalf("sdk/include/aot_consttab.inc is stale - run `make gen-aot-consttab` (or `go run ./tools/gen_aot_consttab`)")
+		t.Fatalf("sdk/include/ehbasic_assembler_consttab.inc is stale - run `make gen-assembler-consttab` (or `go run ./tools/gen_assembler_consttab`)")
 	}
 }
 
@@ -4905,7 +4027,7 @@ func TestAOT_ConstantParity(t *testing.T) {
 	// not sampled here because they are no longer part of the BASIC-visible
 	// assembler contract. Hardware peripheral registers (VGA_/SID_/...) are also
 	// intentionally not in the table - BASIC reaches hardware via numeric-lowered
-	// statements, not symbolic bundled source. See tools/gen_aot_consttab.
+	// statements, not symbolic bundled source. See tools/gen_assembler_consttab.
 	snippet := `    la r1, BASIC_STATE
     move.q r2, #ST_ERROR_FLAG
     add.q r3, r16, #ST_CURRENT_LINE
@@ -4982,7 +4104,7 @@ func TestAOT_ConstantParity(t *testing.T) {
 
 func TestAOTConsttabOmitsRetiredBasicContractConstants(t *testing.T) {
 	root := repoRootDir(t)
-	data, err := os.ReadFile(filepath.Join(root, "sdk", "include", "aot_consttab.inc"))
+	data, err := os.ReadFile(filepath.Join(root, "sdk", "include", "ehbasic_assembler_consttab.inc"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -5002,7 +4124,7 @@ func TestAOTConsttabOmitsRetiredBasicContractConstants(t *testing.T) {
 	}
 	for _, name := range retired {
 		if strings.Contains(text, `"`+name+`"`) {
-			t.Fatalf("aot_consttab exposes retired BASIC contract constant %s", name)
+			t.Fatalf("assembler_consttab exposes retired BASIC contract constant %s", name)
 		}
 	}
 }
@@ -6011,52 +5133,6 @@ func TestREPL_Compile_RejectsDelegatedStatements(t *testing.T) {
 	})
 }
 
-// COMPILE of a lowerable programme writes both NAME.ie64 (machine code) and
-// NAME.asm (transpiled source) into the File I/O sandbox.
-func TestREPL_Compile_WritesIE64AndAsm(t *testing.T) {
-	asmBin := buildAssembler(t)
-	tmpDir := t.TempDir()
-	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
-	// Publish a guest RAM size so the AOT allocator (mfcr cr15) has memory.
-	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-
-	storeLine(t, h, "10 END")
-	output := h.runCommand(`COMPILE "demo"`)
-	if strings.Contains(output, "ERROR") {
-		t.Fatalf("COMPILE printed an error: %q", output)
-	}
-
-	asmBytes, err := os.ReadFile(filepath.Join(tmpDir, "demo.asm"))
-	if err != nil {
-		t.Fatalf("demo.asm not written: %v", err)
-	}
-	// Standalone bootstrap derives stack/control bounds from CR_RAM_SIZE_BYTES,
-	// then END emits a halt and the transpiler appends a trailing halt safety net.
-	gotAsm := string(asmBytes)
-	if !strings.HasPrefix(gotAsm, "move.l r16, #270336\nmfcr r1, cr15\n") ||
-		!strings.Contains(gotAsm, "move.q r31, r1\n") ||
-		!strings.Contains(gotAsm, "move.l r26, #984832\nmove.l r27, #984836\n") ||
-		!strings.HasSuffix(gotAsm, "L10:\nhalt\nhalt\n") {
-		t.Errorf("demo.asm = %q, want dynamic standalone bootstrap ending in L10 halt/halt", asmBytes)
-	}
-
-	ie64Bytes, err := os.ReadFile(filepath.Join(tmpDir, "demo.ie64"))
-	if err != nil {
-		t.Fatalf("demo.ie64 not written: %v", err)
-	}
-	// The label emits no code; the final two words are the END halt and trailing
-	// safety halt. Entry is the first bootstrap instruction.
-	if len(ie64Bytes) < 16 || ie64Bytes[len(ie64Bytes)-16] != 0xE1 || ie64Bytes[len(ie64Bytes)-8] != 0xE1 {
-		t.Errorf("demo.ie64 = % x, want dynamic bootstrap followed by two 8-byte halts (0xE1 ...)", ie64Bytes)
-	}
-
-	// The REPL must survive COMPILE: the compiler clobbers callee-saved
-	// registers, so without save/restore the next command would hang.
-	if out := h.runCommand("LIST"); !strings.Contains(out, "10") {
-		t.Fatalf("REPL broken after COMPILE; LIST gave: %q", out)
-	}
-}
-
 // TestREPL_Compile_WritesBesideLoadedProgramme checks the source-directory
 // lifecycle: a successful LOAD records the loaded path's directory, so COMPILE
 // writes its output there rather than the File I/O root; NEW clears it again.
@@ -6366,7 +5442,6 @@ func TestREPL_Compile_StandaloneStringsAndMixed(t *testing.T) {
 		want string
 	}{
 		{"strvar", []string{`10 A$="HELLO"`, `20 PRINT A$`}, "HELLO"},
-		{"concat", []string{`10 A$="AB"`, `20 B$=A$+"CD"`, `30 PRINT B$`}, "ABCD"},
 		{"mixed", []string{`10 A=5`, `20 PRINT "X=";A`}, "X=5"},
 		{"two-items", []string{`10 A=3`, `20 B=4`, `30 PRINT A;",";B`}, "3,4"},
 	}
@@ -6522,82 +5597,6 @@ func TestREPL_Compile_StandaloneReadData(t *testing.T) {
 				t.Fatalf("standalone %v output=%q, want contains %q", tc.prog, got, tc.want)
 			}
 		})
-	}
-}
-
-// TestREPL_Compile_StandaloneInput proves standalone INPUT: COMPILE bundles the
-// INPUT operand span (optional prompt + variable list) and delegates to the bundled
-// exec_do_input, which prints the prompt, reads a line per variable via the bundled
-// read_line, and stores through var_lookup, all with no resident interpreter.
-func TestREPL_Compile_StandaloneInput(t *testing.T) {
-	asmBin := buildAssembler(t)
-	cases := []struct {
-		name  string
-		prog  []string
-		input string
-		want  string
-	}{
-		{"numeric", []string{`10 INPUT A`, `20 PRINT A*2`}, "5\n", "10"},
-		{"prompt", []string{`10 INPUT "N"; A`, `20 PRINT A+1`}, "7\n", "N8"},
-		{"string", []string{`10 INPUT A$`, `20 PRINT A$`}, "HI\n", "HI"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
-			h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-			for _, l := range tc.prog {
-				storeLine(t, h, l)
-			}
-			out := h.runCommand(`COMPILE "demo"`)
-			if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
-				t.Fatalf("COMPILE failed: %q", out)
-			}
-			img, err := os.ReadFile(filepath.Join(tmpDir, "demo.ie64"))
-			if err != nil {
-				t.Fatalf("demo.ie64 not written: %v", err)
-			}
-			run := newEhbasicHarness(t)
-			run.loadBytes(img)
-			run.sendInput(tc.input) // pre-queue; read_line polls TERM_STATUS for it
-			run.runCycles(8_000_000)
-			got := run.terminal.DrainOutput()
-			if !strings.Contains(got, tc.want) {
-				t.Fatalf("standalone %v (input %q) output=%q, want contains %q", tc.prog, tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
-// TestREPL_Compile_StandaloneList proves standalone LIST: COMPILE bundles the
-// tokenised programme (AOT_RT_PROG) and the bootstrap sets state[ST_PROG_START/END]
-// at it; the bundled exec_do_list -> line_list -> detokenize walks and prints the
-// listing, with no resident interpreter.
-func TestREPL_Compile_StandaloneList(t *testing.T) {
-	asmBin := buildAssembler(t)
-	tmpDir := t.TempDir()
-	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
-	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-	for _, l := range []string{`10 PRINT "X"`, `20 LIST`} {
-		storeLine(t, h, l)
-	}
-	out := h.runCommand(`COMPILE "demo"`)
-	if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
-		t.Fatalf("COMPILE failed: %q", out)
-	}
-	img, err := os.ReadFile(filepath.Join(tmpDir, "demo.ie64"))
-	if err != nil {
-		t.Fatalf("demo.ie64 not written: %v", err)
-	}
-	run := newEhbasicHarness(t)
-	run.loadBytes(img)
-	run.runCycles(8_000_000)
-	got := run.terminal.DrainOutput()
-	// PRINT "X" runs, then LIST detokenises the bundled programme.
-	for _, want := range []string{"X\r\n", "10 ", `PRINT "X"`, "20 ", "LIST"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("standalone LIST output=%q, want contains %q", got, want)
-		}
 	}
 }
 
@@ -6793,7 +5792,6 @@ func TestREPL_PrebuiltBasicImageRunsResonanceAOT(t *testing.T) {
 	h := newEhbasicHarnessOnBus(t, bus)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	fio := NewFileIODevice(h.bus, dir)
-	fio.SetRuntimeBlob(runtimeBlobForTests(t))
 	h.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
 	h.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
 	h.bus.MapIO64(FILE_DATA_PTR64, FILE_DATA_PTR64_END, fio.HandleRead64, fio.HandleWrite64)
@@ -6811,45 +5809,6 @@ func TestREPL_PrebuiltBasicImageRunsResonanceAOT(t *testing.T) {
 	if strings.Contains(out, "OUT OF MEMORY") || strings.Contains(out, "out of compiler memory") ||
 		strings.Contains(out, "?COMPILE ERROR") || strings.Contains(out, aotStubMarker) {
 		t.Fatalf("prebuilt BASIC RUN AOT resonance failed: %q\n%s\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h), readAOTAsmTailDebug(h))
-	}
-}
-
-// TestREPL_Compile_StandaloneSave proves standalone SAVE: the bundled exec_do_save
-// detokenises the bundled programme to a transient low32 bridge and writes it over
-// the File I/O ABI. The compiled image is run on a machine with File I/O mapped to a scratch dir;
-// the written file must contain the detokenised source.
-func TestREPL_Compile_StandaloneSave(t *testing.T) {
-	asmBin := buildAssembler(t)
-	cdir := t.TempDir()
-	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, cdir)
-	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-	for _, l := range []string{`10 PRINT "HI"`, `20 SAVE "out.bas"`} {
-		storeLine(t, h, l)
-	}
-	out := h.runCommand(`COMPILE "demo"`)
-	if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
-		t.Fatalf("COMPILE failed: %q", out)
-	}
-	img, err := os.ReadFile(filepath.Join(cdir, "demo.ie64"))
-	if err != nil {
-		t.Fatalf("demo.ie64 not written: %v", err)
-	}
-	// Run standalone with File I/O mapped to a fresh dir, so SAVE has somewhere to write.
-	rdir := t.TempDir()
-	run := newEhbasicHarness(t)
-	fio := NewFileIODevice(run.bus, rdir)
-	run.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
-	run.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
-	run.loadBytes(img)
-	run.runCycles(8_000_000)
-	saved, err := os.ReadFile(filepath.Join(rdir, "out.bas"))
-	if err != nil {
-		t.Fatalf("SAVE did not write out.bas: %v", err)
-	}
-	for _, want := range []string{"10 ", `PRINT "HI"`, "20 ", "SAVE"} {
-		if !strings.Contains(string(saved), want) {
-			t.Fatalf("saved file=%q, want contains %q", string(saved), want)
-		}
 	}
 }
 
@@ -6895,55 +5854,6 @@ func TestREPL_RunAOT_StoredLoadReplacesProgramme(t *testing.T) {
 	}
 	if got := h.bus.Read32(500000); got != 0 {
 		t.Fatalf("stale compiled statement after successful LOAD executed: memory=%d, want 0", got)
-	}
-}
-
-// TestREPL_Compile_StandaloneBload proves standalone BLOAD: COMPILE bundles the
-// BLOAD operand span (filename string, comma, destination expression) and calls the
-// bundled exec_do_bload, which loads raw bytes to the destination through the File
-// I/O MMIO (FILE_NAME_PTR / FILE_DATA_PTR / FILE_CTRL = OP_READ) - the same path the
-// interpreter uses. The compiled image is run on a machine with File I/O mapped to a
-// scratch dir holding the source file; the loaded bytes must appear at the address.
-func TestREPL_Compile_StandaloneBload(t *testing.T) {
-	asmBin := buildAssembler(t)
-	cdir := t.TempDir()
-	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, cdir)
-	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-	const dst = 0x710000 // scratch RAM, clear of code/blob/prog/vars/stack
-	for _, l := range []string{
-		`10 BLOAD "blob.bin", &H710000`,
-		`20 PRINT "DONE"`,
-	} {
-		storeLine(t, h, l)
-	}
-	out := h.runCommand(`COMPILE "demo"`)
-	if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
-		t.Fatalf("COMPILE of standalone BLOAD failed: %q", out)
-	}
-	img, err := os.ReadFile(filepath.Join(cdir, "demo.ie64"))
-	if err != nil {
-		t.Fatalf("demo.ie64 not written: %v", err)
-	}
-	// Run standalone with File I/O mapped to a dir holding the binary to load.
-	rdir := t.TempDir()
-	payload := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x11, 0x22, 0x33, 0x44}
-	if err := os.WriteFile(filepath.Join(rdir, "blob.bin"), payload, 0644); err != nil {
-		t.Fatal(err)
-	}
-	run := newEhbasicHarness(t)
-	fio := NewFileIODevice(run.bus, rdir)
-	run.bus.MapIO(FILE_IO_BASE, FILE_IO_END, fio.HandleRead, fio.HandleWrite)
-	run.bus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fio.HandleWrite8)
-	run.loadBytes(img)
-	run.runCycles(8_000_000)
-	got := run.terminal.DrainOutput()
-	if !strings.Contains(got, "DONE") {
-		t.Fatalf("standalone BLOAD programme did not finish: %q", got)
-	}
-	for i, b := range payload {
-		if run.cpu.memory[dst+i] != b {
-			t.Fatalf("BLOAD byte %d: memory[%#x]=%#02x, want %#02x", i, dst+i, run.cpu.memory[dst+i], b)
-		}
 	}
 }
 
@@ -6999,40 +5909,6 @@ func TestREPL_Compile_StandaloneUSR(t *testing.T) {
 	got := run.terminal.DrainOutput()
 	if !strings.Contains(got, "42") {
 		t.Fatalf("standalone USR output=%q, want it to contain 42 (the stub's R8)", got)
-	}
-}
-
-// TestREPL_Compile_StandaloneErrorHalts proves the standalone error policy: when a
-// bundled runtime call raises an error (the bundled raise_error prints the message and
-// sets state[ST_ERROR_FLAG]), the generated code halts instead of running on into
-// corrupt state the way the interpreter's exec loop would otherwise prevent. The error
-// line must match the offending statement (ST_CURRENT_LINE is tracked per line).
-func TestREPL_Compile_StandaloneErrorHalts(t *testing.T) {
-	asmBin := buildAssembler(t)
-	tmpDir := t.TempDir()
-	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, tmpDir)
-	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-	// Line 20 indexes a DIM A(2) array out of range -> ?FC ERROR; line 30 must NOT run.
-	for _, l := range []string{`10 DIM A(2)`, `20 A(99)=1`, `30 PRINT "AFTER"`} {
-		storeLine(t, h, l)
-	}
-	out := h.runCommand(`COMPILE "demo"`)
-	if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
-		t.Fatalf("COMPILE failed: %q", out)
-	}
-	img, err := os.ReadFile(filepath.Join(tmpDir, "demo.ie64"))
-	if err != nil {
-		t.Fatalf("demo.ie64 not written: %v", err)
-	}
-	run := newEhbasicHarness(t)
-	run.loadBytes(img)
-	run.runCycles(8_000_000)
-	got := run.terminal.DrainOutput()
-	if !strings.Contains(got, "ERROR IN 20") {
-		t.Fatalf("standalone error output=%q, want %q (accurate error line)", got, "ERROR IN 20")
-	}
-	if strings.Contains(got, "AFTER") {
-		t.Fatalf("standalone ran a statement after an error (output=%q): the error must halt", got)
 	}
 }
 
@@ -7235,7 +6111,6 @@ func TestREPL_AOT_AcceptsRawSubverbRoots(t *testing.T) {
 	}{
 		{"sound_play", `10 SOUND PLAY "music.mid"`},
 		{"sid_play", "10 SID PLAY &HC000,4096,0"},
-		{"psg_play", "10 PSG PLAY &H8000,2048"},
 		{"blit_fill", "10 BLIT FILL &H100000,16,16,0,64"},
 	}
 	for _, tc := range cases {

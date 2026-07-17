@@ -51,66 +51,7 @@ BASIC_LOW32_INTERNAL_BASE equ 0x01000000   ; Shared low32 fallback internal aren
 ; Interpreter code: placed by assembler from org 0x1000
 ; Reserve 0x1000-0x20FFF (128KB) for code growth.
 
-; --- Standalone COMPILE runtime blob (placement B) --------------------------
-; The COMPILE runtime blob (expr/var/string/maths/exec closure) is linked at
-; AOT_RT_BASE and copied there by the standalone bootstrap. Placement B puts it in
-; a private standalone runtime area, which is free RAM in a standalone image
-; (Phases 2-4) because bundled token spans pack low and are
-; addressed by R17. The trimmed blob measures ~35 KiB (it bundles exec.inc for the
-; exec_do_* statement helpers, with hardware/file handlers stubbed). This leaves the
-; full 0x1000-0x041000 PROGRAM region for user code + bundled token spans and a wide
-; runtime-area margin. Layout/budget rules and assertions are in
-; COMPILE_RUNTIME_BUNDLE_PLAN.md. Placement B couples to a future standalone
-; LIST/SAVE/LOAD source region (Phase 5), to be reconciled when that lands.
-AOT_RT_BASE       equ 0x043000              ; runtime blob link ORG and copy dest
-AOT_RT_LIMIT      equ 0x070000              ; blob must end at or below here
-; Maximum runtime-blob byte size. This is BOTH the compile-time low-32 staging
-; allocation (aot_read_rt_blob) AND the hard cap the generator/tests enforce
-; (tools/gen_runtime_blob, TestAOTRuntimeBlob). Tying them together guarantees a
-; valid blob can never exceed the staging buffer (a File I/O read writes the whole
-; file before FILE_RESULT_LEN is checked, so an over-large blob would otherwise
-; corrupt the neighbouring AOT workspace). Current blob ~35 KiB.
-AOT_RT_BLOB_MAX   equ 0x10000               ; 64 KiB
 
-; Jump-table entry addresses (blob base + slot*8); order matches aot_runtime_blob.asm.
-; Slots are dc.q entries the standalone transpiler calls/derefs through, so generated
-; code is decoupled from the blob's internal layout.
-RT_EXPR_EVAL      equ AOT_RT_BASE + 0x00
-RT_VAR_LOOKUP     equ AOT_RT_BASE + 0x08
-RT_VAR_LOOKUP_TAG equ AOT_RT_BASE + 0x10
-RT_VAR_READ       equ AOT_RT_BASE + 0x18
-RT_VAR_PARSE_NAME equ AOT_RT_BASE + 0x20
-RT_ARR_FIND       equ AOT_RT_BASE + 0x28
-RT_ARR_CREATE     equ AOT_RT_BASE + 0x30
-RT_ARR_DIM        equ AOT_RT_BASE + 0x38
-RT_SVAR_LOOKUP    equ AOT_RT_BASE + 0x40
-RT_SVAR_READ      equ AOT_RT_BASE + 0x48
-RT_STR_EVAL       equ AOT_RT_BASE + 0x50
-RT_STR_ALLOC      equ AOT_RT_BASE + 0x58
-RT_VAR_INIT       equ AOT_RT_BASE + 0x60
-RT_RAISE_ERROR    equ AOT_RT_BASE + 0x68
-RT_EXEC_DO_FOR    equ AOT_RT_BASE + 0x70
-RT_EXEC_DO_NEXT   equ AOT_RT_BASE + 0x78
-RT_STMT_JUMP_TAB  equ AOT_RT_BASE + 0x80    ; deref -> base of the blob's stmt_jump_table
-RT_IF_ELSE_BOUND  equ AOT_RT_BASE + 0x88    ; deref -> address of the blob's if_else_boundary
-RT_EXEC_DO_LET    equ AOT_RT_BASE + 0x90
-RT_EXEC_DO_PRINT  equ AOT_RT_BASE + 0x98
-RT_EXEC_DO_DIM    equ AOT_RT_BASE + 0xA0
-RT_EXEC_DO_READ   equ AOT_RT_BASE + 0xA8
-RT_EXEC_DO_RESTORE equ AOT_RT_BASE + 0xB0
-RT_EXEC_DO_INPUT  equ AOT_RT_BASE + 0xB8
-RT_EXEC_DO_LIST   equ AOT_RT_BASE + 0xC0
-RT_EXEC_DO_SAVE   equ AOT_RT_BASE + 0xC8
-RT_EXEC_DO_BLOAD  equ AOT_RT_BASE + 0xD0
-RT_EXEC_RESET_CONTROL_STACK equ AOT_RT_BASE + 0xD8
-RT_EXPR_TRUTHY    equ AOT_RT_BASE + 0xE0
-RT_EXPR_TO_I64    equ AOT_RT_BASE + 0xE8
-
-; Standalone READ/DATA: COMPILE bundles the tokenised programme into the output
-; image and the bootstrap copies it to AOT_RT_PROG before handing resident runtime
-; helpers a normal ST_PROG_START/ST_PROG_END pair. The fixed destination is an
-; internal bootstrap detail, not part of the BASIC source-visible contract.
-AOT_RT_PROG       equ 0x054000
 PROG_START        equ 0x00001000            ; Canonical standalone image origin
 
 ; Interpreter state variables block (pointer cached in R16)
@@ -206,63 +147,27 @@ AOT_DC_TLEN       equ 0x042828             ; q: COMPILE asm-text length
 AOT_DC_CLEN       equ 0x042830             ; q: COMPILE machine-code length
 AOT_TEXT_END      equ 0x042838             ; q: asm-text buffer end limit (0 = unbounded)
 AOT_CODE_END      equ 0x042840             ; q: machine-code buffer end limit (0 = unbounded)
-AOT_LBLCNT        equ 0x042848             ; q: compiler label id counter (unique branch labels per RUN AOT/COMPILE)
 AOT_SAVED_SP      equ 0x042850             ; q: RUN AOT arena entry stack pointer (END/STOP unwind target)
 AOT_LENIENT       equ 0x042858             ; q: nonzero -> private assembler resolves unknown labels to 0 (pass 1 sizing)
 AOT_RT_ERR        equ 0x042860             ; q: RUN AOT runtime error code set by compiled code (0 = none)
 AOT_CUR_SCOPE     equ 0x042868             ; q: private assembler current local-label scope (enclosing global label id)
 AOT_SCOPE_NEXT    equ 0x042870             ; q: private assembler next scope id to allocate
 AOT_QSCOPE        equ 0x042878             ; q: private assembler scratch for the current lookup's query scope
-AOT_USE_PRINT     equ 0x042880             ; q: transpiler flag - nonzero if the programme uses the bundled print helper
 AOT_SYMTAB_PTR    equ 0x042888             ; q: base of the active symbol table (set by the caller)
-AOT_USE_FP        equ 0x042890             ; q: transpiler flag - nonzero if the programme uses the bundled fp_print helper
-AOT_HELPER_FP     equ 0x042898             ; q: assembler flag - inject the fp_print symbol during pass 1
-AOT_HELPER_FP_ADDR equ 0x0428A0            ; q: bundled address of fp_print (link base + offset in the copied closure)
-AOT_HELPER_LEN    equ 0x0428A8             ; q: byte length of machine-code helpers copied ahead of the user code
-AOT_IF_LABEL      equ 0x0428B0             ; q: per-line IF skip-label id (0 = none); all IFs on a line skip to line end
 AOT_CONT_PC       equ 0x0428B8             ; q: RUN AOT STOP saved 64-bit native resume address (0 = no pending CONT)
 AOT_ARENA_HIGH_NEXT equ 0x0428C0           ; q: AOT top-down retained-buffer frontier
 AOT_LOW32_NEXT    equ 0x0428C8             ; q: AOT public low32 scratch cursor
 AOT_FILE_BRIDGE_NEXT equ 0x0428D0          ; q: AOT private file-data bridge cursor
 AOT_FILE_BRIDGE_LOW equ 0x0428D8           ; q: AOT private file-data bridge lower bound
 AOT_RESET_GENERATION equ 0x0428E0          ; q: incremented whenever AOT cursors reset
-AOT_FOR_SP        equ 0x042900             ; q: compile-time FOR-stack pointer (count of open FOR loops)
-AOT_FOR_STACK     equ 0x042908             ; 8 q entries: loop-label ids for open FOR loops (NEXT branches back)
-AOT_FOR_SP_SAVE   equ 0x042948             ; q: NEXT saves ST_FOR_SP here to detect loop (frame kept) vs done (popped)
-AOT_WHILE_SP      equ 0x042950             ; q: compile-time WHILE-stack pointer
-AOT_WHILE_STACK   equ 0x042958             ; 8 q entries: WHILE loop-label ids (WEND pops)
-AOT_DO_SP         equ 0x0429A0             ; q: compile-time DO-stack pointer
-AOT_DO_STACK      equ 0x0429A8             ; 8 q entries: DO loop-label ids (LOOP pops)
-AOT_IF_ELSE       equ 0x0429F0             ; q: pending IF ELSE-clause label id (0 = no ELSE on this IF)
-AOT_USE_RT        equ 0x0429F8             ; q: nonzero -> standalone programme calls the COMPILE runtime blob
-AOT_RT_BUF        equ 0x042A00             ; q: pointer to retained runtime blob bytes
-AOT_RT_LEN        equ 0x042A08             ; q: blob byte length read from aot_runtime_blob.bin
-AOT_RT_PAYLOAD    equ 0x042A10             ; q: guest address of the bundled blob payload in the output image
-AOT_USE_PROG      equ 0x042A18             ; q: nonzero -> bundle the tokenised programme (READ/DATA)
-AOT_RT_PROG_LEN   equ 0x042A20             ; q: bundled programme byte length
-AOT_RT_PROG_PAY   equ 0x042A28             ; q: guest address of the bundled programme payload (__rtprog)
-AOT_ASM_NAME_PTR  equ 0x042A30             ; q: dynamic/private assembler-name buffer pointer
-AOT_ASM_NAME_CAP  equ 0x042A38             ; q: assembler-name buffer capacity
-AOT_MNEM_PTR      equ 0x042A40             ; q: dynamic/private mnemonic scratch pointer
-AOT_MNEM_CAP      equ 0x042A48             ; q: mnemonic scratch capacity
-AOT_SYMTAB_CAP    equ 0x042A50             ; q: active symbol table capacity
-AOT_FOR_NATIVE_STACK equ 0x042A58          ; 8 q entries: nonzero -> native integer FOR frame
-AOT_FOR_VAR_STACK equ 0x042A98             ; 8 q entries: variable-token pointer for native FOR
-AOT_FOR_END_STACK equ 0x042AD8             ; 8 q entries: end-expression pointer for native FOR
-AOT_FOR_STEP_STACK equ 0x042B18            ; 8 q entries: absolute STEP value for native FOR
-AOT_FOR_SIGN_STACK equ 0x042B58            ; 8 q entries: nonzero -> negative STEP
 AOT_FOR_TMP_VAR   equ 0x042B98             ; q: native FOR parser scratch
 AOT_FOR_TMP_START equ 0x042BA0             ; q: native FOR parser scratch
 AOT_FOR_TMP_END   equ 0x042BA8             ; q: native FOR parser scratch
 AOT_FOR_TMP_STEP  equ 0x042BB0             ; q: native FOR parser scratch
 AOT_FOR_TMP_SIGN  equ 0x042BB8             ; q: native FOR parser scratch
 AOT_FOR_TMP_AFTER equ 0x042BC0             ; q: native FOR parser scratch
-AOT_FOR_TMP_LABEL equ 0x042BC8             ; q: native NEXT emitter scratch
-AOT_POKE_STORE_TMP equ 0x042BD0            ; q: native POKE selected store template scratch
 AOT_NATIVE_VAR_TAB equ 0x042BD8            ; q: compiler-time scalar variable tag table
 AOT_NATIVE_VAR_COUNT equ 0x042BE0          ; q: compiler-time scalar variable count
-AOT_NATIVE_MEM_NEXT equ 0x042BE8           ; q: compiler-time MEMALLOC cursor
-AOT_NATIVE_MEM_RANGE equ 0x042BF0          ; q: compiler-time MEMALLOC range
 AOT_LAST_OOM_STAGE equ 0x042BF8            ; q: last AOT OOM stage for diagnostics
 AOT_LAST_LINE     equ 0x042C00             ; q: last BASIC source line seen by AOT transpiler
 AOT_LAST_TOKEN    equ 0x042C08             ; q: last BASIC token seen by AOT transpiler
@@ -284,7 +189,6 @@ COMPILER_VALUE_NEXT   equ 0x042C60          ; q: next programme-unique temporary
 ; native code addresses payload slots directly.
 AOT_NATIVE_VAR_SEG equ 0x00071000
 AOT_NATIVE_VAR_MAX equ 4096
-AOT_NATIVE_VAR_BYTES equ 0x00018010        ; 16 + AOT_NATIVE_VAR_MAX * 24
 
 ; IE64 BASIC runtime error codes
 ERR_SYNTAX        equ 1

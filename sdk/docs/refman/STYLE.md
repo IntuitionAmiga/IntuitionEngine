@@ -421,7 +421,7 @@ Current controlled polish pass:
 
   Canonical sources to check before writing:
 
-  - `sdk/examples/asm/ehbasic_ie64.asm`, `sdk/include/ehbasic_aot.inc`,
+  - `sdk/examples/asm/ehbasic_ie64.asm`, `sdk/include/ehbasic_compiler_driver.inc`,
     `sdk/include/ehbasic_file_io.inc`, and AOT/File I/O tests for the
     startup memory banner, empty-programme compile rejection, and
     generated-image command behaviour.
@@ -1049,12 +1049,12 @@ Current controlled polish pass:
   Execute this AOT / COMPILE pass in this order:
 
   1. Check `sdk/examples/asm/ehbasic_ie64.asm`,
-     `sdk/include/ehbasic_aot.inc`,
+     `sdk/include/ehbasic_compiler_driver.inc`,
      `sdk/include/ehbasic_file_io.inc`,
      `sdk/include/ehbasic_lineeditor.inc`, `sdk/include/ie64.inc`,
      `file_io.go`, `file_io_constants.go`, `cpu_ie64.go`,
      `program_executor.go`, `ehbasic_aot_test.go`,
-     `ehbasic_aot_runtime_blob_test.go`, `file_io_test.go`,
+     `file_io_test.go`,
      `program_executor_test.go`, and `cpu_ie64_flat_load_test.go`
      before writing claims.
   2. Chapter 1: add a short first-session `RUN AOT` transcript after
@@ -1115,8 +1115,8 @@ Current controlled polish pass:
   Execute this TRANSPILE / ASSEMBLE pass in this order:
 
   1. Check `sdk/examples/asm/ehbasic_ie64.asm`,
-     `sdk/include/ehbasic_aot.inc`, `sdk/include/ie64.inc`,
-     `sdk/include/aot_consttab.inc`, `file_io.go`,
+     `sdk/include/ehbasic_compiler_driver.inc`, `sdk/include/ie64.inc`,
+     `sdk/include/ehbasic_assembler_consttab.inc`, `file_io.go`,
      `file_io_constants.go`, `ehbasic_aot_test.go`, and
      `file_io_test.go` before writing claims.
   2. Chapter 1: add `TRANSPILE` and `ASSEMBLE` to the direct-mode
@@ -1218,7 +1218,7 @@ Current controlled polish pass:
      `sdk/include/ehbasic_vars.inc`, `sdk/include/ehbasic_strings.inc`,
      `sdk/include/ehbasic_lineeditor.inc`,
      `sdk/include/ehbasic_file_io.inc`,
-     `sdk/include/ehbasic_aot.inc`, `sdk/include/aot_consttab.inc`,
+     `sdk/include/ehbasic_compiler_driver.inc`, `sdk/include/ehbasic_assembler_consttab.inc`,
      `sdk/examples/asm/ehbasic_ie64.asm`, and the BASIC/AOT tests
      before writing claims.
   2. Chapter 2: refine the `ASSEMBLE` entry so the supported
@@ -1248,7 +1248,7 @@ Current controlled polish pass:
 - Integrate the BASIC AOT, File I/O, and blitter contract changes from
   commit `7daace29` as a narrow correctness pass. Check
   `file_io.go`, `file_io_constants.go`, `main.go`, `video_chip.go`,
-  `sdk/include/ehbasic_aot.inc`, `sdk/include/ie64.inc`,
+  `sdk/include/ehbasic_compiler_driver.inc`, `sdk/include/ie64.inc`,
   `ehbasic_aot_test.go`, `file_io_test.go`, and
   `video_blitter_test.go` before changing reader-facing claims.
   Do not add a new chapter, do not reference the Voodoo mega demo as a

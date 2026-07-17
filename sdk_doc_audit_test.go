@@ -385,8 +385,7 @@ func TestSDKDocsBasicFP64StaticGate(t *testing.T) {
 		"sdk/docs/ehbasic_ie64.md",
 		"sdk/docs/include-files.md",
 		"sdk/examples/asm/ehbasic_ie64.asm",
-		"sdk/include/aot_consttab.inc",
-		"sdk/include/aot_runtime_blob.asm",
+		"sdk/include/ehbasic_assembler_consttab.inc",
 		"sdk/include/ie64_fp.inc",
 	}
 	entries, err := os.ReadDir("sdk/include")
@@ -427,7 +426,7 @@ func TestSDKDocsIE64FP64TranscendentalsDocumentedAcrossAssemblerSurfaces(t *test
 	hostAsmOpcodes := readAuditFile(t, "assembler/ie64asm_opcodes_gen.go")
 	monitorAsm := readAuditFile(t, "internal/asm/ie64/assembler.go")
 	monitorAsmOpcodes := readAuditFile(t, "internal/asm/ie64/opcodes_gen.go")
-	basicAsm := readAuditFile(t, "sdk/include/ehbasic_aot.inc")
+	basicAsm := readAuditFile(t, "sdk/include/ehbasic_assembler.inc")
 
 	opcodes := []struct {
 		mnemonic string

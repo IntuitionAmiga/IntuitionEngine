@@ -9,7 +9,7 @@ sources:
   - sdk/include/ie86.inc
   - cpu_ie64.go
   - program_executor.go
-  - sdk/include/ehbasic_aot.inc
+  - sdk/include/ehbasic_compiler_driver.inc
   - cpu_ie32.go
   - cpu_six5go2.go
   - cpu_z80_runner.go

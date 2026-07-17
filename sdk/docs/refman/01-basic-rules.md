@@ -5,7 +5,7 @@ sources:
   - sdk/include/ehbasic_vars.inc
   - sdk/include/ehbasic_expr.inc
   - sdk/include/ehbasic_lineeditor.inc
-  - sdk/include/ehbasic_aot.inc
+  - sdk/include/ehbasic_compiler_driver.inc
   - sdk/include/ehbasic_strings.inc
   - sdk/include/ehbasic_io.inc
 ---

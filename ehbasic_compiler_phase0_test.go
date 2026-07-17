@@ -188,7 +188,7 @@ func discoverGoTests(t *testing.T) map[string]bool {
 func TestIE64BasicCompilerLegacyTestMigrationInventory(t *testing.T) {
 	allTests := discoverGoTests(t)
 	legacy := make(map[string]bool)
-	for _, path := range []string{"ehbasic_aot_test.go", "ehbasic_aot_runtime_blob_test.go"} {
+	for _, path := range []string{"ehbasic_aot_test.go"} {
 		f, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
 		if err != nil {
 			t.Fatal(err)

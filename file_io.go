@@ -24,12 +24,6 @@ type FileIODevice struct {
 	// refused before any bytes reach guest memory. Consumed (reset to 0) by each
 	// read. See FILE_READ_MAX.
 	fileReadMax uint32
-	// runtimeBlob, when set, is served for reads of runtimeBlobFileName regardless
-	// of the File I/O root. It is the standalone COMPILE runtime blob, provided by
-	// the host (embedded image or generated) so COMPILE can bundle it without the
-	// user having to place a sidecar file in their working directory.
-	runtimeBlob []byte
-
 	// memFS selects the in-memory disk volume used by the js/wasm build, which
 	// has no host filesystem. When true, READ/WRITE/LIST operate on memFiles
 	// instead of os. Files are keyed case-insensitively (canonical lower-case
@@ -48,18 +42,6 @@ type FileIODevice struct {
 	// an HTTP fetch of the assets folder; nil on native. This keeps boot fast:
 	// only the manifest is preloaded, contents load on first LOAD/RUN.
 	memFetch func(relPath string) ([]byte, bool)
-}
-
-// runtimeBlobFileName is the reserved virtual filename the in-guest COMPILE path
-// reads to obtain the runtime blob. A read of this name is served from
-// FileIODevice.runtimeBlob (host-provided), not from disk, when that is set.
-const runtimeBlobFileName = "aot_runtime_blob.bin"
-
-// SetRuntimeBlob installs the host-provided runtime blob served for the reserved
-// virtual filename. Passing nil disables the virtual file (reads fall through to
-// disk). Used by main wiring (embedded blob) and tests (generated blob).
-func (f *FileIODevice) SetRuntimeBlob(blob []byte) {
-	f.runtimeBlob = blob
 }
 
 // NewFileIODevice creates a new File I/O device.
@@ -383,13 +365,6 @@ func (f *FileIODevice) doRead() {
 	readMax := f.fileReadMax
 	f.fileReadMax = 0
 	rawName := f.readFileName()
-	// Serve the reserved runtime-blob virtual file from the host-provided bytes,
-	// regardless of the File I/O root, so COMPILE never depends on a sidecar in the
-	// user's working directory.
-	if f.runtimeBlob != nil && rawName == runtimeBlobFileName {
-		f.writeReadResult(f.runtimeBlob, rawName, "<embedded>", readMax)
-		return
-	}
 	if f.memFS {
 		// Apply the same lexical rejection as the native path below so a
 		// traversal-like name cannot resolve by suffix or basename matching.

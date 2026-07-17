@@ -5,7 +5,7 @@ sources:
   - sdk/include/ehbasic_tokens.inc
   - sdk/include/ehbasic_tokenizer.inc
   - sdk/include/ehbasic_exec.inc
-  - sdk/include/ehbasic_aot.inc
+  - sdk/include/ehbasic_compiler_driver.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

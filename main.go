@@ -1472,8 +1472,7 @@ func main() {
 
 	// Initialize File I/O
 	fileIO := newRuntimeFileIODevice(sysBus, runtimeBaseDir)
-	fileIO.SetRuntimeBlob(embeddedRuntimeBlob) // serve the COMPILE runtime blob virtually
-	seedRuntimeFileIOAssets(fileIO)            // js/wasm: preload the assets volume over HTTP
+	seedRuntimeFileIOAssets(fileIO) // js/wasm: preload the assets volume over HTTP
 	sysBus.MapIO(FILE_IO_BASE, FILE_IO_END, fileIO.HandleRead, fileIO.HandleWrite)
 	sysBus.MapIOByte(FILE_IO_BASE, FILE_IO_END, fileIO.HandleWrite8)
 	sysBus.MapIO64(FILE_DATA_PTR64, FILE_DATA_PTR64_END, fileIO.HandleRead64, fileIO.HandleWrite64)

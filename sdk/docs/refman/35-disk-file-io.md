@@ -5,7 +5,7 @@ sources:
   - file_io.go
   - machine_bus.go
   - sdk/examples/asm/ehbasic_ie64.asm
-  - sdk/include/ehbasic_aot.inc
+  - sdk/include/ehbasic_compiler_driver.inc
   - sdk/include/ehbasic_file_io.inc
   - sdk/include/ie64.inc
   - sdk/include/ie32.inc

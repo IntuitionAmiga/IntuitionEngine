@@ -339,7 +339,7 @@ AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
-.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets aros-iewarp-library iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos aot-runtime-blob cputest-musashi
+.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets aros-iewarp-library iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos cputest-musashi
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis
@@ -433,7 +433,7 @@ setup:
 	@$(MKDIR) -p $(BIN_DIR)
 
 # Build the Intuition Engine VM
-intuition-engine: setup aot-runtime-blob
+intuition-engine: setup
 	@echo "Building Intuition Engine VM..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) .
 	@echo "Stripping debug symbols..."
@@ -610,7 +610,7 @@ $(X64_LIVE_IMG):
 	@test -f "$(X64_LIVE_IMG)" || $(MAKE) x64-live
 
 # Build without Vulkan (software Voodoo rasterizer only)
-novulkan: setup aot-runtime-blob
+novulkan: setup
 	@echo "Building Intuition Engine VM (novulkan)..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags novulkan .
 	@echo "Stripping debug symbols..."
@@ -619,7 +619,7 @@ novulkan: setup aot-runtime-blob
 	@echo "Intuition Engine VM (novulkan) build complete"
 
 # Build headless (no display, no audio, no Vulkan - for CI/testing)
-headless: setup aot-runtime-blob
+headless: setup
 	@echo "Building Intuition Engine VM (headless)..."
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags headless .
 	@echo "Stripping debug symbols..."
@@ -628,7 +628,7 @@ headless: setup aot-runtime-blob
 	@echo "Intuition Engine VM (headless) build complete"
 
 # Build headless+novulkan with CGO disabled (fully portable, cross-compile safe)
-headless-novulkan: setup aot-runtime-blob
+headless-novulkan: setup
 	@echo "Building Intuition Engine VM (headless-novulkan, CGO_ENABLED=0)..."
 	@CGO_ENABLED=0 $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "novulkan headless" .
 	@mv IntuitionEngine $(BIN_DIR)/
@@ -674,7 +674,7 @@ web-demos:
 	@(cd intuitionengine.com/assets && find . -type f ! -name MANIFEST ! -name '.gitkeep' ! -iname 'README.TXT' ! -iname 'mariokart*' | sed 's|^\./||' | LC_ALL=C sort) > intuitionengine.com/assets/MANIFEST
 	@echo "  $$(grep -vc '^$$' intuitionengine.com/assets/MANIFEST 2>/dev/null || echo 0) file(s) in the assets disk volume"
 
-wasm: setup aot-runtime-blob web-demos
+wasm: setup web-demos
 	@echo "Building WebAssembly demo (IE64 BASIC with wasm JIT)..."
 	@mkdir -p $(WASM_DEMO_DIR)
 	$(WASM_GOENV) $(GO) build -ldflags "-s -w" -tags "$(WASM_TAGS)" -o $(WASM_BINARY) .
@@ -700,7 +700,7 @@ wasm: setup aot-runtime-blob web-demos
 # Profiling build: keeps the wasm name section (no -s -w, no wasm-opt) so the
 # browser devtools Performance tab shows Go function names. Overwrites the
 # shipping ie.wasm; run 'make wasm' again before deploying.
-wasm-profile: setup aot-runtime-blob
+wasm-profile: setup
 	@echo "Building WebAssembly demo (PROFILING: symbols kept, unoptimised)..."
 	@mkdir -p $(WASM_DEMO_DIR)
 	$(WASM_GOENV) $(GO) build -tags "$(WASM_TAGS)" -o $(WASM_BINARY) .
@@ -874,21 +874,17 @@ intuitionos-clean:
 	@echo "Cleaning IExec kernel and runtime images..."
 	@rm -f $(IEXEC_DIR)/*.elf $(IEXEC_IMG) $(IEXEC_LST) $(IEXEC_RUNTIME_IMG) $(IEXEC_RUNTIME_LST)
 
-# Regenerate the AOT private-assembler constant table from ie64.inc.
-# The output (sdk/include/aot_consttab.inc) is committed; run this after editing
-# constant definitions in ie64.inc.
-.PHONY: gen-aot-consttab
-gen-aot-consttab:
-	@$(GO) run ./tools/gen_aot_consttab
+# Regenerate the in-guest assembler constant table from ie64.inc.
+# The output (sdk/include/ehbasic_assembler_consttab.inc) is committed; run this
+# after editing constant definitions in ie64.inc.
+.PHONY: gen-assembler-consttab
+gen-assembler-consttab:
+	@$(GO) run ./tools/gen_assembler_consttab
 
 # Build with embedded EhBASIC BASIC interpreter
 .PHONY: basic
 BASIC_BANNER := IE64 BASIC v3.9
-aot-runtime-blob: ie64asm
-	@echo "Generating standalone COMPILE runtime blob..."
-	@$(GO) run ./tools/gen_runtime_blob
-
-basic: ie64asm aot-runtime-blob
+basic: ie64asm
 	@echo "Assembling EhBASIC IE64 interpreter..."
 	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 	@$(MKDIR) -p sdk/examples/prebuilt
@@ -903,7 +899,7 @@ basic: ie64asm aot-runtime-blob
 
 # Build with embedded BASIC + EmuTOS ROM (type EMUTOS at the BASIC prompt).
 .PHONY: basic-emutos
-basic-emutos: ie64asm aot-runtime-blob emutos-rom
+basic-emutos: ie64asm emutos-rom
 	@echo "Assembling EhBASIC IE64 interpreter..."
 	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
 	@$(MKDIR) -p sdk/examples/prebuilt

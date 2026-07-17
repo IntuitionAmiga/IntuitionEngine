@@ -17,7 +17,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$000400`-`$040FFF`    | ~256 KB | BASIC ROM image, system call shim, monitor stub. |
 | `$041000`-`$041FFF`    | 4 KB  | General low workspace; not the BASIC line/input buffer. |
 | `$042000`-`$042FFF`    | 4 KB  | IE64 BASIC shared state page. |
-| `$043000`-`$06FFFF`    | 180 KB | IE64 BASIC standalone runtime blob area and legacy program-text fallback. |
+| `$043000`-`$06FFFF`    | 180 KB | Reserved IE64 BASIC workspace and legacy program-text fallback. |
 | `$600000`-`$6EFFFF`  | 960 KB | IE64 BASIC reserved low32 string export window. |
 | `$700000`-`$77FFFF`  | 512 KB | IE64 BASIC public `MEMALLOC` range 2. |
 | `$780000`-`$78FFFF`  | 64 KB | IE64 BASIC AOT-owned low32 scratch gap, excluded from `MEMALLOC`. |

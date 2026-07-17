@@ -9,7 +9,7 @@ sources:
   - sdk/include/ehbasic_io.inc
   - sdk/include/ehbasic_vars.inc
   - sdk/include/ehbasic_lineeditor.inc
-  - sdk/include/ehbasic_aot.inc
+  - sdk/include/ehbasic_compiler_driver.inc
   - sdk/include/ehbasic_file_io.inc
   - sdk/include/ehbasic_hw_system.inc
   - sdk/examples/asm/ehbasic_ie64.asm
@@ -1095,8 +1095,11 @@ text and write the matching assembly source file. It does not assemble
 the text and it does not write a `.ie64` image.
 
 The assembly text is the same self-contained source that `COMPILE`
-writes beside its image. `ASSEMBLE "`*filename*`"` can assemble it
-later into the same kind of flat IE64 image. See Chapter 35.
+writes beside its image. It begins with `include "ie64.inc"` and depends
+on nothing else: every required runtime helper is emitted into the
+source itself. Both the in-guest `ASSEMBLE "`*filename*`"` command and
+the host `ie64asm` assembler accept it and produce the same flat IE64
+image. See Chapter 35.
 
 ### TWOPI
 
