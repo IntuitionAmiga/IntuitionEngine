@@ -37,6 +37,7 @@ Additional message strings produced by specific verbs:
 | `RUN AOT`    | `Compiling to native code...` before compilation begins. |
 | `RUN AOT` / `COMPILE` / `TRANSPILE` | `?NO CODE TO COMPILE` when the stored programme is empty. |
 | `RUN AOT` / `COMPILE` / `TRANSPILE` | `?COMPILE ERROR IN <line>: <reason>` when a stored line cannot become native IE64 code. |
+| `COMPILE` / `TRANSPILE` | `?COMPILE ERROR IN <line>: <reason>` when a stored `LOAD` is used. `LOAD` is available to the retained `RUN AOT` target, not to a standalone image. |
 | `RUN AOT` / `COMPILE` / `TRANSPILE` / `ASSEMBLE` | `?OUT OF MEMORY ERROR IN <line-or-0>: <reason>` when the native-code arena, generated source, or output image is too large. |
 | `COMPILE` / `TRANSPILE` / `ASSEMBLE` | `?FC ERROR IN 0` for a bad output name. |
 | `COMPILE` / `TRANSPILE` | `?FILE ERROR IN 0` when the output image or generated source cannot be written. |

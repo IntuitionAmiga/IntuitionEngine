@@ -1060,3 +1060,21 @@ Entry format:
   Expected result: start status and error are both 0, the ticket is non-zero, ticket status is 2, and the descriptor result code is 8.
   Author verification workflow: checked constants, handlers, BASIC parser and runtime, monitor commands, script bindings, worker startup code, focused coprocessor tests, and the chapter harness. Part VIII was then checked separately against the migrated porting tree and its live service clients.
   Result: the reader-facing reference matches the final asymmetric instance contract and does not hide the mailbox-version handshake.
+
+- Area: Replacement IE64 BASIC compiler; Chapters 1, 2, 25, 35, and 41; Appendices I and L.
+  Claim: `RUN AOT` compiles the stored programme as typed native IE64 code in the retained arena. The compiled language includes integer and floating-point numeric values, strings, arrays, structured control flow, file operations, and supported hardware statements. `COMPILE` and `TRANSPILE` target standalone output and emit every typed helper required by the programme without delegating statements or expressions to the resident interpreter. Stored `LOAD` is accepted for `RUN AOT` and rejected for standalone output. `RUN`, `NEW`, and `CONT` remain direct-mode operations rather than compiled stored statements.
+  Canonical sources checked: sdk/include/ehbasic_compiler.inc, sdk/include/ehbasic_compiler_ir.inc, sdk/include/ehbasic_compiler_lower.inc, sdk/include/ehbasic_compiler_optimise.inc, sdk/include/ehbasic_compiler_helpers.inc, sdk/include/ehbasic_compiler_emit.inc, sdk/include/ehbasic_compiler_driver.inc, sdk/examples/asm/ehbasic_ie64.asm, sdk/tests/ie64_basic_compiler_phase0.csv, ehbasic_compiler_phase0_test.go, ehbasic_compiler_phase1_test.go, ehbasic_compiler_milestone1_test.go, ehbasic_compiler_milestone2_test.go, ehbasic_compiler_removal_test.go.
+  Reader workflow: enter a stored BASIC programme, use `RUN AOT` to compile and run it inside BASIC, or use the direct-mode `COMPILE`, `TRANSPILE`, and `ASSEMBLE` commands to make and inspect a standalone IE64 image without leaving the machine.
+  Runnable example: Chapter 1 self-contained `RUN AOT` transcript and Chapter 41 direct-mode `COMPILE "MADE"` followed by `RUN "MADE.IE64"`.
+  Expected result: `RUN AOT` compiles and runs typed BASIC; Chapter 41 writes and starts a standalone image; a stored `LOAD` compiles for `RUN AOT` but reports a compile error when the same programme is targeted at a standalone image.
+  Author verification workflow: classified every commit from `de6f358b` through `449cff72`, compared the replacement compiler parser, lowering, emitter, target inventory, and differential tests with each affected chapter, removed obsolete integer-subset and resident-interpreter wording, and kept host tools out of the reader path.
+  Result: the PRG now describes the completed replacement compiler rather than the removed legacy AOT path.
+
+- Area: Chapter 25 IE64 monitor transcript.
+  Claim: IE Mon prefixes the instruction at the current IE64 program counter with `>` and marks a branch target with `T`.
+  Canonical sources checked: debug_commands.go, tools/prm-extract/runiemon.go.
+  Reader workflow: enter the Chapter 25 SoundChip bytes and disassemble them before running.
+  Runnable example: Chapter 25 `d 1000 #25` transcript.
+  Expected result: the instruction at `$1000` carries the current-PC marker and the self-branch at `$10C0` carries the target marker.
+  Author verification workflow: ran the Chapter 25 IE Mon example through the headless PRG harness and compared every disassembly line with the captured monitor output.
+  Result: the transcript matches the current monitor markers as well as the instruction bytes.

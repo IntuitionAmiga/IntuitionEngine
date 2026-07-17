@@ -74,6 +74,7 @@ symbols, and Appendix J gives the full memory map.
 | CMOVcc | Chapter 30, Appendix G |
 | Clipboard bridge monitor view | Chapter 33 |
 | COMPILE | Chapter 2, Chapter 35, Appendix I |
+| Compiled BASIC | Chapter 1, Chapter 2, Chapter 25, Chapter 35 |
 | Compositor | Chapter 3, Appendix K |
 | Copper | Chapter 4, Chapter 53 |
 | Coprocessor | Chapter 32, Chapter 39, Chapter 42, Chapter 56, Chapter 60, Appendix I |
@@ -270,6 +271,8 @@ symbols, and Appendix J gives the full memory map.
 | SN76489 | Chapter 14, Chapter 26, Appendix D |
 | SoundChip | Chapter 11, Chapter 12, Chapter 39, Chapter 44, Appendix D |
 | SoundChip flex channels | Chapter 11, Appendix D, Appendix J |
+| Standalone BASIC image | Chapter 2, Chapter 25, Chapter 35, Chapter 41 |
+| Stored LOAD under RUN AOT | Chapter 25, Chapter 35, Appendix I |
 | SWAP_BUFFER_CMD | Chapter 9, Appendix D |
 | SYSINFO_ACTIVE_RAM_LO | Chapter 24, Appendix D, Appendix J |
 | SYSINFO_LOW_WINDOW_HI | Chapter 24, Appendix D, Appendix H |

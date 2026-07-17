@@ -268,6 +268,10 @@ statement cannot be compiled, BASIC prints `?COMPILE ERROR IN ` followed
 by the line number and the reason. See Chapter 35 for the File I/O
 side and Chapter 25 for flat IE64 images.
 
+`COMPILE` makes a standalone image. A stored `LOAD` can be compiled for
+`RUN AOT`, where BASIC remains present to replace the stored programme,
+but it cannot be placed in a standalone image.
+
 ### COLOR
 
 `COLOR `*fg* [`,` *bg*]
@@ -919,9 +923,12 @@ stack are reset.
 
 `RUN AOT`
 
-Direct-mode form. Compile the stored programme to native IE64 code
-inside the machine and run the compiled code immediately. The visible
-program result should match `RUN`, but BASIC first prints:
+Direct-mode form. Compile the stored programme as typed native IE64 code
+inside the machine and run the compiled code immediately. Numeric and
+string values, arrays, structured control flow, file operations, and
+supported hardware statements are compiled for this retained-arena
+target. The visible program result should match `RUN`, but BASIC first
+prints:
 
 ```text
 Compiling to native code...
@@ -1096,10 +1103,10 @@ the text and it does not write a `.ie64` image.
 
 The assembly text is the same self-contained source that `COMPILE`
 writes beside its image. It begins with `include "ie64.inc"` and depends
-on nothing else: every required runtime helper is emitted into the
-source itself. Both the in-guest `ASSEMBLE "`*filename*`"` command and
-the host `ie64asm` assembler accept it and produce the same flat IE64
-image. See Chapter 35.
+on nothing else: every typed helper required by the programme is emitted
+into the source itself. The in-machine `ASSEMBLE "`*filename*`"` command
+accepts that source and produces the same flat IE64 image. See Chapter
+35.
 
 ### TWOPI
 

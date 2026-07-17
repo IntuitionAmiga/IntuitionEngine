@@ -75,10 +75,14 @@ Ready
 .
 ```
 
-BASIC can make native IE64 programs from inside the machine. Type
-this while the two-line program is still in memory:
+BASIC can make native IE64 programs from inside the machine. `RUN AOT`
+compiles the stored numeric, string, array, and control-flow operations
+as typed native code. Enter the two lines again so this transcript can
+also be typed on its own:
 
 ```basic
+10 PRINT "INTUITION ENGINE"
+20 PRINT 2+3
 RUN AOT
 Compiling to native code...
 INTUITION ENGINE

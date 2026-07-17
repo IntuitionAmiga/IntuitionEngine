@@ -213,17 +213,19 @@ beside that loaded programme. If no programme has been loaded, it is
 written at the root of the disk volume.
 
 `COMPILE` also writes a same-name text listing of the generated IE64
-instructions. That assembly text is self-contained: when the programme
-needs runtime support, the support bytes and any bundled tokenised
-programme data are written as labelled `dc.b` data. The listing is for
-inspection or later assembly. `RUN` uses the `.ie64` image.
+instructions. That assembly text is self-contained: every typed helper
+required by the programme and any bundled tokenised programme data are
+written into the source. Every supported statement and expression is
+represented by generated native code. The listing is for inspection or
+later in-machine assembly. `RUN` uses the `.ie64` image.
 
 Not every stored line can become a standalone image. Direct-mode
 commands such as `RUN AOT`, `COMPILE`, `TRANSPILE`, `ASSEMBLE`, and
 `DIR` or `TYPE` are rejected. A standalone image cannot use `LOAD`.
-For `POKE`, `POKE8`, `POKE16`, `POKE32`, and `POKE64` inside a
-standalone image, integer-literal operands can be lowered directly;
-other expressions use the resident runtime path.
+The same stored `LOAD` is valid under `RUN AOT`, where BASIC remains
+present to replace the stored programme. Numeric expressions used by
+`POKE`, `POKE8`, `POKE16`, `POKE32`, and `POKE64` are compiled as typed
+native operations for both targets.
 
 If the stored programme is empty, `COMPILE` prints `?NO CODE TO COMPILE`
 and writes no image.

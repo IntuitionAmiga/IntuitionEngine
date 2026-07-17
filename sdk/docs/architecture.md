@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-14*
+*Last modified: 2026-07-17*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -499,8 +499,9 @@ flowchart LR
   accounting avoids atomic hot-path updates. Deopt reasons are `unsupported`,
   `helper`, `mmio`, `smc`, `interrupt`, `cache_pressure`, and `debug`. These
   counters are diagnostics only and do not change guest-visible execution.
-- **IE64 JIT tiers** - Linux amd64 and Linux arm64 promote hot static control-flow
-  chains into bounded multi-block regions. Regions retain selected GPR and FPU
+- **IE64 JIT tiers** - amd64 Linux, Windows and macOS builds, plus Linux arm64,
+  promote hot static control-flow chains into bounded multi-block regions.
+  Regions retain selected GPR and FPU
   state across internal edges, preserve budget and retired-count accounting on
   back edges, and spill architectural state at every helper or dispatcher exit.
   MMU region promotion is enabled by default and can be disabled with
@@ -778,11 +779,13 @@ cross-page, out-of-bounds or I/O spans. Instructions with segment, far
 control-flow, interrupt, port-I/O or complex-flag semantics stay on the
 interpreter.
 
-Runtime switches: `X86_JIT_CHAINS` (default on), `X86_JIT_REGIONS` (default
+Runtime switches are `X86_JIT_CHAINS` (default on), `X86_JIT_REGIONS` (default
 off), `X86_JIT_RTS` (default off), `X86_JIT_STATS` (profiling, default off), the
-shared `IE_PERF_ACCT` accounting, and the shared `IE_SIMD` kill switch. The full
-instruction coverage, span-guard details, profiling method and Doom `DEMO1`
-acceptance measurement are in [`x86_JIT.md`](x86_JIT.md).
+shared `IE_PERF_ACCT` accounting, and the shared `IE_SIMD` kill switch. Region
+formation is experimental and must be enabled explicitly. Unsupported or
+guard-failing instructions leave through the normal interpreter fallback, so
+these switches change execution strategy rather than guest-visible x86
+semantics.
 
 ## Build Profiles and Observable Runtime
 
@@ -810,6 +813,30 @@ integer and FP64 blocks, with interpreter fallback and `IE64_WASM_JIT=0` as the
 runtime disable switch. Browser FileIO and Bootstrap HostFS use in-memory
 volumes seeded from web assets, with file contents fetched lazily on first
 read.
+
+The browser exposes an in-tab bridge over the same FileIO memory volume.
+`ieImportFile` adds a session-local file with a 64 MiB per-file limit,
+`ieExportFile` returns a saved file's bytes, and `ieDeleteFile` removes a file;
+none of these operations uploads data to a server. `ieTypeText` injects
+representable text bytes and `ieKey` injects the supported editing and
+navigation key sequences through the normal terminal input path. Imported
+files disappear when the page reloads.
+
+### IE64 BASIC Native Compilation
+
+The resident IE64 BASIC environment implements `RUN AOT`, `COMPILE`,
+`TRANSPILE`, and `ASSEMBLE` with a typed linear-IR compiler resident in guest
+memory. The pipeline parses tokenised BASIC, validates the arena or standalone
+target, applies typed optimisation passes, lowers to IE64 operations, emits
+assembly, and invokes the in-guest assembler. Compiler workspace and generated
+output use the active-RAM AOT arena rather than a fixed host-side buffer.
+
+The replacement compiler does not delegate unsupported statements to the
+removed legacy transpiler. Its source-consumed coverage inventory classifies
+each parser surface and records whether it is common to both targets,
+arena-only, standalone-runtime-backed, direct-only, or invalid. Target-specific
+unsupported constructs fail with compiler diagnostics; generated standalone
+images remain self-contained and do not depend on a resident BASIC interpreter.
 
 ## 3. CPU Subsystem
 

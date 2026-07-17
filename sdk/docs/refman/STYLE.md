@@ -1842,6 +1842,62 @@ book-level structural targets:
 - Normalise heading style and chapter templates without making every
   chapter sound identical.
 
+## Replacement IE64 BASIC Compiler Pass
+
+Integrate the completed replacement IE64 BASIC compiler from commits
+`994274ed` through `449cff72`. This is a focused BASIC native-compilation
+pass. Do not add a compiler-internals chapter and do not expose compiler IR,
+helper masks, optimisation passes, JIT controls, host assemblers, repository
+paths, tests, or build commands in reader-facing prose. The reader-facing
+idea remains: BASIC can make native IE64 programs from inside the machine.
+
+Adversarially check every claim against the compiler `.inc` files, the
+compiler target-classification inventory, and the focused compiler tests.
+Older prose about an integer-only subset, a resident runtime blob, or
+interpreter delegation is not canonical.
+
+Reader-facing facts from the completed compiler replacement:
+
+- `RUN AOT` compiles the stored program as typed native IE64 code and runs it
+  from the retained arena. Its compiled language includes integer and
+  floating-point numeric values, strings, arrays, structured control flow,
+  file operations, and supported hardware statements.
+- `COMPILE` and `TRANSPILE` target a standalone flat IE64 image. Generated
+  source contains every typed helper required by that program. Generated
+  statements and expressions do not delegate to the resident BASIC
+  interpreter.
+- Stored `LOAD` is an arena-only operation. It may be compiled by `RUN AOT`,
+  where it replaces the stored program, but it is rejected for standalone
+  `COMPILE` and `TRANSPILE` output.
+- Prompt commands such as `RUN`, `NEW`, and `CONT` remain direct-only and are
+  not compiled as stored-program statements.
+- Reader examples must keep `RUN AOT`, `COMPILE`, `TRANSPILE`, and `ASSEMBLE`
+  at the prompt. Do not place direct-mode build commands inside a numbered
+  BASIC listing.
+
+Execute this pass in ascending reader order:
+
+1. Chapter 1: check the introductory `RUN AOT` wording and clarify the typed
+   native result only where needed.
+2. Chapter 2: keep the compile commands direct-only, remove the host assembler
+   from the reader workflow, and distinguish retained-arena from standalone
+   targets.
+3. Chapter 25: replace the obsolete integer-subset and hot-path discussion
+   with the reader-visible typed compiler model and its target distinction.
+4. Chapter 35: remove resident-interpreter fallback wording, document the
+   self-contained typed helper closure, and state the standalone `LOAD`
+   limitation precisely.
+5. Chapter 41: make the native-image example a real prompt transcript rather
+   than a numbered listing containing direct-mode commands.
+6. Appendix I: record the target-specific stored `LOAD` compile error.
+7. Appendix L: add lookup entries for compiled BASIC, standalone BASIC images,
+   and stored `LOAD` under `RUN AOT`.
+8. Claim ledger: record canonical sources, target classifications, reader
+   workflow, runnable examples, expected results, and author verification.
+9. Run focused compiler tests, the PRG example harness for affected chapters,
+   forbidden-term and dash scans, strict publication, and PDF generation in
+   that order. PDFs are always the final generated artefact.
+
 ## Uniform Chapter Taxonomy
 
 Name hardware chapters after the hardware block, not after every file

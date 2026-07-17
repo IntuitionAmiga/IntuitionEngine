@@ -33,15 +33,19 @@ machine. All of these images still run on the same Intuition Engine bus.
 
 For IE64, the machine can make a native image without leaving BASIC:
 
-```basic
+```text
 10 REM MAKE A SMALL NATIVE PROGRAMME
 20 PRINT "MADE INSIDE IE"
-30 COMPILE "MADE"
-40 RUN "MADE.IE64"
+COMPILE "MADE"
+RUN "MADE.IE64"
+MADE INSIDE IE
+Ready
+.
 ```
 
 Expected result: `COMPILE` writes `MADE.ie64` and a generated assembly
-listing on the disk volume, then `RUN` starts the native IE64 image.
+listing on the disk volume. `RUN` starts the native IE64 image, which
+prints the message and returns to the prompt.
 
 `TRANSPILE "MADE"` writes only the assembly source. `ASSEMBLE "MADE"`
 reads that source and writes `MADE.ie64` again. Both commands are
