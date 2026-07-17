@@ -38,11 +38,40 @@ compiler_optimise_ir:
     rts
 compiler_optimise_ir_inner:
     move.q  r18, r8
+    jsr     compiler_optimise_scalar_types
+    move.q  r8, r18
+    jsr     compiler_pair_structured_loops
+    bnez    r8, .coi_return
+    move.q  r8, r18
+    jsr     compiler_optimise_reachability
+    move.q  r8, r18
+    jsr     compiler_optimise_loops
+    move.q  r8, r18
+    jsr     compiler_optimise_array_bounds
+    move.q  r8, r18
+    jsr     compiler_optimise_dead_values
+    move.q  r8, r18
+    jsr     compiler_optimise_cleanup
+    la      r1, COMPILER_IR_BASE
+    load.q  r8, (r1)
+    jsr     compiler_optimise_residency
+    move.q  r8, r0
+    move.q  r9, r0
+    move.q  r10, r0
+    rts
+.coi_return:
+    rts
+
+; One forward constant-fold and type-propagation scan over the IR.
+; R8 = IR base; the caller keeps the base in r18 as well. Idempotent, so the
+; scalar type pass may run it repeatedly while its variable proof converges.
+compiler_optimise_forward_scan:
     move.q  r19, r8
     la      r1, COMPILER_IR_CURSOR
     load.q  r20, (r1)
 .coi_record:
-    bge     r19, r20, .coi_ok
+    bge     r19, r20, .coi_scan_done
+    move.q  r27, r0                ; 1 = propagate type only, never fold
     load.q  r1, (r19)
     move.q  r2, #IR_OP_ADD
     beq     r1, r2, .coi_fold_integer
@@ -57,6 +86,15 @@ compiler_optimise_ir_inner:
     move.q  r2, #IR_OP_COMPARE_GE
     ble     r1, r2, .coi_fold_integer
 .coi_not_comparison:
+    move.q  r2, #IR_OP_BIT_AND
+    blt     r1, r2, .coi_not_bitwise
+    move.q  r2, #IR_OP_BIT_OR
+    ble     r1, r2, .coi_bitwise
+.coi_not_bitwise:
+    move.q  r2, #IR_OP_LSHIFT
+    beq     r1, r2, .coi_bitwise
+    move.q  r2, #IR_OP_RSHIFT
+    beq     r1, r2, .coi_bitwise
     move.q  r2, #IR_OP_MOVE
     beq     r1, r2, .coi_propagate_copy
     move.q  r2, #IR_OP_CONVERT
@@ -64,6 +102,11 @@ compiler_optimise_ir_inner:
 .coi_next:
     add.q   r19, r19, #IR_RECORD_BYTES
     bra     .coi_record
+.coi_bitwise:
+    ; Bitwise and shift results are I64 exactly when both operands are proven
+    ; integers; there is no compile-time folding for them yet.
+    move.q  r27, #1
+    bra     .coi_fold_integer
 .coi_fold_integer:
     load.q  r3, 40(r19)
     lsr.q   r4, r3, #16
@@ -79,8 +122,17 @@ compiler_optimise_ir_inner:
     move.q  r26, r0                ; latest constant definition for rhs
     move.q  r9, r0
     move.q  r10, r0
+    ; Walk backwards from the use so the first match per operand is its
+    ; latest definition; stop once both operands are resolved.
+    move.q  r6, r19
+    move.q  r15, r0
 .coi_find_values:
-    bge     r6, r19, .coi_values_found
+    sub.q   r6, r6, #IR_RECORD_BYTES
+    blt     r6, r18, .coi_values_found
+    move.q  r1, r15
+    and.q   r1, r1, #3
+    move.q  r2, #3
+    beq     r1, r2, .coi_values_found
     load.q  r1, 56(r6)
     and.q   r1, r1, #IR_FLAG_REMOVED
     bnez    r1, .coi_find_next
@@ -121,8 +173,10 @@ compiler_optimise_ir_inner:
     load.q  r2, 40(r6)
     and.q   r2, r2, #IR_VALUE_MASK
     bne     r2, r4, .coi_check_rhs
-    move.q  r9, r0
-    move.q  r25, r0
+    move.q  r3, r15
+    and.q   r3, r3, #1
+    bnez    r3, .coi_check_rhs
+    or.q    r15, r15, #1
     load.q  r13, 8(r6)
     move.q  r3, #IR_OP_CONST
     bne     r1, r3, .coi_check_rhs
@@ -131,8 +185,10 @@ compiler_optimise_ir_inner:
     move.q  r25, r6
 .coi_check_rhs:
     bne     r2, r5, .coi_find_next
-    move.q  r10, r0
-    move.q  r26, r0
+    move.q  r3, r15
+    and.q   r3, r3, #2
+    bnez    r3, .coi_find_next
+    or.q    r15, r15, #2
     load.q  r14, 8(r6)
     move.q  r3, #IR_OP_CONST
     bne     r1, r3, .coi_find_next
@@ -140,9 +196,9 @@ compiler_optimise_ir_inner:
     move.q  r10, #1
     move.q  r26, r6
 .coi_find_next:
-    add.q   r6, r6, #IR_RECORD_BYTES
     bra     .coi_find_values
 .coi_values_found:
+    bnez    r27, .coi_propagate_arithmetic_type
     beqz    r9, .coi_propagate_arithmetic_type
     beqz    r10, .coi_propagate_arithmetic_type
     move.q  r1, #IR_TYPE_I64
@@ -257,9 +313,16 @@ compiler_optimise_ir_inner:
     store.q r1, 8(r19)
     bra     .coi_next
 .coi_propagate_i64_type:
+    ; Addresses are integer payloads, so MEMALLOC results participate in
+    ; proven integer arithmetic exactly like I64 values.
     move.q  r1, #IR_TYPE_I64
-    bne     r13, r1, .coi_next
-    bne     r14, r1, .coi_next
+    move.q  r2, #IR_TYPE_ADDRESS
+    beq     r13, r1, .coi_i64_lhs_ok
+    bne     r13, r2, .coi_next
+.coi_i64_lhs_ok:
+    beq     r14, r1, .coi_i64_rhs_ok
+    bne     r14, r2, .coi_next
+.coi_i64_rhs_ok:
     store.q r1, 8(r19)
     load.q  r2, 56(r19)
     or.q    r2, r2, #IR_FLAG_I64_OPERANDS
@@ -269,12 +332,13 @@ compiler_optimise_ir_inner:
     load.q  r3, 40(r19)
     lsr.q   r4, r3, #16
     and.q   r4, r4, #IR_VALUE_MASK
-    move.q  r6, r18
+    move.q  r6, r19
     move.q  r9, r0
     move.q  r11, r0
     move.q  r12, r0
 .coi_find_copy_source:
-    bge     r6, r19, .coi_copy_source_found
+    sub.q   r6, r6, #IR_RECORD_BYTES
+    blt     r6, r18, .coi_copy_source_found
     load.q  r1, 56(r6)
     and.q   r1, r1, #IR_FLAG_REMOVED
     bnez    r1, .coi_copy_next
@@ -315,14 +379,14 @@ compiler_optimise_ir_inner:
     load.q  r2, 40(r6)
     and.q   r2, r2, #IR_VALUE_MASK
     bne     r2, r4, .coi_copy_next
-    move.q  r9, r0
+    ; The first match walking backwards is the latest definition: stop here.
     move.q  r3, #IR_OP_CONST
-    bne     r1, r3, .coi_copy_next
+    bne     r1, r3, .coi_copy_source_found
     load.q  r11, 48(r6)
     load.q  r12, 8(r6)
     move.q  r9, #1
+    bra     .coi_copy_source_found
 .coi_copy_next:
-    add.q   r6, r6, #IR_RECORD_BYTES
     bra     .coi_find_copy_source
 .coi_copy_source_found:
     beqz    r9, .coi_next
@@ -345,28 +409,335 @@ compiler_optimise_ir_inner:
     or.q    r1, r1, #IR_FLAG_CONSTANT
     store.q r1, 56(r19)
     bra     .coi_next
-.coi_ok:
-    move.q  r8, r18
-    jsr     compiler_pair_structured_loops
-    bnez    r8, .coi_return
-    move.q  r8, r18
-    jsr     compiler_optimise_reachability
-    move.q  r8, r18
-    jsr     compiler_optimise_loops
-    move.q  r8, r18
-    jsr     compiler_optimise_array_bounds
-    move.q  r8, r18
-    jsr     compiler_optimise_dead_values
-    move.q  r8, r18
-    jsr     compiler_optimise_cleanup
-    la      r1, COMPILER_IR_BASE
-    load.q  r8, (r1)
-    jsr     compiler_optimise_residency
-    move.q  r8, r0
-    move.q  r9, r0
-    move.q  r10, r0
+.coi_scan_done:
     rts
-.coi_return:
+
+; Whole-programme scalar type proof (Milestone 2). A scalar is proven I64 when
+; every write the programme can make to it stores a proven I64 or address
+; value: an assignment from a proven expression, READ with all-integer DATA,
+; or a FOR whose start, limit and step are proven. CALL, USR and stored LOAD
+; can rewrite variables arbitrarily, so their presence disables the proof and
+; the pass degrades to a single forward scan. The proof iterates because each
+; cleared scalar can invalidate expressions feeding other scalars; states move
+; only from proven to dynamic, so the fixed point terminates.
+; R8 = IR base. Uses the free arena space between COMPILER_IR_CURSOR and
+; COMPILER_IR_END as its symbol state table; a full table abandons the proof.
+compiler_optimise_scalar_types:
+    move.q  r18, r8
+    la      r1, COMPILER_IR_CURSOR
+    load.q  r29, (r1)
+    la      r1, COMPILER_IR_END
+    load.q  r23, (r1)
+    add.q   r21, r29, #15
+    move.q  r1, #-16
+    and.q   r21, r21, r1
+    move.q  r22, r0                ; interned symbol count
+    move.q  r28, #1                ; all DATA items proven I64
+    move.q  r26, r18
+.cost_scan0:
+    bge     r26, r29, .cost_intern
+    load.q  r1, 56(r26)
+    and.q   r1, r1, #IR_FLAG_REMOVED
+    bnez    r1, .cost_scan0_next
+    load.q  r1, (r26)
+    move.q  r2, #IR_OP_CALL
+    beq     r1, r2, .cost_run_once
+    move.q  r2, #IR_OP_USR
+    beq     r1, r2, .cost_run_once
+    move.q  r2, #IR_OP_STORED_LOAD
+    beq     r1, r2, .cost_run_once
+    move.q  r2, #IR_OP_DATA
+    bne     r1, r2, .cost_scan0_next
+    load.q  r1, 8(r26)
+    move.q  r2, #IR_TYPE_I64
+    beq     r1, r2, .cost_scan0_next
+    move.q  r28, r0
+.cost_scan0_next:
+    add.q   r26, r26, #IR_RECORD_BYTES
+    bra     .cost_scan0
+.cost_run_once:
+    move.q  r8, r18
+    jsr     compiler_optimise_forward_scan
+    rts
+.cost_intern:
+    move.q  r26, r18
+.cost_intern_scan:
+    bge     r26, r29, .cost_iterate
+    load.q  r1, 56(r26)
+    and.q   r1, r1, #IR_FLAG_REMOVED
+    bnez    r1, .cost_intern_next
+    load.q  r1, (r26)
+    load.q  r2, 48(r26)
+    move.q  r3, #IR_OP_LOAD_SCALAR
+    beq     r1, r3, .cost_intern_add
+    move.q  r3, #IR_OP_STORE_SCALAR
+    beq     r1, r3, .cost_intern_add
+    move.q  r3, #IR_OP_READ_SCALAR
+    beq     r1, r3, .cost_intern_add
+    move.q  r3, #IR_OP_FOR
+    bne     r1, r3, .cost_intern_next
+    lsr.q   r2, r2, #32
+.cost_intern_add:
+    jsr     compiler_scalar_state_intern
+    beqz    r8, .cost_run_once
+.cost_intern_next:
+    add.q   r26, r26, #IR_RECORD_BYTES
+    bra     .cost_intern_scan
+.cost_iterate:
+    ; Reset every type this pass manages, seed loads from the current states,
+    ; then let the forward scan re-derive expression types from scratch.
+    move.q  r26, r18
+.cost_reset:
+    bge     r26, r29, .cost_reset_done
+    load.q  r1, 56(r26)
+    and.q   r2, r1, #IR_FLAG_REMOVED
+    bnez    r2, .cost_reset_next
+    load.q  r3, (r26)
+    move.q  r4, #IR_OP_LOAD_SCALAR
+    beq     r3, r4, .cost_reset_load
+    move.q  r4, #IR_OP_ADD
+    blt     r3, r4, .cost_reset_next
+    move.q  r4, #IR_OP_MUL
+    ble     r3, r4, .cost_reset_arith
+    move.q  r4, #IR_OP_COMPARE_EQ
+    blt     r3, r4, .cost_reset_next
+    move.q  r4, #IR_OP_COMPARE_GE
+    ble     r3, r4, .cost_reset_arith
+    move.q  r4, #IR_OP_BIT_AND
+    blt     r3, r4, .cost_reset_next
+    move.q  r4, #IR_OP_BIT_OR
+    ble     r3, r4, .cost_reset_arith
+    move.q  r4, #IR_OP_LSHIFT
+    beq     r3, r4, .cost_reset_arith
+    move.q  r4, #IR_OP_RSHIFT
+    beq     r3, r4, .cost_reset_arith
+    bra     .cost_reset_next
+.cost_reset_arith:
+    move.q  r4, #IR_TYPE_UNKNOWN
+    store.q r4, 8(r26)
+    move.q  r4, #IR_FLAG_I64_OPERANDS
+    not.q   r4, r4
+    and.q   r1, r1, r4
+    store.q r1, 56(r26)
+    bra     .cost_reset_next
+.cost_reset_load:
+    load.q  r2, 48(r26)
+    jsr     compiler_scalar_state_lookup
+    move.q  r4, #IR_TYPE_UNKNOWN
+    beqz    r8, .cost_reset_load_store
+    load.q  r5, 8(r8)
+    beqz    r5, .cost_reset_load_store
+    move.q  r4, #IR_TYPE_I64
+.cost_reset_load_store:
+    store.q r4, 8(r26)
+.cost_reset_next:
+    add.q   r26, r26, #IR_RECORD_BYTES
+    bra     .cost_reset
+.cost_reset_done:
+    move.q  r8, r18
+    jsr     compiler_optimise_forward_scan
+    move.q  r24, r0
+    move.q  r26, r18
+.cost_check:
+    bge     r26, r29, .cost_checked
+    load.q  r1, 56(r26)
+    and.q   r1, r1, #IR_FLAG_REMOVED
+    bnez    r1, .cost_check_next
+    load.q  r1, (r26)
+    move.q  r2, #IR_OP_STORE_SCALAR
+    beq     r1, r2, .cost_check_store
+    move.q  r2, #IR_OP_READ_SCALAR
+    beq     r1, r2, .cost_check_read
+    move.q  r2, #IR_OP_FOR
+    beq     r1, r2, .cost_check_for
+    bra     .cost_check_next
+.cost_check_store:
+    load.q  r3, 40(r26)
+    lsr.q   r3, r3, #16
+    and.q   r3, r3, #IR_VALUE_MASK
+    jsr     compiler_scalar_def_type
+    move.q  r2, #IR_TYPE_I64
+    beq     r8, r2, .cost_check_next
+    move.q  r2, #IR_TYPE_ADDRESS
+    beq     r8, r2, .cost_check_next
+    load.q  r2, 48(r26)
+    jsr     compiler_scalar_state_clear
+    bra     .cost_check_next
+.cost_check_read:
+    bnez    r28, .cost_check_next
+    load.q  r2, 48(r26)
+    jsr     compiler_scalar_state_clear
+    bra     .cost_check_next
+.cost_check_for:
+    load.q  r4, 40(r26)
+    and.q   r3, r4, #IR_VALUE_MASK
+    jsr     compiler_scalar_def_type
+    move.q  r2, #IR_TYPE_I64
+    beq     r8, r2, .cost_check_for_limit
+    move.q  r2, #IR_TYPE_ADDRESS
+    bne     r8, r2, .cost_check_for_clear
+.cost_check_for_limit:
+    load.q  r4, 40(r26)
+    lsr.q   r3, r4, #16
+    and.q   r3, r3, #IR_VALUE_MASK
+    jsr     compiler_scalar_def_type
+    move.q  r2, #IR_TYPE_I64
+    beq     r8, r2, .cost_check_for_step
+    move.q  r2, #IR_TYPE_ADDRESS
+    bne     r8, r2, .cost_check_for_clear
+.cost_check_for_step:
+    load.q  r4, 40(r26)
+    lsr.q   r3, r4, #32
+    and.q   r3, r3, #IR_VALUE_MASK
+    jsr     compiler_scalar_def_type
+    move.q  r2, #IR_TYPE_I64
+    beq     r8, r2, .cost_check_next
+    move.q  r2, #IR_TYPE_ADDRESS
+    beq     r8, r2, .cost_check_next
+.cost_check_for_clear:
+    load.q  r2, 48(r26)
+    lsr.q   r2, r2, #32
+    jsr     compiler_scalar_state_clear
+.cost_check_next:
+    add.q   r26, r26, #IR_RECORD_BYTES
+    bra     .cost_check
+.cost_checked:
+    bnez    r24, .cost_iterate
+    move.q  r26, r18
+.cost_flag:
+    bge     r26, r29, .cost_done
+    load.q  r1, 56(r26)
+    and.q   r2, r1, #IR_FLAG_REMOVED
+    bnez    r2, .cost_flag_next
+    load.q  r2, (r26)
+    move.q  r3, #IR_OP_FOR
+    bne     r2, r3, .cost_flag_next
+    load.q  r2, 48(r26)
+    lsr.q   r2, r2, #32
+    jsr     compiler_scalar_state_lookup
+    beqz    r8, .cost_flag_next
+    load.q  r2, 8(r8)
+    beqz    r2, .cost_flag_next
+    or.q    r1, r1, #IR_FLAG_I64_OPERANDS
+    store.q r1, 56(r26)
+.cost_flag_next:
+    add.q   r26, r26, #IR_RECORD_BYTES
+    bra     .cost_flag
+.cost_done:
+    rts
+
+; R2 = symbol. Returns R8 = table entry address, or zero when missing.
+; Preserves R1-R4; clobbers R5-R7.
+compiler_scalar_state_lookup:
+    move.q  r5, r0
+.cssl_loop:
+    bge     r5, r22, .cssl_missing
+    lsl.q   r6, r5, #4
+    add.q   r6, r21, r6
+    load.q  r7, (r6)
+    beq     r7, r2, .cssl_found
+    add.q   r5, r5, #1
+    bra     .cssl_loop
+.cssl_found:
+    move.q  r8, r6
+    rts
+.cssl_missing:
+    move.q  r8, r0
+    rts
+
+; R2 = symbol. Interns the symbol with a proven-I64 seed state. Returns R8 =
+; entry address, or zero when the table region is exhausted.
+compiler_scalar_state_intern:
+    jsr     compiler_scalar_state_lookup
+    bnez    r8, .cssi_ret
+    lsl.q   r5, r22, #4
+    add.q   r5, r21, r5
+    add.q   r6, r5, #16
+    bgt     r6, r23, .cssi_full
+    store.q r2, (r5)
+    move.q  r6, #1
+    store.q r6, 8(r5)
+    add.q   r22, r22, #1
+    move.q  r8, r5
+.cssi_ret:
+    rts
+.cssi_full:
+    move.q  r8, r0
+    rts
+
+; R2 = symbol. Clears a proven state and latches the change flag in r24.
+compiler_scalar_state_clear:
+    jsr     compiler_scalar_state_lookup
+    beqz    r8, .cssc_ret
+    load.q  r5, 8(r8)
+    beqz    r5, .cssc_ret
+    store.q r0, 8(r8)
+    move.q  r24, #1
+.cssc_ret:
+    rts
+
+; R3 = value id, R26 = use record. Returns R8 = proven type of the latest
+; unremoved definition of the value before the use, or IR_TYPE_UNKNOWN.
+; Comparison results are I64 booleans regardless of their operand types.
+compiler_scalar_def_type:
+    ; Walk backwards from the use: the first matching definition is the
+    ; latest one, and expression temporaries sit immediately before their
+    ; consumer, keeping this scan short for large programmes.
+    move.q  r5, r26
+    move.q  r9, #IR_TYPE_UNKNOWN
+.csdt_loop:
+    sub.q   r5, r5, #IR_RECORD_BYTES
+    blt     r5, r18, .csdt_done
+    load.q  r6, 56(r5)
+    and.q   r6, r6, #IR_FLAG_REMOVED
+    bnez    r6, .csdt_next
+    load.q  r6, (r5)
+    move.q  r7, #IR_OP_CONST
+    blt     r6, r7, .csdt_next
+    move.q  r7, #IR_OP_CONVERT
+    ble     r6, r7, .csdt_def
+    move.q  r7, #IR_OP_ADDRESS
+    blt     r6, r7, .csdt_next
+    move.q  r7, #IR_OP_LOAD_SCALAR
+    ble     r6, r7, .csdt_def
+    move.q  r7, #IR_OP_DIV
+    blt     r6, r7, .csdt_next
+    beq     r6, r7, .csdt_def
+    move.q  r7, #IR_OP_COMPARE_GE
+    ble     r6, r7, .csdt_bool
+    move.q  r7, #IR_OP_LOAD_ARRAY
+    beq     r6, r7, .csdt_def
+    move.q  r7, #IR_OP_PEEK8
+    beq     r6, r7, .csdt_def
+    move.q  r7, #IR_OP_PEEK16
+    beq     r6, r7, .csdt_def
+    move.q  r7, #IR_OP_PEEK32
+    beq     r6, r7, .csdt_def
+    move.q  r7, #IR_OP_PEEK64
+    beq     r6, r7, .csdt_def
+    move.q  r7, #IR_OP_BIT_AND
+    blt     r6, r7, .csdt_next
+    move.q  r7, #IR_OP_NUMERIC_FN
+    ble     r6, r7, .csdt_def
+    move.q  r7, #IR_OP_MEMALLOC
+    beq     r6, r7, .csdt_def
+    bra     .csdt_next
+.csdt_def:
+    load.q  r7, 40(r5)
+    and.q   r7, r7, #IR_VALUE_MASK
+    bne     r7, r3, .csdt_next
+    load.q  r9, 8(r5)
+    bra     .csdt_done
+.csdt_bool:
+    load.q  r7, 40(r5)
+    and.q   r7, r7, #IR_VALUE_MASK
+    bne     r7, r3, .csdt_next
+    move.q  r9, #IR_TYPE_I64
+    bra     .csdt_done
+.csdt_next:
+    bra     .csdt_loop
+.csdt_done:
+    move.q  r8, r9
     rts
 
 ; Pair nested WHILE/WEND and DO/LOOP records without imposing SSA. Each pair
@@ -618,8 +989,12 @@ compiler_optimise_loops:
     load.q  r3, 56(r22)
     or.q    r3, r3, #(IR_FLAG_LOOP_INVARIANT | IR_FLAG_LOOP_PAIRED)
     store.q r3, 56(r22)
+    ; A proven-I64 FOR extends its proof to the paired NEXT so both ends of
+    ; the loop lower to direct integer induction.
+    and.q   r4, r3, #IR_FLAG_I64_OPERANDS
     load.q  r3, 56(r20)
     or.q    r3, r3, #(IR_FLAG_LOOP_INVARIANT | IR_FLAG_LOOP_PAIRED)
+    or.q    r3, r3, r4
     store.q r3, 56(r20)
     load.q  r5, 48(r22)
     ; Loop identity belongs to the FOR/NEXT pair, not to an IR position.

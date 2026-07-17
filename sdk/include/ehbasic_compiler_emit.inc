@@ -233,6 +233,7 @@ compiler_emit_assembly_inner:
     lsr.q   r9, r6, #32
     jsr     compiler_emit_hex32_uint
     load.q  r1, 8(r18)
+    and.q   r1, r1, #0xFF
     move.q  r2, #IR_TYPE_FP64
     beq     r1, r2, .cea_const_fp64
     la      r9, compiler_emit_push_i64
@@ -265,6 +266,7 @@ compiler_emit_assembly_inner:
     bra     .cea_next
 .cea_add:
     load.q  r1, 8(r18)
+    and.q   r1, r1, #0xFF
     move.q  r2, #IR_TYPE_I64
     bne     r1, r2, .cea_add_generic
     la      r9, compiler_emit_add
@@ -277,6 +279,7 @@ compiler_emit_assembly_inner:
     bra     .cea_next
 .cea_sub:
     load.q  r1, 8(r18)
+    and.q   r1, r1, #0xFF
     move.q  r2, #IR_TYPE_I64
     bne     r1, r2, .cea_sub_generic
     la      r9, compiler_emit_sub
@@ -289,6 +292,7 @@ compiler_emit_assembly_inner:
     bra     .cea_next
 .cea_mul:
     load.q  r1, 8(r18)
+    and.q   r1, r1, #0xFF
     move.q  r2, #IR_TYPE_I64
     bne     r1, r2, .cea_mul_generic
     la      r9, compiler_emit_mul
@@ -401,6 +405,63 @@ compiler_emit_assembly_inner:
     load.q  r1, 8(r18)
     and.q   r1, r1, #LOWER_FLAG_I64_OPERANDS
     beqz    r1, .cea_compare_generic
+    ; Fuse a proven integer comparison with an immediately following branch on
+    ; its own result into one conditional branch: no boolean is materialised
+    ; and the truthy helper is never referenced.
+    move.q  r1, #2
+    blt     r19, r1, .cea_compare_i64_plain
+    load.q  r1, 32(r18)
+    move.q  r2, #LOWER_OP_BRANCH_FALSE
+    beq     r1, r2, .cea_compare_fuse
+    move.q  r2, #LOWER_OP_BRANCH_TRUE
+    bne     r1, r2, .cea_compare_i64_plain
+.cea_compare_fuse:
+    move.q  r26, r1
+    load.q  r1, 48(r18)
+    lsr.q   r1, r1, #16
+    and.q   r1, r1, #IR_VALUE_MASK
+    load.q  r2, 16(r18)
+    and.q   r2, r2, #IR_VALUE_MASK
+    bne     r1, r2, .cea_compare_i64_plain
+    la      r9, compiler_emit_i64_compare_head
+    jsr     compiler_emit_text
+    ; r27 = mode 4..9; BRANCH_FALSE inverts the condition, BRANCH_TRUE keeps it.
+    sub.q   r1, r27, #4            ; 0=eq 1=ne 2=lt 3=le 4=gt 5=ge
+    move.q  r2, #LOWER_OP_BRANCH_TRUE
+    beq     r26, r2, .cea_compare_fuse_direct
+    move.q  r2, #2
+    blt     r1, r2, .cea_compare_fuse_invert_eq
+    move.q  r2, #7                 ; lt<->ge, le<->gt
+    sub.q   r1, r2, r1
+    bra     .cea_compare_fuse_direct
+.cea_compare_fuse_invert_eq:
+    eor.q   r1, r1, #1             ; eq<->ne
+.cea_compare_fuse_direct:
+    la      r9, compiler_emit_fuse_beq
+    beqz    r1, .cea_compare_fuse_emit
+    la      r9, compiler_emit_fuse_bne
+    move.q  r2, #1
+    beq     r1, r2, .cea_compare_fuse_emit
+    la      r9, compiler_emit_fuse_blt
+    move.q  r2, #2
+    beq     r1, r2, .cea_compare_fuse_emit
+    la      r9, compiler_emit_fuse_ble
+    move.q  r2, #3
+    beq     r1, r2, .cea_compare_fuse_emit
+    la      r9, compiler_emit_fuse_bgt
+    move.q  r2, #4
+    beq     r1, r2, .cea_compare_fuse_emit
+    la      r9, compiler_emit_fuse_bge
+.cea_compare_fuse_emit:
+    jsr     compiler_emit_text
+    load.q  r9, 56(r18)
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_newline
+    jsr     compiler_emit_text
+    add.q   r18, r18, #LOWER_RECORD_BYTES
+    sub.q   r19, r19, #1
+    bra     .cea_next
+.cea_compare_i64_plain:
     la      r9, compiler_emit_i64_compare_head
     jsr     compiler_emit_text
     move.q  r1, #4
@@ -490,7 +551,12 @@ compiler_emit_assembly_inner:
     load.q  r1, 8(r18)
     and.q   r2, r1, #LOWER_FLAG_RESIDENT
     bnez    r2, .cea_for_resident
+    ; A proven-I64 loop needs no tagged numeric helper: its paired NEXT lowers
+    ; to direct integer induction.
+    and.q   r2, r1, #LOWER_FLAG_I64_OPERANDS
+    bnez    r2, .cea_for_no_helper
     or.q    r24, r24, #COMPILER_EMIT_NUMERIC
+.cea_for_no_helper:
     load.q  r1, 24(r18)
     move.q  r26, r1
     lsl.q   r26, r26, #32
@@ -624,7 +690,6 @@ compiler_emit_assembly_inner:
     jsr     compiler_emit_text
     bra     .cea_next
 .cea_next_loop:
-    or.q    r24, r24, #COMPILER_EMIT_NUMERIC
     load.q  r1, 24(r18)
     move.q  r26, r1
     lsl.q   r26, r26, #32
@@ -632,7 +697,10 @@ compiler_emit_assembly_inner:
     lsr.q   r27, r1, #32
     load.q  r1, 8(r18)
     and.q   r2, r1, #LOWER_FLAG_RESIDENT
-    bnez    r2, .cea_next_resident
+    bnez    r2, .cea_next_resident_numeric
+    and.q   r2, r1, #LOWER_FLAG_I64_OPERANDS
+    bnez    r2, .cea_next_i64
+    or.q    r24, r24, #COMPILER_EMIT_NUMERIC
     move.q  r1, #COMPILER_TARGET_ARENA
     bne     r23, r1, .cea_next_static
     move.q  r8, r27
@@ -689,6 +757,68 @@ compiler_emit_assembly_inner:
     move.q  r9, r26
     jsr     compiler_emit_uint
     la      r9, compiler_emit_next_negative
+    jsr     compiler_emit_text
+    move.q  r9, r26
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_next_end_label
+    jsr     compiler_emit_text
+    move.q  r9, r26
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_colon
+    jsr     compiler_emit_text
+    bra     .cea_next
+.cea_next_resident_numeric:
+    or.q    r24, r24, #COMPILER_EMIT_NUMERIC
+    bra     .cea_next_resident
+.cea_next_i64:
+    ; Proven-I64 induction: direct add, compare and branch with no calls into
+    ; the tagged numeric helper. The variable's tag cell already holds VAL_I64.
+    move.q  r1, #COMPILER_TARGET_ARENA
+    bne     r23, r1, .cea_next_i64_static
+    move.q  r8, r27
+    jsr     compiler_native_var_payload
+    move.q  r27, r8
+    la      r9, compiler_emit_next_arena_head
+    jsr     compiler_emit_text
+    move.q  r9, r27
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_i64_next_load_arena
+    jsr     compiler_emit_text
+    move.q  r9, r26
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_i64_next_add_arena
+    bra     .cea_next_i64_tail
+.cea_next_i64_static:
+    la      r9, compiler_emit_next_head
+    jsr     compiler_emit_text
+    move.q  r9, r27
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_i64_next_load_static
+    jsr     compiler_emit_text
+    move.q  r9, r26
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_i64_next_add_static
+.cea_next_i64_tail:
+    jsr     compiler_emit_text
+    move.q  r9, r26
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_i64_next_check
+    jsr     compiler_emit_text
+    move.q  r9, r26
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_i64_next_pos
+    jsr     compiler_emit_text
+    move.q  r9, r26
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_next_exit_branch
+    jsr     compiler_emit_text
+    move.q  r9, r26
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_next_negative_label
+    jsr     compiler_emit_text
+    move.q  r9, r26
+    jsr     compiler_emit_uint
+    la      r9, compiler_emit_i64_next_neg
     jsr     compiler_emit_text
     move.q  r9, r26
     jsr     compiler_emit_uint
@@ -1076,12 +1206,33 @@ compiler_emit_assembly_inner:
     jsr     compiler_emit_text
     bra     .cea_next
 .cea_bit_and:
+    load.q  r1, 8(r18)
+    and.q   r1, r1, #LOWER_FLAG_I64_OPERANDS
+    beqz    r1, .cea_bit_and_generic
+    la      r9, compiler_emit_i64_and
+    jsr     compiler_emit_text
+    bra     .cea_next
+.cea_bit_and_generic:
     move.q  r27, #10
     bra     .cea_bit_binary
 .cea_bit_xor:
+    load.q  r1, 8(r18)
+    and.q   r1, r1, #LOWER_FLAG_I64_OPERANDS
+    beqz    r1, .cea_bit_xor_generic
+    la      r9, compiler_emit_i64_xor
+    jsr     compiler_emit_text
+    bra     .cea_next
+.cea_bit_xor_generic:
     move.q  r27, #11
     bra     .cea_bit_binary
 .cea_bit_or:
+    load.q  r1, 8(r18)
+    and.q   r1, r1, #LOWER_FLAG_I64_OPERANDS
+    beqz    r1, .cea_bit_or_generic
+    la      r9, compiler_emit_i64_or
+    jsr     compiler_emit_text
+    bra     .cea_next
+.cea_bit_or_generic:
     move.q  r27, #12
 .cea_bit_binary:
     la      r9, compiler_emit_compare_mode
@@ -1990,6 +2141,22 @@ compiler_emit_i64_compare_false: dc.b 10,"    move.q r8, #0",10,"    bra CDONE",
 compiler_emit_i64_compare_true:  dc.b 10,"CTRUE",0
 compiler_emit_i64_compare_done:  dc.b ":",10,"    move.q r8, #1",10,"CDONE",0
 compiler_emit_i64_compare_result: dc.b ":",10,"    push r8",10,"    move.q r9, #VAL_I64",10,"    push r9",10,0
+compiler_emit_i64_and:           dc.b "    pop r4",10,"    pop r2",10,"    pop r3",10,"    pop r1",10,"    and.q r8, r1, r2",10,"    push r8",10,"    move.q r9, #VAL_I64",10,"    push r9",10,0
+compiler_emit_i64_xor:           dc.b "    pop r4",10,"    pop r2",10,"    pop r3",10,"    pop r1",10,"    eor.q r8, r1, r2",10,"    push r8",10,"    move.q r9, #VAL_I64",10,"    push r9",10,0
+compiler_emit_i64_or:            dc.b "    pop r4",10,"    pop r2",10,"    pop r3",10,"    pop r1",10,"    or.q r8, r1, r2",10,"    push r8",10,"    move.q r9, #VAL_I64",10,"    push r9",10,0
+compiler_emit_fuse_beq:          dc.b "    beq r1, r3, L",0
+compiler_emit_fuse_bne:          dc.b "    bne r1, r3, L",0
+compiler_emit_fuse_blt:          dc.b "    blt r1, r3, L",0
+compiler_emit_fuse_ble:          dc.b "    ble r1, r3, L",0
+compiler_emit_fuse_bgt:          dc.b "    bgt r1, r3, L",0
+compiler_emit_fuse_bge:          dc.b "    bge r1, r3, L",0
+compiler_emit_i64_next_load_static: dc.b 10,"    load.q r1, (r18)",10,"    move.q r7, #compiler_for_step_",0
+compiler_emit_i64_next_load_arena:  dc.b 10,"    load.q r1, 8(r18)",10,"    move.q r7, #compiler_for_step_",0
+compiler_emit_i64_next_add_static:  dc.b 10,"    load.q r3, (r7)",10,"    add.q r1, r1, r3",10,"    store.q r1, (r18)",10,"    move.q r7, #compiler_for_limit_",0
+compiler_emit_i64_next_add_arena:   dc.b 10,"    load.q r3, (r7)",10,"    add.q r1, r1, r3",10,"    store.q r1, 8(r18)",10,"    move.q r7, #compiler_for_limit_",0
+compiler_emit_i64_next_check:    dc.b 10,"    load.q r4, (r7)",10,"    blt r3, r0, FNEXTNEG",0
+compiler_emit_i64_next_pos:      dc.b 10,"    ble r1, r4, F",0
+compiler_emit_i64_next_neg:      dc.b ":",10,"    bge r1, r4, F",0
 compiler_emit_i64_lshift:        dc.b "    pop r4",10,"    pop r3",10,"    pop r2",10,"    pop r1",10,"    and.q r3, r3, #63",10,"    lsl.q r8, r1, r3",10,"    push r8",10,"    move.q r9, #VAL_I64",10,"    push r9",10,0
 compiler_emit_i64_rshift:        dc.b "    pop r4",10,"    pop r3",10,"    pop r2",10,"    pop r1",10,"    and.q r3, r3, #63",10,"    lsr.q r8, r1, r3",10,"    push r8",10,"    move.q r9, #VAL_I64",10,"    push r9",10,0
 compiler_emit_bit_not:           dc.b "    pop r2",10,"    pop r1",10,"    move.q r3, #0",10,"    move.q r4, #VAL_I64",10,"    move.q r5, #13",10,"    jsr compiler_runtime_numeric",10,"    push r8",10,"    push r9",10,0
