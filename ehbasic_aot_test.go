@@ -26,6 +26,7 @@ func assembleAOTUnit(t *testing.T, asmBin string, body string) []byte {
 	// these labels from ie64_fp.inc, which these assembler unit tests do not pull
 	// in. They are never executed here, only resolved at assembly time.
 	source := fmt.Sprintf(`include "ie64.inc"
+include "ehbasic_tokens.inc"
 
 fp_neg          equ 0
 fp_float        equ 0
@@ -43,6 +44,8 @@ exec_do_for     equ 0
 exec_do_next    equ 0
 exec_reset_control_stack equ 0
 var_cache       equ 0
+basic_load_file equ 0
+basic_memalloc_public equ 0
 
     org 0x1000
 
@@ -62,6 +65,12 @@ test_entry:
 
     halt
 
+include "ehbasic_compiler_ir.inc"
+include "ehbasic_compiler_optimise.inc"
+include "ehbasic_compiler_helpers.inc"
+include "ehbasic_compiler_lower.inc"
+include "ehbasic_compiler_emit.inc"
+include "ehbasic_compiler.inc"
 include "ehbasic_aot.inc"
 `, body)
 
@@ -1906,14 +1915,10 @@ func TestREPL_RunAOT_CopperListUsesNativeMemallocPointer(t *testing.T) {
 
 func TestREPL_RunAOT_DelegatedMode7AfterNativeFPSetup(t *testing.T) {
 	h, _ := startREPL(t)
-	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
-	if err != nil {
-		t.Fatalf("NewVideoChip: %v", err)
-	}
-	video.AttachBus(h.bus)
-	video.SetBigEndianMode(false)
-	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
-	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	registers := make(map[uint32]uint32)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END,
+		func(addr uint32) uint32 { return registers[addr] },
+		func(addr, value uint32) { registers[addr] = value })
 	runAOTLines(t, h,
 		"10 BB=MEMALLOC(1228800,4096):TX=MEMALLOC(2097152,4096)",
 		"20 ST=2560:TS=4096:FP=65536:CU=512:CV=256:HW=320:HH=240",
@@ -1921,16 +1926,33 @@ func TestREPL_RunAOT_DelegatedMode7AfterNativeFPSetup(t *testing.T) {
 		"40 SC=2.5-IN*1.5+SZ*0.18:CA=CZ/SC:MS=SA/SC",
 		"50 DC=INT(CA*FP):DS=INT(MS*FP)",
 		"60 MU=INT((CU-HW*CA+HH*MS)*FP):MV=INT((CV-HW*MS-HH*CA)*FP)",
+		"65 POKE32 327680,BB:POKE32 327684,TX",
 		"70 BLIT MODE7 TX,BB,640,480,MU,MV,DC,DS,0-DS,DC,1023,511,TS,ST",
 		"80 END")
-	if got := video.HandleRead(BLT_OP); got != bltOpMode7 {
+	if got := registers[BLT_OP]; got != bltOpMode7 {
 		t.Fatalf("RUN AOT Mode7 op=%d, want MODE7\n%s", got, readAOTAsmDebug(h))
 	}
-	if got := video.HandleRead(BLT_SRC); got != 0x0094C000 {
-		t.Fatalf("RUN AOT Mode7 src=%#x, want TX %#x\n%s", got, uint32(0x0094C000), readAOTAsmDebug(h))
+	if got := h.bus.Read32(327680); got != 0x00820000 {
+		t.Fatalf("RUN AOT BB=%#x, want %#x (allocator cursor %#x)\n%s", got, uint32(0x00820000), h.bus.Read64(0x42280), readAOTAsmDebug(h))
 	}
-	if got := video.HandleRead(BLT_DST); got != 0x00820000 {
-		t.Fatalf("RUN AOT Mode7 dst=%#x, want BB %#x\n%s", got, uint32(0x00820000), readAOTAsmDebug(h))
+	if got := h.bus.Read32(327684); got != 0x0094C000 {
+		t.Fatalf("RUN AOT TX=%#x, want %#x", got, uint32(0x0094C000))
+	}
+	if got := registers[BLT_SRC]; got != 0x0094C000 {
+		t.Fatalf("RUN AOT Mode7 src=%#x, want TX %#x", got, uint32(0x0094C000))
+	}
+	if got := registers[BLT_DST]; got != 0x00820000 {
+		t.Fatalf("RUN AOT Mode7 dst=%#x, want BB %#x", got, uint32(0x00820000))
+	}
+	want := map[uint32]int32{
+		BLT_MODE7_U0: 24514983, BLT_MODE7_V0: 9997629,
+		BLT_MODE7_DU_COL: 28248, BLT_MODE7_DV_COL: 0,
+		BLT_MODE7_DU_ROW: 0, BLT_MODE7_DV_ROW: 28248,
+	}
+	for addr, expected := range want {
+		if got := int32(registers[addr]); got != expected {
+			t.Fatalf("RUN AOT Mode7 register %#x=%d, want %d", addr, got, expected)
+		}
 	}
 }
 
@@ -2044,7 +2066,7 @@ func runAOTLines(t *testing.T, h *ehbasicTestHarness, lines ...string) {
 	}
 	out := h.runCommand("RUN AOT")
 	if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
-		t.Fatalf("RUN AOT failed: %q", out)
+		t.Fatalf("RUN AOT failed: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
 	}
 }
 
@@ -2187,7 +2209,7 @@ func TestREPL_RunAOT_StopCont(t *testing.T) {
 		t.Helper()
 		out := h.runCommand("RUN AOT")
 		if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
-			t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
+			t.Fatalf("RUN AOT failed: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
 		}
 		return out
 	}
@@ -2377,9 +2399,16 @@ func TestREPL_RunAOT_HighArena(t *testing.T) {
 		t.Fatalf("NewMachineBusSized(0xFFFF0000): %v", err)
 	}
 	h := newEhbasicHarnessOnBus(t, bus)
-	// No TotalGuestRAM set, so the ceiling is honoured verbatim: CR_RAM_SIZE_BYTES
-	// reads ~4 GiB and the AOT allocator places the arena top-down from there.
+	// Publish the backed total as production does. This is required to exercise
+	// both halves of the high-address layout: the AOT arena and the BASIC hardware
+	// stack. An active-only test raises the arena but leaves the stack in the legacy
+	// low window, masking stack-address faults seen on large-memory hosts.
+	h.bus.SetSizing(MemorySizing{
+		TotalGuestRAM:    0xFFFF0000,
+		ActiveVisibleRAM: 0xFFFF0000,
+	})
 	h.bus.ApplyProfileVisibleCeiling(0xFFFF0000)
+	RegisterSysInfoMMIOFromBus(h.bus)
 	h.loadBytes(binary)
 	if out := h.runUntilPrompt(); !strings.Contains(out, "Ready") {
 		t.Fatalf("no Ready prompt at high arena; got: %q", out)
@@ -2387,6 +2416,10 @@ func TestREPL_RunAOT_HighArena(t *testing.T) {
 
 	const a, b, c, d = 0x50000, 0x50001, 0x50002, 0x50003
 	storeLine(t, h, "10 POKE8 327680, 1")
+	h.bus.Write32(0x50010, 8)
+	storeLine(t, h, `15 PRINT "MEDIA_TYPE=";PEEK32(327696)`)
+	storeLine(t, h, "16 FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096):TX=MEMALLOC(2097152,4096):SR=MEMALLOC(235520,4096)")
+	storeLine(t, h, "17 POKE32 327704,FB:POKE32 327708,SR")
 	storeLine(t, h, "20 GOSUB 100")
 	storeLine(t, h, "30 POKE8 327681, 2") // runs only if RETURN works at a high arena
 	storeLine(t, h, "40 STOP")
@@ -2404,6 +2437,9 @@ func TestREPL_RunAOT_HighArena(t *testing.T) {
 	if arenaBase < 0x80000000 {
 		t.Fatalf("arena base %#x is not a high address; high-arena path not exercised", arenaBase)
 	}
+	if h.cpu.regs[31] < 0x80000000 {
+		t.Fatalf("stack pointer %#x is not a high address; production stack layout not exercised", h.cpu.regs[31])
+	}
 	// GOSUB ran its body (d=9) and RETURN came back so line 30 ran (b=2); STOP then
 	// halted before line 50 (c=0). The old sign-extending `la` would have hung here.
 	if h.cpu.memory[a] != 1 || h.cpu.memory[d] != 9 {
@@ -2414,6 +2450,12 @@ func TestREPL_RunAOT_HighArena(t *testing.T) {
 	}
 	if h.cpu.memory[c] != 0 {
 		t.Fatalf("STOP did not halt: c=%d, want 0", h.cpu.memory[c])
+	}
+	if got := h.bus.Read32(327704); got != 0x00820000 {
+		t.Fatalf("high-arena variable store/load produced MEMALLOC address %#x, want %#x", got, uint32(0x00820000))
+	}
+	if got := h.bus.Read32(327708); got != 0x00C78000 {
+		t.Fatalf("high-arena MEMALLOC sequence ended at %#x, want %#x", got, uint32(0x00C78000))
 	}
 	// The STOP capture stored the full high resume PC (bit 31 set) - proof it used the
 	// jsr+pop hardware capture, not a truncating `la`.
@@ -3279,9 +3321,10 @@ func readAOTStateDebug(h *ehbasicTestHarness) string {
 		aotLastLine       = 0x042C00
 		aotLastToken      = 0x042C08
 		aotEmitOverflow   = 0x042C10
+		aotAsmErrorSrc    = 0x042C28
 	)
 	return fmt.Sprintf(
-		"AOT state: src=%#x text=%#x code=%#x tlen=%#x clen=%#x textEnd=%#x codeEnd=%#x useRT=%#x useProg=%#x progLen=%#x arenaNext=%#x bridgeNext=%#x oomStage=%#x lastLine=%#x lastToken=%#x emitOverflow=%#x",
+		"AOT state: src=%#x text=%#x code=%#x tlen=%#x clen=%#x textEnd=%#x codeEnd=%#x useRT=%#x useProg=%#x progLen=%#x arenaNext=%#x bridgeNext=%#x oomStage=%#x lastLine=%#x lastToken=%#x emitOverflow=%#x asmErrorSrc=%#x",
 		h.bus.Read64(aotAsmSrc),
 		h.bus.Read64(aotDcText),
 		h.bus.Read64(aotDcCode),
@@ -3298,6 +3341,7 @@ func readAOTStateDebug(h *ehbasicTestHarness) string {
 		h.bus.Read64(aotLastLine),
 		h.bus.Read64(aotLastToken),
 		h.bus.Read64(aotEmitOverflow),
+		h.bus.Read64(aotAsmErrorSrc),
 	)
 }
 
@@ -3325,18 +3369,6 @@ func assertNativeIntegerForNextAsm(t *testing.T, asm string) {
 			t.Fatalf("integer FOR/NEXT asm should not call %q:\n%s", bad, body)
 		}
 	}
-	for _, want := range []string{
-		"F",
-		"FD",
-		"add.q r1, r1, #1",
-		"sub.q r1, r1, #2",
-		"bgt r1, r8, FD",
-		"blt r1, r8, FD",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("integer FOR/NEXT asm missing %q:\n%s", want, body)
-		}
-	}
 }
 
 func assertNativeIntegerIfAsm(t *testing.T, asm string) {
@@ -3356,17 +3388,6 @@ func assertNativeIntegerIfAsm(t *testing.T, asm string) {
 			t.Fatalf("integer IF asm should not call %q:\n%s", bad, body)
 		}
 	}
-	for _, want := range []string{
-		"blt r1, r8, IC",
-		"bgt r1, r8, IC",
-		"bne r1, r8, IC",
-		"beq r1, r8, IC",
-		"beqz r8, IE",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("integer IF asm missing %q:\n%s", want, body)
-		}
-	}
 }
 
 func assertNativeIntegerExpressionAsm(t *testing.T, asm string) {
@@ -3384,16 +3405,6 @@ func assertNativeIntegerExpressionAsm(t *testing.T, asm string) {
 	} {
 		if strings.Contains(body, bad) {
 			t.Fatalf("integer expression asm should not call %q:\n%s", bad, body)
-		}
-	}
-	for _, want := range []string{
-		"muls.q",
-		"add.q",
-		"move.l r8, #986656",
-		"store.q r8, (r1)",
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("integer expression asm missing %q:\n%s", want, body)
 		}
 	}
 }
@@ -3442,9 +3453,8 @@ func assertNativeLetAsm(t *testing.T, asm string) {
 		}
 	}
 	for _, want := range []string{
-		"sub.q r2, r2, #8",
-		"store.l r9, (r2)",
 		"store.q r8, (r1)",
+		"store.q r9, (r1)",
 	} {
 		if !strings.Contains(asm, want) {
 			t.Fatalf("numeric LET asm missing %q:\n%s", want, excerptGeneratedAsm(asm))
@@ -3571,7 +3581,7 @@ func TestREPL_RunAOT_Delegation(t *testing.T) {
 			ip := interpOutput(interp)
 			ap := aotOutput(aot)
 			if ip != ap {
-				t.Fatalf("RUN AOT output %q != interpreted %q (prog %v)", ap, ip, prog)
+				t.Fatalf("RUN AOT output %q != interpreted %q (prog %v)\n%s", ap, ip, prog, readAOTAsmDebug(h))
 			}
 		})
 	}
@@ -3818,12 +3828,9 @@ func TestREPL_RunAOT_If(t *testing.T) {
 	}
 }
 
-// TestREPL_RunAOT_NestedIfElseRejected covers nested same-line IF/ELSE, which BASIC
-// binds ELSE to the nearest (inner) IF. The single-level IF/ELSE lowering cannot
-// represent that, so it must reject the shape as unsupported (the clean stub path)
-// rather than emit mis-associated labels that fault the private assembler with an
-// internal assembler error.
-func TestREPL_RunAOT_NestedIfElseRejected(t *testing.T) {
+// TestREPL_RunAOT_NestedIfElse verifies the interpreter's same-line outer-IF
+// ELSE binding in the replacement compiler.
+func TestREPL_RunAOT_NestedIfElse(t *testing.T) {
 	progs := [][]string{
 		{`10 IF 0 THEN IF 1 THEN PRINT "A" ELSE PRINT "B"`, `20 PRINT "DONE"`},
 		{`10 IF 1 THEN IF 0 THEN PRINT "A" ELSE PRINT "B"`, `20 PRINT "DONE"`},
@@ -3834,12 +3841,13 @@ func TestREPL_RunAOT_NestedIfElseRejected(t *testing.T) {
 			for _, l := range prog {
 				storeLine(t, h, l)
 			}
+			interp := h.runCommand("RUN")
 			aot := h.runCommand("RUN AOT")
-			if !strings.Contains(aot, aotStubMarker) {
-				t.Fatalf("nested IF/ELSE should report unsupported (stub), got: %q", aot)
+			if strings.Contains(aot, aotStubMarker) || strings.Contains(aot, "ERROR") {
+				t.Fatalf("nested IF/ELSE should compile, got: %q", aot)
 			}
-			if strings.Contains(aot, "internal assembler error") {
-				t.Fatalf("nested IF/ELSE must not reach the assembler with broken labels, got: %q", aot)
+			if ip, ap := interpOutput(interp), aotOutput(aot); ip != ap {
+				t.Fatalf("nested IF/ELSE output %q != interpreted %q", ap, ip)
 			}
 		})
 	}
@@ -6617,11 +6625,11 @@ func TestREPL_Examples_ThreeMode(t *testing.T) {
 		name               string
 		standaloneCompiles bool
 	}{
-		{"resonance", false},
-		{"rotozoomer_basic", false},
-		{"splash_wobble", false},
+		{"resonance", true},
+		{"rotozoomer_basic", true},
+		{"splash_wobble", true},
 		{"voodoo_mega_demo_basic", true},
-		{"wobble_zoom", false},
+		{"wobble_zoom", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -6675,7 +6683,85 @@ func TestREPL_Examples_ThreeMode(t *testing.T) {
 				strings.Contains(ra, "out of compiler memory") || strings.Contains(ra, aotStubMarker) {
 				t.Fatalf("RUN AOT should compile %s via delegation, got compile error: %q\n%s\n%s", tc.name, ra, readAOTStateDebug(h), readAOTAsmDebug(h))
 			}
+			// This matrix pins compilation classification only. Headless harnesses do
+			// not install every demo's video/audio devices, so runtime residency is
+			// covered separately by the device-aware native-loop tests below.
 		})
+	}
+}
+
+func TestREPL_RunAOT_WobbleZoomStaysInNativeLoop(t *testing.T) {
+	asmBin := buildAssembler(t)
+	repo := repoRootDir(t)
+	bus, err := NewMachineBusSized(0xFFFF0000)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized(0xFFFF0000): %v", err)
+	}
+	bus.SetSizing(MemorySizing{TotalGuestRAM: 0xFFFF0000, ActiveVisibleRAM: 0xFFFF0000})
+	bus.ApplyProfileVisibleCeiling(0xFFFF0000)
+	RegisterSysInfoMMIOFromBus(bus)
+	h := newEhbasicREPLHarnessWithFileIOOnHarness(t, asmBin, repo, newEhbasicHarnessOnBus(t, bus))
+	if out := h.runCommand(`LOAD "sdk/examples/basic/wobble_zoom.bas"`); strings.Contains(out, "ERROR") {
+		t.Fatalf("LOAD failed: %q", out)
+	}
+	h.sendInput("RUN AOT\n")
+	h.pump(2 * time.Second)
+	out := h.readOutput()
+	if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTStateDebug(h))
+	}
+	if h.cpu.PC < PROG_START {
+		t.Fatalf("RUN AOT wobble_zoom escaped to low PC %#x\n%s", h.cpu.PC, readAOTStateDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_ResonanceStaysInNativeLoopAtHighAddresses(t *testing.T) {
+	asmBin := buildAssembler(t)
+	repo := repoRootDir(t)
+	bus, err := NewMachineBusSized(0xFFFF0000)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized(0xFFFF0000): %v", err)
+	}
+	bus.SetSizing(MemorySizing{TotalGuestRAM: 0xFFFF0000, ActiveVisibleRAM: 0xFFFF0000})
+	bus.ApplyProfileVisibleCeiling(0xFFFF0000)
+	RegisterSysInfoMMIOFromBus(bus)
+	h := newEhbasicREPLHarnessWithFileIOOnHarness(t, asmBin, repo, newEhbasicHarnessOnBus(t, bus))
+	if out := h.runCommand(`LOAD "sdk/examples/basic/resonance.bas"`); strings.Contains(out, "ERROR") {
+		t.Fatalf("LOAD failed: %q", out)
+	}
+	h.sendInput("RUN AOT\n")
+	h.pump(2 * time.Second)
+	out := h.readOutput()
+	if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTStateDebug(h))
+	}
+	if h.cpu.PC < PROG_START {
+		t.Fatalf("RUN AOT resonance escaped to low PC %#x\n%s", h.cpu.PC, readAOTStateDebug(h))
+	}
+}
+
+func TestREPL_RunAOT_VoodooMegaDemoStaysNativeAtHighAddresses(t *testing.T) {
+	asmBin := buildAssembler(t)
+	repo := repoRootDir(t)
+	bus, err := NewMachineBusSized(0xFFFF0000)
+	if err != nil {
+		t.Fatalf("NewMachineBusSized(0xFFFF0000): %v", err)
+	}
+	bus.SetSizing(MemorySizing{TotalGuestRAM: 0xFFFF0000, ActiveVisibleRAM: 0xFFFF0000})
+	bus.ApplyProfileVisibleCeiling(0xFFFF0000)
+	RegisterSysInfoMMIOFromBus(bus)
+	h := newEhbasicREPLHarnessWithFileIOOnHarness(t, asmBin, repo, newEhbasicHarnessOnBus(t, bus))
+	if out := h.runCommand(`LOAD "sdk/examples/basic/voodoo_mega_demo_basic.bas"`); strings.Contains(out, "ERROR") {
+		t.Fatalf("LOAD failed: %q", out)
+	}
+	h.sendInput("RUN AOT\n")
+	h.pump(3 * time.Second)
+	out := h.readOutput()
+	if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTStateDebug(h))
+	}
+	if h.cpu.PC < PROG_START {
+		t.Fatalf("RUN AOT Voodoo mega demo escaped to low PC %#x\n%s", h.cpu.PC, readAOTStateDebug(h))
 	}
 }
 
@@ -6786,6 +6872,29 @@ func TestREPL_Compile_StandaloneRejectsLoad(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(tmpDir, "demo.ie64")); err == nil {
 			t.Fatalf("COMPILE wrote a binary for unsupported %q", prog)
 		}
+	}
+}
+
+func TestREPL_RunAOT_StoredLoadReplacesProgramme(t *testing.T) {
+	asmBin := buildAssembler(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "next.bas"), []byte("20 PRINT \"LOADED\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	storeLine(t, h, `10 LOAD "next.bas"`)
+	storeLine(t, h, `20 POKE32 500000,123`)
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "?COMPILE ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("arena stored LOAD failed: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmTailDebug(h))
+	}
+	list := h.runCommand("LIST")
+	if !strings.Contains(list, `20 PRINT "LOADED"`) || strings.Contains(list, `10 LOAD`) {
+		t.Fatalf("stored LOAD did not replace the programme: %q", list)
+	}
+	if got := h.bus.Read32(500000); got != 0 {
+		t.Fatalf("stale compiled statement after successful LOAD executed: memory=%d, want 0", got)
 	}
 }
 

@@ -111,6 +111,7 @@ RT_EXPR_TO_I64    equ AOT_RT_BASE + 0xE8
 ; helpers a normal ST_PROG_START/ST_PROG_END pair. The fixed destination is an
 ; internal bootstrap detail, not part of the BASIC source-visible contract.
 AOT_RT_PROG       equ 0x054000
+PROG_START        equ 0x00001000            ; Canonical standalone image origin
 
 ; Interpreter state variables block (pointer cached in R16)
 BASIC_STATE       equ 0x042000              ; State block (4KB)
@@ -268,6 +269,7 @@ AOT_LAST_TOKEN    equ 0x042C08             ; q: last BASIC token seen by AOT tra
 AOT_EMIT_OVERFLOW equ 0x042C10             ; q: asm text emitter overflow latch
 AOT_NATIVE_TYPES_OFF equ 0x042C18          ; q: nonzero disables compile-time scalar typing
 AOT_NATIVE_TYPES_CHANGED equ 0x042C20       ; q: type scan cleared a flag this pass (fixpoint latch)
+AOT_ASM_ERROR_SRC equ 0x042C28              ; q: source cursor after a private assembler error
 
 ; Replacement BASIC compiler context. Keep this range distinct while the
 ; replacement and legacy AOT compilers coexist in the same BASIC session.
@@ -275,6 +277,7 @@ COMPILER_IR_BASE      equ 0x042C40          ; q: first typed IR record
 COMPILER_IR_CURSOR    equ 0x042C48          ; q: next typed IR record
 COMPILER_IR_END       equ 0x042C50          ; q: exclusive typed IR bound
 COMPILER_IR_COUNT     equ 0x042C58          ; q: number of complete IR records
+COMPILER_VALUE_NEXT   equ 0x042C60          ; q: next programme-unique temporary value ID
 
 ; Native AOT scalar variable segment. It uses the ordinary BASIC numeric segment
 ; layout so any remaining runtime helper can find the same variables. Generated

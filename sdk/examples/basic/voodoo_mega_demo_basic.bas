@@ -1,10 +1,9 @@
 1 REM IE64 BASIC VOODOO MEGA DEMO - PURE RUN AOT PORT OF IE32 DEMO
 2 REM PURE BASIC ONLY - NO INLINE MACHINE CODE
 10 SineTable=MEMALLOC(4096,4096):ProjectionTable=MEMALLOC(12288,4096):StarData=MEMALLOC(4096,4096):MessageData=MEMALLOC(4096,4096):SidData=MEMALLOC(8192,4096):CommandBuffer=MEMALLOC(524288,4096)
-15 AnimationTables=MEMALLOC(8192,4096):GlyphSpans=MEMALLOC(16384,4096):ProjectionResults=MEMALLOC(2883584,4096):SpawnTables=MEMALLOC(352256,4096)
+15 AnimationTables=MEMALLOC(8192,4096):GlyphSpans=MEMALLOC(16384,4096):ProjectionResults=MEMALLOC(2883584,4096)
 20 QuarterSine=SineTable+2048:FontMasks=SineTable+3000:FontData=SineTable+3072:TwistXTable=AnimationTables:TwistYTable=AnimationTables+1024:WobbleTable=AnimationTables+2048:RainbowRedTable=AnimationTables+3072:RainbowGreenTable=AnimationTables+4096:RainbowBlueTable=AnimationTables+5120
-25 SpawnRadiusTable=SpawnTables:SpawnXTable=SpawnTables+4096:SpawnYTable=SpawnTables+157696:SpawnValidTable=SpawnTables+311296
-30 ScreenWidth=640:ScreenHeight=480:ScreenCentreX=320:ScreenCentreY=240:TunnelRadius=150:NearPlane=80:FarPlane=1000:FocalLength=200:TwistAmplitude=120:CoordinateBias=512:ProjectionProductBias=360000:ProjectionResultBias=2048
+30 ScreenWidth=640:ScreenHeight=480:ScreenCentreX=320:ScreenCentreY=240:TunnelRadius=150:NearPlane=80:FarPlane=1000:FocalLength=200:TwistAmplitude=120:WorldOffset=600:ProjectionProductBias=360000:ProjectionResultBias=2048
 40 ProjectionMaxDepth=2304:ScrollSpeed=3:CharacterWidthPixels=24:PixelSize=4:ShadowOffset=2:ScrollBaseY=340:WobbleAmplitude=50:MaxVisibleCharacters=24:MessageLength=217
 50 VoodooEnable=&HF8004:VoodooVideoDimensions=&HF8214:VoodooFbzMode=&HF8110:VoodooClipLeftRight=&HF8118:VoodooClipTopBottom=&HF811C:VoodooColourPath=&HF8104:VoodooClearColour=&HF81D8:VoodooFastFill=&HF8124:VoodooSwapBuffer=&HF8128
 60 VertexAX=&HF8008:VertexAY=&HF800C:VertexBX=&HF8010:VertexBY=&HF8014:VertexCX=&HF8018:VertexCY=&HF801C:StartRed=&HF8020:StartGreen=&HF8024:StartBlue=&HF8028:StartDepth=&HF802C:StartAlpha=&HF8030:TriangleCommand=&HF8080:ColourSelect=&HF8088
@@ -17,27 +16,24 @@
 100 FOR DataIndex=0 TO 4:READ DataValue:POKE8 FontMasks+DataIndex,DataValue:NEXT
 110 FOR DataIndex=0 TO 447:READ DataValue:POKE8 FontData+DataIndex,DataValue:NEXT
 120 FOR DataIndex=0 TO 216:READ DataValue:POKE8 MessageData+DataIndex,DataValue:NEXT
-130 GOSUB 6000:GOSUB 6100:GOSUB 6600:GOSUB 6400:GOSUB 6800:GOSUB 6500:GOSUB 6200
+130 GOSUB 6000:GOSUB 6100:GOSUB 6600:GOSUB 6400:GOSUB 6500:GOSUB 6200
 140 REM AUDIO STARTED BEFORE TABLE SETUP
 150 REM KEEP MAIN LOOP ENTRY STABLE
 200 POKE32 VoodooClearColour,&HFF040410:POKE32 VoodooFastFill,0:GOSUB 3000:CommandCount=0
 210 AnimationPhase=FrameCounter AND 255:TunnelOffsetX=PEEK32(TwistXTable+AnimationPhase*4):TunnelOffsetY=PEEK32(TwistYTable+AnimationPhase*4)
 230 FOR StarIndex=0 TO 255
-240 StarPointer=StarData+StarIndex*16:StarLocalX=PEEK32(StarPointer):StarLocalY=PEEK32(StarPointer+4):StarDepth=PEEK32(StarPointer+8):StarSpeed=PEEK32(StarPointer+12)
+240 StarPointer=StarData+StarIndex*16:StarAngle=PEEK32(StarPointer):StarRadius=PEEK32(StarPointer+4):StarDepth=PEEK32(StarPointer+8):StarSpeed=PEEK32(StarPointer+12)
 250 StarDepth=StarDepth-StarSpeed:IF StarDepth>NearPlane THEN 310
-260 GOSUB 5800:SpawnAngle=RandomValue AND 255
-270 GOSUB 5800:SpawnRadius=PEEK32(SpawnRadiusTable+(RandomValue AND 255)*4):GOSUB 6300
+260 GOSUB 5800:StarAngle=RandomValue AND 255
+270 GOSUB 5800:StarRadius=(((RandomValue AND 255)*TunnelRadius) >> 8)+15
 280 GOSUB 5800:StarDepth=(RandomValue AND 511)+FarPlane
 290 GOSUB 5800:StarSpeed=(RandomValue AND 7)+2
-310 POKE32 StarPointer+8,StarDepth:POKE32 StarPointer+12,StarSpeed
+310 POKE32 StarPointer,StarAngle:POKE32 StarPointer+4,StarRadius:POKE32 StarPointer+8,StarDepth:POKE32 StarPointer+12,StarSpeed
+320 StarCosine=PEEK32(SineTable+((StarAngle+64) AND 255)*4):StarSine=PEEK32(SineTable+StarAngle*4)
 340 IF StarDepth<10 THEN 520
-341 IF StarDepth>ProjectionMaxDepth THEN 520
-350 ProjectionScale=PEEK32(ProjectionTable+StarDepth*4):ProjectionProductX=(StarLocalX-CoordinateBias+TunnelOffsetX)*ProjectionScale:ProjectionProductY=(StarLocalY-CoordinateBias+TunnelOffsetY)*ProjectionScale
-351 IF ProjectionProductX<0-ProjectionProductBias THEN 520
-352 IF ProjectionProductX>ProjectionProductBias THEN 520
-353 IF ProjectionProductY<0-ProjectionProductBias THEN 520
-354 IF ProjectionProductY>ProjectionProductBias THEN 520
-360 ScreenX=PEEK32(ProjectionResults+(ProjectionProductX+ProjectionProductBias)*4)-ProjectionResultBias+ScreenCentreX:ScreenY=PEEK32(ProjectionResults+(ProjectionProductY+ProjectionProductBias)*4)-ProjectionResultBias+ScreenCentreY
+330 StarLocalX=((StarCosine*StarRadius) >> 6)+WorldOffset+TunnelOffsetX+128:StarLocalY=((StarSine*StarRadius) >> 6)+WorldOffset+TunnelOffsetY+128
+350 ProjectionScale=PEEK32(ProjectionTable+StarDepth*4):ProjectionProductX=StarLocalX*ProjectionScale:ProjectionProductY=StarLocalY*ProjectionScale
+360 ProjectionOffsetBase=((127*StarRadius) >> 6)+WorldOffset+128:ProjectionOffset=(ProjectionOffsetBase*ProjectionScale) >> 8:ScreenX=(ProjectionProductX >> 8)-ProjectionOffset+ScreenCentreX:ScreenY=(ProjectionProductY >> 8)-ProjectionOffset+ScreenCentreY
 370 IF ScreenX<0 THEN 520
 371 IF ScreenX>=ScreenWidth THEN 520
 372 IF ScreenY<0 THEN 520
@@ -96,7 +92,7 @@
 4340 IF ShadowPass=1 THEN 4342
 4341 GOTO 4350
 4342 RectangleX=RectangleX+ShadowOffset:RectangleY=RectangleY+ShadowOffset
-4350 IF RectangleX<0 THEN 4270
+4350 IF RectangleX<0 THEN 4540
 4351 IF RectangleX>=ScreenWidth THEN 4540
 4352 IF RectangleY<0 THEN 4540
 4353 IF RectangleY>=ScreenHeight THEN 4540
@@ -138,18 +134,12 @@
 6111 NEXT
 6112 RETURN
 6200 FOR DataIndex=0 TO 255:StarPointer=StarData+DataIndex*16
-6210 GOSUB 5800:SpawnAngle=RandomValue AND 255
-6220 GOSUB 5800:SpawnRadius=PEEK32(SpawnRadiusTable+(RandomValue AND 255)*4):GOSUB 6300
+6210 GOSUB 5800:POKE32 StarPointer,RandomValue AND 255
+6220 GOSUB 5800:POKE32 StarPointer+4,(((RandomValue AND 255)*TunnelRadius) >> 8)+15
 6230 GOSUB 5800:POKE32 StarPointer+8,(RandomValue AND 2047)+NearPlane
 6240 GOSUB 5800:POKE32 StarPointer+12,(RandomValue AND 7)+2
 6250 NEXT
 6260 RETURN
-6300 SpawnCacheIndex=SpawnAngle*150+SpawnRadius-15:SpawnCoordinateIndex=SpawnCacheIndex*4:IF PEEK(SpawnValidTable+SpawnCacheIndex)<>0 THEN 6340
-6310 WorkingValue=(SpawnAngle+64) AND 255:GOSUB 5900:SpawnCosine=WorkingValue:WorkingValue=SpawnAngle:GOSUB 5900:SpawnSine=WorkingValue
-6320 WorkingProduct=127*SpawnRadius*4:SpawnCentre=PEEK32(ProjectionResults+(ProjectionProductBias+WorkingProduct)*4)-ProjectionResultBias
-6330 WorkingProduct=SpawnCosine*SpawnRadius*4:SpawnX=PEEK32(ProjectionResults+(ProjectionProductBias+WorkingProduct)*4)-ProjectionResultBias-SpawnCentre+CoordinateBias:WorkingProduct=SpawnSine*SpawnRadius*4:SpawnY=PEEK32(ProjectionResults+(ProjectionProductBias+WorkingProduct)*4)-ProjectionResultBias-SpawnCentre+CoordinateBias
-6331 POKE32 SpawnXTable+SpawnCoordinateIndex,SpawnX:POKE32 SpawnYTable+SpawnCoordinateIndex,SpawnY:POKE8 SpawnValidTable+SpawnCacheIndex,1
-6340 StarLocalX=PEEK32(SpawnXTable+SpawnCoordinateIndex):StarLocalY=PEEK32(SpawnYTable+SpawnCoordinateIndex):POKE32 StarPointer,StarLocalX:POKE32 StarPointer+4,StarLocalY:RETURN
 6400 FOR DataIndex=0 TO 255
 6410 WorkingValue=DataIndex:GOSUB 5900:WorkingProduct=WorkingValue*TwistAmplitude*4:TwistValue=PEEK32(ProjectionResults+(ProjectionProductBias+WorkingProduct)*4)-ProjectionResultBias:WorkingProduct=WorkingValue*WobbleAmplitude*2:WobbleValue=PEEK32(ProjectionResults+(ProjectionProductBias+WorkingProduct)*4)-ProjectionResultBias:WorkingProduct=WorkingValue*16:RainbowValue=PEEK32(ProjectionResults+(ProjectionProductBias+WorkingProduct)*4)-ProjectionResultBias
 6411 POKE32 TwistXTable+DataIndex*4,TwistValue-238:POKE32 WobbleTable+DataIndex*4,WobbleValue+ScrollBaseY-20:POKE32 RainbowRedTable+DataIndex*4,RainbowValue*256+&H0400
@@ -184,8 +174,6 @@
 6710 WobbleRemainder=WobbleRemainder+8:BaseWobblePhase=(BaseWobblePhase-1) AND 255:GOTO 6700
 6720 IF WobbleRemainder<8 THEN RETURN
 6730 WobbleRemainder=WobbleRemainder-8:BaseWobblePhase=(BaseWobblePhase+1) AND 255:GOTO 6720
-6800 FOR RadiusIndex=0 TO 255:WorkingProduct=RadiusIndex*TunnelRadius:SpawnRadius=PEEK32(ProjectionResults+(ProjectionProductBias+WorkingProduct)*4)-ProjectionResultBias+15:POKE32 SpawnRadiusTable+RadiusIndex*4,SpawnRadius:NEXT RadiusIndex
-6860 RETURN
 8000 DATA 0,3,6,10,13,16,19,22,25,28,31,34,37,40,43,46
 8010 DATA 49,51,54,57,60,62,65,68,70,73,75,78,80,82,85,87
 8020 DATA 89,91,94,96,98,100,102,103,105,107,108,110,112,113,114,116

@@ -1509,10 +1509,22 @@ aot_is_directive:
 .id_dc:
     load.b  r1, 1(r8)
     or.q    r1, r1, #0x20
+    move.q  r2, #0x73               ; 's' -> ds.q
+    beq     r1, r2, .id_ds
     move.q  r2, #0x63               ; 'c'
     bne     r1, r2, .id_no
     load.b  r1, 2(r8)
     move.q  r2, #0x2E               ; '.'
+    bne     r1, r2, .id_no
+    move.q  r8, #1
+    rts
+.id_ds:
+    load.b  r1, 2(r8)
+    move.q  r2, #0x2E
+    bne     r1, r2, .id_no
+    load.b  r1, 3(r8)
+    or.q    r1, r1, #0x20
+    move.q  r2, #0x71               ; only ds.q is emitted by the compiler
     bne     r1, r2, .id_no
     move.q  r8, #1
     rts
@@ -1593,6 +1605,10 @@ aot_asm_data:
     or.q    r1, r1, #0x20
     move.q  r2, #0x61               ; 'a' -> align
     beq     r1, r2, .ad_align
+    load.b  r1, 1(r13)
+    or.q    r1, r1, #0x20
+    move.q  r2, #0x73               ; 's' -> ds.q count
+    beq     r1, r2, .ad_space_q
     load.b  r1, 3(r13)             ; the size letter in dc.X
     or.q    r1, r1, #0x20
     add.q   r13, r13, #4           ; past "dc.X"
@@ -1609,6 +1625,26 @@ aot_asm_data:
     beq     r1, r2, .ad_num
     move.q  r8, r0                 ; unknown dc size
     rts
+
+.ad_space_q:
+    add.q   r13, r13, #4           ; past "ds.q"
+    move.q  r8, r13
+    jsr     aot_parse_value
+    beqz    r9, .ad_err
+    move.q  r13, r10
+    lsl.q   r3, r8, #3
+    lsr.q   r4, r3, #3
+    bne     r4, r8, .ad_oflow
+    beqz    r15, .adsq_zero
+    add.q   r4, r12, r3
+    blt     r4, r12, .ad_oflow
+    bgt     r4, r15, .ad_oflow
+.adsq_zero:
+    beqz    r3, .ad_ok
+    store.b r0, (r12)
+    add.q   r12, r12, #1
+    sub.q   r3, r3, #1
+    bra     .adsq_zero
 
 ; dc.w/dc.l/dc.q: comma-separated numeric/label list, little-endian, r14 bytes.
 .ad_num:
@@ -1873,6 +1909,25 @@ aot_line_class:
 ; Clobbers: R1-R4. Preserves R5-R31 (notably R17/R18/R19 in the pass loops).
 aot_inc_class:
     move.q  r2, r8                 ; working cursor (R8 reused for the result)
+    la      r3, aot_str_org_prog_start
+.ic_org_cmp:
+    load.b  r4, (r3)
+    beqz    r4, .ic_org_tail
+    load.b  r1, (r2)
+    beq     r1, r4, .ic_org_char_ok
+    or.q    r1, r1, #0x20
+    bne     r1, r4, .ic_org_not
+.ic_org_char_ok:
+    add.q   r2, r2, #1
+    add.q   r3, r3, #1
+    bra     .ic_org_cmp
+.ic_org_tail:
+    ; Standalone compiler output uses the canonical fixed link origin. The
+    ; private assembler already receives PROG_START as its link base, so this
+    ; exact directive is a validated no-op in both layout passes.
+    bra     .ic_tail
+.ic_org_not:
+    move.q  r2, r8
     la      r3, aot_str_kw_include
 .ic_kw:
     load.b  r4, (r3)
@@ -1949,6 +2004,8 @@ aot_inc_class:
 
 aot_str_kw_include:
     dc.b    "include", 0
+aot_str_org_prog_start:
+    dc.b    "org prog_start", 0
 aot_str_ie64inc:
     dc.b    "ie64.inc", 0
     align 4
@@ -2173,6 +2230,8 @@ aot_asm_program:
     move.q  r8, #1
     rts
 .p_err:
+    la      r1, AOT_ASM_ERROR_SRC
+    store.q r17, (r1)              ; source cursor after the rejected line
     move.q  r8, r0
     rts
 .p_oflow:
@@ -8491,7 +8550,7 @@ aot_do_transpile_inner:
     la      r11, AOT_DC_TLEN
     load.q  r11, (r11)
     add.q   r11, r9, r11           ; text buffer end
-    jsr     aot_transpile          ; R8=status R9=textLen
+    jsr     compiler_transpile_adapter ; replacement typed compiler
     move.q  r1, #2
     beq     r8, r1, .tp_oom        ; text buffer overflow
     beqz    r8, .tp_unsupported    ; unsupported statement
@@ -8648,7 +8707,7 @@ aot_do_compile_inner:
     la      r11, AOT_DC_TLEN
     load.q  r11, (r11)
     add.q   r11, r9, r11           ; text buffer end
-    jsr     aot_transpile          ; R8=status R9=textLen
+    jsr     compiler_transpile_adapter ; replacement typed compiler
     move.q  r1, #2
     beq     r8, r1, .dc_oom        ; text buffer overflow
     beqz    r8, .dc_unsupported    ; unsupported statement (reported before any blob issue)
@@ -8828,6 +8887,14 @@ aot_do_run_aot:
     rts
 aot_do_run_aot_inner:
     jsr     aot_alloc_reset
+    jsr     aot_native_vars_alloc
+    beqz    r9, .ra_oom
+    load.q  r20, (r16)
+    jsr     aot_native_vars_prescan
+    beqz    r9, .ra_oom
+    load.q  r20, (r16)
+    jsr     aot_native_vars_type_scan
+    beqz    r9, .ra_oom
     la      r1, AOT_LAST_OOM_STAGE
     store.q r0, (r1)
     jsr     aot_dynamic_text_code_sizes
@@ -8877,7 +8944,7 @@ aot_do_run_aot_inner:
     la      r1, AOT_LAST_OOM_STAGE
     move.q  r2, #4                 ; RUN AOT transpiler text overflow
     store.q r2, (r1)
-    jsr     aot_transpile
+    jsr     compiler_transpile_adapter
     move.q  r1, #2
     beq     r8, r1, .ra_oom        ; text buffer overflow
     beqz    r8, .ra_unsupported
@@ -8885,6 +8952,8 @@ aot_do_run_aot_inner:
     la      r1, AOT_DC_TEXT
     load.q  r8, (r1)
     jsr     aot_append_helpers     ; R8=buf, R9=len -> R8=new len
+    la      r1, AOT_DC_TLEN
+    store.q r8, (r1)              ; replace temporary capacity with text length
 
     ; Machine-code-bundle the fp_print closure ahead of the user code (if used),
     ; so the user code assembles after it and "jsr fp_print" resolves into it.
@@ -8918,6 +8987,8 @@ aot_do_run_aot_inner:
     move.q  r1, #2
     beq     r8, r1, .ra_oom        ; code buffer overflow
     beqz    r8, .ra_asm_err
+    la      r1, AOT_DC_CLEN
+    store.q r9, (r1)
 
     ; Invalidate the IE64 JIT cache before executing. The arena address is
     ; reused on every RUN AOT (the allocator resets to the same top of RAM), but
@@ -8972,6 +9043,8 @@ aot_do_run_aot_inner:
     la      r1, AOT_HELPER_LEN
     load.q  r1, (r1)
     add.q   r8, r8, r1
+    la      r2, AOT_SAVED_SP
+    store.q r31, (r2)
     jsr     (r8)
     la      r1, AOT_RT_ERR
     load.q  r1, (r1)
@@ -8989,4 +9062,128 @@ aot_do_run_aot_inner:
     rts
 .ra_asm_err:
     move.q  r8, #3
+    rts
+; Compatibility adapter for RUN AOT, TRANSPILE and COMPILE. It replaces the
+; legacy token transpiler while retaining the established allocation, private
+; assembly and file orchestration around it. Inputs and return values match
+; aot_transpile's historical contract.
+compiler_transpile_adapter:
+    move.q  r18, r8
+    move.q  r19, r9
+    move.q  r20, r11
+    move.q  r21, r10
+    ; Each invocation owns a fresh output span. Do not inherit a prior
+    ; overflow latch or bound from RUN AOT, TRANSPILE or COMPILE.
+    la      r1, AOT_EMIT_OVERFLOW
+    store.q r0, (r1)
+    la      r1, AOT_TEXT_END
+    store.q r20, (r1)
+    add.q   r1, r16, #ST_PROG_END
+    load.q  r22, (r1)
+    sub.q   r23, r22, r18
+    lsl.q   r23, r23, #6
+    move.q  r1, #0x20000
+    bge     r23, r1, .cta_ir_size
+    move.q  r23, r1
+.cta_ir_size:
+    move.q  r8, r23
+    jsr     aot_alloc64
+    bnez    r9, .cta_oom
+    move.q  r24, r8
+    add.q   r25, r24, r23
+    lsr.q   r26, r23, #1
+    move.q  r8, r26
+    jsr     aot_alloc64
+    bnez    r9, .cta_oom
+    move.q  r27, r8
+    add.q   r28, r27, r26
+    move.q  r8, r24
+    move.q  r9, r25
+    jsr     compiler_ir_init
+    bnez    r8, .cta_unsupported
+    move.q  r8, r18
+    move.q  r9, r22
+    move.q  r10, r24
+    jsr     compiler_parse_program
+    bnez    r8, .cta_unsupported
+    move.q  r8, r24
+    jsr     compiler_optimise_ir
+    bnez    r8, .cta_unsupported
+    move.q  r29, #COMPILER_TARGET_ARENA
+    beqz    r21, .cta_target_ready
+    move.q  r29, #COMPILER_TARGET_STANDALONE
+.cta_target_ready:
+    move.q  r8, r24
+    move.q  r9, r27
+    move.q  r10, r28
+    move.q  r11, r29
+    jsr     compiler_lower_ir
+    move.q  r1, #1
+    beq     r8, r1, .cta_oom
+    bnez    r8, .cta_unsupported
+    move.q  r25, r9
+    move.q  r13, #PROG_START
+    move.q  r1, #COMPILER_TARGET_STANDALONE
+    beq     r29, r1, .cta_emit
+    la      r1, AOT_DC_CODE
+    load.q  r13, (r1)
+.cta_emit:
+    move.q  r1, #COMPILER_TARGET_ARENA
+    bne     r29, r1, .cta_emit_compiler
+    push    r18
+    push    r19
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    push    r24
+    push    r25
+    push    r26
+    push    r27
+    push    r28
+    push    r29
+    move.q  r8, r19
+    jsr     aot_emit_native_vars_init
+    move.q  r1, r8
+    move.q  r2, r9
+    pop     r29
+    pop     r28
+    pop     r27
+    pop     r26
+    pop     r25
+    pop     r24
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
+    pop     r19
+    pop     r18
+    beqz    r2, .cta_native_init_oom
+    move.q  r19, r1
+.cta_emit_compiler:
+    move.q  r8, r27
+    move.q  r9, r25
+    move.q  r10, r19
+    move.q  r11, r20
+    move.q  r12, r29
+    jsr     compiler_emit_assembly
+    move.q  r1, #1
+    beq     r8, r1, .cta_emit_oom
+    bnez    r8, .cta_unsupported
+    move.q  r8, #1
+    rts
+.cta_unsupported:
+    la      r1, AOT_LAST_LINE
+    store.q r9, (r1)
+    la      r1, AOT_LAST_TOKEN
+    store.q r10, (r1)
+    move.q  r8, r0
+    move.q  r9, r0
+    rts
+.cta_native_init_oom:
+    bra     .cta_oom
+.cta_emit_oom:
+.cta_oom:
+    move.q  r8, #2
+    move.q  r9, r0
     rts

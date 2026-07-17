@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -47,7 +49,6 @@ func TestVoodooMegaDemoBasicStaticContract(t *testing.T) {
 		"AnimationTables=MEMALLOC(8192,4096)",
 		"GlyphSpans=MEMALLOC(16384,4096)",
 		"ProjectionResults=MEMALLOC(2883584,4096)",
-		"SpawnTables=MEMALLOC(352256,4096)",
 		"RandomSeed=54321",
 		"VoodooVideoDimensions=&HF8214",
 		"POKE32 VoodooVideoDimensions,&H028001E0",
@@ -67,10 +68,13 @@ func TestVoodooMegaDemoBasicStaticContract(t *testing.T) {
 		"FOR StarIndex=0 TO 255",
 		"SpanRecord=GlyphSpans+(FontIndex*7+FontRowIndex)*28",
 		"TunnelOffsetX=PEEK32(TwistXTable+AnimationPhase*4)",
-		"ScreenX=PEEK32(ProjectionResults+(ProjectionProductX+ProjectionProductBias)*4)-ProjectionResultBias+ScreenCentreX",
-		"SpawnRadius=PEEK32(SpawnRadiusTable+(RandomValue AND 255)*4)",
-		"StarLocalX=PEEK32(SpawnXTable+SpawnCoordinateIndex)",
-		"StarLocalY=PEEK32(SpawnYTable+SpawnCoordinateIndex)",
+		"StarAngle=PEEK32(StarPointer)",
+		"StarRadius=PEEK32(StarPointer+4)",
+		"StarCosine=PEEK32(SineTable+((StarAngle+64) AND 255)*4)",
+		"StarSine=PEEK32(SineTable+StarAngle*4)",
+		"StarLocalX=((StarCosine*StarRadius) >> 6)+WorldOffset+TunnelOffsetX+128",
+		"StarLocalY=((StarSine*StarRadius) >> 6)+WorldOffset+TunnelOffsetY+128",
+		"ProjectionOffset=(ProjectionOffsetBase*ProjectionScale) >> 8",
 		"WobbleRemainder=WobbleRemainder+1-ScrollSpeed",
 		"CharacterCode=PEEK(MessageData+MessageIndex)",
 	} {
@@ -81,7 +85,11 @@ func TestVoodooMegaDemoBasicStaticContract(t *testing.T) {
 	if strings.Contains(upper, "&HFA014") {
 		t.Fatal("demo uses the obsolete Voodoo video dimension address")
 	}
-
+	for _, obsolete := range []string{"SpawnXTable", "SpawnYTable", "SpawnValidTable", "SpawnCacheIndex", "SpawnCoordinateIndex"} {
+		if strings.Contains(upper, strings.ToUpper(obsolete)) {
+			t.Fatalf("starfield still uses obsolete precomputed coordinate cache %q", obsolete)
+		}
+	}
 	if regexp.MustCompile(`(?m)(^|:)\s*(VOODOO|VERTEX|VSYNC)\b`).MatchString(upper) {
 		t.Fatalf("render loop must use the Voodoo register interface without high-level commands or VSYNC")
 	}
@@ -215,7 +223,16 @@ func TestVoodooMegaDemoBasicRunAOTSmoke(t *testing.T) {
 		t.Fatalf("Voodoo dimensions=%#x, want 0x028001e0", got)
 	}
 	if v.cmdStreamCount == 0 || v.cmdStreamPtr == 0 {
-		t.Fatalf("Voodoo command stream was not submitted: pointer=%#x count=%d", v.cmdStreamPtr, v.cmdStreamCount)
+		vars := readAOTNativeVarsForVoodoo(t, h, "DataIndex", "StarIndex", "StarAngle", "StarRadius", "FrameCounter")
+		aligned := h.cpu.PC &^ 7
+		disasm := disassembleIE64(func(addr uint64, size int) []byte {
+			buf := make([]byte, size)
+			for i := range buf {
+				buf[i] = h.bus.Read8(uint32(addr) + uint32(i))
+			}
+			return buf
+		}, aligned-40, 12)
+		t.Fatalf("Voodoo command stream was not submitted: pointer=%#x count=%d pc=%#x instr=%#x vars=%#v output=%q\n%s\n%s\n%s\n%s", v.cmdStreamPtr, v.cmdStreamCount, h.cpu.PC, h.bus.Read64(uint32(h.cpu.PC)), vars, out, readAOTStateDebug(h), readAOTAsmDebug(h), readAOTAsmTailDebug(h), fmt.Sprint(disasm))
 	}
 	if got := sidPlayer.HandlePlayRead(SID_PLAY_CTRL); got&1 == 0 || got&2 != 0 || !sidPlayer.ForceLoop {
 		t.Fatalf("SID_PLAY_CTRL status=%d ForceLoop=%v, want playing loop with no error", got, sidPlayer.ForceLoop)
@@ -262,17 +279,64 @@ func TestVoodooMegaDemoBasicRunAOTSmoke(t *testing.T) {
 	if whiteish*100 > pixels*80 {
 		t.Fatalf("Voodoo frame is mostly white after bounded RUN AOT smoke: %d/%d pixels", whiteish, pixels)
 	}
-	startFrame := readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"]
-	targetFrame := startFrame + 3
-	started := time.Now()
+	longStart := readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"]
+	longTarget := longStart + 120
 	h.pumpUntil(func() bool {
-		return readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"] >= targetFrame
+		return readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"] >= longTarget || h.cpu.PC == 0
 	}, 10*time.Second)
-	endFrame := readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"]
-	if endFrame < targetFrame {
-		t.Fatalf("RUN AOT advanced from frame %d to %d, want at least %d within 10 seconds", startFrame, endFrame, targetFrame)
+	longEnd := readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"]
+	if h.cpu.PC == 0 {
+		t.Fatalf("RUN AOT returned through address zero after frame %d\n%s\n%s", longEnd, readAOTStateDebug(h), readAOTAsmTailDebug(h))
 	}
-	t.Logf("RUN AOT rendered three further frames in %s", time.Since(started))
+	if longEnd < longTarget {
+		vars := readAOTNativeVarsForVoodoo(t, h, "FrameCounter", "CommandCount", "StarIndex", "CharacterIndex", "DataIndex", "ScrollCharacter", "ScrollPixelOffset", "MessageIndex", "CharacterCode", "FontIndex", "FontRowIndex", "SpanIndex", "SpanCount")
+		disasm := disassembleIE64(func(addr uint64, size int) []byte {
+			buf := make([]byte, size)
+			for i := range buf {
+				buf[i] = h.bus.Read8(uint32(addr) + uint32(i))
+			}
+			return buf
+		}, h.cpu.PC-40, 11)
+		t.Fatalf("RUN AOT froze from frame %d at frame %d before target %d; pc=%#x code=[%#x %#x %#x %#x %#x] sp=%#x running=%v vars=%#v command={ptr:%#x count:%d} voodoo={busy:%v jobs:%d swap:%v}\n%s\n%s",
+			longStart, longEnd, longTarget, h.cpu.PC,
+			h.bus.Read64(uint32(h.cpu.PC-24)), h.bus.Read64(uint32(h.cpu.PC-16)), h.bus.Read64(uint32(h.cpu.PC-8)), h.bus.Read64(uint32(h.cpu.PC)), h.bus.Read64(uint32(h.cpu.PC+8)),
+			h.cpu.regs[31], h.cpu.running.Load(), vars, v.cmdStreamPtr, v.cmdStreamCount,
+			v.busy, v.jobsInFlight, v.swapPending, readAOTStateDebug(h), fmt.Sprint(disasm))
+	}
+	// The preceding smoke run is the warm-up. Measure three independent samples
+	// on the same live machine and use their median, as required by Milestone 1.
+	samples := make([]time.Duration, 3)
+	const measuredFrames = 30
+	for i := range samples {
+		startFrame := readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"]
+		targetFrame := startFrame + measuredFrames
+		started := time.Now()
+		h.pumpUntil(func() bool {
+			return readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"] >= targetFrame
+		}, 10*time.Second)
+		samples[i] = time.Since(started)
+		endFrame := readAOTNativeVarsForVoodoo(t, h, "FrameCounter")["FrameCounter"]
+		if endFrame < targetFrame {
+			t.Fatalf("RUN AOT sample %d advanced from frame %d to %d, want at least %d within 10 seconds", i+1, startFrame, endFrame, targetFrame)
+		}
+	}
+	sort.Slice(samples, func(i, j int) bool { return samples[i] < samples[j] })
+	medianFPS := measuredFrames / samples[1].Seconds()
+	// Wall-clock throughput depends on the host CPU, scheduler and software
+	// Voodoo backend. Keep the functional suite portable and make the reference
+	// performance gate explicit for controlled benchmark runs.
+	minimumFPS := 0.0
+	if raw := os.Getenv("IE_BASIC_MIN_FPS"); raw != "" {
+		parsed, parseErr := strconv.ParseFloat(raw, 64)
+		if parseErr != nil || parsed < 0 {
+			t.Fatalf("invalid IE_BASIC_MIN_FPS=%q", raw)
+		}
+		minimumFPS = parsed
+	}
+	if medianFPS < minimumFPS {
+		t.Fatalf("RUN AOT median throughput %.2f fps is below configured %.2f fps; samples=%v", medianFPS, minimumFPS, samples)
+	}
+	t.Logf("RUN AOT median throughput %.2f fps; samples=%v (set IE_BASIC_MIN_FPS=60 for the Milestone 1 reference gate)", medianFPS, samples)
 }
 
 func readAOTNativeVarsForVoodoo(t *testing.T, h *ehbasicTestHarness, names ...string) map[string]uint64 {

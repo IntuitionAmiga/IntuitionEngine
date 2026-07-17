@@ -489,7 +489,43 @@ exec_do_save:
 exec_do_load:
     jsr     exec_skip_spaces
     jsr     str_eval                ; R8 = filename
-    move.q  r10, r8
+    move.q  r1, r8
+    jsr     basic_load_file
+    bnez    r8, .exec_load_done
+    move.q  r28, #2                 ; end the current interpreted programme
+.exec_load_done:
+    rts
+
+; Typed arena-compiler entry point. R1 is a NUL-terminated filename and R8 is
+; zero on success. The resident loader may replace all programme and variable
+; state, but it preserves the compiled-runtime callee-saved registers.
+basic_load_file:
+    push    r18
+    push    r19
+    push    r20
+    push    r21
+    push    r22
+    push    r23
+    push    r24
+    push    r25
+    push    r26
+    push    r27
+    jsr     basic_load_file_inner
+    move.q  r1, r8
+    pop     r27
+    pop     r26
+    pop     r25
+    pop     r24
+    pop     r23
+    pop     r22
+    pop     r21
+    pop     r20
+    pop     r19
+    pop     r18
+    move.q  r8, r1
+    rts
+basic_load_file_inner:
+    move.q  r10, r1
     
     ; Copy to EHBASIC_PRIV_NAME_BUF
     la      r1, EHBASIC_PRIV_NAME_BUF
@@ -545,6 +581,7 @@ exec_do_load:
     la      r8, .msg_not_found
     jsr     print_string
     jsr     print_crlf
+    move.q  r8, #1
     rts
 
 .load_process:
@@ -724,8 +761,7 @@ exec_do_load:
     pop     r25
     add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
     store.q r20, (r1)
-    ; Signal end of execution
-    move.q  r28, #2
+    move.q  r8, r0
     rts
 
 .l_store_error:
@@ -736,6 +772,7 @@ exec_do_load:
     pop     r25
     add.q   r1, r16, #ST_FILE_BRIDGE_NEXT
     store.q r20, (r1)
+    move.q  r8, #1
     rts
 
 .load_oom:

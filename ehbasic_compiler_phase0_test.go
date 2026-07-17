@@ -18,7 +18,7 @@ import (
 
 func TestIE64BasicCompilerPrivateAssemblerHighLinkBase(t *testing.T) {
 	asmBin := buildAssembler(t)
-	program := []byte("start:\n    move.q r1, #3\n.loop:\n    sub.q r1, r1, #1\n    bnez r1, .loop\n    jsr done\ndone:\n    rts\n")
+	program := []byte("start:\n    move.q r1, #3\n    move.q r31, r1\n    load.q r31, (r6)\n.loop:\n    sub.q r1, r1, #1\n    bnez r1, .loop\n    jsr done\ndone:\n    rts\n")
 	var data strings.Builder
 	data.WriteString(".source:\n    dc.b ")
 	for i, b := range program {
@@ -100,7 +100,11 @@ func TestIE64BasicCompilerPhase0Inventory(t *testing.T) {
 		}
 		seen[row[0]] = true
 		for _, name := range row[1:3] {
-			if name != "pending" && !tests[name] {
+			if name == "pending" {
+				t.Errorf("%s has unresolved executable coverage", row[0])
+				continue
+			}
+			if !tests[name] {
 				t.Errorf("%s claims missing test %s", row[0], name)
 			}
 		}

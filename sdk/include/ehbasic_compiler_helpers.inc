@@ -95,8 +95,82 @@ compiler_helper_closure:
     rts
 
 compiler_runtime_truthy:
+    move.q  r10, r0
+    move.q  r3, #VAL_I64
+    beq     r2, r3, .crt_integer
+    move.q  r3, #VAL_F64
+    bne     r2, r3, .crt_type
+    move.q  r3, r1
+    lsl.q   r3, r3, #1             ; +0.0 and -0.0 are both false
+    move.q  r8, r0
+    beqz    r3, .crt_result
+    move.q  r8, #1
+.crt_result:
+    move.q  r9, #VAL_I64
+    rts
+.crt_integer:
+    move.q  r8, r0
+    beqz    r1, .crt_integer_result
+    move.q  r8, #1
+.crt_integer_result:
+    move.q  r9, #VAL_I64
+    rts
+.crt_type:
+    move.q  r8, r0
+    move.q  r9, r0
+    move.q  r10, #ERR_TYPE_MISMATCH
     rts
 compiler_runtime_to_i64:
+    move.q  r10, r0
+    move.q  r3, #VAL_I64
+    beq     r2, r3, .cti_integer
+    move.q  r3, #VAL_F64
+    bne     r2, r3, .cti_type
+    push    r1
+    dload   f0, (r31)
+    dcvtfi  r8, f0
+    pop     r1
+    move.q  r9, #VAL_I64
+    rts
+.cti_integer:
+    move.q  r8, r1
+    move.q  r9, #VAL_I64
+    rts
+.cti_type:
+    move.q  r8, r0
+    move.q  r9, r0
+    move.q  r10, #ERR_TYPE_MISMATCH
     rts
 compiler_runtime_print_num:
+    move.q  r6, r26
+    bgez    r1, .crp_abs
+    move.q  r2, #45
+    store.b r2, (r6)
+    sub.q   r1, r0, r1
+.crp_abs:
+    bnez    r1, .crp_convert
+    move.q  r2, #48
+    store.b r2, (r6)
+    bra     .crp_newline
+.crp_convert:
+    move.q  r2, r0
+.crp_divide:
+    move.q  r3, r1
+    divu.q  r3, r3, #10
+    mulu.q  r4, r3, #10
+    sub.q   r4, r1, r4
+    add.q   r4, r4, #48
+    push    r4
+    add.q   r2, r2, #1
+    move.q  r1, r3
+    bnez    r1, .crp_divide
+.crp_digits:
+    pop     r3
+    store.b r3, (r6)
+    sub.q   r2, r2, #1
+    bnez    r2, .crp_digits
+.crp_newline:
+    move.q  r2, #10
+    store.b r2, (r6)
+    move.q  r10, r0
     rts

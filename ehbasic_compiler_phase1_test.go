@@ -14,6 +14,9 @@ func assembleCompilerUnit(t *testing.T, body string) []byte {
 	source := fmt.Sprintf(`include "ie64.inc"
 include "ehbasic_tokens.inc"
 
+basic_load_file equ 0
+basic_memalloc_public equ 0
+
     org 0x1000
 test_entry:
     la      r31, STACK_TOP
@@ -25,7 +28,9 @@ include "ehbasic_compiler_ir.inc"
 include "ehbasic_compiler_optimise.inc"
 include "ehbasic_compiler_helpers.inc"
 include "ehbasic_compiler_lower.inc"
+include "ehbasic_compiler_emit.inc"
 include "ehbasic_compiler.inc"
+include "ehbasic_tokenizer.inc"
 `, body)
 	dir := t.TempDir()
 	src := filepath.Join(dir, "compiler_unit.asm")
@@ -44,11 +49,15 @@ include "ehbasic_compiler.inc"
 }
 
 func runCompilerUnit(t *testing.T, body string) *ehbasicTestHarness {
+	return runCompilerUnitCycles(t, body, 1_000_000)
+}
+
+func runCompilerUnitCycles(t *testing.T, body string, cycles int) *ehbasicTestHarness {
 	t.Helper()
 	h := newEhbasicHarness(t)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	h.loadBytes(assembleCompilerUnit(t, body))
-	h.runCycles(1_000_000)
+	h.runCycles(cycles)
 	return h
 }
 
@@ -272,7 +281,13 @@ func TestIE64BasicCompilerParseAndTargetValidation(t *testing.T) {
     store.l r2, 8(r1)
     move.q  r2, #TK_LOAD
     store.b r2, 16(r1)
-    store.b r0, 17(r1)
+    move.q  r2, #0x22
+    store.b r2, 17(r1)
+    move.q  r2, #0x78
+    store.b r2, 18(r1)
+    move.q  r2, #0x22
+    store.b r2, 19(r1)
+    store.b r0, 20(r1)
     la      r1, 0x050020
     store.q r0, (r1)
     move.q  r2, #20
