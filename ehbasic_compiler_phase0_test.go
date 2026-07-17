@@ -87,19 +87,27 @@ func TestIE64BasicCompilerPhase0Inventory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) == 0 || strings.Join(records[0], ",") != "key,parser_test,differential_test,arena,standalone" {
+	if len(records) == 0 || strings.Join(records[0], ",") != "key,classification,parser_test,differential_test,arena,standalone,lowering_method,expected_diagnostic" {
 		t.Fatal("invalid Phase 0 inventory header")
+	}
+	validClass := map[string]bool{
+		"common": true, "arena-only": true, "expression-operator": true,
+		"expression-function": true, "statement-subcommand": true,
+		"direct-only": true, "reserved-invalid": true,
 	}
 	seen := make(map[string]bool, len(records)-1)
 	for i, row := range records[1:] {
-		if len(row) != 5 {
+		if len(row) != 8 {
 			t.Fatalf("inventory row %d has %d fields", i+2, len(row))
 		}
 		if seen[row[0]] {
 			t.Fatalf("duplicate inventory key %s", row[0])
 		}
 		seen[row[0]] = true
-		for _, name := range row[1:3] {
+		if !validClass[row[1]] {
+			t.Errorf("%s has invalid classification %q", row[0], row[1])
+		}
+		for _, name := range row[2:4] {
 			if name == "pending" {
 				t.Errorf("%s has unresolved executable coverage", row[0])
 				continue
@@ -108,10 +116,27 @@ func TestIE64BasicCompilerPhase0Inventory(t *testing.T) {
 				t.Errorf("%s claims missing test %s", row[0], name)
 			}
 		}
-		if row[3] != "compile" && row[3] != "reject" || row[4] != "compile" && row[4] != "reject" {
+		if row[4] != "compile" && row[4] != "reject" || row[5] != "compile" && row[5] != "reject" {
 			t.Errorf("%s has invalid target result", row[0])
 		}
-		if strings.HasPrefix(row[0], "statement-slot:") && strings.HasSuffix(row[0], ":exec_do_unknown") && (row[3] != "reject" || row[4] != "reject") {
+		if row[6] == "" || row[7] == "" {
+			t.Errorf("%s lacks lowering or diagnostic metadata", row[0])
+		}
+		switch row[1] {
+		case "common", "expression-operator", "expression-function", "statement-subcommand":
+			if row[4] != "compile" || row[5] != "compile" || row[7] != "none" {
+				t.Errorf("%s has target results inconsistent with %s classification", row[0], row[1])
+			}
+		case "arena-only":
+			if row[4] != "compile" || row[5] != "reject" || row[7] == "none" {
+				t.Errorf("%s has target results inconsistent with arena-only classification", row[0])
+			}
+		case "direct-only", "reserved-invalid":
+			if row[4] != "reject" || row[5] != "reject" || row[6] != "reject" || row[7] == "none" {
+				t.Errorf("%s has target results inconsistent with %s classification", row[0], row[1])
+			}
+		}
+		if strings.HasPrefix(row[0], "statement-slot:") && strings.HasSuffix(row[0], ":exec_do_unknown") && (row[4] != "reject" || row[5] != "reject") {
 			t.Errorf("%s dispatches to syntax-error handler but is not rejected by both targets", row[0])
 		}
 	}

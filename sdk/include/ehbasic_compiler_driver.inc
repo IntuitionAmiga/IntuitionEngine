@@ -154,24 +154,8 @@ aot_alloc_fail:
     move.q  r9, #1
     rts
 
-; aot_transpile - lower a tokenised BASIC programme to IE64 asm text.
-; First slice: supports the empty programme and programmes whose statements are
-; only END / REM. Any other statement is not yet lowerable.
-;
-; The line list is the live IE64 BASIC format: records
-; [next:q, lineNo:l, reserved:l, tokens..]
-; chained by next; the terminator record has next == 0. A real line always has
-; a non-zero next, so next == 0 marks the end without a body to lower.
-;
-; Input:  R8  = pointer to the first line record (may be the terminator)
-;         R9  = output text buffer
-;         R10 = end mode: 0 = arena (emit "rts", return to the REPL trampoline),
-;               non-zero = standalone (emit "halt")
-;         R11 = output buffer end limit (0 = unbounded; used by callers with a
-;               fixed arena to fail safely instead of overrunning it)
-; Output: R8  = 1 if fully lowered, 0 unsupported statement, 2 buffer overflow
-;         R9  = length of the emitted asm text (valid on success)
-; Clobbers: R1-R3, R8, R9, R17-R21
+; Shared command-driver strings and utilities retained by the replacement
+; compiler's arena, file and native-variable orchestration.
 aot_str_movel_r1:
     dc.b    "move.l r1, #", 0
     align 4
@@ -507,170 +491,9 @@ aot_str_crlf:
     dc.b    "move.q r1, #13", 0x0A, "store.b r1, (r26)", 0x0A
     dc.b    "move.q r1, #10", 0x0A, "store.b r1, (r26)", 0x0A, 0
     align 4
-; PRINT <integer literal>: convert to FP64 at runtime and call the bundled
-; fp_print (so formatting matches the interpreter's expr_eval -> fp_print path).
-aot_str_movel_r8:
-    dc.b    "move.l r8, #", 0
-    align 4
-aot_str_moveq_r8_imm:
-    dc.b    "move.q r8, #", 0
-    align 4
-aot_str_lslq_r8_32:
-    dc.b    "lsl.q r8, r8, #32", 0x0A, 0
-    align 4
-aot_str_orq_r8_r8_r1:
-    dc.b    "or.q r8, r8, r1", 0x0A, 0
-    align 4
-aot_str_fp_seq:
-    dc.b    "jsr fp_float", 0x0A, "jsr fp_print", 0x0A, 0
-    align 4
-; Generic leaf-statement delegation: point R17 at the statement tokens and call
-; the resident handler via the interpreter's stmt_jump_table.
-aot_str_movel_r17:
-    dc.b    "move.l r17, #", 0
-    align 4
-aot_str_movel_r17_q:
-    dc.b    "move.l r17, #Q", 0
-    align 4
-aot_str_jsr_fp_print:
-    dc.b    "jsr fp_print", 0x0A, 0
-    align 4
-aot_str_movel_r9:
-    dc.b    "move.l r9, #", 0
-    align 4
-aot_str_load_jsr_r9:
-    dc.b    "load.l r9, (r9)", 0x0A, "jsr (r9)", 0x0A, 0
-    align 4
-; IF <expr> THEN: evaluate the condition via resident expr_eval, then branch.
-aot_str_jsr_r6:
-    dc.b    "jsr (r6)", 0x0A, 0
-    align 4
-; --- Standalone runtime-blob bootstrap + blob-call templates ----------------
-aot_str_loadq_r6_r6:
-    dc.b    "load.q r6, (r6)", 0x0A, 0
-    align 4
-; Post-call error check: a bundled runtime call that raised an error left a non-zero
-; state[ST_ERROR_FLAG] (raise_error persisted it and printed the message). A standalone
-; image has no REPL to unwind to, so halt rather than run on into corrupt state. E<id>
-; skips the halt on the no-error path.
-aot_str_loadl_r6_r6:
-    dc.b    "load.l r6, (r6)", 0x0A, 0
-    align 4
-aot_str_beqz_r6_e:
-    dc.b    "beqz r6, E", 0
-    align 4
-aot_str_beq_r9_r1_e:
-    dc.b    "beq r9, r1, E", 0
-    align 4
-aot_str_lbl_e:
-    dc.b    "E", 0
-    align 4
 aot_str_store_r2_r1:
     dc.b    "store.l r2, (r1)", 0x0A, 0
     align 4
-aot_str_beqz_ie:
-    dc.b    "beqz r8, IE", 0
-    align 4
-aot_str_lbl_ie:
-    dc.b    "IE", 0
-    align 4
-; IF ... ELSE: false branches to EL<id> (the ELSE clause); the THEN clause ends
-; with "bra IE<id>" to skip over the ELSE clause to the line-end join.
-aot_str_beqz_el:
-    dc.b    "beqz r8, EL", 0
-    align 4
-aot_str_bra_ie:
-    dc.b    "bra IE", 0
-    align 4
-aot_str_lbl_el:
-    dc.b    "EL", 0
-    align 4
-aot_str_moveq_r1:
-    dc.b    "move.q r1, #", 0
-    align 4
-aot_str_beq_r1_l:
-    dc.b    "beq r8, r1, L", 0
-    align 4
-aot_str_bne_r1_s:
-    dc.b    "bne r8, r1, S", 0
-    align 4
-aot_str_bra_d:
-    dc.b    "bra D", 0
-    align 4
-aot_str_lbl_s:
-    dc.b    "S", 0
-    align 4
-aot_str_lbl_d:
-    dc.b    "D", 0
-    align 4
-; FOR/NEXT labels. Simple scalar integer loops use F<id> as the loop top and
-; FD<id> as the done label; delegated loops still use F<id> for their loop-back.
-aot_str_lbl_f:
-    dc.b    "F", 0
-    align 4
-aot_str_lbl_fd:
-    dc.b    "FD", 0
-    align 4
-aot_str_bra_f:
-    dc.b    "bra F", 0
-    align 4
-aot_str_bgt_fd:
-    dc.b    "bgt r1, r8, FD", 0
-    align 4
-aot_str_blt_fd:
-    dc.b    "blt r1, r8, FD", 0
-    align 4
-aot_str_addq_r1_imm:
-    dc.b    "add.q r1, r1, #", 0
-    align 4
-aot_str_subq_r1_imm:
-    dc.b    "sub.q r1, r1, #", 0
-    align 4
-aot_str_for_next_load:
-    dc.b    "move.q r3, r8", 0x0A
-    dc.b    "load.q r1, (r3)", 0x0A, 0
-    align 4
-aot_str_for_next_store:
-    dc.b    "move.q r4, r3", 0x0A
-    dc.b    "sub.q r4, r4, #8", 0x0A
-    dc.b    "move.l r2, #2", 0x0A
-    dc.b    "store.l r2, (r4)", 0x0A
-    dc.b    "store.q r1, (r3)", 0x0A, 0
-    align 4
-aot_str_addq_r1_gosub:
-    dc.b    "add.q r1, r16, #", 0
-    align 4
-aot_str_load_r1_r1:
-    dc.b    "load.q r1, (r1)", 0x0A, 0
-    align 4
-aot_str_store_r1_r2:
-    dc.b    "store.q r1, (r2)", 0x0A, 0
-    align 4
-aot_str_load_r2_r2:
-    dc.b    "load.q r2, (r2)", 0x0A, 0
-    align 4
-aot_str_beq_r1_r2_f:
-    dc.b    "beq r1, r2, F", 0
-    align 4
-; WHILE/WEND and DO/LOOP (fully native: expr_eval condition + native branches).
-; (aot_str_lbl_w "W" is shared with the WAIT poll-loop strings.)
-aot_str_lbl_we:
-    dc.b    "WE", 0
-    align 4
-aot_str_beqz_we:
-    dc.b    "beqz r8, WE", 0
-    align 4
-aot_str_bra_w:
-    dc.b    "bra W", 0
-    align 4
-aot_str_beqz_d:
-    dc.b    "beqz r8, D", 0
-    align 4
-aot_str_bnez_d:
-    dc.b    "bnez r8, D", 0
-    align 4
-
-
 ; aot_emit_movel - emit "<prefix><uint>\n" to the text cursor: the move.l
 ; prefix string at R9 followed by the value in R10. Clobbers R1-R3, R9.
 aot_emit_movel:
@@ -681,13 +504,6 @@ aot_emit_movel:
     jsr     aot_emit_str
     rts
 
-; aot_emit_delegate - emit a call to a resident statement handler:
-;   move.l r17, #<token pointer> / move.l r9, #<jump-table slot> /
-;   load.l r9, (r9) / jsr (r9)
-; The handler executes one statement using the live interpreter state (R16) and
-; the resident token stream. R8 = cursor, R9 = R17 target (resident token
-; address), R10 = jump-table slot address. Returns R8 advanced. Clobbers
-; R1-R10, R12, R13.
 aot_skip_spaces:
 .ass_loop:
     load.b  r1, (r20)
@@ -2682,9 +2498,9 @@ aot_do_run_aot_inner:
     move.q  r8, #3
     rts
 ; Compatibility adapter for RUN AOT, TRANSPILE and COMPILE. It replaces the
-; legacy token transpiler while retaining the established allocation, private
-; assembly and file orchestration around it. Inputs and return values match
-; aot_transpile's historical contract.
+; removed token transpiler while retaining the established allocation, private
+; assembly and file orchestration around it. Inputs and return values match the
+; command drivers' established contract.
 compiler_transpile_adapter:
     move.q  r18, r8
     move.q  r19, r9

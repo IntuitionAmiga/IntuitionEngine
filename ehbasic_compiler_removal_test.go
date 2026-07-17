@@ -100,6 +100,18 @@ func TestMakefileHasNoRuntimeBlobRules(t *testing.T) {
 	}
 }
 
+func TestReplacementDriverContainsNoInterpreterDelegationTemplates(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRootDir(t), "sdk", "include", "ehbasic_compiler_driver.inc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"expr_eval", "stmt_jump_table", "aot_emit_delegate", "aot_transpile -"} {
+		if strings.Contains(string(data), forbidden) {
+			t.Errorf("replacement driver retains obsolete interpreter delegation marker %q", forbidden)
+		}
+	}
+}
+
 // The private in-guest assembler keeps its generated constant table; it is a
 // live non-AOT consumer, so the table and its generator survive under names
 // that reflect that ownership.
