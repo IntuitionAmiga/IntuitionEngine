@@ -503,7 +503,8 @@ flowchart LR
   chains into bounded multi-block regions. Regions retain selected GPR and FPU
   state across internal edges, preserve budget and retired-count accounting on
   back edges, and spill architectural state at every helper or dispatcher exit.
-  MMU region promotion remains opt-in through `IE64_JIT_REGION_MMU=1`. The
+  MMU region promotion is enabled by default and can be disabled with
+  `IE64_JIT_REGION_MMU=0`. The
   browser backend emits the same bounded region shape as one structured wasm
   function and keeps exact disjoint code ranges for SMC invalidation.
   MMU-off low-memory entries with an external conditional or register-indirect

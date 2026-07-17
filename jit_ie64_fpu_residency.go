@@ -58,12 +58,17 @@ func ie64FPResidencySysV() bool {
 }
 
 // ie64FPResidencyEnabled reports whether FP register residency is switched on.
-// Off by default; opt in with IE64_JIT_FP_RESIDENCY=1 on a SysV host.
+// Supported hosts enable it by default and retain an environment kill switch.
 func ie64FPResidencyEnabled() bool {
 	if !ie64FPResidencySysV() {
 		return false
 	}
-	return strings.TrimSpace(os.Getenv("IE64_JIT_FP_RESIDENCY")) == "1"
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("IE64_JIT_FP_RESIDENCY"))) {
+	case "0", "false", "off", "no":
+		return false
+	default:
+		return true
+	}
 }
 
 // ie64BuildBlockFPPlan builds an FP32-single and FP64-pair residency plan for

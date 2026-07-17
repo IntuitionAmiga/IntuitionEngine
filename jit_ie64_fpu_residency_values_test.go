@@ -12,6 +12,20 @@ import (
 // every backend. This file keeps only the residency-specific tests, which
 // depend on amd64-only helpers.
 
+func TestIE64FPResidencyEnabled_DefaultAndKillSwitch(t *testing.T) {
+	if !ie64FPResidencySysV() {
+		t.Skip("FP residency unavailable on this host ABI")
+	}
+	t.Setenv("IE64_JIT_FP_RESIDENCY", "")
+	if !ie64FPResidencyEnabled() {
+		t.Fatal("IE64_JIT_FP_RESIDENCY should default on")
+	}
+	t.Setenv("IE64_JIT_FP_RESIDENCY", "0")
+	if ie64FPResidencyEnabled() {
+		t.Fatal("IE64_JIT_FP_RESIDENCY=0 should disable FP residency")
+	}
+}
+
 // TestJIT_vs_Interpreter_FPResidencyValueMatrix is the special-value gate for FP
 // residency (Technique 3): every pair in the shared matrix is run under the JIT
 // with residency enabled and under the interpreter, and the full architectural

@@ -31,10 +31,10 @@ func ie64RegionPromotionEnabled() bool {
 
 func ie64RegionMMUEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("IE64_JIT_REGION_MMU"))) {
-	case "1", "true", "on", "yes":
-		return true
-	default:
+	case "0", "false", "off", "no":
 		return false
+	default:
+		return true
 	}
 }
 

@@ -883,7 +883,8 @@ LOAD/STORE helpers fill a small direct-mapped micro-TLB in `JITContext`; PTBR
 writes and TLB invalidation flush it before native code can reuse stale
 translations.
 
-IE64 amd64 regions can form under MMU when `IE64_JIT_REGION_MMU=1`.
+IE64 amd64 regions form under MMU by default. Set `IE64_JIT_REGION_MMU=0` to
+disable MMU region promotion.
 The region scanner translates each virtual block through the active PTBR and
 stores the promoted block under the exact `(ptbr, pc)` MMU cache key. This is a
 formation and keying slice only; regions still use the fixed IE64

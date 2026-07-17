@@ -320,12 +320,12 @@ func TestIE64RegionPromotionEnabled_KillSwitch(t *testing.T) {
 		t.Fatal("IE64_JIT_REGIONS=1 should enable region promotion")
 	}
 	t.Setenv("IE64_JIT_REGION_MMU", "")
-	if ie64RegionMMUEnabled() {
-		t.Fatal("IE64_JIT_REGION_MMU should default off")
-	}
-	t.Setenv("IE64_JIT_REGION_MMU", "1")
 	if !ie64RegionMMUEnabled() {
-		t.Fatal("IE64_JIT_REGION_MMU=1 should enable MMU region promotion")
+		t.Fatal("IE64_JIT_REGION_MMU should default on")
+	}
+	t.Setenv("IE64_JIT_REGION_MMU", "0")
+	if ie64RegionMMUEnabled() {
+		t.Fatal("IE64_JIT_REGION_MMU=0 should disable MMU region promotion")
 	}
 }
 

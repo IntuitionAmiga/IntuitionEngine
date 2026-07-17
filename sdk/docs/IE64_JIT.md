@@ -226,20 +226,20 @@ On AMD64 and Linux ARM64, hot IE64 blocks can be promoted from Tier 1 single-blo
 
 `ie64FormRegion()` scans `cpu.memory` at flat physical indices and follows statically-known BRA/JMP terminators. Under MMU each virtual successor needs its own page-table walk before the scanner can read the correct physical bytes, so that case has a separate page-bounded former, `ie64FormRegionMMU()`. The dispatcher picks between them on `cpu.mmuEnabled`.
 
-Both native region compilers emit one `JITBlock` for two or more IE64 blocks. Internal BRA/JMP targets transfer directly inside the region; external targets use the normal exit machinery. Back edges retain loop-budget and retired-count checks so native code cannot spin without returning to the dispatcher. AMD64 regions bind their four hottest guest registers to RBX, RBP, R12 and R13. Linux ARM64 regions retain the fixed R1-R14 mapping in X12 through X17 and X19 through X26, never X18. Dirty GPR and floating-point state is retained across internal edges and spilled at helper, bail and dispatcher exits. MMU region formation remains opt-in on both native backends.
+Both native region compilers emit one `JITBlock` for two or more IE64 blocks. Internal BRA/JMP targets transfer directly inside the region; external targets use the normal exit machinery. Back edges retain loop-budget and retired-count checks so native code cannot spin without returning to the dispatcher. AMD64 regions bind their four hottest guest registers to RBX, RBP, R12 and R13. Linux ARM64 regions retain the fixed R1-R14 mapping in X12 through X17 and X19 through X26, never X18. Dirty GPR and floating-point state is retained across internal edges and spilled at helper, bail and dispatcher exits. MMU region formation is enabled by default on both native backends.
 
 Environment gates:
 
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `IE64_JIT_REGIONS` | on | `0`/`false`/`off`/`no` disables region promotion entirely |
-| `IE64_JIT_REGION_MMU` | off | `1`/`true`/`on`/`yes` enables MMU region formation |
+| `IE64_JIT_REGION_MMU` | on | `0`/`false`/`off`/`no` disables MMU region formation |
 | `IE64_JIT_REGION_MAX_SPILLS` | no ceiling | amd64 spill-pressure ceiling for accepting a region plan |
 | `IE64_JIT_STATS` | off | On amd64, `1` prints region and spill statistics |
 | `IE64_JIT_RESUME` | on | `0`/`false`/`off`/`no` disables native continuation after a clean helper exit |
-| `IE64_JIT_FP_RESIDENCY` | off | `1` enables eligible FP32 and FP64 residency on Linux/macOS amd64 and ARM64 |
+| `IE64_JIT_FP_RESIDENCY` | on where supported | `0`/`false`/`off`/`no` disables eligible FP32 and FP64 residency on Linux/macOS amd64 and ARM64 |
 
-Linux ARM64 enables non-MMU region promotion by default. Other ARM64 operating systems retain the single-block tier.
+Linux ARM64 enables region promotion by default, including under the MMU. Other ARM64 operating systems retain the single-block tier.
 
 ### ExecMem
 
@@ -350,8 +350,8 @@ Required on ARM64. Uses DC CVAU + IC IVAU + DSB ISH + ISB per 64-byte cache line
 
 ### Region Promotion
 
-Linux ARM64 promotes hot non-MMU code to native regions by default and supports
-MMU regions when `IE64_JIT_REGION_MMU=1`. Region formation follows static BRA
+Linux ARM64 promotes hot code to native regions by default, including code
+running under the MMU. Region formation follows static BRA
 and JMP successors, with limits of 8 blocks and 512 guest instructions. Other
 ARM64 operating systems retain the single-block tier.
 
@@ -367,9 +367,10 @@ if recording is rejected and no invalidation occurred.
 An entry ending in `JMP rs, displacement`, where `rs` is not R0, uses the same
 recording path. The region compares the computed target with the single
 recorded target. A match keeps resident GPR state live across the internal
-edge. Eligible FP state also remains resident when `IE64_JIT_FP_RESIDENCY=1`;
-otherwise the FP register file remains memory-backed. A mismatch uses the
-normal dynamic-jump exit with the computed 64-bit PC and exact retired count.
+edge. Eligible FP state also remains resident by default. Set
+`IE64_JIT_FP_RESIDENCY=0` to use the memory-backed FP register file. A mismatch
+uses the normal dynamic-jump exit with the computed 64-bit PC and exact retired
+count.
 
 ---
 
@@ -426,7 +427,7 @@ No flush needed. x86-64 guarantees instruction cache coherency.
 
 ### Regions
 
-Region formation uses `ScanRegionIE64()` and `ie64FormRegion()` to collect two or more statically-linked blocks within `IE64RegionProfile` limits (up to 8 blocks and 512 guest instructions). `ie64CompileRegion()` emits a single native block, preserves the normal chain-exit path for targets outside the region, and emits direct in-region jumps for BRA/JMP targets inside the region. Non-MMU promotion is enabled by default. When the MMU is active, `IE64_JIT_REGION_MMU=1` enables the page-bounded `ie64FormRegionMMU()` path.
+Region formation uses `ScanRegionIE64()` and `ie64FormRegion()` to collect two or more statically-linked blocks within `IE64RegionProfile` limits (up to 8 blocks and 512 guest instructions). `ie64CompileRegion()` emits a single native block, preserves the normal chain-exit path for targets outside the region, and emits direct in-region jumps for BRA/JMP targets inside the region. Promotion is enabled by default. When the MMU is active, the page-bounded `ie64FormRegionMMU()` path is used unless `IE64_JIT_REGION_MMU=0` disables it.
 
 Observed conditional and register-indirect paths use the same compiler,
 residency plans, loop budget and external exits. Static BRA and `JMP R0`
@@ -726,14 +727,14 @@ This inventory summarises the techniques used by the Linux and browser IE64 back
 | Dirty resident-register exits and cold bailout tails | Implemented | Implemented | Implemented through local writeback and shared exits |
 | Bounded static-JMP chase with timer and retired-count accounting | Implemented | Implemented through the shared native dispatcher | Implemented, with timer-enabled execution returning to normal dispatch |
 | Proven constant RAM/MMIO access check elision with SMC retained | Implemented | Implemented | Implemented |
-| Multi-block regions with internal edges and bounded back edges | Implemented | Implemented, including opt-in MMU regions | Implemented as one structured wasm function |
+| Multi-block regions with internal edges and bounded back edges | Implemented | Implemented, including MMU regions | Implemented as one structured wasm function |
 | Hot GPR residency across region edges | Four dynamically selected callee-saved hosts | Fixed R1-R14 mapping in X12-X17 and X19-X26 | `i64` locals |
-| FP32 and FP64 residency | XMM8 through XMM15 when `IE64_JIT_FP_RESIDENCY=1` on Linux/macOS | V16 through V31 when `IE64_JIT_FP_RESIDENCY=1` | FP64 pairs in `f64` locals; FP32 is inapplicable |
+| FP32 and FP64 residency | XMM8 through XMM15 by default on Linux/macOS | V16 through V31 by default | FP64 pairs in `f64` locals; FP32 is inapplicable |
 | Backward FPSR condition-code liveness | Implemented | Implemented | Implemented across blocks and regions |
 | MMIO poll acceleration | Implemented | Implemented | Implemented as a cooperative parking poll service |
 | Integer flag liveness and compare-branch fusion | Inapplicable: IE64 branches compare GPR operands directly | Inapplicable | Inapplicable |
 | x87 constant pooling | Inapplicable: IE64 constants use immediate materialisation | Inapplicable | Inapplicable |
-| MMU JIT support | Implemented | Implemented, with region promotion opt-in | Inapplicable to this backend scope |
+| MMU JIT support | Implemented | Implemented, with region promotion enabled by default | Inapplicable to this backend scope |
 
 ## MMU Integration
 
