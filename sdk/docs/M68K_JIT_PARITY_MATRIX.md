@@ -178,8 +178,13 @@ Slice 2 (memory effective addresses and operation sizes):
   M68K result exactly.
 - Big-endian access: loads and stores byte-swap through REV/REV16; the
   read-modify-write memory destinations swap in both directions.
-- Every guest access is guarded inline: both bounds against MemSize plus a
-  single-page I/O bitmap probe (the amd64 single-access page policy). A
+- Every guest access is guarded inline: both bounds against MemSize plus an
+  I/O bitmap probe of the first byte's page and, for multi-byte accesses,
+  the last byte's page, so an access that crosses a 256-byte page boundary
+  into an I/O page still bails. The amd64 shared single-access guard
+  (m68kEmitMemAccessBailChecks, used by the RTS/LINK/UNLK stack paths) now
+  takes an access size and applies the same two-page probe; amd64 word and
+  long data accesses already scanned every page through the range checker. A
   failing guard exits through a per-instruction bail stub BEFORE any of the
   faulting instruction's side effects: RetPC is the faulting instruction,
   RetCount the fully retired predecessors, NeedIOFallback set, CCR flushed.
@@ -206,11 +211,11 @@ Slice 3 (immediates, single-operand forms, shifts and rotates):
   ORI and EORI preserve X, V and C (SetFlagsNZ); ROL and ROR apply the
   rotate modulo AFTER the immediate zero-to-eight mapping, so ROL.B #8 and
   ROR.B #8 are complete no-ops that preserve the whole CCR.
-- Known shared deviation, matching amd64: native pushes (PEA here, JSR on
-  amd64) do not perform the interpreter's stackLowerBound overflow check;
-  the stack floor bus error is an interpreter-only diagnostic path. Both
-  backends deviate identically, so differential parity between backends
-  holds.
+- The interpreter's configured stack bounds are enforced natively on both
+  backends: pushes (BSR, JSR, PEA, LINK) bail when the decremented A7 falls
+  below stackLowerBound, pops (RTS, RTE, UNLK) when A7 is at or above
+  stackUpperBound, matching Push32/Pop32 exactly. The bounds are read
+  through context pointers because loaders retune them at runtime.
 
 Test coverage: TestM68KARM64_DifferentialMemoryEAGrid (77 shapes),
 TestM68KARM64_DifferentialShiftImmGrid (50 shapes), both over the operand
@@ -262,3 +267,41 @@ TestM68KARM64_BranchTargetOutOfProfileRAM (admission rules);
 TestM68KARM64_DispatcherLoopDBRA (end-to-end DBRA loop through the
 dispatcher with exact retired accounting). All green under qemu-aarch64;
 amd64 suite unaffected (8669 tests).
+
+### Milestone 3 slice 5 delivered (arm64 subroutine flow)
+
+Slice 5 lowers the call and return terminators:
+
+- BSR with byte, word and long displacement: the return address (the
+  address after the whole instruction) is pushed through a guarded native
+  stack write before A7 commits, then the block exits to the static
+  target. The push guard bails with the BSR unexecuted, so the
+  interpreter reproduces Push32's stack exceptions on the fallback path.
+- JSR with the lowered control EA set (An), (d16,An) and (xxx).L. The
+  effective address is computed before the push, matching ExecJsr's
+  ordering (visible when the EA base is A7). Other control EA forms
+  (absolute short, indexed, PC-relative) stay with the interpreter.
+- JMP with the same EA set, as a pushless dynamic exit.
+- RTS: guarded native pop (read at A7, then A7 += 4) with the popped
+  address as the dynamic exit PC. A guard failure bails with the RTS
+  unexecuted and the interpreter reproduces Pop32's checks.
+- Admission quirks pinned: the interpreter halts on a taken BSR target at
+  or beyond ProfileTopOfRAM minus two (after pushing), so such BSRs are
+  rejected at admission; JSR and JMP apply their targets unchecked, as
+  ExecJsr/ExecJmp do, so no target check is made for them.
+- Stack bounds enforced (both backends): the native push (emitPushRet, PEA)
+  and pop (RTS) paths check cpu.stackLowerBound/stackUpperBound through
+  context pointers before the access guard and bail with the terminator
+  unexecuted, so the interpreter fallback raises the exact Push32/Pop32 bus
+  errors. amd64 gained the same checks across BSR/JSR/PEA/LINK (floor) and
+  RTS/RTSNoChain/RTE/UNLK plus the fused JSR/RTS leaf pair (ceiling/floor).
+
+Test coverage: TestM68KARM64_DifferentialCallReturnGrid (13 shapes: BSR
+all widths and directions, JSR and JMP over each lowered EA, RTS) with
+register, CCR, PC, retired-count and stack memory comparison;
+TestM68KARM64_CallReturnPrefixAdmission (admission rules including the
+indexed-EA rejection and the out-of-RAM BSR quirk);
+TestM68KARM64_JSRStackBailUnit (pre-commit bail contract for the stack
+push); TestM68KARM64_DispatcherCallReturn (end-to-end JSR/RTS pair
+through the dispatcher with exact retired accounting). All green under
+qemu-aarch64; amd64 suite unaffected (8669 tests).

@@ -5087,11 +5087,35 @@ func m68kAccessSizeBytes(size int) uint32 {
 	}
 }
 
-// m68kEmitMemRead emits code to read from memory at address in addrReg.
-// Result goes into dstReg. Size determines byte-swap and width.
-// On I/O bail: sets NeedIOFallback and jumps to bailLabel.
-// Returns the offset of the bail Jcc for patching by the caller.
-func m68kEmitMemAccessBailChecks(cb *CodeBuffer, addrReg byte, bailSites *[]int) {
+// m68kEmitStackFloorBailCheck bails when spReg (the already-decremented A7)
+// is below cpu.stackLowerBound, matching Push32's stack-floor bus error.
+// The bound is read through the context because loaders retune it at
+// runtime. Clobbers RDX.
+func m68kEmitStackFloorBailCheck(cb *CodeBuffer, spReg byte, bailSites *[]int) {
+	amd64MOV_reg_mem(cb, amd64RDX, m68kAMD64RegCtx, int32(m68kCtxOffStackLowerBoundPtr))
+	amd64MOV_reg_mem32(cb, amd64RDX, amd64RDX, 0)
+	amd64ALU_reg_reg32(cb, 0x39, spReg, amd64RDX) // CMP sp, stackLowerBound
+	*bailSites = append(*bailSites, amd64Jcc_rel32(cb, amd64CondB))
+}
+
+// m68kEmitStackCeilingBailCheck bails when spReg (A7 before the pop) is at
+// or above cpu.stackUpperBound, matching Pop32's stack-ceiling bus error.
+// Clobbers RDX.
+func m68kEmitStackCeilingBailCheck(cb *CodeBuffer, spReg byte, bailSites *[]int) {
+	amd64MOV_reg_mem(cb, amd64RDX, m68kAMD64RegCtx, int32(m68kCtxOffStackUpperBoundPtr))
+	amd64MOV_reg_mem32(cb, amd64RDX, amd64RDX, 0)
+	amd64ALU_reg_reg32(cb, 0x39, spReg, amd64RDX) // CMP sp, stackUpperBound
+	*bailSites = append(*bailSites, amd64Jcc_rel32(cb, amd64CondAE))
+}
+
+// m68kEmitMemAccessBailChecks emits the shared single-access guard for a
+// sized access at addrReg: start bound against MemSize plus an I/O bitmap
+// probe of the first byte's page and, for multi-byte accesses, the last
+// byte's page (a 4-byte stack access starting 2 bytes below an I/O page
+// boundary must still bail; callers provide their own end-bound check).
+// On failure the appended bail sites jump to the caller's bail path.
+// Clobbers RCX, RDX, R11.
+func m68kEmitMemAccessBailChecks(cb *CodeBuffer, addrReg byte, size uint32, bailSites *[]int) {
 	amd64MOV_reg_mem32(cb, amd64R11, m68kAMD64RegCtx, int32(m68kCtxOffMemSize))
 	amd64ALU_reg_reg32(cb, 0x39, addrReg, amd64R11) // CMP addr, MemSize
 	*bailSites = append(*bailSites, amd64Jcc_rel32(cb, amd64CondAE))
@@ -5110,8 +5134,30 @@ func m68kEmitMemAccessBailChecks(cb *CodeBuffer, addrReg byte, bailSites *[]int)
 	cb.EmitBytes(0x0F, 0xB6, modRM(0, amd64R11, 4), sibByte(0, amd64R11, amd64RCX))
 	amd64TEST_reg_reg32(cb, amd64R11, amd64R11)
 	*bailSites = append(*bailSites, amd64Jcc_rel32(cb, amd64CondNE))
+
+	var endBoundsOff int
+	haveEndProbe := false
+	if size > 1 {
+		// Last byte's page: catches accesses that cross a 256-byte page
+		// boundary into an I/O page. Usually the same page (the redundant
+		// probe is cheap); an end page past the bitmap is plain RAM, like
+		// the start-page case above.
+		amd64MOV_reg_reg32(cb, amd64R11, addrReg)
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, int32(size-1))
+		amd64SHR_imm32(cb, amd64R11, 8)
+		amd64ALU_reg_reg32(cb, 0x39, amd64R11, amd64RDX) // CMP endPage, bitmapLen
+		endBoundsOff = amd64Jcc_rel32(cb, amd64CondAE)
+		haveEndProbe = true
+		emitREX_SIB(cb, false, amd64R11, amd64R11, amd64RCX)
+		cb.EmitBytes(0x0F, 0xB6, modRM(0, amd64R11, 4), sibByte(0, amd64R11, amd64RCX))
+		amd64TEST_reg_reg32(cb, amd64R11, amd64R11)
+		*bailSites = append(*bailSites, amd64Jcc_rel32(cb, amd64CondNE))
+	}
 	patchRel32(cb, noBitmapOff, cb.Len())
 	patchRel32(cb, noBitmapBoundsOff, cb.Len())
+	if haveEndProbe {
+		patchRel32(cb, endBoundsOff, cb.Len())
+	}
 }
 
 func m68kEmitMemRangeBailChecks(cb *CodeBuffer, startReg, countReg byte, bailSites *[]int) {
@@ -5185,7 +5231,7 @@ func m68kEmitSMCRangeBailChecks(cb *CodeBuffer, startReg, countReg byte, bailSit
 func m68kEmitMemRead(cb *CodeBuffer, addrReg, dstReg byte, size int, bailLabel *int) {
 	bailSites := make([]int, 0, 5)
 	if size == M68K_SIZE_BYTE {
-		m68kEmitMemAccessBailChecks(cb, addrReg, &bailSites)
+		m68kEmitMemAccessBailChecks(cb, addrReg, 1, &bailSites)
 	} else {
 		amd64MOV_reg_imm32(cb, amd64RDX, m68kAccessSizeBytes(size))
 		m68kEmitMemRangeBailChecks(cb, addrReg, amd64RDX, &bailSites)
@@ -5244,7 +5290,7 @@ func m68kEmitMemWrite(cb *CodeBuffer, addrReg, valReg byte, size int, bailLabel 
 
 	bailSites := make([]int, 0, 5)
 	if size == M68K_SIZE_BYTE {
-		m68kEmitMemAccessBailChecks(cb, addrReg, &bailSites)
+		m68kEmitMemAccessBailChecks(cb, addrReg, 1, &bailSites)
 	} else {
 		amd64MOV_reg_imm32(cb, amd64RDX, m68kAccessSizeBytes(size))
 		m68kEmitMemRangeBailChecks(cb, addrReg, amd64RDX, &bailSites)
@@ -7698,6 +7744,7 @@ func m68kEmitBSR(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 	amd64ALU_reg_imm32_32bit(cb, 5, m68kAMD64RegA7, 4)
 
 	bailOffs := make([]int, 0, 8)
+	m68kEmitStackFloorBailCheck(cb, m68kAMD64RegA7, &bailOffs)
 	amd64MOV_reg_imm32(cb, amd64RDX, 4)
 	m68kEmitMemRangeBailChecks(cb, m68kAMD64RegA7, amd64RDX, &bailOffs)
 
@@ -7918,6 +7965,7 @@ func m68kEmitRTS(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m68kBlock
 	// Read return address from stack: Read32_BE([memBase + A7]); A7 += 4
 
 	bailOffs := make([]int, 0, 6)
+	m68kEmitStackCeilingBailCheck(cb, m68kAMD64RegA7, &bailOffs)
 
 	// Stack read checks: aligned, direct RAM, no 32-bit wrap across the longword.
 	amd64TEST_reg_imm8(cb, m68kAMD64RegA7, 1)
@@ -7932,7 +7980,7 @@ func m68kEmitRTS(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m68kBlock
 	amd64ALU_reg_reg32(cb, 0x39, amd64RDX, amd64R11) // CMP end, MemSize
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondA))
 
-	m68kEmitMemAccessBailChecks(cb, m68kAMD64RegA7, &bailOffs)
+	m68kEmitMemAccessBailChecks(cb, m68kAMD64RegA7, 4, &bailOffs)
 
 	// Read32_BE: MOV EAX, [RSI + R13]; BSWAP EAX
 	emitMemOpSIB(cb, false, 0x8B, amd64RAX, m68kAMD64RegMemBase, m68kAMD64RegA7, 0)
@@ -8099,6 +8147,7 @@ func m68kEmitRTSNoChain(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m6
 	}
 
 	bailOffs := make([]int, 0, 8)
+	m68kEmitStackCeilingBailCheck(cb, m68kAMD64RegA7, &bailOffs)
 	amd64TEST_reg_imm8(cb, m68kAMD64RegA7, 1)
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondNE))
 	amd64MOV_reg_mem32(cb, amd64R11, m68kAMD64RegCtx, int32(m68kCtxOffMemSize))
@@ -8110,7 +8159,7 @@ func m68kEmitRTSNoChain(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m6
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondB))
 	amd64ALU_reg_reg32(cb, 0x39, amd64RDX, amd64R11) // CMP end, MemSize
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondA))
-	m68kEmitMemAccessBailChecks(cb, m68kAMD64RegA7, &bailOffs)
+	m68kEmitMemAccessBailChecks(cb, m68kAMD64RegA7, 4, &bailOffs)
 
 	emitMemOpSIB(cb, false, 0x8B, amd64RAX, m68kAMD64RegMemBase, m68kAMD64RegA7, 0)
 	emitREX(cb, false, 0, amd64RAX)
@@ -8143,6 +8192,7 @@ func m68kEmitRTE(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m68kBlock
 	}
 
 	bailOffs := make([]int, 0, 8)
+	m68kEmitStackCeilingBailCheck(cb, m68kAMD64RegA7, &bailOffs)
 
 	// The native path owns 68020+ format-0 frames. Malformed stacks, 68000
 	// frames, non-supervisor RTE, and larger frame formats re-enter the
@@ -8318,6 +8368,7 @@ func m68kEmitJSR(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 	amd64ALU_reg_imm32_32bit(cb, 5, m68kAMD64RegA7, 4) // SUB A7, 4
 
 	bailOffs := make([]int, 0, 10)
+	m68kEmitStackFloorBailCheck(cb, m68kAMD64RegA7, &bailOffs)
 	amd64TEST_reg_imm8(cb, m68kAMD64RegA7, 1)
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondNE))
 	amd64MOV_reg_imm32(cb, amd64RDX, 4)
@@ -9313,6 +9364,7 @@ func m68kEmitPEA(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 	amd64ALU_reg_imm32_32bit(cb, 5, m68kAMD64RegA7, 4)
 
 	bailOffs := make([]int, 0, 10)
+	m68kEmitStackFloorBailCheck(cb, m68kAMD64RegA7, &bailOffs)
 	amd64TEST_reg_imm8(cb, m68kAMD64RegA7, 1)
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondNE))
 	amd64MOV_reg_imm32(cb, amd64RDX, 4)
@@ -9368,6 +9420,7 @@ func m68kEmitLINK(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint3
 	amd64ALU_reg_imm32_32bit(cb, 5, m68kAMD64RegA7, 4) // A7 -= 4
 
 	bailOffs := make([]int, 0, 6)
+	m68kEmitStackFloorBailCheck(cb, m68kAMD64RegA7, &bailOffs)
 	amd64TEST_reg_imm8(cb, m68kAMD64RegA7, 1)
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondNE))
 	amd64MOV_reg_mem32(cb, amd64R11, m68kAMD64RegCtx, int32(m68kCtxOffMemSize))
@@ -9379,7 +9432,7 @@ func m68kEmitLINK(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint3
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondB))
 	amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64R11) // CMP end, MemSize
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondA))
-	m68kEmitMemAccessBailChecks(cb, m68kAMD64RegA7, &bailOffs)
+	m68kEmitMemAccessBailChecks(cb, m68kAMD64RegA7, 4, &bailOffs)
 
 	// Write An to stack (big-endian)
 	amd64MOV_reg_mem32(cb, amd64RDX, amd64RSP, 32)
@@ -9418,6 +9471,7 @@ func m68kEmitUNLK(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m68kBloc
 
 	// 2. Pop An: An = Read32_BE([A7]); A7 += 4
 	bailOffs := make([]int, 0, 6)
+	m68kEmitStackCeilingBailCheck(cb, m68kAMD64RegA7, &bailOffs)
 	amd64TEST_reg_imm8(cb, m68kAMD64RegA7, 1)
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondNE))
 	amd64MOV_reg_mem32(cb, amd64R11, m68kAMD64RegCtx, int32(m68kCtxOffMemSize))
@@ -9429,7 +9483,7 @@ func m68kEmitUNLK(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m68kBloc
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondB))
 	amd64ALU_reg_reg32(cb, 0x39, amd64RDX, amd64R11) // CMP end, MemSize
 	bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondA))
-	m68kEmitMemAccessBailChecks(cb, m68kAMD64RegA7, &bailOffs)
+	m68kEmitMemAccessBailChecks(cb, m68kAMD64RegA7, 4, &bailOffs)
 
 	// Read from stack (big-endian)
 	emitMemOpSIB(cb, false, 0x8B, amd64RAX, m68kAMD64RegMemBase, m68kAMD64RegA7, 0)
@@ -11654,6 +11708,7 @@ func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint
 		// Push return address: A7 -= 4; range/I/O check; Write32_BE.
 		amd64ALU_reg_imm32_32bit(cb, 5, m68kAMD64RegA7, 4)
 		bailOffs := make([]int, 0, 10)
+		m68kEmitStackFloorBailCheck(cb, m68kAMD64RegA7, &bailOffs)
 		amd64TEST_reg_imm8(cb, m68kAMD64RegA7, 1)
 		bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondNE))
 		amd64MOV_reg_imm32(cb, amd64RDX, 4)
@@ -11689,6 +11744,7 @@ func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint
 		// discarded — control flow naturally continues at the JSR's
 		// returnPC (the next instr in the block).
 		bailOffs := make([]int, 0, 10)
+		m68kEmitStackCeilingBailCheck(cb, m68kAMD64RegA7, &bailOffs)
 		amd64TEST_reg_imm8(cb, m68kAMD64RegA7, 1)
 		bailOffs = append(bailOffs, amd64Jcc_rel32(cb, amd64CondNE))
 		amd64MOV_reg_imm32(cb, amd64RDX, 4)

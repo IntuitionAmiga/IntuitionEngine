@@ -1474,3 +1474,139 @@ func TestM68KJIT_AMD64_LazyCCR_XInitFromPrologue2(t *testing.T) {
 		t.Error("Z flag should be set for MOVEQ #0")
 	}
 }
+
+// TestM68KJIT_AMD64_CrossPageStackIOGuard pins the two-page guard policy for
+// the shared single-access bail checks: a 4-byte stack access that starts on
+// a plain RAM page but whose final byte lands on an I/O page must bail with
+// NeedIOFallback rather than touch the backing array directly. LINK covers
+// the guarded push, UNLK the guarded pop; RTS shares the same helper.
+func TestM68KJIT_AMD64_CrossPageStackIOGuard(t *testing.T) {
+	type shape struct {
+		name   string
+		words  []uint16
+		setup  func(cpu *M68KCPU, ioPage uint32)
+		wantA7 func(ioPage uint32) uint32
+	}
+	shapes := []shape{
+		{
+			// LINK A6,#-8: push of A6 starts at A7-4 = ioPage-2. The bail
+			// path undoes the A7 decrement, so A7 is unchanged.
+			name:   "link-push-cross",
+			words:  []uint16{0x4E56, 0xFFF8},
+			setup:  func(cpu *M68KCPU, ioPage uint32) { cpu.AddrRegs[7] = ioPage + 2 },
+			wantA7: func(ioPage uint32) uint32 { return ioPage + 2 },
+		},
+		{
+			// UNLK A6: pop reads 4 bytes at A7=A6 = ioPage-2. Like the
+			// interpreter, A7=A6 commits before the failing pop; the
+			// re-executed UNLK repeats that assignment, so it is safe.
+			name:   "unlk-pop-cross",
+			words:  []uint16{0x4E5E},
+			setup:  func(cpu *M68KCPU, ioPage uint32) { cpu.AddrRegs[6] = ioPage - 2 },
+			wantA7: func(ioPage uint32) uint32 { return ioPage - 2 },
+		},
+	}
+	for _, sh := range shapes {
+		t.Run(sh.name, func(t *testing.T) {
+			r := newM68KJITTestRig(t)
+			cpu := r.cpu
+			cpu.m68kJitIOPageBitmap = make([]bool, (uint32(len(cpu.memory))+255)>>8)
+			ioPage := uint32(0x9000)
+			cpu.m68kJitIOPageBitmap[ioPage>>8] = true
+			r.ctx.IOPageBitmapPtr = uintptr(unsafe.Pointer(&cpu.m68kJitIOPageBitmap[0]))
+			r.ctx.IOPageBitmapLen = uint32(len(cpu.m68kJitIOPageBitmap))
+			sh.setup(cpu, ioPage)
+
+			r.compileAndRun(t, 0x1000, sh.words...)
+
+			if r.ctx.NeedIOFallback != 1 {
+				t.Fatalf("NeedIOFallback=%d, want 1 (cross-page stack access must bail)", r.ctx.NeedIOFallback)
+			}
+			if r.ctx.RetPC != 0x1000 {
+				t.Fatalf("bail RetPC=%08X, want 00001000", r.ctx.RetPC)
+			}
+			if want := sh.wantA7(ioPage); cpu.AddrRegs[7] != want {
+				t.Fatalf("A7=%08X after bail, want %08X", cpu.AddrRegs[7], want)
+			}
+			for off := uint32(0); off < 4; off++ {
+				if cpu.memory[ioPage+off] != 0 {
+					t.Fatalf("I/O page byte %08X = %02X, want untouched", ioPage+off, cpu.memory[ioPage+off])
+				}
+			}
+		})
+	}
+}
+
+// TestM68KJIT_AMD64_StackBoundBail pins the interpreter's configured
+// stack-bound exceptions on the native stack paths: Push32 raises a bus
+// error when the decremented A7 falls below cpu.stackLowerBound, Pop32 when
+// A7 is at or above cpu.stackUpperBound, even though both addresses are
+// valid guest RAM. The native BSR/JSR/PEA/LINK/RTS/UNLK paths must bail with
+// the instruction unexecuted so the interpreter delivers the exception.
+func TestM68KJIT_AMD64_StackBoundBail(t *testing.T) {
+	type shape struct {
+		name   string
+		words  []uint16
+		setup  func(cpu *M68KCPU)
+		wantA7 uint32
+	}
+	shapes := []shape{
+		{
+			name:   "bsr-below-floor",
+			words:  []uint16{0x6100, 0x0010}, // bsr.w +16
+			setup:  func(cpu *M68KCPU) { cpu.stackLowerBound = 0x8000; cpu.AddrRegs[7] = 0x8000 },
+			wantA7: 0x8000,
+		},
+		{
+			name:   "jsr-below-floor",
+			words:  []uint16{0x4EB9, 0x0000, 0x2000}, // jsr $2000.l
+			setup:  func(cpu *M68KCPU) { cpu.stackLowerBound = 0x8000; cpu.AddrRegs[7] = 0x8000 },
+			wantA7: 0x8000,
+		},
+		{
+			name:   "pea-below-floor",
+			words:  []uint16{0x4850}, // pea (a0)
+			setup:  func(cpu *M68KCPU) { cpu.stackLowerBound = 0x8000; cpu.AddrRegs[7] = 0x8000; cpu.AddrRegs[0] = 0x4000 },
+			wantA7: 0x8000,
+		},
+		{
+			name:   "link-below-floor",
+			words:  []uint16{0x4E56, 0xFFF8}, // link a6,#-8
+			setup:  func(cpu *M68KCPU) { cpu.stackLowerBound = 0x8000; cpu.AddrRegs[7] = 0x8000 },
+			wantA7: 0x8000,
+		},
+		{
+			name:   "rts-at-ceiling",
+			words:  []uint16{0x4E75}, // rts
+			setup:  func(cpu *M68KCPU) { cpu.stackUpperBound = 0x8000; cpu.AddrRegs[7] = 0x8000 },
+			wantA7: 0x8000,
+		},
+		{
+			// UNLK commits A7=A6 before the failing pop, like the interpreter.
+			name:   "unlk-at-ceiling",
+			words:  []uint16{0x4E5E}, // unlk a6
+			setup:  func(cpu *M68KCPU) { cpu.stackUpperBound = 0x8000; cpu.AddrRegs[6] = 0x8000 },
+			wantA7: 0x8000,
+		},
+	}
+	for _, sh := range shapes {
+		t.Run(sh.name, func(t *testing.T) {
+			r := newM68KJITTestRig(t)
+			cpu := r.cpu
+			sh.setup(cpu)
+			r.ctx.ChainBudget = 8 // keep RTS off the budget-exhausted bail path
+
+			r.compileAndRun(t, 0x1000, sh.words...)
+
+			if r.ctx.NeedIOFallback != 1 {
+				t.Fatalf("NeedIOFallback=%d, want 1 (stack-bound violation must bail)", r.ctx.NeedIOFallback)
+			}
+			if r.ctx.RetPC != 0x1000 {
+				t.Fatalf("bail RetPC=%08X, want 00001000", r.ctx.RetPC)
+			}
+			if cpu.AddrRegs[7] != sh.wantA7 {
+				t.Fatalf("A7=%08X after bail, want %08X", cpu.AddrRegs[7], sh.wantA7)
+			}
+		})
+	}
+}

@@ -441,10 +441,12 @@ func (e *m68kA64Emitter) cbnzToBail(rt byte) {
 }
 
 // emitGuard validates a guest access of the given size at the address in
-// addrReg: both bounds against MemSize and a single-page I/O bitmap probe
-// (the same page policy as the amd64 single-access guard). On failure it
-// branches to the current instruction's bail stub. addrReg is preserved;
-// W15 (Tmp6) is clobbered.
+// addrReg: both bounds against MemSize and an I/O bitmap probe of the first
+// byte's page plus, for multi-byte accesses, the last byte's page (a 32-bit
+// stack push starting 2 bytes below an I/O page boundary must still bail;
+// the amd64 single-access guard probes only the start page and keeps that
+// known gap for now). On failure it branches to the current instruction's
+// bail stub. addrReg is preserved; W15 (Tmp6) is clobbered.
 func (e *m68kA64Emitter) emitGuard(addrReg byte, size uint32) {
 	cb := e.cb
 	// Start bound (also protects the end-bound ADD against 32-bit wrap).
@@ -463,9 +465,28 @@ func (e *m68kA64Emitter) emitGuard(addrReg byte, size uint32) {
 	cb.Emit32(arm64Bcond(m68kA64CondCS, 0)) // beyond bitmap: plain RAM
 	cb.Emit32(arm64LDRB_reg(m68kA64Tmp6, m68kA64IOBmp, m68kA64Tmp6))
 	e.cbnzToBail(m68kA64Tmp6)
+	var skip3 m68kA64BranchSite
+	haveSkip3 := false
+	if size > 1 {
+		// Last byte's page: catches accesses that cross a 256-byte page
+		// boundary into an I/O page. Usually the same page (the redundant
+		// probe is cheap); when the end page is past the bitmap it is plain
+		// RAM, like the start-page case above.
+		cb.Emit32(arm64ADD_W_imm(m68kA64Tmp6, addrReg, size-1))
+		cb.Emit32(arm64LSR_W_imm(m68kA64Tmp6, m68kA64Tmp6, 8))
+		cb.Emit32(arm64CMP_W(m68kA64Tmp6, m68kA64IOBmpLen))
+		skip3 = m68kA64BranchSite{off: cb.Len(), base: 0x54000000 | uint32(m68kA64CondCS)}
+		haveSkip3 = true
+		cb.Emit32(arm64Bcond(m68kA64CondCS, 0))
+		cb.Emit32(arm64LDRB_reg(m68kA64Tmp6, m68kA64IOBmp, m68kA64Tmp6))
+		e.cbnzToBail(m68kA64Tmp6)
+	}
 	ok := cb.Len()
 	e.patchSite(skip1, ok)
 	e.patchSite(skip2, ok)
+	if haveSkip3 {
+		e.patchSite(skip3, ok)
+	}
 }
 
 // emitLoadBE loads a sized big-endian guest value at [MemBase + addrReg]
@@ -577,6 +598,10 @@ const (
 	m68kA64ClassBRA   // unconditional branch (block terminator; q = target)
 	m68kA64ClassBcc   // conditional branch (block-ending; kind = cond, q = target)
 	m68kA64ClassDBcc  // decrement and branch (block-ending; kind = cond, q = target)
+	m68kA64ClassBSR   // branch to subroutine (block terminator; q = target)
+	m68kA64ClassJSR   // jump to subroutine (block terminator; src = EA)
+	m68kA64ClassJMP   // jump (block terminator; src = EA)
+	m68kA64ClassRTS   // return from subroutine (block terminator)
 )
 
 // Shift/rotate kinds (bits 4-3 of the opcode), carried in q; sub carries
@@ -886,14 +911,16 @@ func m68kARM64InstrSupported(ji *M68KJITInstr, memory []byte, instrPC uint32) bo
 	return ok
 }
 
-// m68kA64DecodeBranch classifies a block-ending branch: BRA (byte, word or
-// long displacement), Bcc (conditions 2-15) or DBcc. BSR is not lowered (it
-// pushes through the interpreter's guarded stack path).
+// m68kA64DecodeBranch classifies a block-ending control transfer: BRA/BSR
+// (byte, word or long displacement), Bcc (conditions 2-15), DBcc, JSR and
+// JMP with a lowered EA ((An), (d16,An) or (xxx).L), and RTS.
 //
-// The interpreter halts the machine when a taken BRA/Bcc target reaches
+// The interpreter halts the machine when a taken BRA/BSR/Bcc target reaches
 // ProfileTopOfRAM-2 (decodeGroup6/ExecBRA); such branches are rejected here
-// so the interpreter keeps that behaviour. DBcc applies its taken target
-// unchecked in the interpreter, so no target check is made for it.
+// so the interpreter keeps that behaviour (for BSR the interpreter pushes
+// the return address before halting, which the fallback reproduces). DBcc,
+// JSR and JMP apply their targets unchecked in the interpreter, so no
+// target check is made for them.
 func m68kA64DecodeBranch(ji *M68KJITInstr, memory []byte, instrPC uint32, topOfRAM uint32) (m68kA64DecodedOp, bool) {
 	op := ji.opcode
 	bad := m68kA64DecodedOp{}
@@ -907,9 +934,6 @@ func m68kA64DecodeBranch(ji *M68KJITInstr, memory []byte, instrPC uint32, topOfR
 	switch {
 	case op&0xF000 == 0x6000: // BRA/BSR/Bcc
 		cond := (op >> 8) & 0xF
-		if cond == 1 { // BSR
-			return bad, false
-		}
 		disp8 := int8(op)
 		var target uint32
 		ext := 0
@@ -939,10 +963,38 @@ func m68kA64DecodeBranch(ji *M68KJITInstr, memory []byte, instrPC uint32, topOfR
 			return bad, false // interpreter halts on this taken target
 		}
 		class := m68kA64ClassBcc
-		if cond == 0 {
+		switch cond {
+		case 0:
 			class = m68kA64ClassBRA
+		case 1:
+			class = m68kA64ClassBSR
 		}
 		return m68kA64DecodedOp{class: class, kind: int(cond), q: target}, true
+
+	case op == 0x4E75: // RTS
+		if ji.length != 2 {
+			return bad, false
+		}
+		return m68kA64DecodedOp{class: m68kA64ClassRTS}, true
+
+	case op&0xFFC0 == 0x4E80 || op&0xFFC0 == 0x4EC0: // JSR/JMP
+		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, 4, memory, instrPC+2)
+		if !ok {
+			return bad, false
+		}
+		switch ea.kind {
+		case m68kA64EAInd, m68kA64EADisp, m68kA64EAAbsL:
+		default:
+			return bad, false // control EA forms outside the lowered set
+		}
+		if 2+uint32(ea.ext)*2 != uint32(ji.length) {
+			return bad, false
+		}
+		class := m68kA64ClassJMP
+		if op&0xFFC0 == 0x4E80 {
+			class = m68kA64ClassJSR
+		}
+		return m68kA64DecodedOp{class: class, src: ea}, true
 
 	case op&0xF0F8 == 0x50C8: // DBcc
 		if ji.length != 4 {
@@ -960,10 +1012,10 @@ func m68kA64DecodeBranch(ji *M68KJITInstr, memory []byte, instrPC uint32, topOfR
 }
 
 // m68kARM64SupportedPrefix returns the number of leading instructions the
-// arm64 backend can execute natively. A supported branch (BRA, Bcc, DBcc)
-// ends the prefix and is included as its final instruction; any other block
-// terminator or unsupported instruction ends the prefix without being
-// included.
+// arm64 backend can execute natively. A supported control transfer (BRA,
+// Bcc, DBcc, BSR, JSR, JMP, RTS) ends the prefix and is included as its
+// final instruction; any other block terminator or unsupported instruction
+// ends the prefix without being included.
 func m68kARM64SupportedPrefix(instrs []M68KJITInstr, memory []byte, startPC uint32, topOfRAM uint32) int {
 	n := 0
 	for i := range instrs {
@@ -1326,6 +1378,11 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		m68kA64EmitEAAddr(cb, &dec.src, 4, m68kA64Tmp1, 0)
 		m68kA64LoadA(cb, m68kA64Tmp0, 7)
 		cb.Emit32(arm64SUB_W_imm(m68kA64Tmp0, m68kA64Tmp0, 4))
+		// Push32's stack-floor bus error applies to PEA as well.
+		cb.Emit32(arm64LDR_imm(m68kA64Tmp2, m68kA64Ctx, m68kCtxOffStackLowerBoundPtr/8))
+		cb.Emit32(arm64LDR_W_imm(m68kA64Tmp2, m68kA64Tmp2, 0))
+		cb.Emit32(arm64CMP_W(m68kA64Tmp0, m68kA64Tmp2))
+		e.branchToBail(m68kA64CondCC) // newSP < stackLowerBound
 		e.emitGuard(m68kA64Tmp0, 4)
 		m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp3, 4)
 		m68kA64StoreA(cb, m68kA64Tmp0, 7)
@@ -1610,11 +1667,14 @@ func (e *m68kA64Emitter) emitCondTest(cond int, rc byte) {
 	}
 }
 
-// emitBranch lowers a block-ending branch. BRA resolves to a static exit PC;
-// Bcc and DBcc compute the resume PC into Tmp5 at run time. DBcc parity with
-// ExecDBcc: condition true takes the fallthrough with no decrement; otherwise
-// the low word of Dn decrements (high word preserved) and the branch is taken
-// unless the counter expires to -1.
+// emitBranch lowers a block-ending control transfer. BRA resolves to a
+// static exit PC; every other shape leaves the resume PC in Tmp5 at run
+// time. DBcc parity with ExecDBcc: condition true takes the fallthrough with
+// no decrement; otherwise the low word of Dn decrements (high word
+// preserved) and the branch is taken unless the counter expires to -1.
+// BSR/JSR push the return address through the guarded stack path and RTS
+// pops through it; their guard failures bail with the terminator unexecuted
+// so the interpreter reproduces Push32/Pop32 exception behaviour.
 func (e *m68kA64Emitter) emitBranch(dec *m68kA64DecodedOp, ji *M68KJITInstr, instrPC uint32) {
 	cb := e.cb
 	fall := instrPC + uint32(ji.length)
@@ -1650,7 +1710,65 @@ func (e *m68kA64Emitter) emitBranch(dec *m68kA64DecodedOp, ji *M68KJITInstr, ins
 		e.patchSite(condTrue, done)
 		e.patchSite(expired, done)
 		e.dynExit = true
+
+	case m68kA64ClassBSR:
+		// Target is static and range-checked at decode. The push is guarded
+		// before A7 commits: a bail leaves the BSR fully unexecuted and the
+		// interpreter reproduces Push32's stack exceptions.
+		m68kA64MovImm32(cb, m68kA64Tmp5, dec.q)
+		e.emitPushRet(fall)
+		e.dynExit = true
+
+	case m68kA64ClassJSR:
+		// ExecJsr computes the EA before pushing (visible when the EA base
+		// is A7), so the target lands in Tmp5 first. emitGuard and the
+		// store scratch leave Tmp5 intact.
+		m68kA64EmitEAAddr(cb, &dec.src, 4, m68kA64Tmp5, 0)
+		e.emitPushRet(fall)
+		e.dynExit = true
+
+	case m68kA64ClassJMP:
+		m68kA64EmitEAAddr(cb, &dec.src, 4, m68kA64Tmp5, 0)
+		e.dynExit = true
+
+	case m68kA64ClassRTS:
+		// Pop the return address: guarded read at A7, then A7 += 4. A bail
+		// leaves RTS unexecuted; the interpreter reproduces Pop32's checks.
+		// Pop32 bus-errors when A7 >= stackUpperBound even for valid RAM,
+		// so the ceiling (read through the context; loaders retune it at
+		// runtime) is enforced before the access guard.
+		m68kA64LoadA(cb, m68kA64Tmp0, 7)
+		cb.Emit32(arm64LDR_imm(m68kA64Tmp1, m68kA64Ctx, m68kCtxOffStackUpperBoundPtr/8))
+		cb.Emit32(arm64LDR_W_imm(m68kA64Tmp1, m68kA64Tmp1, 0))
+		cb.Emit32(arm64CMP_W(m68kA64Tmp0, m68kA64Tmp1))
+		e.branchToBail(m68kA64CondCS) // A7 >= stackUpperBound
+		e.emitGuard(m68kA64Tmp0, 4)
+		m68kA64EmitLoadBE(cb, m68kA64Tmp5, m68kA64Tmp0, 4)
+		cb.Emit32(arm64ADD_W_imm(m68kA64Tmp0, m68kA64Tmp0, 4))
+		m68kA64StoreA(cb, m68kA64Tmp0, 7)
+		e.dynExit = true
 	}
+}
+
+// emitPushRet pushes the 32-bit return address retAddr onto the guest stack:
+// A7 -= 4 with the write guarded BEFORE A7 commits, so an I/O or bounds bail
+// leaves the calling instruction fully unexecuted. Tmp5 is preserved (it
+// carries the jump target); Tmp0-Tmp3 and Tmp6 are clobbered.
+func (e *m68kA64Emitter) emitPushRet(retAddr uint32) {
+	cb := e.cb
+	m68kA64LoadA(cb, m68kA64Tmp0, 7)
+	cb.Emit32(arm64SUB_W_imm(m68kA64Tmp0, m68kA64Tmp0, 4))
+	// Push32 bus-errors when the decremented SP falls below stackLowerBound
+	// even for valid RAM; the floor is read through the context because
+	// loaders retune the bounds at runtime.
+	cb.Emit32(arm64LDR_imm(m68kA64Tmp1, m68kA64Ctx, m68kCtxOffStackLowerBoundPtr/8))
+	cb.Emit32(arm64LDR_W_imm(m68kA64Tmp1, m68kA64Tmp1, 0))
+	cb.Emit32(arm64CMP_W(m68kA64Tmp0, m68kA64Tmp1))
+	e.branchToBail(m68kA64CondCC) // newSP < stackLowerBound
+	e.emitGuard(m68kA64Tmp0, 4)
+	m68kA64MovImm32(cb, m68kA64Tmp1, retAddr)
+	m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp2, 4)
+	m68kA64StoreA(cb, m68kA64Tmp0, 7)
 }
 
 func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecMem, memory []byte, topOfRAM uint32) (*JITBlock, error) {
@@ -1681,6 +1799,11 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 			// instruction (m68kARM64SupportedPrefix stops on it).
 			if bdec, ok := m68kA64DecodeBranch(ji, memory, instrPC, topOfRAM); ok {
 				e.emitBranch(&bdec, ji, instrPC)
+				// BSR/JSR/RTS carry stack-access guards; their bail exits
+				// leave the terminator unexecuted.
+				if len(e.bails) > 0 {
+					e.stubs = append(e.stubs, m68kA64BailStub{sites: e.bails, pc: instrPC, retired: uint32(i)})
+				}
 				endPC = instrPC + uint32(ji.length)
 				break
 			}

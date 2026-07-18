@@ -91,6 +91,8 @@ type M68KJITContext struct {
 	FPIARPtr            uintptr // 432: &cpu.FPU.FPIAR
 	FPAbsMask           uint64  // 440: 0x7FFFFFFFFFFFFFFF — FABS sign-clear mask
 	FPNegMask           uint64  // 448: 0x8000000000000000 — FNEG sign-flip mask
+	StackLowerBoundPtr  uintptr // 456: &cpu.stackLowerBound (Push stack-floor check)
+	StackUpperBoundPtr  uintptr // 464: &cpu.stackUpperBound (Pop stack-ceiling check)
 }
 
 // M68KJITContext field offsets (must match struct layout above)
@@ -159,6 +161,8 @@ const (
 	m68kCtxOffFPIARPtr            = 432
 	m68kCtxOffFPAbsMask           = 440
 	m68kCtxOffFPNegMask           = 448
+	m68kCtxOffStackLowerBoundPtr  = 456
+	m68kCtxOffStackUpperBoundPtr  = 464
 )
 
 // m68kAddrRegFileByteDelta is the fixed byte distance from &DataRegs[0] to
@@ -251,6 +255,8 @@ func newM68KJITContext(cpu *M68KCPU, codePageBitmap []byte, codePageMin []uint16
 		PendingInterruptPtr: uintptr(unsafe.Pointer(&cpu.pendingInterrupt)),
 		FPAbsMask:           m68kFPAbsMaskBits,
 		FPNegMask:           m68kFPNegMaskBits,
+		StackLowerBoundPtr:  uintptr(unsafe.Pointer(&cpu.stackLowerBound)),
+		StackUpperBoundPtr:  uintptr(unsafe.Pointer(&cpu.stackUpperBound)),
 	}
 	// The FPU is optional (cpu.FPU may be nil). Only wire the FP register/status
 	// pointers when present; native FPU emission is gated on the same nil check,

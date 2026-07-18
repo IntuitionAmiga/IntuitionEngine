@@ -77,8 +77,8 @@ var m68kARM64GridValues = []uint32{
 // block terminator.
 func TestM68KARM64_SupportedPrefix(t *testing.T) {
 	cpu := m68kARM64NewCPU(t)
-	// moveq #1,d0 ; add.l d0,d1 ; jsr (a0) [unsupported] ; rts
-	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7001, 0xD280, 0x4E90, 0x4E75)
+	// moveq #1,d0 ; add.l d0,d1 ; jsr 8(a0,d0.w) [unsupported EA] ; rts
+	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7001, 0xD280, 0x4EB0, 0x0008, 0x4E75)
 	instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
 	prefix := m68kARM64SupportedPrefix(instrs, cpu.memory, m68kARM64TestPC, cpu.ProfileTopOfRAM())
 	if prefix != 2 {
@@ -1018,5 +1018,406 @@ func TestM68KARM64_BranchTargetOutOfProfileRAM(t *testing.T) {
 	// and the prefix must stop before it.
 	if got := m68kARM64SupportedPrefix(instrs, cpu.memory, m68kARM64TestPC, m68kARM64TestPC+0x40); got != 1 {
 		t.Fatalf("out-of-range BRA prefix = %d, want 1 (branch rejected)", got)
+	}
+}
+
+// ===========================================================================
+// Milestone 3 slice 5: subroutine flow — BSR, JSR, JMP and RTS as
+// block-ending exits with native stack push/pop.
+// ===========================================================================
+
+// TestM68KARM64_CallReturnPrefixAdmission pins the admission rules for the
+// call and return terminators: supported shapes end the block and are
+// included as its final instruction; unsupported EA forms are excluded.
+func TestM68KARM64_CallReturnPrefixAdmission(t *testing.T) {
+	cpu := m68kARM64NewCPU(t)
+	top := cpu.ProfileTopOfRAM()
+	cases := []struct {
+		name  string
+		words []uint16
+		top   uint32
+		want  int
+	}{
+		{"JSR (A0)", []uint16{0x7001, 0x4E90}, top, 2},
+		{"JSR 16(A0)", []uint16{0x7001, 0x4EA8, 0x0010}, top, 2},
+		{"JSR abs.L", []uint16{0x7001, 0x4EB9, 0x0000, 0x2000}, top, 2},
+		{"JMP (A0)", []uint16{0x7001, 0x4ED0}, top, 2},
+		{"RTS", []uint16{0x7001, 0x4E75}, top, 2},
+		{"BSR.S", []uint16{0x7001, 0x6108}, top, 2},
+		// Indexed EA is not lowered; the prefix stops before the JSR.
+		{"JSR 8(A0,D0.W)", []uint16{0x7001, 0x4EB0, 0x0008}, top, 1},
+		// The interpreter halts on a taken BSR target beyond top of RAM
+		// (after pushing); such a BSR must stay on the interpreter.
+		{"BSR.W out of RAM", []uint16{0x7001, 0x6100, 0x0100}, m68kARM64TestPC + 0x40, 1},
+	}
+	for _, tc := range cases {
+		m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.words...)
+		instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+		if got := m68kARM64SupportedPrefix(instrs, cpu.memory, m68kARM64TestPC, tc.top); got != tc.want {
+			t.Errorf("%s: prefix = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestM68KARM64_DifferentialCallReturnGrid drives every lowered call and
+// return shape against the interpreter: PC, all registers (A7 in
+// particular), CCR, the retired count and the stack memory window must match
+// exactly.
+func TestM68KARM64_DifferentialCallReturnGrid(t *testing.T) {
+	type opCase struct {
+		name  string
+		words []uint16
+		count int
+	}
+	cases := []opCase{
+		{"BSR.S +8", []uint16{0x7001, 0x6108}, 2},
+		{"BSR.S -16", []uint16{0x7001, 0x61F0}, 2},
+		{"BSR.W +256", []uint16{0x7001, 0x6100, 0x0100}, 2},
+		{"BSR.L +1024", []uint16{0x7001, 0x61FF, 0x0000, 0x0400}, 2},
+		{"JSR (A0)", []uint16{0x7001, 0x4E90}, 2},
+		{"JSR 16(A0)", []uint16{0x7001, 0x4EA8, 0x0010}, 2},
+		{"JSR -8(A1)", []uint16{0x7001, 0x4EA9, 0xFFF8}, 2},
+		{"JSR abs.L", []uint16{0x7001, 0x4EB9, 0x0000, 0x2000}, 2},
+		{"JMP (A0)", []uint16{0x7001, 0x4ED0}, 2},
+		{"JMP 16(A0)", []uint16{0x7001, 0x4EE8, 0x0010}, 2},
+		{"JMP -8(A1)", []uint16{0x7001, 0x4EE9, 0xFFF8}, 2},
+		{"JMP abs.L", []uint16{0x7001, 0x4EF9, 0x0000, 0x2000}, 2},
+		{"RTS", []uint16{0x7001, 0x4E75}, 2},
+	}
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	execMem, err := AllocExecMem(1 << 21)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	// Stack pointer seeds inside the interpreter's valid stack region
+	// (Push32 enforces a stack floor well above the data buffer).
+	spSeeds := []uint32{m68kARM64StackTop, m68kARM64StackTop + 0x40}
+	for _, tc := range cases {
+		tc := tc
+		ok := t.Run(tc.name, func(t *testing.T) {
+			for _, cpu := range []*M68KCPU{ref, got} {
+				m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.words...)
+			}
+			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM())
+			if prefix != tc.count {
+				t.Fatalf("%s: supported prefix %d, want %d", tc.name, prefix, tc.count)
+			}
+			block, err := m68kCompileBlockARM64(instrs[:tc.count], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("%s: compile: %v", tc.name, err)
+			}
+			ctx := newM68KJITContext(got, nil, nil, nil)
+			for _, sp := range spSeeds {
+				for _, ccrIn := range []uint16{0x00, 0x1F, 0x0A} {
+					for _, cpu := range []*M68KCPU{ref, got} {
+						m68kARM64SeedRegs(cpu, [8]uint32{1, 2, 3, 4, 5, 6, 7, 8}, ccrIn)
+						m68kARM64SeedMem(cpu)
+						cpu.AddrRegs[7] = sp
+						// Return address for RTS: an even in-RAM target.
+						cpu.memory[sp] = 0x00
+						cpu.memory[sp+1] = 0x00
+						cpu.memory[sp+2] = 0x20
+						cpu.memory[sp+3] = 0x40
+						cpu.PC = m68kARM64TestPC
+					}
+					ref.running.Store(true)
+					m68kARM64RunInterp(ref, tc.count)
+					if !ref.running.Load() {
+						t.Fatalf("%s sp=%08X: interpreter halted unexpectedly", tc.name, sp)
+					}
+					ctx.RetPC = 0
+					ctx.RetCount = 0
+					ctx.NeedIOFallback = 0
+					callNative(block.execAddr, m68kJITContextPtr(ctx))
+					if ctx.NeedIOFallback != 0 {
+						t.Fatalf("%s sp=%08X: unexpected I/O bail", tc.name, sp)
+					}
+					got.PC = ctx.RetPC
+					if ctx.RetCount != uint32(tc.count) {
+						t.Fatalf("%s sp=%08X: retired=%d want %d", tc.name, sp, ctx.RetCount, tc.count)
+					}
+					m68kARM64CompareState(t, tc.name, ref, got)
+					m68kARM64CompareMem(t, tc.name, ref, got)
+					for i := uint32(0); i < 16; i++ {
+						a := sp - 8 + i
+						if ref.memory[a] != got.memory[a] {
+							t.Errorf("%s: stack[%08X] interp=%02X native=%02X", tc.name, a, ref.memory[a], got.memory[a])
+							break
+						}
+					}
+					if t.Failed() {
+						t.Fatalf("%s: first divergence at sp=%08X ccrIn=%02X", tc.name, sp, ccrIn)
+					}
+				}
+			}
+		})
+		if !ok {
+			t.Fatalf("%s: subtest failed, stopping grid", tc.name)
+		}
+	}
+}
+
+// TestM68KARM64_JSRStackBailUnit pins the pre-commit bail contract for the
+// native stack push: a JSR whose push lands on an I/O page must exit with
+// NeedIOFallback before any side effect (no A7 change, no store, no jump).
+func TestM68KARM64_JSRStackBailUnit(t *testing.T) {
+	cpu := m68kARM64NewCPU(t)
+	// moveq #5,d0 ; jsr $2000.l
+	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7005, 0x4EB9, 0x0000, 0x2000)
+	cpu.m68kJitIOPageBitmap = make([]bool, (uint32(len(cpu.memory))+255)>>8)
+	ioPage := uint32(0x9000)
+	cpu.m68kJitIOPageBitmap[ioPage>>8] = true
+
+	instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	ctx := newM68KJITContext(cpu, nil, nil, nil)
+
+	// SP such that the push (SP-4) lands inside the I/O page.
+	cpu.AddrRegs[7] = ioPage + 8
+	cpu.DataRegs[0] = 0
+	callNative(block.execAddr, m68kJITContextPtr(ctx))
+
+	if ctx.NeedIOFallback != 1 {
+		t.Fatalf("NeedIOFallback=%d, want 1", ctx.NeedIOFallback)
+	}
+	if ctx.RetPC != m68kARM64TestPC+2 {
+		t.Fatalf("bail RetPC=%08X, want %08X (the JSR)", ctx.RetPC, m68kARM64TestPC+2)
+	}
+	if ctx.RetCount != 1 {
+		t.Fatalf("bail RetCount=%d, want 1", ctx.RetCount)
+	}
+	if cpu.AddrRegs[7] != ioPage+8 {
+		t.Fatalf("A7=%08X changed by bailed JSR", cpu.AddrRegs[7])
+	}
+	if cpu.DataRegs[0] != 5 {
+		t.Fatalf("D0=%08X, want 5 (moveq before the bail must commit)", cpu.DataRegs[0])
+	}
+}
+
+// TestM68KARM64_DispatcherCallReturn runs a real call/return pair through the
+// full dispatcher: the caller block ends in JSR, the callee block ends in
+// RTS, and the whole flow must match the interpreter exactly, including the
+// retired-instruction count.
+func TestM68KARM64_DispatcherCallReturn(t *testing.T) {
+	program := []uint16{
+		0x7005,                 // 1000: moveq #5,d0
+		0x4EB9, 0x0000, 0x1010, // 1002: jsr $1010.l
+		0x5281,         // 1008: addq.l #1,d1
+		0x4E72, 0x2700, // 100A: stop #$2700
+		0x4E71, // 100E: nop (pad)
+		0x5480, // 1010: addq.l #2,d0
+		0x7403, // 1012: moveq #3,d2
+		0x4E75, // 1014: rts
+	}
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	for _, cpu := range []*M68KCPU{ref, got} {
+		m68kARM64WriteWords(cpu, m68kARM64TestPC, program...)
+		cpu.PC = m68kARM64TestPC
+		cpu.AddrRegs[7] = m68kARM64StackTop
+	}
+
+	refCount := 0
+	for !ref.stopped.Load() && refCount < 100 {
+		refCount += ref.StepOne()
+	}
+
+	got.m68kJitEnabled = true
+	got.PerfEnabled = true
+	got.m68kJitForceNative = true
+	got.StoppedIdleHook = func(c *M68KCPU) { c.running.Store(false) }
+	got.running.Store(true)
+	got.M68KExecuteJIT()
+
+	m68kARM64CompareState(t, "call-return", ref, got)
+	if got.DataRegs[0] != 7 || got.DataRegs[1] != 1 || got.DataRegs[2] != 3 {
+		t.Errorf("D0=%d D1=%d D2=%d, want 7 1 3", got.DataRegs[0], got.DataRegs[1], got.DataRegs[2])
+	}
+	if got.InstructionCount != uint64(refCount) {
+		t.Errorf("retired count: interp=%d jit=%d", refCount, got.InstructionCount)
+	}
+}
+
+// TestM68KARM64_CrossPageIOGuard pins the two-page guard policy: a multi-byte
+// guest access that starts on a plain RAM page but whose final byte lands on
+// an I/O page must bail to the interpreter, not write (or read) through the
+// backing array. Covers the guarded stack push (JSR), the guarded stack pop
+// (RTS) and a plain data store, since they all share emitGuard.
+func TestM68KARM64_CrossPageIOGuard(t *testing.T) {
+	type shape struct {
+		name  string
+		words []uint16
+		count int
+		setup func(cpu *M68KCPU, ioPage uint32)
+	}
+	shapes := []shape{
+		{
+			// Push starts at ioPage-2, bytes ioPage-2..ioPage+1.
+			name:  "jsr-push-cross",
+			words: []uint16{0x7005, 0x4EB9, 0x0000, 0x2000}, // moveq #5,d0 ; jsr $2000.l
+			count: 2,
+			setup: func(cpu *M68KCPU, ioPage uint32) { cpu.AddrRegs[7] = ioPage + 2 },
+		},
+		{
+			// Pop reads ioPage-2..ioPage+1.
+			name:  "rts-pop-cross",
+			words: []uint16{0x7005, 0x4E75}, // moveq #5,d0 ; rts
+			count: 2,
+			setup: func(cpu *M68KCPU, ioPage uint32) { cpu.AddrRegs[7] = ioPage - 2 },
+		},
+		{
+			// Data store crossing: move.l d0,(a0) with a0 = ioPage-2.
+			name:  "move-store-cross",
+			words: []uint16{0x7005, 0x2080}, // moveq #5,d0 ; move.l d0,(a0)
+			count: 2,
+			setup: func(cpu *M68KCPU, ioPage uint32) { cpu.AddrRegs[0] = ioPage - 2 },
+		},
+	}
+	for _, sh := range shapes {
+		t.Run(sh.name, func(t *testing.T) {
+			cpu := m68kARM64NewCPU(t)
+			m68kARM64WriteWords(cpu, m68kARM64TestPC, sh.words...)
+			cpu.m68kJitIOPageBitmap = make([]bool, (uint32(len(cpu.memory))+255)>>8)
+			ioPage := uint32(0x9000)
+			cpu.m68kJitIOPageBitmap[ioPage>>8] = true
+			sh.setup(cpu, ioPage)
+			a7Before := cpu.AddrRegs[7]
+
+			instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+			execMem, err := AllocExecMem(1 << 20)
+			if err != nil {
+				t.Fatalf("AllocExecMem: %v", err)
+			}
+			defer execMem.Free()
+			block, err := m68kCompileBlockARM64(instrs[:sh.count], m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			ctx := newM68KJITContext(cpu, nil, nil, nil)
+			callNative(block.execAddr, m68kJITContextPtr(ctx))
+
+			if ctx.NeedIOFallback != 1 {
+				t.Fatalf("NeedIOFallback=%d, want 1 (cross-page access must bail)", ctx.NeedIOFallback)
+			}
+			if ctx.RetPC != m68kARM64TestPC+2 {
+				t.Fatalf("bail RetPC=%08X, want %08X", ctx.RetPC, m68kARM64TestPC+2)
+			}
+			if ctx.RetCount != 1 {
+				t.Fatalf("bail RetCount=%d, want 1", ctx.RetCount)
+			}
+			if cpu.AddrRegs[7] != a7Before {
+				t.Fatalf("A7=%08X changed by bailed instruction", cpu.AddrRegs[7])
+			}
+			if cpu.DataRegs[0] != 5 {
+				t.Fatalf("D0=%08X, want 5", cpu.DataRegs[0])
+			}
+			// The I/O page bytes must be untouched.
+			for off := uint32(0); off < 4; off++ {
+				if cpu.memory[ioPage+off] != 0 {
+					t.Fatalf("I/O page byte %08X = %02X, want untouched", ioPage+off, cpu.memory[ioPage+off])
+				}
+			}
+		})
+	}
+}
+
+// TestM68KARM64_StackBoundBail pins the interpreter's configured stack-bound
+// exceptions on the native call/return paths: Push32 raises a bus error when
+// the decremented A7 falls below cpu.stackLowerBound, Pop32 when A7 is at or
+// above cpu.stackUpperBound, even though both addresses are valid guest RAM.
+// The native BSR/JSR/RTS paths must bail (instruction unexecuted) so the
+// interpreter fallback delivers the exact exception.
+func TestM68KARM64_StackBoundBail(t *testing.T) {
+	type shape struct {
+		name  string
+		words []uint16
+		setup func(cpu *M68KCPU)
+	}
+	shapes := []shape{
+		{
+			// Push at A7-4 = 0x7FFC, below the 0x8000 floor but valid RAM.
+			name:  "bsr-below-floor",
+			words: []uint16{0x7005, 0x6100, 0x0010}, // moveq #5,d0 ; bsr.w +16
+			setup: func(cpu *M68KCPU) {
+				cpu.stackLowerBound = 0x8000
+				cpu.AddrRegs[7] = 0x8000
+			},
+		},
+		{
+			// JSR shares emitPushRet with BSR.
+			name:  "jsr-below-floor",
+			words: []uint16{0x7005, 0x4EB9, 0x0000, 0x2000}, // moveq #5,d0 ; jsr $2000.l
+			setup: func(cpu *M68KCPU) {
+				cpu.stackLowerBound = 0x8000
+				cpu.AddrRegs[7] = 0x8000
+			},
+		},
+		{
+			// PEA pushes through its own path, not emitPushRet.
+			name:  "pea-below-floor",
+			words: []uint16{0x7005, 0x4850}, // moveq #5,d0 ; pea (a0)
+			setup: func(cpu *M68KCPU) {
+				cpu.stackLowerBound = 0x8000
+				cpu.AddrRegs[7] = 0x8000
+				cpu.AddrRegs[0] = 0x4000
+			},
+		},
+		{
+			// Pop with A7 at the ceiling: valid RAM, but Pop32 bus-errors.
+			name:  "rts-at-ceiling",
+			words: []uint16{0x7005, 0x4E75}, // moveq #5,d0 ; rts
+			setup: func(cpu *M68KCPU) {
+				cpu.stackUpperBound = 0x8000
+				cpu.AddrRegs[7] = 0x8000
+			},
+		},
+	}
+	for _, sh := range shapes {
+		t.Run(sh.name, func(t *testing.T) {
+			cpu := m68kARM64NewCPU(t)
+			m68kARM64WriteWords(cpu, m68kARM64TestPC, sh.words...)
+			sh.setup(cpu)
+			a7Before := cpu.AddrRegs[7]
+
+			instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+			execMem, err := AllocExecMem(1 << 20)
+			if err != nil {
+				t.Fatalf("AllocExecMem: %v", err)
+			}
+			defer execMem.Free()
+			block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			ctx := newM68KJITContext(cpu, nil, nil, nil)
+			callNative(block.execAddr, m68kJITContextPtr(ctx))
+
+			if ctx.NeedIOFallback != 1 {
+				t.Fatalf("NeedIOFallback=%d, want 1 (stack-bound violation must bail)", ctx.NeedIOFallback)
+			}
+			if ctx.RetPC != m68kARM64TestPC+2 {
+				t.Fatalf("bail RetPC=%08X, want %08X", ctx.RetPC, m68kARM64TestPC+2)
+			}
+			if ctx.RetCount != 1 {
+				t.Fatalf("bail RetCount=%d, want 1", ctx.RetCount)
+			}
+			if cpu.AddrRegs[7] != a7Before {
+				t.Fatalf("A7=%08X changed by bailed instruction", cpu.AddrRegs[7])
+			}
+			if cpu.DataRegs[0] != 5 {
+				t.Fatalf("D0=%08X, want 5", cpu.DataRegs[0])
+			}
+		})
 	}
 }
