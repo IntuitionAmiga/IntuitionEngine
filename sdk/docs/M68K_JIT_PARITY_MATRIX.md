@@ -118,3 +118,47 @@ the capability when those backends are brought up.
 - `jit_m68k_abi_arm64_test.go`: pins reserved-register avoidance, uniqueness,
   callee-saved placement, scratch-pool disjointness (green under qemu-aarch64;
   hardware gates per plan still apply to residency/control-flow work).
+
+## Milestone 3 slice 1 delivered: first native arm64 execution
+
+Correctness-first minimal backend, differential-gated against the interpreter
+from day one:
+
+- `jit_m68k_emit_arm64.go`: A64 emitter for straight-line data-register
+  prefixes (MOVEQ, MOVE.L reg/imm, TST.L, CLR.L, ADD/SUB/CMP/AND/OR/EOR .L
+  reg-reg, ADDQ/SUBQ.L, NOP) with full CCR materialisation per instruction.
+  Emitted blocks are leaf functions using only caller-saved registers
+  (X0 ctx, X1 data-reg base, X3 SR, W4 CCR, W9-W15 scratch); the pinned
+  X19-X28 mapping in `jit_m68k_abi_arm64.go` is the milestone 4 residency
+  plan and is deliberately unused here. Adds the missing flag-setting A64
+  encoders (ADDS/SUBS reg+imm, CSET, shifted ORR, 32-bit CMP immediate —
+  the IE64 helper `arm64CMP_imm` is 64-bit and reads sign from bit 63).
+- Flag semantics are parity with the interpreter, not the M68000PRM: IE's
+  AND/OR/EOR preserve V and C (interpreter `SetFlagsNZ`, amd64
+  `emitCCR_LogicPreserveVC`); the arm64 backend replicates this via
+  `m68kA64FlagsLogicPreserveVC`. MOVE/MOVEQ/CLR/TST clear V and C, ADD/SUB
+  set full XNZVC, CMP sets NZVC and preserves X.
+- `jit_m68k_exec_arm64.go`: dispatcher with per-block-boundary interrupt and
+  exception sampling, warmup-tier interpretation, single-instruction
+  `StepOne` fallback for unsupported opcodes, and the shared retired-count
+  contract (`m68kJITRetiredInstructionCount`). SMC is two-layered: same-thread
+  writes are caught by the shared guest byte stamp
+  (`m68kStampGuestBlockBytes`, moved to `jit_m68k_common.go`); cross-thread
+  writes go through the shared invalidation queue and generation counter
+  (enqueue/drain/coalesce and the bus-level entry moved to
+  `jit_m68k_inval_queue.go`), with the arm64 dispatcher publishing the code
+  envelope for the bus invalidator gate, draining at each loop head, and
+  re-checking the `m68kJitInvalGen` snapshot immediately before native entry
+  so a write between the stamp check and the call forces a re-loop (the same
+  residual tail the amd64 dispatcher documents).
+  `m68kJitAvailable` stays false on arm64 until the full milestone 3 gate
+  (complete integer core, Harte exception cases, AROS boot on real hardware);
+  tests opt in via `m68kJitEnabled`.
+- `jit_m68k_arm64_backend_test.go`: operand-grid ALU differential (12x12
+  values x 3 CCR seeds per shape), full-dispatcher differential including an
+  unsupported-opcode fallback and STOP, retired-count equality, SMC stamp
+  detection, native call smoke test. All green under qemu-aarch64.
+- Remaining for milestone 3: memory EA modes with big-endian paths, byte/word
+  sizes, shifts/rotates, LEA/PEA, exceptions with per-instruction resume PC,
+  exact-range native-exit SMC invalidation, chaining, 68881 staging, Harte
+  exception gate, AROS boot gate on real hardware.

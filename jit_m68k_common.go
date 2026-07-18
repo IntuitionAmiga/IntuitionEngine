@@ -3,6 +3,7 @@
 package main
 
 import (
+	"hash/crc32"
 	"math/bits"
 	"unsafe"
 )
@@ -3901,3 +3902,54 @@ func m68kResolveTerminatorTarget(opcode uint16, instrPC uint32, memory []byte) (
 // Suppress unused import warnings
 var _ = bits.Len
 var _ = unsafe.Pointer(nil)
+
+// ===========================================================================
+// Guest block byte stamping (shared SMC stamp check, moved from
+// jit_m68k_exec.go for the arm64 backend - M68K JIT parity plan milestone 3)
+// ===========================================================================
+
+// m68kBlockHashCRCTable selects the Castagnoli polynomial so crc32.Update
+// takes the SSE4.2 hardware path — the stamp is recomputed before every
+// un-chained native block entry, so per-byte software hashing (the old FNV
+// loop) was a measurable slice of dispatch cost.
+var m68kBlockHashCRCTable = crc32.MakeTable(crc32.Castagnoli)
+
+func m68kHashGuestBlockBytes(memory []byte, block *JITBlock) (uint64, bool) {
+	if block == nil {
+		return 0, false
+	}
+	const fnvPrime = uint64(1099511628211)
+	hash := uint64(1469598103934665603)
+	for _, r := range JITBlockCoveredRanges(block) {
+		if r[1] < r[0] || r[1] > uint64(len(memory)) {
+			return 0, false
+		}
+		hash ^= r[0]
+		hash *= fnvPrime
+		hash ^= r[1]
+		hash *= fnvPrime
+		crc := crc32.Update(0, m68kBlockHashCRCTable, memory[int(r[0]):int(r[1])])
+		hash ^= uint64(crc)
+		hash *= fnvPrime
+	}
+	return hash, true
+}
+
+func m68kStampGuestBlockBytes(memory []byte, block *JITBlock) {
+	hash, ok := m68kHashGuestBlockBytes(memory, block)
+	if !ok {
+		block.guestHash = 0
+		block.guestHashValid = false
+		return
+	}
+	block.guestHash = hash
+	block.guestHashValid = true
+}
+
+func m68kGuestBlockBytesStillMatch(memory []byte, block *JITBlock) bool {
+	if block == nil || !block.guestHashValid {
+		return true
+	}
+	hash, ok := m68kHashGuestBlockBytes(memory, block)
+	return ok && hash == block.guestHash
+}

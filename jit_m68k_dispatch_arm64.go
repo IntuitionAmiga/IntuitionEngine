@@ -10,11 +10,14 @@
 
 package main
 
-// m68kJitExecute falls back to the interpreter until the arm64 M68K JIT
-// backend lands (parity plan milestone 3).
+// m68kJitExecute runs the arm64 JIT dispatcher when the JIT is enabled.
+// m68kJitAvailable stays false until the full milestone 3 gate passes
+// (differential grids plus AROS boot on real arm64 hardware), so default
+// runners keep interpreting; tests and explicit opt-in set m68kJitEnabled.
 func (cpu *M68KCPU) m68kJitExecute() {
-	cpu.ExecuteInstruction()
+	if cpu.m68kJitEnabled {
+		cpu.M68KExecuteJIT()
+	} else {
+		cpu.ExecuteInstruction()
+	}
 }
-
-// freeM68KJIT is a no-op until the arm64 backend owns native resources.
-func (cpu *M68KCPU) freeM68KJIT() {}

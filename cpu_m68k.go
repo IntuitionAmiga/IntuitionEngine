@@ -750,6 +750,9 @@ type M68KCPU struct {
 	m68kJitCodeEnv       atomic.Uint64
 	m68kJitNativeActive  atomic.Bool
 	m68kJitDeferredInval atomic.Bool
+	// Serialises host writes to compiled guest-code bytes with final block
+	// validation and native execution. Data-only writes do not take this lock.
+	m68kJitExecMu sync.Mutex
 	// m68kJitDispatchActive is true only while the M68KExecuteJIT dispatcher
 	// loop is running on the CPU goroutine. It is the signal a cross-thread
 	// bus invalidation uses to decide whether the cache maps are concurrently
@@ -772,13 +775,9 @@ type M68KCPU struct {
 	// enqueue, after the range and pending flag are published. The dispatcher
 	// snapshots it right after draining and re-checks it immediately before
 	// entering native code: if a host goroutine queued an invalidation in that
-	// gap, the dispatcher re-loops to drain it instead of running a block whose
-	// guest bytes a concurrent write may have just changed. This shrinks the
-	// lock-free cross-thread SMC window to the few instructions between the
-	// snapshot re-check and the native call (the irreducible tail that only a
-	// per-block execution lock could remove — too costly for the hot path, and
-	// untriggered by any real caller, since loaders run pre-boot and DMA/video/
-	// blitter/clipboard target data, not executing code).
+	// gap, the dispatcher re-loops to drain it instead of running a stale block.
+	// m68kJitExecMu closes the remaining check-to-call window for bus writes
+	// that overlap the published compiled-code envelope.
 	m68kJitInvalGen atomic.Uint64
 
 	// Per-block native-vs-interpreter self-verifier (IE_M68K_JIT_VERIFY=1).
@@ -1020,6 +1019,27 @@ func NewM68KCPU(bus Bus32) *M68KCPU {
 		cpu.PC = pc
 	}
 	if mb, ok := bus.(*MachineBus); ok {
+		mb.RegisterM68KJITWriteBarrier(func(addr, size uint64) bool {
+			if size == 0 || addr > uint64(^uint32(0)) {
+				return false
+			}
+			env := cpu.m68kJitCodeEnv.Load()
+			envLo, envHi := uint32(env>>32), uint32(env)
+			if envHi <= envLo || addr+size <= uint64(envLo) || addr >= uint64(envHi) {
+				return false
+			}
+			// MachineBus writes are host writes. Native guest RAM stores use the
+			// CPU's direct-memory path and report self-modification through
+			// NeedInval, so they do not enter this callback. Do not use the
+			// CPU-wide native-active flag to bypass this lock: it would also
+			// exempt unrelated host goroutines while native code is executing.
+			cpu.m68kJitExecMu.Lock()
+			return true
+		}, func(locked bool) {
+			if locked {
+				cpu.m68kJitExecMu.Unlock()
+			}
+		})
 		mb.RegisterM68KJITInvalidator(func(addr, size uint64) {
 			if size == 0 || addr > uint64(^uint32(0)) {
 				return

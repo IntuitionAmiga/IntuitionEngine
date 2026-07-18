@@ -14800,8 +14800,9 @@ func TestM68KJIT_MachineBusWriteInvalidatesCompiledCodePage(t *testing.T) {
 
 	const pc = uint64(0x9000)
 	page := pc >> 12
-	cpu.m68kJitCache.Put(&JITBlock{startPC: pc, endPC: pc + 4})
-	cpu.m68kJitCodeBitmap[page] = 1
+	block := &JITBlock{startPC: pc, endPC: pc + 4}
+	cpu.m68kJitCache.Put(block)
+	cpu.m68kMarkJITCodeRanges(block)
 	cpu.m68kJitCtx.RTSCache0PC = 0x2000
 	cpu.m68kJitCtx.RTSCache0Addr = 0x3000
 
@@ -14889,7 +14890,7 @@ func TestM68KJIT_MachineBusWriteDefersInvalidationDuringNative(t *testing.T) {
 	page := pc >> 12
 	block := &JITBlock{startPC: pc, endPC: pc + 4}
 	cpu.m68kJitCache.Put(block)
-	cpu.m68kJitCodeBitmap[page] = 1
+	cpu.m68kMarkJITCodeRanges(block)
 	cpu.m68kJitCtx.RTSCache0PC = 0x2100
 	cpu.m68kJitCtx.RTSCache0Addr = 0x3100
 
@@ -14921,6 +14922,90 @@ func TestM68KJIT_MachineBusWriteDefersInvalidationDuringNative(t *testing.T) {
 	}
 	if cpu.m68kJitCtx.RTSCache0PC != 0 || cpu.m68kJitCtx.RTSCache0Addr != 0 {
 		t.Fatalf("RTS cache was not cleared by deferred invalidation")
+	}
+}
+
+func TestM68KJIT_MachineBusCodeWriteWaitsForNativeExecution(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	const codeAddr = uint32(0x1000)
+	cpu.memory[codeAddr] = 0x70
+	cpu.m68kJitCodeEnv.Store(uint64(codeAddr)<<32 | uint64(codeAddr+2))
+	cpu.m68kJitDispatchActive.Store(true)
+	defer cpu.m68kJitDispatchActive.Store(false)
+
+	// Model the dispatcher's atomic final-validation/native-execution region.
+	cpu.m68kJitExecMu.Lock()
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(started)
+		bus.Write8(codeAddr, 0x71)
+		close(done)
+	}()
+	<-started
+
+	select {
+	case <-done:
+		cpu.m68kJitExecMu.Unlock()
+		t.Fatal("overlapping guest-code write completed during native execution")
+	case <-time.After(20 * time.Millisecond):
+	}
+	if got := cpu.memory[codeAddr]; got != 0x70 {
+		cpu.m68kJitExecMu.Unlock()
+		t.Fatalf("guest code changed during native execution: got %02X, want 70", got)
+	}
+
+	cpu.m68kJitExecMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("guest-code write did not resume after native execution")
+	}
+	if got := cpu.memory[codeAddr]; got != 0x71 {
+		t.Fatalf("guest-code write did not commit: got %02X, want 71", got)
+	}
+	if !cpu.m68kJitHasPendingInval.Load() {
+		t.Fatal("guest-code write committed without publishing invalidation")
+	}
+}
+
+func TestM68KJIT_ConcurrentHostCodeWriteWaitsWhileNativeActive(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewM68KCPU(bus)
+	const codeAddr = uint32(0x5000)
+	cpu.m68kJitCodeEnv.Store(uint64(codeAddr)<<32 | uint64(codeAddr+2))
+
+	// Model a native block executing while an unrelated host goroutine writes
+	// overlapping guest-code bytes. Native-active is CPU-wide and must not
+	// cause that host writer to bypass the execution mutex.
+	cpu.m68kJitExecMu.Lock()
+	cpu.m68kJitNativeActive.Store(true)
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(started)
+		bus.Write8(codeAddr, 0x71)
+		close(done)
+	}()
+	<-started
+
+	select {
+	case <-done:
+		cpu.m68kJitExecMu.Unlock()
+		t.Fatal("concurrent host write bypassed the execution mutex while native code was active")
+	case <-time.After(20 * time.Millisecond):
+	}
+	cpu.m68kJitNativeActive.Store(false)
+	cpu.m68kJitExecMu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("host write did not resume after native execution")
+	}
+	if got := cpu.memory[codeAddr]; got != 0x71 {
+		t.Fatalf("host write did not commit: got %02X, want 71", got)
 	}
 }
 

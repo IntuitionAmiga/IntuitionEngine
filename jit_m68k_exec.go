@@ -6,11 +6,9 @@ package main
 
 import (
 	"fmt"
-	"hash/crc32"
 	"math/bits"
 	"os"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -613,81 +611,11 @@ func (cpu *M68KCPU) m68kApplyDeferredJITInvalidation() bool {
 	return true
 }
 
-// m68kPendingInvalMaxRanges bounds the cross-thread invalidation queue. If a
-// host goroutine floods writes faster than the CPU thread drains, the queue
-// collapses to a single full-cache reset instead of growing unbounded.
-const m68kPendingInvalMaxRanges = 64
+// Moved to jit_m68k_inval_queue.go (shared across M68020 backends,
+// M68K JIT parity plan milestone 3).
 
-// m68kEnqueueJITInvalidation records a guest-write range to invalidate, to be
-// applied by the CPU/dispatcher thread. SAFE TO CALL FROM ANY GOROUTINE: it
-// only touches the pending-range list under m68kJitPendingInvalMu and never the
-// JIT cache maps or code bitmap, which are owned by the CPU thread. This is the
-// serialization point that closes the host-vs-CPU data race on the cache.
-func (cpu *M68KCPU) m68kEnqueueJITInvalidation(addr, size uint32) {
-	if cpu == nil || size == 0 {
-		return
-	}
-	end := uint64(addr) + uint64(size)
-	if end > uint64(^uint32(0)) {
-		end = uint64(^uint32(0))
-	}
-	hi := uint32(end)
-	cpu.m68kJitPendingInvalMu.Lock()
-	if !cpu.m68kJitPendingInvalReset {
-		if n := len(cpu.m68kJitPendingInvalRanges); n > 0 {
-			// Coalesce with the last range when adjacent/overlapping (handles
-			// the common sequential byte-write loaders without list growth).
-			last := &cpu.m68kJitPendingInvalRanges[n-1]
-			if addr <= last[1] && hi >= last[0] {
-				if addr < last[0] {
-					last[0] = addr
-				}
-				if hi > last[1] {
-					last[1] = hi
-				}
-				cpu.m68kJitPendingInvalMu.Unlock()
-				cpu.m68kJitHasPendingInval.Store(true)
-				// Publish AFTER the range + flag so a dispatcher observing the
-				// new generation also observes the queued work.
-				cpu.m68kJitInvalGen.Add(1)
-				return
-			}
-		}
-		if len(cpu.m68kJitPendingInvalRanges) >= m68kPendingInvalMaxRanges {
-			cpu.m68kJitPendingInvalReset = true
-			cpu.m68kJitPendingInvalRanges = cpu.m68kJitPendingInvalRanges[:0]
-		} else {
-			cpu.m68kJitPendingInvalRanges = append(cpu.m68kJitPendingInvalRanges, [2]uint32{addr, hi})
-		}
-	}
-	cpu.m68kJitPendingInvalMu.Unlock()
-	cpu.m68kJitHasPendingInval.Store(true)
-	// Publish AFTER the range + flag so a dispatcher observing the new
-	// generation also observes the queued work.
-	cpu.m68kJitInvalGen.Add(1)
-}
-
-// m68kDrainPendingJITInvalidations applies queued cross-thread invalidations.
-// MUST be called only from the CPU/dispatcher goroutine (it mutates the cache).
-func (cpu *M68KCPU) m68kDrainPendingJITInvalidations() {
-	if cpu == nil || !cpu.m68kJitHasPendingInval.Load() {
-		return
-	}
-	cpu.m68kJitPendingInvalMu.Lock()
-	reset := cpu.m68kJitPendingInvalReset
-	ranges := cpu.m68kJitPendingInvalRanges
-	cpu.m68kJitPendingInvalRanges = nil
-	cpu.m68kJitPendingInvalReset = false
-	cpu.m68kJitHasPendingInval.Store(false)
-	cpu.m68kJitPendingInvalMu.Unlock()
-	if reset {
-		cpu.m68kResetJITCodeCache()
-		return
-	}
-	for _, r := range m68kCoalesceInvalRanges(ranges) {
-		cpu.invalidateM68KJITForGuestWrite(r[0], r[1]-r[0])
-	}
-}
+// Moved to jit_m68k_inval_queue.go (shared across M68020 backends,
+// M68K JIT parity plan milestone 3).
 
 // m68kVerifyCaptureWrite logs old RAM bytes for the verifier's interpreter
 // pre-pass so it can be undone. Returns true (abort) if the target is MMIO /
@@ -820,40 +748,9 @@ func (cpu *M68KCPU) m68kReportVerifyDivergence(startPC, endPC uint32, exp *m68kV
 // sequential word writes that queue many tiny adjacent ranges; coalescing them
 // collapses the redundant per-page and cache scans in the drain loop. Merging
 // the union is identical in effect to invalidating each sub-range, so this is a
-// pure performance transform.
-func m68kCoalesceInvalRanges(ranges [][2]uint32) [][2]uint32 {
-	if len(ranges) < 2 {
-		return ranges
-	}
-	sort.Slice(ranges, func(i, j int) bool { return ranges[i][0] < ranges[j][0] })
-	out := ranges[:1]
-	for _, r := range ranges[1:] {
-		last := &out[len(out)-1]
-		if r[0] <= last[1] { // overlapping or touching (end is exclusive)
-			if r[1] > last[1] {
-				last[1] = r[1]
-			}
-			continue
-		}
-		out = append(out, r)
-	}
-	return out
-}
+// Moved to jit_m68k_inval_queue.go (shared across M68020 backends,
+// M68K JIT parity plan milestone 3).
 
-// m68kWriteOutsideCodeBounds reports whether a guest write of [addr,addr+size)
-// lies entirely outside the conservative global envelope [codeLo,codeHi) of all
-// compiled JIT code. When true the write cannot intersect any block, so the
-// caller skips invalidation in O(1) before any per-page or cache scan.
-//
-// Safety: the envelope is widened on every m68kMarkJITCodeRanges and reset only
-// when the whole metadata is cleared, so it is always a superset of live code
-// ranges — an over-wide envelope only costs an occasional unnecessary scan,
-// never a missed invalidation. An empty/unknown envelope (codeHi<=codeLo) never
-// rejects, deferring to the authoritative slow path.
-//
-// This relies on M68K populating only regular cache blocks (CodeCache.Put),
-// never MMU-mode blocks (PutMMU) — the latter are not threaded through
-// m68kMarkJITCodeRanges and would escape the envelope. If M68K ever adopts
 // MMU-mode JIT blocks, widen the envelope on PutMMU or this reject is unsafe.
 func m68kWriteOutsideCodeBounds(addr, size, codeLo, codeHi uint32) bool {
 	if size == 0 {
@@ -1117,25 +1014,8 @@ func (cpu *M68KCPU) m68kMarkJITCodeRanges(block *JITBlock) {
 	cpu.m68kJitCodeEnv.Store(uint64(cpu.m68kJitCodeLoAddr)<<32 | uint64(cpu.m68kJitCodeHiAddr))
 }
 
-func invalidateM68KJITForGuestWrite(bus Bus32, addr uint64, size uint64) {
-	if bus == nil || size == 0 || addr > uint64(^uint32(0)) {
-		return
-	}
-	if mb, ok := bus.(*MachineBus); ok && mb.m68kJITInvalidator != nil {
-		mb.m68kJITInvalidator(addr, size)
-		return
-	}
-	snap := runtimeStatus.snapshot()
-	if snap.m68k == nil || snap.m68k.cpu == nil || snap.m68k.cpu.bus != bus {
-		return
-	}
-	if size > uint64(^uint32(0)) {
-		size = uint64(^uint32(0))
-	}
-	// Fallback (non-MachineBus) path is also reachable from host goroutines;
-	// enqueue rather than touch the cache maps off the CPU thread.
-	snap.m68k.cpu.m68kEnqueueJITInvalidation(uint32(addr), uint32(size))
-}
+// Moved to jit_m68k_inval_queue.go (shared across M68020 backends,
+// M68K JIT parity plan milestone 3).
 
 // m68kInterpretOne executes one M68K instruction at cpu.PC using the interpreter.
 func (cpu *M68KCPU) m68kInterpretOne() {
@@ -1739,51 +1619,9 @@ func m68kJitDiagEnvUint32(name string) uint32 {
 	return uint32(v)
 }
 
-// m68kBlockHashCRCTable selects the Castagnoli polynomial so crc32.Update
-// takes the SSE4.2 hardware path — the stamp is recomputed before every
-// un-chained native block entry, so per-byte software hashing (the old FNV
-// loop) was a measurable slice of dispatch cost.
-var m68kBlockHashCRCTable = crc32.MakeTable(crc32.Castagnoli)
-
-func m68kHashGuestBlockBytes(memory []byte, block *JITBlock) (uint64, bool) {
-	if block == nil {
-		return 0, false
-	}
-	const fnvPrime = uint64(1099511628211)
-	hash := uint64(1469598103934665603)
-	for _, r := range JITBlockCoveredRanges(block) {
-		if r[1] < r[0] || r[1] > uint64(len(memory)) {
-			return 0, false
-		}
-		hash ^= r[0]
-		hash *= fnvPrime
-		hash ^= r[1]
-		hash *= fnvPrime
-		crc := crc32.Update(0, m68kBlockHashCRCTable, memory[int(r[0]):int(r[1])])
-		hash ^= uint64(crc)
-		hash *= fnvPrime
-	}
-	return hash, true
-}
-
-func m68kStampGuestBlockBytes(memory []byte, block *JITBlock) {
-	hash, ok := m68kHashGuestBlockBytes(memory, block)
-	if !ok {
-		block.guestHash = 0
-		block.guestHashValid = false
-		return
-	}
-	block.guestHash = hash
-	block.guestHashValid = true
-}
-
-func m68kGuestBlockBytesStillMatch(memory []byte, block *JITBlock) bool {
-	if block == nil || !block.guestHashValid {
-		return true
-	}
-	hash, ok := m68kHashGuestBlockBytes(memory, block)
-	return ok && hash == block.guestHash
-}
+// m68kBlockHashCRCTable and the guest block byte-stamp helpers moved to
+// jit_m68k_common.go: every M68020 backend (amd64, arm64, wasm) shares the
+// conservative SMC stamp check (M68K JIT parity plan, milestone 3).
 
 func (cpu *M68KCPU) m68kTryPromoteJITRegion(block *JITBlock, execMem *ExecMem, memory []byte, disableChains bool) *JITBlock {
 	if cpu == nil || cpu.m68kJitCache == nil || block == nil || block.startPC > uint64(^uint32(0)) {
@@ -2689,13 +2527,16 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		// Final cross-thread SMC guard: if a host goroutine queued an
 		// invalidation since the post-drain snapshot, the guest bytes backing
 		// this block may have changed. Re-loop to drain (which evicts the stale
-		// block) and recompile from current memory rather than run it. Closes
-		// the store-before-enqueue window down to the few instructions between
-		// here and the native entry below.
+		// block) and recompile from current memory rather than run it. The
+		// execution mutex makes this validation and native execution atomic with
+		// overlapping MachineBus guest-code writes.
+		cpu.m68kJitExecMu.Lock()
 		if cpu.m68kJitInvalGen.Load() != genAtDispatch {
+			cpu.m68kJitExecMu.Unlock()
 			continue
 		}
 		if m68kJITDispatchHashEnabled && !m68kGuestBlockBytesStillMatch(cpu.memory, block) {
+			cpu.m68kJitExecMu.Unlock()
 			cpu.m68kInvalidateJITCodeRange(uint32(block.startPC), uint32(block.endPC))
 			continue
 		}
@@ -2711,6 +2552,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			cpu.perfAcct.AddJitSince(jitT0)
 		}
 		cpu.m68kJitNativeActive.Store(false)
+		cpu.m68kJitExecMu.Unlock()
 		cpu.m68kJitNativeBlocksExecuted.Add(1)
 
 		// Read return values from context
