@@ -37,8 +37,78 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"sync"
 	"unsafe"
 )
+
+// m68kARM64CCRLivenessEnabled reports whether within-block CCR-liveness
+// elimination is enabled (milestone 4 optimisation). Default on; set
+// M68K_ARM64_CCR_LIVENESS=0 to disable. It is a correctness-preserving
+// optimisation over the always-materialise path (verified by the differential
+// suite with it on and off).
+var m68kARM64CCRLivenessOnce sync.Once
+var m68kARM64CCRLivenessFlag bool
+
+func m68kARM64CCRLivenessEnabled() bool {
+	m68kARM64CCRLivenessOnce.Do(func() {
+		m68kARM64CCRLivenessFlag = os.Getenv("M68K_ARM64_CCR_LIVENESS") != "0"
+	})
+	return m68kARM64CCRLivenessFlag
+}
+
+// m68kARM64ChainEnabled reports whether native block chaining is enabled
+// (milestone 4 optimisation). Default on; set M68K_ARM64_CHAIN=0 to disable. It
+// bounds interrupt latency by ChainBudget. Chaining is disabled per-block when
+// register pinning claims that block (they are mutually exclusive), so with
+// pinning also on chaining only applies to register-less blocks.
+var m68kARM64ChainOnce sync.Once
+var m68kARM64ChainFlag bool
+
+func m68kARM64ChainEnabled() bool {
+	m68kARM64ChainOnce.Do(func() {
+		m68kARM64ChainFlag = os.Getenv("M68K_ARM64_CHAIN") != "0"
+	})
+	return m68kARM64ChainFlag
+}
+
+// m68kARM64PinEnabled reports whether within-block register residency (pinning
+// hot guest registers into callee-saved host registers) is enabled (milestone
+// 4 optimisation). Default on; set M68K_ARM64_PIN=0 to disable. It changes the
+// stack frame and register-access model; the differential suite verifies it
+// with it on and off, but qemu cannot exercise the register-corruption modes a
+// real AROS boot surfaces, so M68K_ARM64_PIN=0 remains the escape hatch pending
+// that hardware validation. When enabled it disables chaining per block, since a
+// chained edge requires a matching pin map across blocks; region residency
+// across chain edges is the remaining hardware-gated work.
+var m68kARM64PinOnce sync.Once
+var m68kARM64PinFlag bool
+
+func m68kARM64PinEnabled() bool {
+	m68kARM64PinOnce.Do(func() {
+		m68kARM64PinFlag = os.Getenv("M68K_ARM64_PIN") != "0"
+	})
+	return m68kARM64PinFlag
+}
+
+// m68kA64CurrentEmitter exposes the in-flight emitter to the leaf register
+// accessors (m68kA64LoadD/StoreD/LoadA/StoreA) so they can route a pinned guest
+// register to its host register even when called from a free helper. This
+// mirrors the amd64 backend's m68kCurrentCS compile-state global. Set for the
+// duration of one m68kCompileBlockARM64 call; nil otherwise (no pinning).
+//
+// Because it is process-global, every compilation is serialised by
+// m68kA64PinCompileMu WHENEVER pinning is enabled, so a second M68K CPU
+// compiling concurrently can neither observe another compilation's pin map nor
+// race on the pointer. The lock is taken only in the opt-in pinning mode; with
+// pinning off the global stays nil and no lock is needed.
+var m68kA64CurrentEmitter *m68kA64Emitter
+var m68kA64PinCompileMu sync.Mutex
+
+// First callee-saved host register used for pinning; X19..X26 (AAPCS64
+// callee-saved, never the X18 platform register) give eight pin slots.
+const m68kA64PinFirstHost = 19
+const m68kA64PinMaxSlots = 8
 
 // ARM64 condition codes used for flag extraction and guards.
 const (
@@ -47,8 +117,10 @@ const (
 	m68kA64CondCS = 0x2 // also HS
 	m68kA64CondCC = 0x3 // also LO
 	m68kA64CondMI = 0x4
+	m68kA64CondPL = 0x5
 	m68kA64CondVS = 0x6
 	m68kA64CondHI = 0x8
+	m68kA64CondLE = 0xD
 )
 
 // M68K CCR bit positions (SR bits 4..0) as untyped shift amounts.
@@ -115,6 +187,81 @@ func arm64LSLV_W(rd, rn, rm byte) uint32 {
 	return 0x1AC02000 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
 }
 
+// lsrv Wd, Wn, Wm (variable logical shift right, shift amount mod 32)
+func arm64LSRV_W(rd, rn, rm byte) uint32 {
+	return 0x1AC02400 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
+}
+
+// asrv Wd, Wn, Wm (variable arithmetic shift right, shift amount mod 32)
+func arm64ASRV_W(rd, rn, rm byte) uint32 {
+	return 0x1AC02800 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
+}
+
+// rorv Wd, Wn, Wm (variable rotate right, rotate amount mod 32)
+func arm64RORV_W(rd, rn, rm byte) uint32 {
+	return 0x1AC02C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
+}
+
+// br Xn (unconditional branch to register — tail chain into a successor block)
+func arm64BR(rn byte) uint32 {
+	return 0xD61F0000 | uint32(rn)<<5
+}
+
+// fsqrt Dd, Dn (double-precision square root)
+func arm64FSQRT_D(dd, dn byte) uint32 {
+	return 0x1E61C000 | uint32(dn)<<5 | uint32(dd)
+}
+
+// fabs Dd, Dn (double-precision absolute value)
+func arm64FABS_D(dd, dn byte) uint32 {
+	return 0x1E60C000 | uint32(dn)<<5 | uint32(dd)
+}
+
+// fneg Dd, Dn (double-precision negate)
+func arm64FNEG_D(dd, dn byte) uint32 {
+	return 0x1E614000 | uint32(dn)<<5 | uint32(dd)
+}
+
+// fmov Dd, Dn (double-precision register move)
+func arm64FMOV_D(dd, dn byte) uint32 {
+	return 0x1E604000 | uint32(dn)<<5 | uint32(dd)
+}
+
+// fcmp Dn, #0.0 (compare against zero, sets NZCV)
+func arm64FCMP_D_zero(dn byte) uint32 {
+	return 0x1E602008 | uint32(dn)<<5
+}
+
+// ldr Dt, [Xn, #imm] (unsigned offset, byteOff must be a multiple of 8)
+func arm64LDR_D_imm(dt, rn byte, byteOff uint32) uint32 {
+	return 0xFD400000 | ((byteOff/8)&0xFFF)<<10 | uint32(rn)<<5 | uint32(dt)
+}
+
+// str Dt, [Xn, #imm] (unsigned offset, byteOff must be a multiple of 8)
+func arm64STR_D_imm(dt, rn byte, byteOff uint32) uint32 {
+	return 0xFD000000 | ((byteOff/8)&0xFFF)<<10 | uint32(rn)<<5 | uint32(dt)
+}
+
+// fcvt Sd, Dn (double-precision to single-precision)
+func arm64FCVT_SfromD(sd, dn byte) uint32 {
+	return 0x1E624000 | uint32(dn)<<5 | uint32(sd)
+}
+
+// fcvt Dd, Sn (single-precision to double-precision)
+func arm64FCVT_DfromS(dd, sn byte) uint32 {
+	return 0x1E22C000 | uint32(sn)<<5 | uint32(dd)
+}
+
+// umull Xd, Wn, Wm (unsigned multiply long — W×W→X, alias of UMADDL …,XZR)
+func arm64UMULL(rd, rn, rm byte) uint32 {
+	return 0x9BA07C00 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
+}
+
+// orr Xd, Xn, Xm, lsl #shift (64-bit shifted register OR)
+func arm64ORR_lsl(rd, rn, rm byte, shift uint32) uint32 {
+	return 0xAA000000 | uint32(rm)<<16 | (shift&0x3F)<<10 | uint32(rn)<<5 | uint32(rd)
+}
+
 // rev16 Wd, Wn (byte swap within each halfword)
 func arm64REV16_W(rd, rn byte) uint32 {
 	return 0x5AC00400 | uint32(rn)<<5 | uint32(rd)
@@ -169,19 +316,39 @@ func m68kA64MovImm32(cb *CodeBuffer, rd byte, val uint32) {
 	}
 }
 
+// The register accessors route a pinned guest register to its host register
+// (a W-move) when residency is active, otherwise touch the in-memory register
+// file. Routing lives here, at the single leaf, so it applies uniformly to
+// every caller including the free EA helpers.
 func m68kA64LoadD(cb *CodeBuffer, rt byte, dn uint16) {
+	if e := m68kA64CurrentEmitter; e != nil && e.pinD[dn] != 0 {
+		cb.Emit32(arm64MOV_W(rt, e.pinD[dn]))
+		return
+	}
 	cb.Emit32(arm64LDR_W_imm(rt, m68kA64DataBase, uint32(dn)))
 }
 
 func m68kA64StoreD(cb *CodeBuffer, rt byte, dn uint16) {
+	if e := m68kA64CurrentEmitter; e != nil && e.pinD[dn] != 0 {
+		cb.Emit32(arm64MOV_W(e.pinD[dn], rt))
+		return
+	}
 	cb.Emit32(arm64STR_W_imm(rt, m68kA64DataBase, uint32(dn)))
 }
 
 func m68kA64LoadA(cb *CodeBuffer, rt byte, an uint16) {
+	if e := m68kA64CurrentEmitter; e != nil && e.pinA[an] != 0 {
+		cb.Emit32(arm64MOV_W(rt, e.pinA[an]))
+		return
+	}
 	cb.Emit32(arm64LDR_W_imm(rt, m68kA64AddrBase, uint32(an)))
 }
 
 func m68kA64StoreA(cb *CodeBuffer, rt byte, an uint16) {
+	if e := m68kA64CurrentEmitter; e != nil && e.pinA[an] != 0 {
+		cb.Emit32(arm64MOV_W(e.pinA[an], rt))
+		return
+	}
 	cb.Emit32(arm64STR_W_imm(rt, m68kA64AddrBase, uint32(an)))
 }
 
@@ -212,7 +379,11 @@ func m68kA64AssembleCCR(cb *CodeBuffer, c, v, z, n, x byte) {
 // m68kA64FlagsArith extracts full XNZVC after an ADDS/SUBS.
 // carryCond selects the M68K carry: CS for add, CC (borrow) for sub/cmp.
 // If keepX is true (CMP), X is preserved from the old CCR instead of C.
-func m68kA64FlagsArith(cb *CodeBuffer, carryCond byte, keepX bool) {
+func (e *m68kA64Emitter) flagsArith(carryCond byte, keepX bool) {
+	if e.ccrDead {
+		return
+	}
+	cb := e.cb
 	if keepX {
 		cb.Emit32(arm64UBFX_W(m68kA64Tmp4, m68kA64CCR, m68kA64BitX, 1))
 	}
@@ -238,7 +409,11 @@ func m68kA64ShiftForSize(size uint32) uint32 {
 // which the amd64 backend also replicates (emitCCR_LogicPreserveVC): IE's
 // AND/OR/EOR deliberately keep V and C, unlike the M68000PRM. Parity is
 // with the interpreter, not the manual. rv is not modified.
-func m68kA64FlagsLogicPreserveVC(cb *CodeBuffer, rv byte, size uint32) {
+func (e *m68kA64Emitter) flagsLogicPreserveVC(rv byte, size uint32) {
+	if e.ccrDead {
+		return
+	}
+	cb := e.cb
 	rt := rv
 	if sh := m68kA64ShiftForSize(size); sh != 0 {
 		cb.Emit32(arm64LSL_W_imm(m68kA64Tmp5, rv, sh))
@@ -256,7 +431,11 @@ func m68kA64FlagsLogicPreserveVC(cb *CodeBuffer, rv byte, size uint32) {
 
 // m68kA64FlagsMove materialises the MOVE/TST CCR (N/Z from the sized value,
 // V=C=0, X preserved). rv is not modified.
-func m68kA64FlagsMove(cb *CodeBuffer, rv byte, size uint32) {
+func (e *m68kA64Emitter) flagsMove(rv byte, size uint32) {
+	if e.ccrDead {
+		return
+	}
+	cb := e.cb
 	rt := rv
 	if sh := m68kA64ShiftForSize(size); sh != 0 {
 		cb.Emit32(arm64LSL_W_imm(m68kA64Tmp5, rv, sh))
@@ -271,7 +450,11 @@ func m68kA64FlagsMove(cb *CodeBuffer, rv byte, size uint32) {
 
 // m68kA64FlagsStatic sets CCR to a compile-time N/Z pair with V=C=0 and X
 // preserved (MOVEQ, MOVE #imm, CLR).
-func m68kA64FlagsStatic(cb *CodeBuffer, negative, zero bool) {
+func (e *m68kA64Emitter) flagsStatic(negative, zero bool) {
+	if e.ccrDead {
+		return
+	}
+	cb := e.cb
 	cb.Emit32(arm64UBFX_W(m68kA64Tmp4, m68kA64CCR, m68kA64BitX, 1))
 	bits := uint16(0)
 	if negative {
@@ -481,6 +664,40 @@ type m68kA64Emitter struct {
 	dynExit       bool
 	staticExit    uint32
 	hasStaticExit bool
+
+	// Within-block CCR liveness (milestone 4, opt-in via env). ccrLive[i] is
+	// false when instruction i's CCR result is provably dead — fully
+	// overwritten before any consumer, bail, exception or exit observes it —
+	// so its condition-code materialisation is skipped. ccrDead mirrors the
+	// current instruction's slot; when the optimisation is off ccrLive is nil
+	// and ccrDead stays false, so every instruction materialises CCR.
+	ccrLive []bool
+	ccrDead bool
+
+	// chain enables native block chaining at the success epilogue (milestone 4,
+	// opt-in). The CCR is always flushed to SR on the chain edge first, so a
+	// chained successor sees a fully consistent status register.
+	chain bool
+
+	// Register residency (milestone 4, opt-in). pinD[dn]/pinA[an] hold the
+	// callee-saved host register a guest data/address register is pinned to, or
+	// 0 when unpinned. pins lists every pinned slot in host order for the
+	// prologue load and exit spill; pinPairs is the number of callee-saved
+	// register pairs the prologue saves. A pinned register's live value lives in
+	// its host register for the whole block; every access routes through the
+	// leaf accessors, and every exit (success and bail) spills the dirty pins
+	// back and restores the callee-saved registers.
+	pinD     [8]byte
+	pinA     [8]byte
+	pins     []m68kA64Pin
+	pinPairs int
+}
+
+type m68kA64Pin struct {
+	host   byte
+	guest  uint16
+	isAddr bool
+	dirty  bool // the block writes this register, so it must be spilled on exit
 }
 
 func (e *m68kA64Emitter) patchSite(s m68kA64BranchSite, target int) {
@@ -508,6 +725,12 @@ func (e *m68kA64Emitter) localFwdCBZ(rt byte) m68kA64BranchSite {
 	return s
 }
 
+func (e *m68kA64Emitter) localFwdCBNZ(rt byte) m68kA64BranchSite {
+	s := m68kA64BranchSite{off: e.cb.Len(), base: 0xB5000000 | uint32(rt)}
+	e.cb.Emit32(arm64CBNZ(rt, 0))
+	return s
+}
+
 func (e *m68kA64Emitter) localFwdB() m68kA64BranchSite {
 	s := m68kA64BranchSite{off: e.cb.Len(), base: 0x14000000, imm26: true}
 	e.cb.Emit32(arm64B(0))
@@ -516,6 +739,17 @@ func (e *m68kA64Emitter) localFwdB() m68kA64BranchSite {
 
 func (e *m68kA64Emitter) bindLocal(s m68kA64BranchSite) {
 	e.patchSite(s, e.cb.Len())
+}
+
+// hereLocal returns the current code offset as a backward-branch target.
+func (e *m68kA64Emitter) hereLocal() int { return e.cb.Len() }
+
+// backCBNZ emits a conditional backward branch to a previously recorded target
+// (loop bodies use it to iterate a runtime count).
+func (e *m68kA64Emitter) backCBNZ(rt byte, target int) {
+	s := m68kA64BranchSite{off: e.cb.Len(), base: 0xB5000000 | uint32(rt)}
+	e.cb.Emit32(arm64CBNZ(rt, 0))
+	e.patchSite(s, target)
 }
 
 func (e *m68kA64Emitter) branchToBail(cond byte) {
@@ -612,6 +846,60 @@ func m68kA64EmitStoreBE(cb *CodeBuffer, src, addrReg, scratch byte, size uint32)
 	}
 }
 
+// emitStoreBE performs a guarded guest store and then, for native-exit
+// self-modifying-code detection, records an exact invalidation range if the
+// written address lands on a page that contains compiled code. addrReg is
+// preserved by the store and reused as the invalidation address; scratch and
+// W15 (Tmp6) are clobbered. addrReg must not be Tmp6.
+func (e *m68kA64Emitter) emitStoreBE(src, addrReg, scratch byte, size uint32) {
+	m68kA64EmitStoreBE(e.cb, src, addrReg, scratch, size)
+	e.emitSMCStoreCheck(addrReg, scratch, size)
+}
+
+// emitSMCStoreCheck sets NeedInval/InvalAddr/InvalSize when the just-written
+// guest range touches a code page. Both the first and last byte's 4 KiB pages
+// are probed, so a word or long store that straddles a page boundary into a
+// compiled page is still caught (otherwise native chaining could run the
+// modified stale block before the dispatcher's stamp re-check). The per-page
+// code bitmap covers all of guest RAM and the store's bounds guard already
+// proved addr+size <= MemSize, so no extra bounds check is needed; a nil bitmap
+// (no compiled code, or a test context without one) short-circuits. This is the
+// arm64 analogue of the amd64 m68kEmitSMCInvalidateByteRangeCheck: the
+// dispatcher performs the precise-range invalidation on return. Clobbers scratch
+// and Tmp6; preserves addrReg.
+func (e *m68kA64Emitter) emitSMCStoreCheck(addrReg, scratch byte, size uint32) {
+	cb := e.cb
+	cb.Emit32(arm64LDR_imm(m68kA64Tmp6, m68kA64Ctx, m68kCtxOffCodePageBitmapPtr/8))
+	noBitmap := e.localFwdCBZ(m68kA64Tmp6)
+
+	// First page.
+	cb.Emit32(arm64LSR_W_imm(scratch, addrReg, 12))
+	cb.Emit32(arm64LDRB_reg(scratch, m68kA64Tmp6, scratch))
+	hit := e.localFwdCBNZ(scratch)
+
+	var toEnd m68kA64BranchSite
+	if size > 1 {
+		// Last byte's page (only differs on a boundary-straddling store).
+		cb.Emit32(arm64ADD_W_imm(scratch, addrReg, size-1))
+		cb.Emit32(arm64LSR_W_imm(scratch, scratch, 12))
+		cb.Emit32(arm64LDRB_reg(scratch, m68kA64Tmp6, scratch))
+		toEnd = e.localFwdCBZ(scratch) // last page unmarked too: no SMC
+	} else {
+		toEnd = e.localFwdB() // single-byte store, first page missed: no SMC
+	}
+
+	// Marked: record the exact written range and flag invalidation.
+	e.bindLocal(hit)
+	cb.Emit32(arm64STR_W_imm(addrReg, m68kA64Ctx, m68kCtxOffInvalAddr/4))
+	m68kA64MovImm32(cb, m68kA64Tmp6, size)
+	cb.Emit32(arm64STR_W_imm(m68kA64Tmp6, m68kA64Ctx, m68kCtxOffInvalSize/4))
+	m68kA64MovImm32(cb, m68kA64Tmp6, 1)
+	cb.Emit32(arm64STR_W_imm(m68kA64Tmp6, m68kA64Ctx, m68kCtxOffNeedInval/4))
+
+	e.bindLocal(noBitmap)
+	e.bindLocal(toEnd)
+}
+
 // emitEAAddr materialises the access address of a memory EA into dst
 // WITHOUT committing any side effect. extraDelta pre-adjusts the base
 // register value (used when an earlier operand's uncommitted side effect
@@ -695,7 +983,10 @@ type m68kA64DecodedOp struct {
 	dst   m68kA64EA
 	q     uint32 // ADDQ/SUBQ/shift count, or ALU op selector for the ALU classes
 	kind  int    // shift/rotate kind, EXT opmode
-	sub   bool   // SUBQ/SUB vs ADD variants; shift direction (true = right)
+	sub   bool   // SUBQ/SUB vs ADD variants; shift direction (true = right); signed MUL/DIV
+	rlo   uint16 // long MULL/DIVL: Dl (product low) or Dq (quotient)
+	rhi   uint16 // long MULL/DIVL: Dh (product high) or Dr (remainder)
+	wide  bool   // long MULL: 64-bit result; long DIVL: 64-bit dividend
 }
 
 const (
@@ -717,9 +1008,13 @@ const (
 	m68kA64ClassEXT      // EXT.W/EXT.L/EXTB.L Dn (q = opmode)
 	m68kA64ClassPEA      // PEA <ea>
 	m68kA64ClassShift    // immediate-count shift/rotate on Dn
+	m68kA64ClassShiftReg // register-count shift/rotate on Dn (src = count Dn)
 	m68kA64ClassShiftMem // memory shift/rotate by one (kind = operation 0..7)
 	m68kA64ClassMulW     // MULU/MULS.W <ea>,Dn (sub = signed)
 	m68kA64ClassDivW     // DIVU/DIVS.W <ea>,Dn (sub = signed)
+	m68kA64ClassMulL     // MULU/MULS.L <ea>,Dl[:Dh] (68020; sub = signed, wide = 64-bit)
+	m68kA64ClassDivL     // DIVU/DIVS.L <ea>,Dq[:Dr] (68020; sub = signed, wide = 64-bit dividend)
+	m68kA64ClassFPU      // 68881 register-to-register general op (kind = native op, rlo/rhi = FPn, q = precision)
 	m68kA64ClassBitOp    // BTST/BCHG/BCLR/BSET (kind = op, sub = dynamic bit, q = bit source)
 	m68kA64ClassScc      // Scc <ea> byte (kind = condition)
 	m68kA64ClassTAS      // TAS <ea> byte
@@ -1065,11 +1360,69 @@ func m68kA64DecodeInner(ji *M68KJITInstr, memory []byte, instrPC uint32) (m68kA6
 		return m68kA64DecodedOp{class: m68kA64ClassDivW, size: 2, sub: op&0x0100 != 0,
 			src: src, dst: m68kA64EA{kind: m68kA64EADn, reg: (op >> 9) & 7}}, true
 
-	// Register-count shift/rotate (op&0x0020 set) stays interpreter fallback:
-	// the count is a runtime Dn value with clamp/modulo and count==0 CCR
-	// preservation, so lowering it is an optimisation, not a correctness
-	// capability. Fallback reproduces ExecShiftRotate exactly. Deferred to a
-	// milestone 4 optimisation slice.
+	case op&0xFFC0 == 0x4C00: // MULU.L/MULS.L <ea>,Dl (68020)
+		if int(extPC)+2 > len(memory) {
+			return bad, false
+		}
+		ext := uint16(memory[extPC])<<8 | uint16(memory[extPC+1])
+		signed := ext&0x0800 != 0
+		wide := ext&0x0400 != 0
+		rlo := (ext >> 12) & 7
+		rhi := rlo
+		if wide {
+			rhi = ext & 7
+		}
+		// EA extension words follow the register-spec word (at extPC+2).
+		src, ok := m68kA64ParseEA((op>>3)&7, op&7, 4, memory, extPC+2)
+		if !ok || src.kind == m68kA64EAAn {
+			return bad, false
+		}
+		return m68kA64DecodedOp{class: m68kA64ClassMulL, size: 4, sub: signed, wide: wide,
+			rlo: rlo, rhi: rhi, src: src,
+			dst: m68kA64EA{kind: m68kA64EADn, reg: rlo, ext: 1}}, true
+
+	case op&0xFFC0 == 0x4C40: // DIVU.L/DIVS.L <ea>,Dq[:Dr] (68020)
+		if int(extPC)+2 > len(memory) {
+			return bad, false
+		}
+		ext := uint16(memory[extPC])<<8 | uint16(memory[extPC+1])
+		signed := ext&0x0800 != 0
+		wide := ext&0x0400 != 0 // 64-bit dividend
+		rq := (ext >> 12) & 7
+		rr := ext & 7
+		src, ok := m68kA64ParseEA((op>>3)&7, op&7, 4, memory, extPC+2)
+		if !ok || src.kind == m68kA64EAAn {
+			return bad, false
+		}
+		return m68kA64DecodedOp{class: m68kA64ClassDivL, size: 4, sub: signed, wide: wide,
+			rlo: rq, rhi: rr, src: src,
+			dst: m68kA64EA{kind: m68kA64EADn, reg: rq, ext: 1}}, true
+
+	case op>>12 == 0xF && (op>>6)&0x7 == 0: // Line-F general FPU op
+		if int(extPC)+2 > len(memory) {
+			return bad, false
+		}
+		cmdWord := uint16(memory[extPC])<<8 | uint16(memory[extPC+1])
+		fpOp, src, dst, precision, ok := m68kDecodeNativeFPURegToReg(op, cmdWord)
+		if !ok || !m68kA64FPUNativeEmittable(fpOp) {
+			return bad, false
+		}
+		return m68kA64DecodedOp{class: m68kA64ClassFPU, size: 8,
+			kind: int(fpOp), q: uint32(precision),
+			rlo: uint16(src), rhi: uint16(dst),
+			dst: m68kA64EA{kind: m68kA64EADn, reg: uint16(dst), ext: 1}}, true
+
+	// Register-count shift/rotate (op&0x0020 set): the count is a runtime
+	// Dn value (Dn&0x3F, clamped for shifts / modulo for rotates), and a
+	// count of zero preserves the whole CCR. Lowered natively per
+	// ExecShiftRotate; see emitShiftReg.
+	case op&0xF000 == 0xE000 && (op>>6)&3 != 3 && op&0x0020 != 0: // shift/rotate, reg count, Dn
+		size := m68kA64SizeFromBits((op >> 6) & 3)
+		return m68kA64DecodedOp{class: m68kA64ClassShiftReg, size: size,
+			kind: int((op >> 3) & 3), sub: op&0x0100 == 0,
+			src: m68kA64EA{kind: m68kA64EADn, reg: (op >> 9) & 7},
+			dst: m68kA64EA{kind: m68kA64EADn, reg: op & 7}}, true
+
 	case op&0xF000 == 0xE000 && (op>>6)&3 != 3 && op&0x0020 == 0: // shift/rotate, imm count, Dn
 		size := m68kA64SizeFromBits((op >> 6) & 3)
 		c := uint32((op >> 9) & 7)
@@ -1353,7 +1706,7 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		val := uint32(int32(int8(op)))
 		m68kA64MovImm32(cb, m68kA64Tmp0, val)
 		m68kA64StoreD(cb, m68kA64Tmp0, dn)
-		m68kA64FlagsStatic(cb, int8(op) < 0, int8(op) == 0)
+		e.flagsStatic(int8(op) < 0, int8(op) == 0)
 		return nil
 
 	case m68kA64ClassMOVE:
@@ -1366,9 +1719,9 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 				neg := size == 4 && int32(src.imm) < 0 ||
 					size == 2 && src.imm&0x8000 != 0 ||
 					size == 1 && src.imm&0x80 != 0
-				m68kA64FlagsStatic(cb, neg, src.imm == 0)
+				e.flagsStatic(neg, src.imm == 0)
 			} else {
-				m68kA64FlagsMove(cb, m68kA64Tmp1, size)
+				e.flagsMove(m68kA64Tmp1, size)
 			}
 			return nil
 		}
@@ -1395,15 +1748,15 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		} else {
 			e.loadOperand(src, size, m68kA64Tmp1, true)
 		}
-		m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp2, m68kA64Tmp3, size)
+		e.emitStoreBE(m68kA64Tmp1, m68kA64Tmp2, m68kA64Tmp3, size)
 		m68kA64EmitEACommit(cb, dst, size, m68kA64Tmp2, m68kA64Tmp6)
 		if src.kind == m68kA64EAImm {
 			neg := size == 4 && int32(src.imm) < 0 ||
 				size == 2 && src.imm&0x8000 != 0 ||
 				size == 1 && src.imm&0x80 != 0
-			m68kA64FlagsStatic(cb, neg, src.imm == 0)
+			e.flagsStatic(neg, src.imm == 0)
 		} else {
-			m68kA64FlagsMove(cb, m68kA64Tmp1, size)
+			e.flagsMove(m68kA64Tmp1, size)
 		}
 		return nil
 
@@ -1417,7 +1770,7 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 
 	case m68kA64ClassTST:
 		e.loadOperand(&dec.src, dec.size, m68kA64Tmp1, true)
-		m68kA64FlagsMove(cb, m68kA64Tmp1, dec.size)
+		e.flagsMove(m68kA64Tmp1, dec.size)
 		return nil
 
 	case m68kA64ClassCLR:
@@ -1438,10 +1791,10 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		} else {
 			m68kA64EmitEAAddr(cb, dst, size, m68kA64Tmp0, 0)
 			e.emitGuard(m68kA64Tmp0, size)
-			m68kA64EmitStoreBE(cb, 31, m68kA64Tmp0, m68kA64Tmp3, size)
+			e.emitStoreBE(31, m68kA64Tmp0, m68kA64Tmp3, size)
 			m68kA64EmitEACommit(cb, dst, size, m68kA64Tmp0, m68kA64Tmp6)
 		}
-		m68kA64FlagsStatic(cb, false, true)
+		e.flagsStatic(false, true)
 		return nil
 
 	case m68kA64ClassLEA:
@@ -1464,7 +1817,7 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 			if alu != m68kA64ALUAdd {
 				carry = m68kA64CondCC
 			}
-			m68kA64FlagsArith(cb, carry, alu == m68kA64ALUCmp)
+			e.flagsArith(carry, alu == m68kA64ALUCmp)
 		default:
 			switch alu {
 			case m68kA64ALUAnd:
@@ -1475,7 +1828,7 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 				cb.Emit32(arm64EOR_W(m68kA64Tmp3, m68kA64Tmp2, m68kA64Tmp1))
 			}
 			m68kA64MergeSizedToD(cb, dec.dst.reg, m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp2, size)
-			m68kA64FlagsLogicPreserveVC(cb, m68kA64Tmp3, size)
+			e.flagsLogicPreserveVC(m68kA64Tmp3, size)
 		}
 		return nil
 
@@ -1495,14 +1848,14 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		case m68kA64ALUAdd, m68kA64ALUSub, m68kA64ALUCmp:
 			m68kA64EmitSizedArith(cb, alu != m68kA64ALUAdd, m68kA64Tmp1, m68kA64Tmp2, m68kA64Tmp3, size)
 			if alu != m68kA64ALUCmp {
-				m68kA64EmitStoreBE(cb, m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, size)
+				e.emitStoreBE(m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, size)
 			}
 			m68kA64EmitEACommit(cb, dst, size, m68kA64Tmp0, m68kA64Tmp6)
 			carry := byte(m68kA64CondCS)
 			if alu != m68kA64ALUAdd {
 				carry = m68kA64CondCC
 			}
-			m68kA64FlagsArith(cb, carry, alu == m68kA64ALUCmp)
+			e.flagsArith(carry, alu == m68kA64ALUCmp)
 		default:
 			switch alu {
 			case m68kA64ALUAnd:
@@ -1512,9 +1865,9 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 			case m68kA64ALUEor:
 				cb.Emit32(arm64EOR_W(m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp2))
 			}
-			m68kA64EmitStoreBE(cb, m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, size)
+			e.emitStoreBE(m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, size)
 			m68kA64EmitEACommit(cb, dst, size, m68kA64Tmp0, m68kA64Tmp6)
-			m68kA64FlagsLogicPreserveVC(cb, m68kA64Tmp3, size)
+			e.flagsLogicPreserveVC(m68kA64Tmp3, size)
 		}
 		return nil
 
@@ -1528,7 +1881,7 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		if dec.sub {
 			carry = m68kA64CondCC
 		}
-		m68kA64FlagsArith(cb, carry, false)
+		e.flagsArith(carry, false)
 		return nil
 
 	case m68kA64ClassQuickA:
@@ -1564,16 +1917,16 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 			cb.Emit32(arm64MVN_W(m68kA64Tmp3, m68kA64Tmp1))
 		}
 		if mem {
-			m68kA64EmitStoreBE(cb, m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, size)
+			e.emitStoreBE(m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, size)
 			m68kA64EmitEACommit(cb, dst, size, m68kA64Tmp0, m68kA64Tmp6)
 		} else {
 			m68kA64MergeSizedToD(cb, dst.reg, m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp2, size)
 		}
 		if isNeg {
-			m68kA64FlagsArith(cb, m68kA64CondCC, false)
+			e.flagsArith(m68kA64CondCC, false)
 		} else {
 			// NOT uses the interpreter's SetFlagsNZ: X, V and C preserved.
-			m68kA64FlagsLogicPreserveVC(cb, m68kA64Tmp3, size)
+			e.flagsLogicPreserveVC(m68kA64Tmp3, size)
 		}
 		return nil
 
@@ -1584,7 +1937,7 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		cb.Emit32(arm64ORR_W_lsl(m68kA64Tmp2, m68kA64Tmp2, m68kA64Tmp1, 16))
 		m68kA64StoreD(cb, m68kA64Tmp2, dn)
 		// SWAP: N/Z from the 32-bit result, V and C cleared, X preserved.
-		m68kA64FlagsMove(cb, m68kA64Tmp2, 4)
+		e.flagsMove(m68kA64Tmp2, 4)
 		return nil
 
 	case m68kA64ClassEXT:
@@ -1597,15 +1950,15 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 			cb.Emit32(arm64LSR_W_imm(m68kA64Tmp1, m68kA64Tmp1, 16))
 			cb.Emit32(arm64ORR_W_lsl(m68kA64Tmp2, m68kA64Tmp2, m68kA64Tmp1, 16))
 			m68kA64StoreD(cb, m68kA64Tmp2, dn)
-			m68kA64FlagsMove(cb, m68kA64Tmp2, 2)
+			e.flagsMove(m68kA64Tmp2, 2)
 		case 3: // EXT.L: sign-extend low word
 			cb.Emit32(arm64SXTH_W(m68kA64Tmp2, m68kA64Tmp1))
 			m68kA64StoreD(cb, m68kA64Tmp2, dn)
-			m68kA64FlagsMove(cb, m68kA64Tmp2, 4)
+			e.flagsMove(m68kA64Tmp2, 4)
 		case 7: // EXTB.L: sign-extend low byte to long (68020)
 			cb.Emit32(arm64SXTB_W(m68kA64Tmp2, m68kA64Tmp1))
 			m68kA64StoreD(cb, m68kA64Tmp2, dn)
-			m68kA64FlagsMove(cb, m68kA64Tmp2, 4)
+			e.flagsMove(m68kA64Tmp2, 4)
 		default:
 			return fmt.Errorf("m68k arm64 emitter: EXT opmode %d at %08X", dec.kind, instrPC)
 		}
@@ -1624,7 +1977,7 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		cb.Emit32(arm64CMP_W(m68kA64Tmp0, m68kA64Tmp2))
 		e.branchToBail(m68kA64CondCC) // newSP < stackLowerBound
 		e.emitGuard(m68kA64Tmp0, 4)
-		m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp3, 4)
+		e.emitStoreBE(m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp3, 4)
 		m68kA64StoreA(cb, m68kA64Tmp0, 7)
 		return nil
 
@@ -1643,11 +1996,20 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		}
 		cb.Emit32(arm64MUL_W(m68kA64Tmp3, m68kA64Tmp2, m68kA64Tmp1))
 		m68kA64StoreD(cb, m68kA64Tmp3, dec.dst.reg)
-		m68kA64FlagsLogicPreserveVC(cb, m68kA64Tmp3, 4)
+		e.flagsLogicPreserveVC(m68kA64Tmp3, 4)
 		return nil
 
 	case m68kA64ClassDivW:
 		return e.emitDivW(dec)
+
+	case m68kA64ClassMulL:
+		return e.emitMulL(dec)
+
+	case m68kA64ClassDivL:
+		return e.emitDivL(dec)
+
+	case m68kA64ClassFPU:
+		return e.emitFPU(dec, instrPC)
 
 	case m68kA64ClassBitOp:
 		return e.emitBitOp(dec)
@@ -1666,7 +2028,7 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		} else {
 			m68kA64EmitEAAddr(cb, dst, 1, m68kA64Tmp2, 0)
 			e.emitGuard(m68kA64Tmp2, 1)
-			m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp2, m68kA64Tmp3, 1)
+			e.emitStoreBE(m68kA64Tmp1, m68kA64Tmp2, m68kA64Tmp3, 1)
 			m68kA64EmitEACommit(cb, dst, 1, m68kA64Tmp2, m68kA64Tmp6)
 		}
 		return nil
@@ -1677,7 +2039,7 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		dst := &dec.dst
 		if dst.kind == m68kA64EADn {
 			m68kA64LoadD(cb, m68kA64Tmp1, dst.reg)
-			m68kA64FlagsMove(cb, m68kA64Tmp1, 1)
+			e.flagsMove(m68kA64Tmp1, 1)
 			cb.Emit32(arm64MOVZ_W(m68kA64Tmp3, 0x80, 0))
 			cb.Emit32(arm64ORR_W(m68kA64Tmp2, m68kA64Tmp1, m68kA64Tmp3))
 			m68kA64MergeSizedToD(cb, dst.reg, m68kA64Tmp2, m68kA64Tmp3, m68kA64Tmp4, 1)
@@ -1685,16 +2047,19 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 			m68kA64EmitEAAddr(cb, dst, 1, m68kA64Tmp0, 0)
 			e.emitGuard(m68kA64Tmp0, 1)
 			m68kA64EmitLoadBE(cb, m68kA64Tmp1, m68kA64Tmp0, 1)
-			m68kA64FlagsMove(cb, m68kA64Tmp1, 1)
+			e.flagsMove(m68kA64Tmp1, 1)
 			cb.Emit32(arm64MOVZ_W(m68kA64Tmp3, 0x80, 0))
 			cb.Emit32(arm64ORR_W(m68kA64Tmp2, m68kA64Tmp1, m68kA64Tmp3))
-			m68kA64EmitStoreBE(cb, m68kA64Tmp2, m68kA64Tmp0, m68kA64Tmp3, 1)
+			e.emitStoreBE(m68kA64Tmp2, m68kA64Tmp0, m68kA64Tmp3, 1)
 			m68kA64EmitEACommit(cb, dst, 1, m68kA64Tmp0, m68kA64Tmp6)
 		}
 		return nil
 
 	case m68kA64ClassShift:
 		return e.emitShift(dec, instrPC)
+
+	case m68kA64ClassShiftReg:
+		return e.emitShiftReg(dec, instrPC)
 
 	case m68kA64ClassShiftMem:
 		// Memory shift/rotate by one on a word. Parity with
@@ -1736,9 +2101,9 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		default:
 			return fmt.Errorf("m68k arm64 emitter: mem shift op %d at %08X", dec.kind, instrPC)
 		}
-		m68kA64EmitStoreBE(cb, m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, 2)
+		e.emitStoreBE(m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, 2)
 		m68kA64EmitEACommit(cb, dst, 2, m68kA64Tmp0, m68kA64Tmp6)
-		m68kA64FlagsShift(cb, m68kA64Tmp3, 2, m68kA64Tmp2, 0xFF, false)
+		e.flagsShift(m68kA64Tmp3, 2, m68kA64Tmp2, 0xFF, false)
 		return nil
 
 	case m68kA64ClassQuickMem:
@@ -1749,13 +2114,13 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		m68kA64EmitLoadBE(cb, m68kA64Tmp1, m68kA64Tmp0, size)
 		m68kA64MovImm32(cb, m68kA64Tmp2, dec.q)
 		m68kA64EmitSizedArith(cb, dec.sub, m68kA64Tmp1, m68kA64Tmp2, m68kA64Tmp3, size)
-		m68kA64EmitStoreBE(cb, m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, size)
+		e.emitStoreBE(m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, size)
 		m68kA64EmitEACommit(cb, dst, size, m68kA64Tmp0, m68kA64Tmp6)
 		carry := byte(m68kA64CondCS)
 		if dec.sub {
 			carry = m68kA64CondCC
 		}
-		m68kA64FlagsArith(cb, carry, false)
+		e.flagsArith(carry, false)
 		return nil
 	}
 	return fmt.Errorf("m68k arm64 emitter: unsupported opcode %04X at %08X", op, instrPC)
@@ -1851,7 +2216,7 @@ func (e *m68kA64Emitter) emitMovem(dec *m68kA64DecodedOp) error {
 			} else {
 				m68kA64LoadD(cb, m68kA64Tmp1, uint16(15-i))
 			}
-			m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp3, size)
+			e.emitStoreBE(m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp3, size)
 		}
 	case !memToReg:
 		for i := 0; i < 16; i++ {
@@ -1863,7 +2228,7 @@ func (e *m68kA64Emitter) emitMovem(dec *m68kA64DecodedOp) error {
 			} else {
 				m68kA64LoadA(cb, m68kA64Tmp1, uint16(i-8))
 			}
-			m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp3, size)
+			e.emitStoreBE(m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp3, size)
 			cb.Emit32(arm64ADD_W_imm(m68kA64Tmp0, m68kA64Tmp0, size))
 		}
 	default: // mem-to-reg
@@ -1944,7 +2309,7 @@ func (e *m68kA64Emitter) emitBitOp(dec *m68kA64DecodedOp) error {
 			cb.Emit32(arm64ORR_W(m68kA64Tmp1, m68kA64Tmp1, m68kA64Tmp3))
 		}
 		if memDst {
-			m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp5, 1)
+			e.emitStoreBE(m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp5, 1)
 		} else {
 			m68kA64StoreD(cb, m68kA64Tmp1, dst.reg) // long register write-back
 		}
@@ -2019,11 +2384,359 @@ func (e *m68kA64Emitter) emitDivW(dec *m68kA64DecodedOp) error {
 	return nil
 }
 
+// emitMulL lowers the 68020 long multiply MULU.L/MULS.L. A single 32x32->64
+// A64 multiply (SMULL/UMULL) yields both result words. The 32-bit form writes
+// only Dl and sets V when the product does not fit in 32 bits (signed: the
+// high word is not the sign extension of the low word; unsigned: the high word
+// is non-zero); the 64-bit form writes Dh:Dl and never sets V. N/Z/C follow
+// ExecMulL, X is preserved. The memory source commits its (An)+/-(An) side
+// effect, matching resolveEAWithPrePost.
+func (e *m68kA64Emitter) emitMulL(dec *m68kA64DecodedOp) error {
+	cb := e.cb
+	signed := dec.sub
+	e.loadOperand(&dec.src, 4, m68kA64Tmp1, true) // source (long)
+	m68kA64LoadD(cb, m68kA64Tmp2, dec.rlo)        // multiplicand Dl
+	if signed {
+		cb.Emit32(arm64SMULL(m68kA64Tmp3, m68kA64Tmp2, m68kA64Tmp1))
+	} else {
+		cb.Emit32(arm64UMULL(m68kA64Tmp3, m68kA64Tmp2, m68kA64Tmp1))
+	}
+	cb.Emit32(arm64LSR_imm(m68kA64Tmp4, m68kA64Tmp3, 32)) // result high word
+
+	// Store result(s): high first so a Dh==Dl encoding keeps the low word.
+	if dec.wide {
+		m68kA64StoreD(cb, m68kA64Tmp4, dec.rhi)
+		m68kA64StoreD(cb, m68kA64Tmp3, dec.rlo)
+	} else {
+		m68kA64StoreD(cb, m68kA64Tmp3, dec.rlo)
+	}
+
+	// CCR: keep X, clear N/Z/V/C, then set N/Z (and V for the 32-bit form).
+	m68kA64MovImm32(cb, m68kA64Tmp6, 0x10)
+	cb.Emit32(arm64AND_W(m68kA64CCR, m68kA64CCR, m68kA64Tmp6))
+	if dec.wide {
+		cb.Emit32(arm64CMP_imm(m68kA64Tmp3, 0)) // full 64-bit product == 0
+		cb.Emit32(arm64CSET_W(m68kA64Tmp5, m68kA64CondEQ))
+		cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp5, m68kA64BitZ))
+		cb.Emit32(arm64UBFX_W(m68kA64Tmp5, m68kA64Tmp4, 31, 1)) // N = bit 63
+		cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp5, m68kA64BitN))
+	} else {
+		cb.Emit32(arm64CMP_W_imm(m68kA64Tmp3, 0)) // low word == 0
+		cb.Emit32(arm64CSET_W(m68kA64Tmp5, m68kA64CondEQ))
+		cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp5, m68kA64BitZ))
+		cb.Emit32(arm64UBFX_W(m68kA64Tmp5, m68kA64Tmp3, 31, 1)) // N = bit 31
+		cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp5, m68kA64BitN))
+		if signed {
+			cb.Emit32(arm64SXTW(m68kA64Tmp6, m68kA64Tmp3)) // sign-extend low
+			cb.Emit32(arm64CMP(m68kA64Tmp3, m68kA64Tmp6))
+			cb.Emit32(arm64CSET_W(m68kA64Tmp5, m68kA64CondNE)) // V = mismatch
+		} else {
+			cb.Emit32(arm64CMP_W_imm(m68kA64Tmp4, 0))
+			cb.Emit32(arm64CSET_W(m68kA64Tmp5, m68kA64CondNE)) // V = high != 0
+		}
+		cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp5, m68kA64BitV))
+	}
+	return nil
+}
+
+// emitDivL lowers the 68020 long divide DIVU.L/DIVS.L. A 64-bit A64 divide
+// covers both the 64/32 and 32/32 dividend forms; a zero divisor bails to the
+// interpreter to raise the zero-divide trap. Quotient-out-of-range overflow is
+// detected without a trap (signed: the 32-bit quotient sign-extended does not
+// equal the 64-bit quotient, which also catches INT_MIN/-1; unsigned: the
+// quotient's high word is non-zero) and leaves the registers unchanged with V
+// set. Otherwise Dq takes the quotient and Dr the remainder, matching
+// ExecDIVL including the single-register 32-bit encoding.
+func (e *m68kA64Emitter) emitDivL(dec *m68kA64DecodedOp) error {
+	cb := e.cb
+	signed := dec.sub
+	rq, rr := dec.rlo, dec.rhi
+	e.loadOperand(&dec.src, 4, m68kA64Tmp1, true) // divisor (long)
+	e.cbzToBail(m68kA64Tmp1)                      // divisor == 0: reproduce the trap
+
+	// Dividend into Tmp2 (64-bit), divisor into Tmp1 (64-bit).
+	if dec.wide {
+		m68kA64LoadD(cb, m68kA64Tmp2, rq) // low
+		m68kA64LoadD(cb, m68kA64Tmp3, rr) // high
+		cb.Emit32(arm64ORR_lsl(m68kA64Tmp2, m68kA64Tmp2, m68kA64Tmp3, 32))
+	} else {
+		m68kA64LoadD(cb, m68kA64Tmp2, rq)
+		if signed {
+			cb.Emit32(arm64SXTW(m68kA64Tmp2, m68kA64Tmp2))
+		}
+	}
+	if signed {
+		cb.Emit32(arm64SXTW(m68kA64Tmp1, m68kA64Tmp1))
+		cb.Emit32(arm64SDIV(m68kA64Tmp3, m68kA64Tmp2, m68kA64Tmp1))
+	} else {
+		cb.Emit32(arm64UDIV(m68kA64Tmp3, m68kA64Tmp2, m68kA64Tmp1))
+	}
+	cb.Emit32(arm64MSUB(m68kA64Tmp4, m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp2)) // remainder
+
+	// Overflow test into the Z/condition flags.
+	if signed {
+		cb.Emit32(arm64SXTW(m68kA64Tmp5, m68kA64Tmp3))
+		cb.Emit32(arm64CMP(m68kA64Tmp3, m68kA64Tmp5))
+	} else {
+		cb.Emit32(arm64LSR_imm(m68kA64Tmp5, m68kA64Tmp3, 32))
+		cb.Emit32(arm64CMP_imm(m68kA64Tmp5, 0))
+	}
+	overflow := e.localFwdBcond(m68kA64CondNE)
+
+	// No overflow: keep X, clear N/Z/V/C, set Z/N, store quotient/remainder.
+	m68kA64MovImm32(cb, m68kA64Tmp6, 0x10)
+	cb.Emit32(arm64AND_W(m68kA64CCR, m68kA64CCR, m68kA64Tmp6))
+	cb.Emit32(arm64CMP_W_imm(m68kA64Tmp3, 0))
+	cb.Emit32(arm64CSET_W(m68kA64Tmp6, m68kA64CondEQ)) // Z
+	cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp6, m68kA64BitZ))
+	if signed {
+		cb.Emit32(arm64UBFX_W(m68kA64Tmp6, m68kA64Tmp3, 31, 1)) // N = quotient bit 31
+		cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp6, m68kA64BitN))
+	}
+	m68kA64StoreD(cb, m68kA64Tmp3, rq) // quotient
+	if dec.wide || rr != rq {
+		m68kA64StoreD(cb, m68kA64Tmp4, rr) // remainder
+	}
+	toEnd := e.localFwdB()
+
+	// Overflow: registers unchanged, keep X, clear N/Z/C, set V.
+	e.bindLocal(overflow)
+	m68kA64MovImm32(cb, m68kA64Tmp6, 0x10)
+	cb.Emit32(arm64AND_W(m68kA64CCR, m68kA64CCR, m68kA64Tmp6))
+	m68kA64MovImm32(cb, m68kA64Tmp6, 1<<m68kA64BitV)
+	cb.Emit32(arm64ORR_W(m68kA64CCR, m68kA64CCR, m68kA64Tmp6))
+
+	e.bindLocal(toEnd)
+	return nil
+}
+
+// FP work registers (NEON scalar double). Blocks are leaf functions, so the
+// caller-saved V0..V3 are free scratch.
+const (
+	m68kA64FPWork = 0 // D0: result / operand a
+	m68kA64FPSrc  = 1 // D1: source operand b
+	m68kA64FPAux  = 2 // D2: abs / diff
+	m68kA64FPInf  = 3 // D3: +Inf constant
+)
+
+// m68kA64FPUNativeEmittable reports whether the arm64 backend lowers the given
+// 68881 native op. It is the SSE2-cleanly-mappable register-to-register subset
+// minus FINT/FINTRZ, which need FPCR-rounding-mode-aware rounding and stay on
+// the interpreter's 68881; transcendentals, EA-operand forms, control/FMOVEM
+// and the conditional (FScc/FDBcc/FBcc) forms never reach here.
+func m68kA64FPUNativeEmittable(op m68kFPUNativeOp) bool {
+	switch op {
+	case m68kFPUNativeFMOVE, m68kFPUNativeFADD, m68kFPUNativeFSUB,
+		m68kFPUNativeFMUL, m68kFPUNativeFDIV, m68kFPUNativeFSQRT,
+		m68kFPUNativeFABS, m68kFPUNativeFNEG, m68kFPUNativeFSGLDIV,
+		m68kFPUNativeFSGLMUL, m68kFPUNativeFCMP, m68kFPUNativeFTST:
+		return true
+	default:
+		return false
+	}
+}
+
+// emitFPU lowers a 68881 register-to-register general op on the float64 FP
+// register file. The FP registers are stored as double, and A64 scalar-double
+// arithmetic matches the interpreter's Go float64 arithmetic bit for bit, so
+// native emission is exact. Every general data op sets FPIAR to the
+// instruction PC (mirroring ExecFPUInstruction) and refreshes the FPSR
+// condition codes exactly per m68kFPUConditionBits.
+func (e *m68kA64Emitter) emitFPU(dec *m68kA64DecodedOp, instrPC uint32) error {
+	cb := e.cb
+	op := m68kFPUNativeOp(dec.kind)
+	src := uint32(dec.rlo)
+	dst := uint32(dec.rhi)
+	precision := int(dec.q)
+
+	// FP register file base and FPIAR = instruction PC.
+	cb.Emit32(arm64LDR_imm(m68kA64Tmp0, m68kA64Ctx, m68kCtxOffFPRegsPtr/8))
+	cb.Emit32(arm64LDR_imm(m68kA64Tmp1, m68kA64Ctx, m68kCtxOffFPIARPtr/8))
+	m68kA64MovImm32(cb, m68kA64Tmp2, instrPC)
+	cb.Emit32(arm64STR_W_imm(m68kA64Tmp2, m68kA64Tmp1, 0))
+
+	loadFP := func(d byte, reg uint32) {
+		cb.Emit32(arm64LDR_D_imm(d, m68kA64Tmp0, reg*8))
+	}
+
+	switch op {
+	case m68kFPUNativeFCMP:
+		loadFP(m68kA64FPWork, dst) // a
+		loadFP(m68kA64FPSrc, src)  // b
+		e.emitFPUCompare()
+		return nil
+	case m68kFPUNativeFTST:
+		loadFP(m68kA64FPWork, src)
+		e.emitFPUSetCC(m68kA64FPWork)
+		return nil
+	}
+
+	// Arithmetic: compute the result in D0.
+	switch op {
+	case m68kFPUNativeFMOVE:
+		loadFP(m68kA64FPWork, src)
+	case m68kFPUNativeFSQRT:
+		loadFP(m68kA64FPSrc, src)
+		cb.Emit32(arm64FSQRT_D(m68kA64FPWork, m68kA64FPSrc))
+	case m68kFPUNativeFABS:
+		loadFP(m68kA64FPSrc, src)
+		cb.Emit32(arm64FABS_D(m68kA64FPWork, m68kA64FPSrc))
+	case m68kFPUNativeFNEG:
+		loadFP(m68kA64FPSrc, src)
+		cb.Emit32(arm64FNEG_D(m68kA64FPWork, m68kA64FPSrc))
+	case m68kFPUNativeFADD:
+		loadFP(m68kA64FPWork, dst)
+		loadFP(m68kA64FPSrc, src)
+		cb.Emit32(arm64FADD_D(m68kA64FPWork, m68kA64FPWork, m68kA64FPSrc))
+	case m68kFPUNativeFSUB:
+		loadFP(m68kA64FPWork, dst)
+		loadFP(m68kA64FPSrc, src)
+		cb.Emit32(arm64FSUB_D(m68kA64FPWork, m68kA64FPWork, m68kA64FPSrc))
+	case m68kFPUNativeFMUL:
+		loadFP(m68kA64FPWork, dst)
+		loadFP(m68kA64FPSrc, src)
+		cb.Emit32(arm64FMUL_D(m68kA64FPWork, m68kA64FPWork, m68kA64FPSrc))
+	case m68kFPUNativeFDIV:
+		loadFP(m68kA64FPWork, dst)
+		loadFP(m68kA64FPSrc, src)
+		cb.Emit32(arm64FDIV_D(m68kA64FPWork, m68kA64FPWork, m68kA64FPSrc))
+	case m68kFPUNativeFSGLMUL:
+		loadFP(m68kA64FPWork, dst)
+		loadFP(m68kA64FPSrc, src)
+		cb.Emit32(arm64FCVT_SfromD(m68kA64FPWork, m68kA64FPWork))
+		cb.Emit32(arm64FCVT_SfromD(m68kA64FPSrc, m68kA64FPSrc))
+		cb.Emit32(arm64FMUL_S(m68kA64FPWork, m68kA64FPWork, m68kA64FPSrc))
+		cb.Emit32(arm64FCVT_DfromS(m68kA64FPWork, m68kA64FPWork))
+	case m68kFPUNativeFSGLDIV:
+		loadFP(m68kA64FPWork, dst)
+		loadFP(m68kA64FPSrc, src)
+		cb.Emit32(arm64FCVT_SfromD(m68kA64FPWork, m68kA64FPWork))
+		cb.Emit32(arm64FCVT_SfromD(m68kA64FPSrc, m68kA64FPSrc))
+		cb.Emit32(arm64FDIV_S(m68kA64FPWork, m68kA64FPWork, m68kA64FPSrc))
+		cb.Emit32(arm64FCVT_DfromS(m68kA64FPWork, m68kA64FPWork))
+	default:
+		return fmt.Errorf("m68k arm64 emitter: unsupported FPU op %d at %08X", op, instrPC)
+	}
+
+	// Single-precision opmode: round the result through float32 (matches
+	// applyFPUResultPrecision). Idempotent for the FSGL ops.
+	if precision == m68kFPURoundSingle {
+		cb.Emit32(arm64FCVT_SfromD(m68kA64FPWork, m68kA64FPWork))
+		cb.Emit32(arm64FCVT_DfromS(m68kA64FPWork, m68kA64FPWork))
+	}
+
+	cb.Emit32(arm64STR_D_imm(m68kA64FPWork, m68kA64Tmp0, dst*8))
+	e.emitFPUSetCC(m68kA64FPWork)
+	return nil
+}
+
+// m68kA64MergeFPSR clears the four condition bits of FPSR and installs ccReg.
+// Clobbers Tmp1, Tmp2, Tmp5.
+func (e *m68kA64Emitter) m68kA64MergeFPSR(ccReg byte) {
+	cb := e.cb
+	cb.Emit32(arm64LDR_imm(m68kA64Tmp1, m68kA64Ctx, m68kCtxOffFPSRPtr/8))
+	cb.Emit32(arm64LDR_W_imm(m68kA64Tmp2, m68kA64Tmp1, 0))
+	m68kA64MovImm32(cb, m68kA64Tmp5, ^fpuCCMask)
+	cb.Emit32(arm64AND_W(m68kA64Tmp2, m68kA64Tmp2, m68kA64Tmp5))
+	cb.Emit32(arm64ORR_W(m68kA64Tmp2, m68kA64Tmp2, ccReg))
+	cb.Emit32(arm64STR_W_imm(m68kA64Tmp2, m68kA64Tmp1, 0))
+}
+
+// emitFPUSetCC derives the FPSR condition codes (N/Z/I/NAN) from the double in
+// dReg exactly per m68kFPUConditionBits and merges them into FPSR. Order
+// matters: a zero (including -0.0) is Zero, never Negative. Clobbers Tmp1-5 and
+// the FP aux/inf registers.
+func (e *m68kA64Emitter) emitFPUSetCC(dReg byte) {
+	cb := e.cb
+	m68kA64MovImm32(cb, m68kA64Tmp3, 0) // default: finite positive → cc 0
+
+	cb.Emit32(arm64FCMP_D(dReg, dReg)) // unordered → NaN
+	toNaN := e.localFwdBcond(m68kA64CondVS)
+	cb.Emit32(arm64FCMP_D_zero(dReg))
+	toZero := e.localFwdBcond(m68kA64CondEQ)
+	cb.Emit32(arm64FABS_D(m68kA64FPAux, dReg))
+	cb.Emit32(arm64MOVZ(m68kA64Tmp4, 0x7FF0, 48)) // +Inf bit pattern
+	cb.Emit32(arm64FMOV_XtoD(m68kA64FPInf, m68kA64Tmp4))
+	cb.Emit32(arm64FCMP_D(m68kA64FPAux, m68kA64FPInf))
+	toInf := e.localFwdBcond(m68kA64CondEQ)
+
+	// Finite nonzero: N if the sign bit is set, else cc stays 0.
+	cb.Emit32(arm64FMOV_DtoX(m68kA64Tmp4, dReg))
+	cb.Emit32(arm64LSR_imm(m68kA64Tmp4, m68kA64Tmp4, 63))
+	toMergeFinite := e.localFwdCBZ(m68kA64Tmp4)
+	m68kA64MovImm32(cb, m68kA64Tmp3, FPU_CC_N)
+	toMerge0 := e.localFwdB()
+
+	e.bindLocal(toNaN)
+	m68kA64MovImm32(cb, m68kA64Tmp3, FPU_CC_NAN)
+	toMerge1 := e.localFwdB()
+
+	e.bindLocal(toZero)
+	m68kA64MovImm32(cb, m68kA64Tmp3, FPU_CC_Z)
+	toMerge2 := e.localFwdB()
+
+	e.bindLocal(toInf)
+	m68kA64MovImm32(cb, m68kA64Tmp3, FPU_CC_I)
+	cb.Emit32(arm64FMOV_DtoX(m68kA64Tmp4, dReg))
+	cb.Emit32(arm64LSR_imm(m68kA64Tmp4, m68kA64Tmp4, 63))
+	toMergeInf := e.localFwdCBZ(m68kA64Tmp4)
+	m68kA64MovImm32(cb, m68kA64Tmp5, FPU_CC_N)
+	cb.Emit32(arm64ORR_W(m68kA64Tmp3, m68kA64Tmp3, m68kA64Tmp5))
+
+	e.bindLocal(toMergeFinite)
+	e.bindLocal(toMerge0)
+	e.bindLocal(toMerge1)
+	e.bindLocal(toMerge2)
+	e.bindLocal(toMergeInf)
+	e.m68kA64MergeFPSR(m68kA64Tmp3)
+}
+
+// emitFPUCompare derives the FPSR condition codes for FCMP: NAN if either
+// operand is a NaN, else Z/N/none from the sign of (a - b), matching
+// (*M68881FPU).FCMP exactly (including Inf-Inf giving neither, via the diff).
+// a is in FPWork, b in FPSrc.
+func (e *m68kA64Emitter) emitFPUCompare() {
+	cb := e.cb
+	m68kA64MovImm32(cb, m68kA64Tmp3, 0)
+
+	cb.Emit32(arm64FCMP_D(m68kA64FPWork, m68kA64FPWork))
+	toNaNa := e.localFwdBcond(m68kA64CondVS)
+	cb.Emit32(arm64FCMP_D(m68kA64FPSrc, m68kA64FPSrc))
+	toNaNb := e.localFwdBcond(m68kA64CondVS)
+
+	cb.Emit32(arm64FSUB_D(m68kA64FPAux, m68kA64FPWork, m68kA64FPSrc)) // diff = a - b
+	cb.Emit32(arm64FCMP_D_zero(m68kA64FPAux))
+	toZero := e.localFwdBcond(m68kA64CondEQ)
+	toNeg := e.localFwdBcond(m68kA64CondMI)
+	toMerge0 := e.localFwdB() // diff > 0 (or unordered Inf-Inf): cc 0
+
+	e.bindLocal(toNeg)
+	m68kA64MovImm32(cb, m68kA64Tmp3, FPU_CC_N)
+	toMerge1 := e.localFwdB()
+
+	e.bindLocal(toZero)
+	m68kA64MovImm32(cb, m68kA64Tmp3, FPU_CC_Z)
+	toMerge2 := e.localFwdB()
+
+	e.bindLocal(toNaNa)
+	e.bindLocal(toNaNb)
+	m68kA64MovImm32(cb, m68kA64Tmp3, FPU_CC_NAN)
+
+	e.bindLocal(toMerge0)
+	e.bindLocal(toMerge1)
+	e.bindLocal(toMerge2)
+	e.m68kA64MergeFPSR(m68kA64Tmp3)
+}
+
 // m68kA64FlagsShift assembles the CCR after a shift or rotate: N/Z from the
 // sized result in rRes (preserved), C from the 0/1 bit in cReg, V from vReg
 // (0xFF = cleared), X = C for shifts and ROXd, X preserved for ROL/ROR
 // (keepX). Clobbers Tmp4, Tmp5, Tmp6.
-func m68kA64FlagsShift(cb *CodeBuffer, rRes byte, size uint32, cReg, vReg byte, keepX bool) {
+func (e *m68kA64Emitter) flagsShift(rRes byte, size uint32, cReg, vReg byte, keepX bool) {
+	if e.ccrDead {
+		return
+	}
+	cb := e.cb
 	if keepX {
 		cb.Emit32(arm64UBFX_W(m68kA64Tmp4, m68kA64CCR, m68kA64BitX, 1))
 	}
@@ -2188,7 +2901,183 @@ func (e *m68kA64Emitter) emitShift(dec *m68kA64DecodedOp, instrPC uint32) error 
 	}
 
 	m68kA64MergeSizedToD(cb, dn, m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp6, size)
-	m68kA64FlagsShift(cb, m68kA64Tmp3, size, m68kA64Tmp2, vReg, keepX)
+	e.flagsShift(m68kA64Tmp3, size, m68kA64Tmp2, vReg, keepX)
+	return nil
+}
+
+// emitShiftReg lowers a register-count shift or rotate on Dn. Unlike the
+// immediate form the count is a runtime Dn value, so this mirrors
+// GetShiftCount/ExecShiftRotate at run time: the raw count is masked to six
+// bits, clamped to the operand width for shifts or reduced modulo the width
+// (width+1 for ROXd) for rotates, and a resulting count of zero preserves the
+// whole CCR and leaves Dn untouched. AS/LS shifts and RO rotates use closed
+// forms with a runtime width branch; ROX rotates use a small per-bit loop,
+// matching the interpreter through the X flag exactly. Parity is with
+// ExecShiftRotate, not the M68000PRM.
+func (e *m68kA64Emitter) emitShiftReg(dec *m68kA64DecodedOp, instrPC uint32) error {
+	cb := e.cb
+	size := dec.size
+	w := size * 8
+	dn := dec.dst.reg
+	right := dec.sub
+	kind := dec.kind
+
+	maskReg := func(rd byte) {
+		switch size {
+		case 1:
+			cb.Emit32(arm64UXTB(rd, rd))
+		case 2:
+			cb.Emit32(arm64UXTH(rd, rd))
+		}
+	}
+
+	// Runtime count in Tmp0 = Dn & 0x3F, then clamp/modulo per operand form.
+	m68kA64LoadD(cb, m68kA64Tmp0, dec.src.reg)
+	m68kA64MovImm32(cb, m68kA64Tmp6, 0x3F)
+	cb.Emit32(arm64AND_W(m68kA64Tmp0, m68kA64Tmp0, m68kA64Tmp6))
+	switch kind {
+	case m68kA64ShiftRO: // ROL/ROR: modulo width (a power of two)
+		m68kA64MovImm32(cb, m68kA64Tmp6, w-1)
+		cb.Emit32(arm64AND_W(m68kA64Tmp0, m68kA64Tmp0, m68kA64Tmp6))
+	case m68kA64ShiftROX: // ROXL/ROXR: modulo width+1 (not a power of two)
+		m68kA64MovImm32(cb, m68kA64Tmp6, w+1)
+		cb.Emit32(arm64UDIV_W(m68kA64Tmp5, m68kA64Tmp0, m68kA64Tmp6))
+		cb.Emit32(arm64MSUB(m68kA64Tmp0, m68kA64Tmp5, m68kA64Tmp6, m68kA64Tmp0))
+	default: // AS/LS shifts: clamp to width
+		m68kA64MovImm32(cb, m68kA64Tmp6, w)
+		cb.Emit32(arm64CMP_W(m68kA64Tmp0, m68kA64Tmp6))
+		skip := e.localFwdBcond(m68kA64CondCC) // count < width: keep
+		cb.Emit32(arm64MOV_W(m68kA64Tmp0, m68kA64Tmp6))
+		e.bindLocal(skip)
+	}
+
+	// Count of zero: preserve CCR and Dn, and skip everything below.
+	zero := e.localFwdCBZ(m68kA64Tmp0)
+
+	// Sized, zero-extended value in Tmp1.
+	m68kA64LoadD(cb, m68kA64Tmp1, dn)
+	maskReg(m68kA64Tmp1)
+
+	vReg := byte(0xFF)
+	keepX := false
+
+	switch kind {
+	case m68kA64ShiftLS:
+		cb.Emit32(arm64CMP_W(m68kA64Tmp0, m68kA64Tmp6)) // Tmp6 still == width
+		wide := e.localFwdBcond(m68kA64CondCS)          // count >= width
+		if right {
+			cb.Emit32(arm64SUB_W_imm(m68kA64Tmp5, m68kA64Tmp0, 1))
+			cb.Emit32(arm64LSRV_W(m68kA64Tmp2, m68kA64Tmp1, m68kA64Tmp5))
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp2, 0, 1))
+			cb.Emit32(arm64LSRV_W(m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp0))
+		} else {
+			m68kA64MovImm32(cb, m68kA64Tmp5, w)
+			cb.Emit32(arm64SUBS_W(m68kA64Tmp5, m68kA64Tmp5, m68kA64Tmp0))
+			cb.Emit32(arm64LSRV_W(m68kA64Tmp2, m68kA64Tmp1, m68kA64Tmp5))
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp2, 0, 1))
+			cb.Emit32(arm64LSLV_W(m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp0))
+			maskReg(m68kA64Tmp3)
+		}
+		toEnd := e.localFwdB()
+		e.bindLocal(wide)
+		// count >= width: result 0, C = (value != 0).
+		cb.Emit32(arm64CMP_W_imm(m68kA64Tmp1, 0))
+		cb.Emit32(arm64CSET_W(m68kA64Tmp2, m68kA64CondNE))
+		cb.Emit32(arm64MOVZ_W(m68kA64Tmp3, 0, 0))
+		e.bindLocal(toEnd)
+
+	case m68kA64ShiftAS:
+		if right {
+			switch size { // sign-extended source in Tmp4
+			case 1:
+				cb.Emit32(arm64SXTB_W(m68kA64Tmp4, m68kA64Tmp1))
+			case 2:
+				cb.Emit32(arm64SXTH_W(m68kA64Tmp4, m68kA64Tmp1))
+			default:
+				cb.Emit32(arm64MOV_W(m68kA64Tmp4, m68kA64Tmp1))
+			}
+			cb.Emit32(arm64CMP_W(m68kA64Tmp0, m68kA64Tmp6))
+			wide := e.localFwdBcond(m68kA64CondCS)
+			cb.Emit32(arm64SUB_W_imm(m68kA64Tmp5, m68kA64Tmp0, 1))
+			cb.Emit32(arm64LSRV_W(m68kA64Tmp2, m68kA64Tmp1, m68kA64Tmp5))
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp2, 0, 1))
+			cb.Emit32(arm64ASRV_W(m68kA64Tmp3, m68kA64Tmp4, m68kA64Tmp0))
+			maskReg(m68kA64Tmp3)
+			toEnd := e.localFwdB()
+			e.bindLocal(wide)
+			// count >= width: C = (value != 0), result = sign-filled.
+			cb.Emit32(arm64CMP_W_imm(m68kA64Tmp1, 0))
+			cb.Emit32(arm64CSET_W(m68kA64Tmp2, m68kA64CondNE))
+			cb.Emit32(arm64ASR_W_imm(m68kA64Tmp3, m68kA64Tmp4, 31))
+			maskReg(m68kA64Tmp3)
+			e.bindLocal(toEnd)
+		} else { // ASL: C = V = OR of the shifted-out bits
+			cb.Emit32(arm64CMP_W(m68kA64Tmp0, m68kA64Tmp6))
+			wide := e.localFwdBcond(m68kA64CondCS)
+			m68kA64MovImm32(cb, m68kA64Tmp5, w)
+			cb.Emit32(arm64SUBS_W(m68kA64Tmp5, m68kA64Tmp5, m68kA64Tmp0))
+			cb.Emit32(arm64LSRV_W(m68kA64Tmp2, m68kA64Tmp1, m68kA64Tmp5)) // top count bits
+			cb.Emit32(arm64CMP_W_imm(m68kA64Tmp2, 0))
+			cb.Emit32(arm64CSET_W(m68kA64Tmp2, m68kA64CondNE))
+			cb.Emit32(arm64LSLV_W(m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp0))
+			maskReg(m68kA64Tmp3)
+			toEnd := e.localFwdB()
+			e.bindLocal(wide)
+			cb.Emit32(arm64CMP_W_imm(m68kA64Tmp1, 0))
+			cb.Emit32(arm64CSET_W(m68kA64Tmp2, m68kA64CondNE))
+			cb.Emit32(arm64MOVZ_W(m68kA64Tmp3, 0, 0))
+			e.bindLocal(toEnd)
+			vReg = m68kA64Tmp2
+		}
+
+	case m68kA64ShiftRO:
+		keepX = true
+		// count is in 1..width-1 here (modulo applied, zero skipped).
+		m68kA64MovImm32(cb, m68kA64Tmp6, w)
+		cb.Emit32(arm64SUBS_W(m68kA64Tmp5, m68kA64Tmp6, m68kA64Tmp0)) // width - count
+		if right {
+			cb.Emit32(arm64LSRV_W(m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp0))
+			cb.Emit32(arm64LSLV_W(m68kA64Tmp6, m68kA64Tmp1, m68kA64Tmp5))
+			cb.Emit32(arm64ORR_W(m68kA64Tmp3, m68kA64Tmp3, m68kA64Tmp6))
+			maskReg(m68kA64Tmp3)
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp3, w-1, 1)) // C = MSB
+		} else {
+			cb.Emit32(arm64LSLV_W(m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp0))
+			cb.Emit32(arm64LSRV_W(m68kA64Tmp6, m68kA64Tmp1, m68kA64Tmp5))
+			cb.Emit32(arm64ORR_W(m68kA64Tmp3, m68kA64Tmp3, m68kA64Tmp6))
+			maskReg(m68kA64Tmp3)
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp3, 0, 1)) // C = LSB
+		}
+
+	case m68kA64ShiftROX:
+		// Rotate through X: a per-bit loop over the runtime count (1..width).
+		// New X = C = the last bit rotated out; X is updated so keepX stays
+		// false and FlagsShift takes X from the carry register.
+		cb.Emit32(arm64UBFX_W(m68kA64Tmp4, m68kA64CCR, m68kA64BitX, 1)) // xFlag
+		cb.Emit32(arm64MOV_W(m68kA64Tmp3, m68kA64Tmp1))                 // result = value
+		loop := e.hereLocal()
+		if right {
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp5, m68kA64Tmp3, 0, 1)) // new xFlag = LSB
+			cb.Emit32(arm64LSR_W_imm(m68kA64Tmp3, m68kA64Tmp3, 1))
+			cb.Emit32(arm64ORR_W_lsl(m68kA64Tmp3, m68kA64Tmp3, m68kA64Tmp4, w-1)) // old X into MSB
+		} else {
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp5, m68kA64Tmp3, w-1, 1)) // new xFlag = MSB
+			cb.Emit32(arm64LSL_W_imm(m68kA64Tmp3, m68kA64Tmp3, 1))
+			maskReg(m68kA64Tmp3)
+			cb.Emit32(arm64ORR_W(m68kA64Tmp3, m68kA64Tmp3, m68kA64Tmp4)) // old X into LSB
+		}
+		cb.Emit32(arm64MOV_W(m68kA64Tmp4, m68kA64Tmp5)) // xFlag = new
+		cb.Emit32(arm64SUB_W_imm(m68kA64Tmp0, m68kA64Tmp0, 1))
+		e.backCBNZ(m68kA64Tmp0, loop)
+		cb.Emit32(arm64MOV_W(m68kA64Tmp2, m68kA64Tmp4)) // C = final xFlag
+
+	default:
+		return fmt.Errorf("m68k arm64 emitter: shiftreg kind %d at %08X", kind, instrPC)
+	}
+
+	m68kA64MergeSizedToD(cb, dn, m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp6, size)
+	e.flagsShift(m68kA64Tmp3, size, m68kA64Tmp2, vReg, keepX)
+	e.bindLocal(zero)
 	return nil
 }
 
@@ -2375,8 +3264,149 @@ func (e *m68kA64Emitter) emitPushRet(retAddr uint32) {
 	e.branchToBail(m68kA64CondCC) // newSP < stackLowerBound
 	e.emitGuard(m68kA64Tmp0, 4)
 	m68kA64MovImm32(cb, m68kA64Tmp1, retAddr)
-	m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp2, 4)
+	e.emitStoreBE(m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp2, 4)
 	m68kA64StoreA(cb, m68kA64Tmp0, 7)
+}
+
+// buildPinPlan selects the guest registers a block uses and pins each to a
+// callee-saved host register (data registers first, then address registers
+// excluding A7 to avoid stack-pointer hazards), up to m68kA64PinMaxSlots. A
+// register the block writes is marked dirty and spilled on exit.
+func (e *m68kA64Emitter) buildPinPlan(instrs []M68KJITInstr) {
+	br := m68kAnalyzeBlockRegs(instrs)
+	host := byte(m68kA64PinFirstHost)
+	add := func(guest uint16, isAddr, dirty bool) bool {
+		if len(e.pins) >= m68kA64PinMaxSlots {
+			return false
+		}
+		e.pins = append(e.pins, m68kA64Pin{host: host, guest: guest, isAddr: isAddr, dirty: dirty})
+		if isAddr {
+			e.pinA[guest] = host
+		} else {
+			e.pinD[guest] = host
+		}
+		host++
+		return true
+	}
+	for dn := uint16(0); dn < 8; dn++ {
+		if (br.dataRead|br.dataWritten)&(1<<dn) != 0 {
+			if !add(dn, false, br.dataWritten&(1<<dn) != 0) {
+				break
+			}
+		}
+	}
+	for an := uint16(0); an < 7; an++ { // exclude A7
+		if (br.addrRead|br.addrWritten)&(1<<an) != 0 {
+			if !add(an, true, br.addrWritten&(1<<an) != 0) {
+				break
+			}
+		}
+	}
+	e.pinPairs = (len(e.pins) + 1) / 2
+}
+
+// emitPinPrologue saves the callee-saved host registers the pin plan uses and
+// loads each pinned guest register's value into its host register.
+func (e *m68kA64Emitter) emitPinPrologue() {
+	cb := e.cb
+	for p := 0; p < e.pinPairs; p++ {
+		r1 := byte(m68kA64PinFirstHost + 2*p)
+		cb.Emit32(arm64STP_pre(r1, r1+1, 31, -2)) // STP r1,r2,[SP,#-16]!
+	}
+	for _, pin := range e.pins {
+		base := byte(m68kA64DataBase)
+		if pin.isAddr {
+			base = m68kA64AddrBase
+		}
+		cb.Emit32(arm64LDR_W_imm(pin.host, base, uint32(pin.guest)))
+	}
+}
+
+// emitPinExit spills every dirty pinned register back to the in-memory register
+// file and restores the callee-saved host registers. It runs before every
+// block return (success epilogue and each bail), so a bailing instruction's
+// StepOne re-execution and any interrupt boundary observe the correct register
+// state.
+func (e *m68kA64Emitter) emitPinExit() {
+	cb := e.cb
+	for _, pin := range e.pins {
+		if !pin.dirty {
+			continue
+		}
+		base := byte(m68kA64DataBase)
+		if pin.isAddr {
+			base = m68kA64AddrBase
+		}
+		cb.Emit32(arm64STR_W_imm(pin.host, base, uint32(pin.guest)))
+	}
+	for p := e.pinPairs - 1; p >= 0; p-- {
+		r1 := byte(m68kA64PinFirstHost + 2*p)
+		cb.Emit32(arm64LDP_post(r1, r1+1, 31, 2)) // LDP r1,r2,[SP],#16
+	}
+}
+
+// emitChainAttempt emits a native-to-native chain edge before the unchained
+// epilogue. On the memory-resident arm64 backend the only live cross-edge
+// state is the CCR (W4) and the base pointers, all of which persist to a
+// successor's chain entry, so chaining needs no register spill: it decrements
+// ChainBudget (interrupt-latency bound), refuses to chain across a self-mod
+// (NeedInval) exit, looks the target guest PC up in the context chain cache
+// (populated by the dispatcher with startPC -> chainEntry), accumulates the
+// retired count into ChainCount, and tail-branches into the successor's chain
+// entry. Any miss falls through to the caller's unchained epilogue. Clobbers
+// Tmp1-3; preserves Tmp5 (the dynExit resume PC) and W4.
+func (e *m68kA64Emitter) emitChainAttempt(instrCount uint32, dynExit bool, staticPC uint32) {
+	cb := e.cb
+	var toUnchained []m68kA64BranchSite
+
+	// Target guest PC into Tmp1.
+	if dynExit {
+		cb.Emit32(arm64MOV_W(m68kA64Tmp1, m68kA64Tmp5))
+	} else {
+		m68kA64MovImm32(cb, m68kA64Tmp1, staticPC)
+	}
+
+	// ChainBudget -= instrCount; a signed result <= 0 means the interpreter's
+	// interrupt-sample boundary is due, so return to the dispatcher.
+	cb.Emit32(arm64LDR_W_imm(m68kA64Tmp2, m68kA64Ctx, m68kCtxOffChainBudget/4))
+	cb.Emit32(arm64SUBS_W_imm(m68kA64Tmp2, m68kA64Tmp2, instrCount))
+	cb.Emit32(arm64STR_W_imm(m68kA64Tmp2, m68kA64Ctx, m68kCtxOffChainBudget/4))
+	toUnchained = append(toUnchained, e.localFwdBcond(m68kA64CondLE))
+
+	// A self-modifying exit must go through the dispatcher so the precise-range
+	// invalidation runs before any successor executes.
+	cb.Emit32(arm64LDR_W_imm(m68kA64Tmp2, m68kA64Ctx, m68kCtxOffNeedInval/4))
+	cb.Emit32(arm64CMP_W_imm(m68kA64Tmp2, 0))
+	toUnchained = append(toUnchained, e.localFwdBcond(m68kA64CondNE))
+
+	// Cross-thread invalidation: if a host goroutine bumped the generation
+	// since this dispatch began, a queued code rewrite is pending; return to
+	// the dispatcher to drain it rather than chain across stale code.
+	cb.Emit32(arm64LDR_imm(m68kA64Tmp2, m68kA64Ctx, m68kCtxOffInvalGenPtr/8))
+	cb.Emit32(arm64LDR_imm(m68kA64Tmp2, m68kA64Tmp2, 0))
+	cb.Emit32(arm64LDR_imm(m68kA64Tmp3, m68kA64Ctx, m68kCtxOffInvalGenSnapshot/8))
+	cb.Emit32(arm64CMP(m68kA64Tmp2, m68kA64Tmp3))
+	toUnchained = append(toUnchained, e.localFwdBcond(m68kA64CondNE))
+
+	// Chain-target cache lookup (8 slots: PC at 80+16k, chain entry at 88+16k).
+	for k := uint32(0); k < 8; k++ {
+		cb.Emit32(arm64LDR_W_imm(m68kA64Tmp2, m68kA64Ctx, (m68kCtxOffRTSCache0PC+16*k)/4))
+		cb.Emit32(arm64CMP_W(m68kA64Tmp2, m68kA64Tmp1))
+		noMatch := e.localFwdBcond(m68kA64CondNE)
+		cb.Emit32(arm64LDR_imm(m68kA64Tmp3, m68kA64Ctx, (m68kCtxOffRTSCache0Addr+16*k)/8))
+		toUnchained = append(toUnchained, e.localFwdCBZ(m68kA64Tmp3)) // empty slot
+		// Chained: ChainCount += instrCount, then tail-branch to the entry.
+		cb.Emit32(arm64LDR_W_imm(m68kA64Tmp2, m68kA64Ctx, m68kCtxOffChainCount/4))
+		cb.Emit32(arm64ADD_W_imm(m68kA64Tmp2, m68kA64Tmp2, instrCount))
+		cb.Emit32(arm64STR_W_imm(m68kA64Tmp2, m68kA64Ctx, m68kCtxOffChainCount/4))
+		cb.Emit32(arm64BR(m68kA64Tmp3))
+		e.bindLocal(noMatch)
+	}
+
+	// No cached successor: fall through to the unchained epilogue.
+	for _, s := range toUnchained {
+		e.bindLocal(s)
+	}
 }
 
 func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecMem, memory []byte, topOfRAM uint32) (*JITBlock, error) {
@@ -2385,6 +3415,28 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 	}
 	cb := NewCodeBuffer(len(instrs)*160 + 128)
 	e := &m68kA64Emitter{cb: cb}
+	if m68kARM64CCRLivenessEnabled() {
+		e.ccrLive = m68kCCRLiveness(instrs)
+	}
+	e.chain = m68kARM64ChainEnabled()
+	if m68kARM64PinEnabled() {
+		// Serialise all compilation while pinning is enabled so the process-
+		// global current-emitter pointer the leaf accessors read is never
+		// shared or raced across concurrent compilations. Held for the whole
+		// compile; the current-emitter clear (defer below) runs first (LIFO),
+		// so the pointer is nil again before the lock is released.
+		m68kA64PinCompileMu.Lock()
+		defer m68kA64PinCompileMu.Unlock()
+		e.buildPinPlan(instrs)
+		if len(e.pins) > 0 {
+			// Route the leaf register accessors through the pin map, and
+			// disable chaining: a chain edge would need a matching pin map in
+			// the successor.
+			m68kA64CurrentEmitter = e
+			defer func() { m68kA64CurrentEmitter = nil }()
+			e.chain = false
+		}
+	}
 
 	// Prologue: base pointers, memory window, I/O bitmap, live CCR.
 	cb.Emit32(arm64LDR_imm(m68kA64DataBase, m68kA64Ctx, m68kCtxOffDataRegsPtr/8))
@@ -2397,11 +3449,23 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 	cb.Emit32(arm64LDRH_imm(m68kA64Tmp0, m68kA64SRAddr, 0))
 	cb.Emit32(arm64UBFX_W(m68kA64CCR, m68kA64Tmp0, 0, 5))
 
+	// Register residency: save callee-saved hosts and load the pinned guest
+	// registers. (Pinning and chaining are mutually exclusive, so this never
+	// coexists with a chain entry.)
+	if len(e.pins) > 0 {
+		e.emitPinPrologue()
+	}
+
+	// A chained successor branches here, past the prologue: the base pointers
+	// and the live CCR (W4) are already established by the predecessor.
+	chainEntryOff := cb.Len()
+
 	endPC := startPC
 	for i := range instrs {
 		ji := &instrs[i]
 		instrPC := startPC + ji.pcOffset
 		e.bails = nil
+		e.ccrDead = e.ccrLive != nil && i < len(e.ccrLive) && !e.ccrLive[i]
 		if i == len(instrs)-1 {
 			// A block-ending branch is only ever admitted as the final
 			// instruction (m68kARM64SupportedPrefix stops on it).
@@ -2439,6 +3503,20 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 		cb.Emit32(arm64STRH_imm(m68kA64Tmp0, m68kA64SRAddr, 0))
 	}
 	flushSR()
+	// Native chaining edge (after the SR flush, so the successor sees a
+	// consistent SR). On a cache hit this tail-branches away and never reaches
+	// the unchained RetPC/return below.
+	if e.chain {
+		if e.dynExit {
+			e.emitChainAttempt(uint32(len(instrs)), true, 0)
+		} else {
+			exitPC := endPC
+			if e.hasStaticExit {
+				exitPC = e.staticExit
+			}
+			e.emitChainAttempt(uint32(len(instrs)), false, exitPC)
+		}
+	}
 	if e.dynExit {
 		cb.Emit32(arm64STR_W_imm(m68kA64Tmp5, m68kA64Ctx, m68kCtxOffRetPC/4))
 	} else {
@@ -2451,6 +3529,9 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 	}
 	m68kA64MovImm32(cb, m68kA64Tmp0, uint32(len(instrs)))
 	cb.Emit32(arm64STR_W_imm(m68kA64Tmp0, m68kA64Ctx, m68kCtxOffRetCount/4))
+	if len(e.pins) > 0 {
+		e.emitPinExit()
+	}
 	cb.Emit32(arm64MOVZ(0, 0, 0)) // mov x0, #0 — clean return value
 	cb.Emit32(arm64RET())
 
@@ -2477,6 +3558,9 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 		cb.Emit32(arm64STR_W_imm(m68kA64Tmp6, m68kA64Ctx, m68kCtxOffRetCount/4))
 		cb.Emit32(arm64MOVZ_W(m68kA64Tmp0, 1, 0))
 		cb.Emit32(arm64STR_W_imm(m68kA64Tmp0, m68kA64Ctx, m68kCtxOffNeedIOFallback/4))
+		if len(e.pins) > 0 {
+			e.emitPinExit()
+		}
 		cb.Emit32(arm64MOVZ(0, 0, 0))
 		cb.Emit32(arm64RET())
 	}
@@ -2486,13 +3570,17 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 	if err != nil {
 		return nil, err
 	}
-	return &JITBlock{
+	block := &JITBlock{
 		startPC:    uint64(startPC),
 		endPC:      uint64(endPC),
 		instrCount: len(instrs),
 		execAddr:   addr,
 		execSize:   len(code),
-	}, nil
+	}
+	if e.chain {
+		block.chainEntry = addr + uintptr(chainEntryOff)
+	}
+	return block, nil
 }
 
 // m68kJITContextPtr returns the context pointer for callNative.

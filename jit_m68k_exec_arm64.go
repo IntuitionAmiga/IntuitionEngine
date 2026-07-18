@@ -19,20 +19,22 @@
 //     snapshot immediately before entering native code. A bus write that
 //     overlaps compiled code is serialised with final validation and native
 //     execution, closing the check-to-call race.
-// Exact-range native-exit invalidation (the amd64 refinement where a block
-// that stores into its own code region exits carrying the precise byte range)
-// is a throughput optimisation over the conservative guest-byte stamp used
-// here: the stamp recompiles on ANY change to a block's bytes before the block
-// is re-entered, so stale native code never runs across a dispatch boundary
-// (TestM68KARM64_SMCStampMismatch). It ports alongside register pinning in
-// milestone 4. Blocks are short straight-line prefixes, and every dispatch
-// revalidates the stamp, so the conservative scheme is correct; only the
-// precise-range fast path is deferred.
+// Exact-range native-exit invalidation (milestone 4): every native guest store
+// consults a per-page code bitmap (emitSMCStoreCheck) and, on a hit, records
+// the precise written range in NeedInval/InvalAddr/InvalSize; the dispatcher
+// invalidates exactly that range on return (TestM68KARM64_SMCExactRange). The
+// conservative guest-byte stamp remains a backstop and still revalidates every
+// block before entry, but the precise range is what lets native chaining bypass
+// the dispatcher safely: a chained successor must never run across a
+// self-modified predecessor.
 //
-// 68881 floating point: F-line instructions (opcode 0xF000..) are never
-// admitted into a native block, so they always fall back to the interpreter's
-// 68881 implementation. This is the explicitly staged FPU fallback the parity
-// plan permits; native 68881 lowering is milestone 4 work.
+// 68881 floating point (milestone 4): the register-to-register clean-mapping
+// subset (FMOVE/FADD/FSUB/FMUL/FDIV/FABS/FNEG/FSQRT/FCMP/FTST and single
+// FSGLMUL/FSGLDIV) is lowered natively in A64 scalar double, matching the
+// interpreter's float64 arithmetic bit for bit with eager FPSR condition codes
+// and FPIAR set to the instruction PC (emitFPU). FINT/FINTRZ (FPCR rounding
+// mode), transcendentals, EA-operand forms and control/FMOVEM stay on the
+// interpreter's 68881.
 //
 // Block chaining and the interrupt boundary:
 //   The arm64 backend operates directly on cpu.DataRegs/cpu.AddrRegs through
@@ -86,9 +88,33 @@ func (cpu *M68KCPU) initM68KJIT() error {
 	// The I/O page bitmap must exist before the context snapshot: the
 	// slice-2 emitter's inline access guards read it through the context.
 	cpu.m68kBuildJITIOPageBitmap()
-	cpu.m68kJitCtx = newM68KJITContext(cpu, nil, nil, nil)
+	// Per-page code bitmap for native-exit exact-range SMC detection: one byte
+	// per 4 KiB guest page, covering all of guest RAM. Native stores consult it
+	// (emitSMCStoreCheck) and flag NeedInval with the precise byte range.
+	pageCount := (uint32(len(cpu.memory)) + 4095) >> 12
+	cpu.m68kJitCodeBitmap = make([]byte, pageCount)
+	cpu.m68kJitCtx = newM68KJITContext(cpu, cpu.m68kJitCodeBitmap, nil, nil)
 	cpu.m68kJitWarmupLimit = m68kJITCompileWarmupLimit()
 	return nil
+}
+
+// m68kARM64MarkCodePages marks every 4 KiB page a freshly compiled block spans
+// so native stores into it flag an SMC invalidation. Marks are conservative:
+// a page stays marked after its block is removed, which only costs a redundant
+// (empty) precise-range invalidation later, never a missed one.
+func (cpu *M68KCPU) m68kARM64MarkCodePages(block *JITBlock) {
+	if cpu.m68kJitCodeBitmap == nil || block == nil {
+		return
+	}
+	last := block.endPC
+	if last > 0 {
+		last--
+	}
+	for p := uint32(block.startPC) >> 12; p <= uint32(last)>>12; p++ {
+		if int(p) < len(cpu.m68kJitCodeBitmap) {
+			cpu.m68kJitCodeBitmap[p] = 1
+		}
+	}
 }
 
 func (cpu *M68KCPU) freeM68KJIT() {
@@ -100,6 +126,7 @@ func (cpu *M68KCPU) freeM68KJIT() {
 		cpu.m68kJitCache = nil
 		cpu.m68kJitCtx = nil
 		cpu.m68kJitWarmupCounts = nil
+		cpu.m68kJitCodeBitmap = nil
 	}
 }
 
@@ -114,6 +141,56 @@ func (cpu *M68KCPU) invalidateM68KJITForGuestWrite(addr uint32, size uint32) {
 	}
 	end := uint64(addr) + uint64(size)
 	cpu.m68kJitCache.InvalidateRange(uint64(addr), end)
+	// Any removed block leaves a dangling chain-cache entry.
+	m68kARM64ClearChainCache(cpu.m68kJitCtx)
+}
+
+// m68kARM64ChainCacheInsert records a compiled block's (startPC -> chainEntry)
+// in one of the eight context chain-cache slots (reused from the RTS-cache
+// fields, which the arm64 backend does not otherwise use). A chaining block's
+// native exit scans these slots to tail-branch into a hot successor. cursor
+// rotates so recently executed blocks stay resident. A zero chainEntry (chaining
+// disabled for that block) is ignored.
+func m68kARM64ChainCacheInsert(ctx *M68KJITContext, pc uint32, entry uintptr, cursor int) {
+	if entry == 0 {
+		return
+	}
+	switch cursor & 7 {
+	case 0:
+		ctx.RTSCache0PC, ctx.RTSCache0Addr = pc, entry
+	case 1:
+		ctx.RTSCache1PC, ctx.RTSCache1Addr = pc, entry
+	case 2:
+		ctx.RTSCache2PC, ctx.RTSCache2Addr = pc, entry
+	case 3:
+		ctx.RTSCache3PC, ctx.RTSCache3Addr = pc, entry
+	case 4:
+		ctx.RTSCache4PC, ctx.RTSCache4Addr = pc, entry
+	case 5:
+		ctx.RTSCache5PC, ctx.RTSCache5Addr = pc, entry
+	case 6:
+		ctx.RTSCache6PC, ctx.RTSCache6Addr = pc, entry
+	case 7:
+		ctx.RTSCache7PC, ctx.RTSCache7Addr = pc, entry
+	}
+}
+
+// m68kARM64ClearChainCache zeroes every chain-cache slot. It MUST run whenever a
+// block is removed or exec memory is reset: a stale chain entry would tail-branch
+// into dead or reused native code. Clearing only disables chaining until the
+// cache refills, so it is always safe.
+func m68kARM64ClearChainCache(ctx *M68KJITContext) {
+	if ctx == nil {
+		return
+	}
+	ctx.RTSCache0PC, ctx.RTSCache0Addr = 0, 0
+	ctx.RTSCache1PC, ctx.RTSCache1Addr = 0, 0
+	ctx.RTSCache2PC, ctx.RTSCache2Addr = 0, 0
+	ctx.RTSCache3PC, ctx.RTSCache3Addr = 0, 0
+	ctx.RTSCache4PC, ctx.RTSCache4Addr = 0, 0
+	ctx.RTSCache5PC, ctx.RTSCache5Addr = 0, 0
+	ctx.RTSCache6PC, ctx.RTSCache6Addr = 0, 0
+	ctx.RTSCache7PC, ctx.RTSCache7Addr = 0, 0
 }
 
 // m68kResetJITCodeCache drops every compiled block (cross-thread queue
@@ -127,6 +204,13 @@ func (cpu *M68KCPU) m68kResetJITCodeCache() {
 	if execMem := cpu.m68kGetJITExecMem(); execMem != nil {
 		execMem.Reset()
 	}
+	// A full drop clears the code-page marks; they are rebuilt as blocks
+	// recompile. The chain cache holds now-dangling entry addresses and must
+	// be cleared too.
+	if cpu.m68kJitCodeBitmap != nil {
+		clear(cpu.m68kJitCodeBitmap)
+	}
+	m68kARM64ClearChainCache(cpu.m68kJitCtx)
 }
 
 // m68kVerifyCaptureWrite: the native-vs-interpreter self-verifier is an
@@ -199,6 +283,12 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 	execMem := cpu.m68kGetJITExecMem()
 	ctx := cpu.m68kJitCtx
 	uncompilable := make(map[uint32]struct{}, 1024)
+	chainEnabled := m68kARM64ChainEnabled()
+	// ChainBudget bounds how many instructions may run natively (across chained
+	// blocks) before returning to sample interrupts; matches the interpreter's
+	// poll cadence.
+	const m68kARM64ChainBudget = 256
+	chainCursor := 0
 	var instructionCount uint64
 	if cpu.PerfEnabled {
 		cpu.InstructionCount = 0
@@ -243,6 +333,10 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			// uncompilable-adjacent or replaced code under them; rewritten
 			// code must get a fresh admission decision.
 			clear(uncompilable)
+			// Removed blocks leave dangling chain-cache entries.
+			if chainEnabled {
+				m68kARM64ClearChainCache(ctx)
+			}
 		}
 		genSnapshot := cpu.m68kJitInvalGen.Load()
 
@@ -255,6 +349,10 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			cpu.m68kJitCache.RemoveBlock(block)
 			block = nil
 			delete(uncompilable, pc)
+			// The removed block may be referenced by a chain-cache entry.
+			if chainEnabled {
+				m68kARM64ClearChainCache(ctx)
+			}
 		}
 		if block == nil {
 			if _, bad := uncompilable[pc]; !bad && int(pc) < len(cpu.memory) && pc&1 == 0 {
@@ -269,6 +367,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 					if err == nil {
 						m68kStampGuestBlockBytes(cpu.memory, compiled)
 						cpu.m68kARM64PublishCodeEnv(compiled)
+						cpu.m68kARM64MarkCodePages(compiled)
 						cpu.m68kJitCache.Put(compiled)
 						block = compiled
 					} else {
@@ -301,11 +400,39 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		ctx.RetCount = 0
 		ctx.ChainCount = 0
 		ctx.NeedIOFallback = 0
+		ctx.NeedInval = 0
+		ctx.InvalAddr = 0
+		ctx.InvalSize = 0
+		if chainEnabled {
+			// Seed the interrupt-latency budget, publish the generation
+			// snapshot so a chained edge can detect a cross-thread rewrite, and
+			// make this block reachable as a chain target for its predecessors.
+			ctx.ChainBudget = m68kARM64ChainBudget
+			ctx.InvalGenSnapshot = genSnapshot
+			m68kARM64ChainCacheInsert(ctx, uint32(block.startPC), block.chainEntry, chainCursor)
+			chainCursor++
+		}
 		cpu.m68kJitNativeActive.Store(true)
 		callNative(block.execAddr, m68kJITContextPtr(ctx))
 		cpu.m68kJitNativeActive.Store(false)
 		cpu.m68kJitExecMu.Unlock()
 		cpu.PC = ctx.RetPC
+
+		if ctx.NeedInval != 0 {
+			// A native store landed on a code page: invalidate exactly the
+			// written range so any block covering it recompiles on next
+			// dispatch. The conservative guest-byte stamp remains a backstop;
+			// this precise invalidation is the throughput refinement and the
+			// prerequisite for native chaining (a chained successor must never
+			// run across a self-modified predecessor).
+			invalAddr, invalSize := ctx.InvalAddr, ctx.InvalSize
+			ctx.NeedInval = 0
+			ctx.InvalAddr = 0
+			ctx.InvalSize = 0
+			if invalSize != 0 {
+				cpu.invalidateM68KJITForGuestWrite(invalAddr, invalSize)
+			}
+		}
 
 		if ctx.NeedIOFallback != 0 {
 			// A guarded memory access hit an I/O page or the RAM bound.
@@ -314,6 +441,9 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			// RetPC the faulting instruction. Interpret that single
 			// instruction and re-enter the dispatch loop.
 			ctx.NeedIOFallback = 0
+			// Across a chain, ChainCount holds the fully-retired predecessors
+			// and RetCount the partial count within the bailing block.
+			instructionCount += uint64(ctx.ChainCount)
 			instructionCount += uint64(ctx.RetCount)
 			instructionCount += uint64(cpu.StepOne())
 			if cpu.PerfEnabled {

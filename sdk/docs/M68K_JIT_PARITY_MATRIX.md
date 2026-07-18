@@ -384,3 +384,78 @@ arm64 under qemu-aarch64 (307 arm64 subtests). The Harte exception gate and
 the AROS-boot-on-real-hardware gate for residency/control-flow changes remain
 outstanding per the plan and are not satisfiable in qemu. m68kJitAvailable
 stays false on arm64 until those hardware gates pass.
+
+## Milestone 4 delivered: arm64 capability completion and optimisation slices
+
+All seven milestone 4 slices are implemented on arm64 and validated by the qemu
+differential suite. Every change was checked against the interpreter differential
+under qemu-aarch64. The optimisation slices are ON by default, each with an
+environment kill switch (M68K_ARM64_CCR_LIVENESS=0, M68K_ARM64_CHAIN=0,
+M68K_ARM64_PIN=0). m68kJitAvailable remains false on arm64 until the Harte
+exception gate and the AROS-boot gate pass on real hardware, so these run in the
+test-only arm64 path today; the x13s benchmark (measure the wins) and the
+AROS-boot correctness run for pinning and chaining remain the outstanding
+hardware gates, and M68K_ARM64_PIN=0 is the escape hatch until pinning clears the
+AROS boot.
+
+Capability completion (native lowering, qemu differential-verified):
+
+- Register-count shift/rotate (Dn count): ASR/ASL/LSR/LSL/ROR/ROL/ROXR/ROXL with
+  a runtime count. The count is masked to six bits then clamped to the operand
+  width (shifts) or reduced modulo the width, width+1 for ROXd (rotates); a
+  resulting count of zero preserves the whole CCR. AS/LS shifts and RO rotates
+  use closed forms with a runtime width branch (variable A64 shifts); ROXd uses a
+  per-bit loop through the X flag. Parity is with ExecShiftRotate.
+- 68020 long MULL/DIVL: MULU.L/MULS.L (32x32 to 32 or 64) via a single A64 long
+  multiply, and DIVU.L/DIVS.L (64/32 and 32/32) via a 64-bit A64 divide with a
+  zero-divisor bail and overflow detection that also catches INT_MIN / -1. Both
+  the 64-bit and single-register 32-bit DIVL encodings are covered.
+- Native 68881 subset: the register-to-register clean-mapping ops
+  (FMOVE/FADD/FSUB/FMUL/FDIV/FABS/FNEG/FSQRT/FCMP/FTST and single-precision
+  FSGLMUL/FSGLDIV) in A64 scalar double, bit-identical to the interpreter's
+  float64 arithmetic, with eager FPSR condition codes and FPIAR set to the
+  instruction PC, plus the single-precision result round-trip. FINT/FINTRZ,
+  transcendentals, effective-address operand forms and control/FMOVEM stay on the
+  interpreter's 68881. This is the arm64 analogue of the amd64 native 68881.
+
+Optimisation slices (on by default with environment kill switches; x13s
+benchmark and pin/chain AROS-boot gate deferred):
+
+- Exact-range native-exit SMC invalidation: every native store consults a
+  per-page code bitmap and, on a hit, records the precise written range in
+  NeedInval/InvalAddr/InvalSize; the dispatcher invalidates exactly that range.
+  The conservative guest-byte stamp remains a backstop; the precise range is what
+  makes native chaining safe across a self-modified predecessor.
+- Within-block CCR liveness (default on; M68K_ARM64_CCR_LIVENESS=0 disables): a producer whose
+  condition codes are fully overwritten before any consumer, bail, exception or
+  exit is dead and its CCR materialisation is skipped. It consumes the shared,
+  architecture-neutral m68kCCRLiveness analysis, preserving the rule that only
+  NZ-safe conditions may drop V and C, and never eliminates across an observation
+  point (no cross-block CCR).
+- Native block chaining (default on; M68K_ARM64_CHAIN=0 disables): on the memory-resident arm64
+  backend the only live cross-edge state is the CCR (flushed to SR on the edge)
+  and the base pointers, so chaining needs no register spill. A clean static or
+  dynamic exit decrements ChainBudget (interrupt-latency bound), refuses to chain
+  across a self-modifying or cross-thread-invalidated exit, looks the target PC
+  up in a context chain cache (populated by the dispatcher, cleared on every
+  invalidation, so no dangling entry is ever branched into), accumulates the
+  retired count into ChainCount, and tail-branches into the successor's chain
+  entry. No runtime-patched branches, so there is no patch-into-freed-code
+  coherence hazard.
+- Register residency / pinning (default on; M68K_ARM64_PIN=0 disables): a block's used data
+  registers, then address registers other than A7, are pinned to callee-saved
+  host registers with a prologue load and a spill of the dirty pins at every
+  exit, success and bail alike, so a bailing instruction's re-execution and any
+  interrupt boundary observe correct register state. Every access routes through
+  the leaf register accessors via a compile-scoped current-emitter global (the
+  same pattern as the amd64 m68kCurrentCS). Pinning and chaining are mutually
+  exclusive for now, since a chain edge would require a matching pin map in the
+  successor; region residency across chain edges is the remaining hardware-gated
+  work.
+
+Gate status (milestone 4): the full arm64 differential suite is green under
+qemu-aarch64 with each optimisation flag off (default) and on, and with the
+liveness+chain, liveness+pin and all-flags combinations. The benchmark gate on
+the x13s and the AROS-boot correctness gate for the residency and chaining
+changes remain outstanding and are not satisfiable in qemu; the register-corruption
+modes those gates catch are exactly why pinning stays behind a flag until then.
