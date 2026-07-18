@@ -459,3 +459,63 @@ liveness+chain, liveness+pin and all-flags combinations. The benchmark gate on
 the x13s and the AROS-boot correctness gate for the residency and chaining
 changes remain outstanding and are not satisfiable in qemu; the register-corruption
 modes those gates catch are exactly why pinning stays behind a flag until then.
+
+## Milestone 5 delivered: the minimal wasm M68020 backend
+
+Runtime-boundary decision (recorded per the plan prerequisite): the M68020 gets
+its own wasm backend. It reuses only the generic wasm binary encoder
+(jit_wasm_encoder.go) and the architecture-neutral analysis in jit_m68k_common.go
+(scanning, instruction length, the native FPU decode and FPSR condition
+reference). It deliberately does not reuse jit_wasm_runtime.go, jit_exec_wasm.go
+or the IE64 chain driver, which are tied to CPU64, JITContext, 64-bit PCs, IE64
+helpers, timers, MMU gating and IE64 accounting.
+
+The translator and encoder are untagged pure Go, so the same module bytes the
+browser feeds to WebAssembly.instantiate are exercised natively under wazero in
+the test suite, mirroring the IE64 wasm backend. Each block is one wasm function
+`block(ctx i32) -> ()` importing the host `env.mem`. The register files live in
+linear memory (eight uint32 each) and the CCR is modelled in a wasm local in
+M68K bit order (X N Z V C at 4..0), materialised into cpu.SR's low byte in every
+block epilogue.
+
+Delivered and differentially verified against the interpreter under wazero
+(jit_m68k_wasm_diff_test.go):
+
+- Integer blocks: NOP, MOVEQ, MOVE/MOVEA, ADD/SUB/CMP/AND/OR/EOR register and
+  immediate forms, ADDQ/SUBQ to Dn and An, TST, CLR, in all three sizes, with
+  full CCR materialised on every flag-setting instruction. Overflow and carry
+  match the interpreter bit for bit via a top-of-word alignment, and AND/OR/EOR
+  preserve V and C exactly as the interpreter does.
+- Memory effective addresses: (An), (An)+, -(An), (d16,An), (xxx).W, (xxx).L and
+  (d16,PC), with big-endian access, byte/word/long sizes, inline RAM-bounds and
+  I/O-page guards, and a mid-block bail that exits before the faulting
+  instruction's side effects with the faulting PC, the partial retired count and
+  NeedIOFallback so the dispatcher interprets that one instruction. At most one
+  memory operand per instruction in this slice, which sidesteps the double
+  side-effect hazard when both operands auto-adjust the same An.
+- Control flow as block-ending exits: BRA, Bcc (all conditions), DBcc, BSR,
+  JMP, JSR and RTS, each publishing a resume PC to the dispatcher. Guarded
+  stack push/pop for BSR/JSR/RTS.
+- 68881 clean-mapping FPU subset in wasm f64: FMOVE/FADD/FSUB/FMUL/FDIV/FABS/
+  FNEG/FSQRT/FCMP/FTST with eager FPSR condition codes (a bit-exact replica of
+  the interpreter's setCC64 and FCMP), single-precision result rounding via an
+  f32 round-trip, and FPIAR set to the instruction PC. Verified bit-exact over
+  a grid including NaN, both infinities, subnormals and negative zero.
+
+Gate status (milestone 5): the integer, memory, control-flow and FPU
+differential grids are green under wazero (102 subtests). The remaining
+milestone 5 item is the js/wasm browser dispatcher (the analogue of the IE64
+wasmJITRuntime plus jit_exec_wasm.go) and the browser smoke run, which cannot
+run in the headless/wazero environment. Before it can be enabled it must resolve
+the wasm32 context layout (the shared M68KJITContext offsets assume an 8-byte
+uintptr; wasm pointers are 4 bytes) and provide synchronous per-block
+instantiation with a PC-keyed instance cache, boundary interrupt sampling,
+NeedIOFallback single-stepping and SMC invalidation. Until then m68kJitAvailable
+stays false on wasm and execution routes to the interpreter, as on arm64 pending
+its hardware gates.
+
+Deferred to milestone 6 (documented, not silently capped): read-modify-write
+ALU to a memory destination, structured in-block loops for proven-in-block
+backward branches (the correct exit-to-driver path is implemented), native
+stack floor/ceiling enforcement, observed-region promotion, and FSGLMUL/FSGLDIV/
+FINT/FINTRZ plus every transcendental (interpreter fallback).
