@@ -1181,7 +1181,9 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 	prevLoopPlan := ie64ActiveLoopPlan
 	ie64ActiveLoopPlan = ie64AnalyseLoop(instrs, startPC)
 	defer func() { ie64ActiveLoopPlan = prevLoopPlan }()
-
+	prevFoldPlan := ie64ActiveFoldPlan
+	ie64ActiveFoldPlan = ie64AnalyseConstFold(instrs, startPC)
+	defer func() { ie64ActiveFoldPlan = prevFoldPlan }()
 	// FP register residency (Technique 3, B1): keep the block's hottest FP32
 	// registers in host XMM8..XMM15 across the block. Only eligible when the
 	// block has FP state (hasFPU) and no residency barrier / FP64 usage. The
@@ -1206,10 +1208,29 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 		if ie64ActiveLoopPlan != nil && len(ie64ActiveLoopPlan.accesses) != 0 && i == ie64ActiveLoopPlan.head {
 			emitIE64LoopPrecheckAMD64(cb, &br, writtenSoFar, ie64ActiveLoopPlan)
 		}
+		if ie64ActiveLoopPlan != nil && ie64ActiveLoopPlan.hoist >= 0 && i == ie64ActiveLoopPlan.head {
+			// Hoisted invariant: emitted once, immediately before the
+			// loop-head label, so back-edge targets land after it.
+			hj := &instrs[ie64ActiveLoopPlan.hoist]
+			emitInstruction(cb, hj, startPC, false, &br, writtenSoFar, ie64ActiveLoopPlan.hoist, instrOffsets, &pendingChains)
+			writtenSoFar |= instrWrittenRegs(hj)
+			ie64LoopHoistEmits.Add(1)
+		}
 		instrOffsets[i] = cb.Len()
 		ji := &instrs[i]
 		ie64CurrentLoopInstr = i
-		emitInstruction(cb, ji, startPC, i == len(instrs)-1, &br, writtenSoFar, i, instrOffsets, &pendingChains)
+		if ie64ActiveLoopPlan != nil && i == ie64ActiveLoopPlan.hoist {
+			// Suppressed inside the loop: the host instruction ran once
+			// before the loop head. The guest instruction stays in every
+			// index-based retired count.
+			writtenSoFar |= instrWrittenRegs(ji)
+			continue
+		}
+		if f := ie64FoldEntryAt(i); f.folded {
+			emitFoldedConst(cb, ji.rd, f.value)
+		} else {
+			emitInstruction(cb, ji, startPC, i == len(instrs)-1, &br, writtenSoFar, i, instrOffsets, &pendingChains)
+		}
 		writtenSoFar |= instrWrittenRegs(ji)
 	}
 
@@ -1449,6 +1470,9 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 	prevLoopPlan := ie64ActiveLoopPlan
 	ie64ActiveLoopPlan = regionLoopPlan
 	defer func() { ie64ActiveLoopPlan = prevLoopPlan }()
+	prevFoldPlan := ie64ActiveFoldPlan
+	ie64ActiveFoldPlan = ie64AnalyseRegionConstFold(region.blocks, region.blockPCs)
+	defer func() { ie64ActiveFoldPlan = prevFoldPlan }()
 	// Conservative: cross-block back-edge detection is per-block today.
 	// Force-true so the prologue + counter machinery handles intra-region
 	// back-edges correctly.
@@ -1488,6 +1512,7 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 	}
 	var fwdFixups []fwdFixup
 	var pendingChains []ie64PendingChainSlot
+	var coldStub *ie64ColdExitStubAMD64
 
 	prevBase := ie64CurrentInstrCountBase
 	defer func() { ie64CurrentInstrCountBase = prevBase }()
@@ -1572,6 +1597,28 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 				rsReg := resolveRegAMD64(cb, ji.rs, amd64RAX)
 				rtReg := resolveRegAMD64(cb, ji.rt, amd64RDX)
 				amd64ALU_reg_reg(cb, 0x39, rsReg, rtReg)
+				if targetBI == bi+1 && ie64ColdExitOutlineEligible(region.observed) {
+					// Outlined cold exit: invert the host condition so the
+					// adjacent forward hot successor is reached by
+					// fall-through; the cold-exit sequence is emitted after
+					// all normal region bodies and exits, reached only
+					// through this conditional fixup. The pending FPCC and
+					// count base are captured so the stub replays the exact
+					// existing cold-exit sequence.
+					coldStub = &ie64ColdExitStubAMD64{
+						jccOff:       amd64Jcc_rel32(cb, cond^1),
+						coldTarget:   region.observed[bi].coldTarget,
+						count:        uint32(i + 1),
+						countBase:    ie64CurrentInstrCountBase,
+						writtenSoFar: writtenSoFar,
+						pendingFPCC:  ie64PendingFPCC,
+					}
+					// Fall through into the next emitted block. The
+					// block-end flush below settles any sunk CC on this
+					// edge, exactly like the previous explicit hot edge.
+					writtenSoFar |= instrWrittenRegs(ji)
+					continue
+				}
 				hotOff := amd64Jcc_rel32(cb, cond)
 				emitPackedPCAndCount(cb, region.observed[bi].coldTarget, uint32(i+1), &br)
 				emitEpilogue(cb, writtenSoFar, br.used)
@@ -1662,7 +1709,11 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 			}
 
 			instrOffsets[i] = cb.Len()
-			emitInstruction(cb, ji, region.blockPCs[bi], isLast, &br, writtenSoFar, i, instrOffsets, &pendingChains)
+			if f := ie64FoldEntryAt(totalInstrCount + i); f.folded {
+				emitFoldedConst(cb, ji.rd, f.value)
+			} else {
+				emitInstruction(cb, ji, region.blockPCs[bi], isLast, &br, writtenSoFar, i, instrOffsets, &pendingChains)
+			}
 			writtenSoFar |= instrWrittenRegs(ji)
 		}
 		// A block that does not end in a terminator falls through to the next
@@ -1695,6 +1746,21 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		endPC := lastBlockPC + uint64(lastInstr.pcOffset) + IE64_INSTR_SIZE
 		emitPackedPCAndCount(cb, endPC, uint32(totalInstrCount), &br)
 		emitEpilogue(cb, br.written, br.used)
+	}
+
+	// Outlined cold exit stub: reached only through its conditional fixup.
+	// Every normal path above has already terminated or branched. The stub
+	// replays the exact cold-exit sequence with the state captured at the
+	// conditional: count base, written-so-far spill mask and pending FPCC.
+	if coldStub != nil {
+		patchRel32(cb, coldStub.jccOff, cb.Len())
+		ie64CurrentInstrCountBase = coldStub.countBase
+		ie64PendingFPCC = coldStub.pendingFPCC
+		emitPackedPCAndCount(cb, coldStub.coldTarget, coldStub.count, &br)
+		emitEpilogue(cb, coldStub.writtenSoFar, br.used)
+		ie64CurrentInstrCountBase = 0
+		ie64PendingFPCC = ie64FPCCPending{}
+		ie64ColdExitOutlines.Add(1)
 	}
 
 	emitFPStickyColdBlocksAMD64(cb)
@@ -1748,6 +1814,19 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 }
 
 var errIE64RegionTooSmall = errors.New("ie64CompileRegion: region has fewer than 2 blocks")
+
+// ie64ColdExitStubAMD64 captures everything the outlined cold-exit stub
+// needs to replay the existing cold-exit sequence after all normal region
+// bodies and exits. The x86 condition codes pair by xor-1, so the inverted
+// branch is cond^1.
+type ie64ColdExitStubAMD64 struct {
+	jccOff       int
+	coldTarget   uint64
+	count        uint32
+	countBase    uint32
+	writtenSoFar uint32
+	pendingFPCC  ie64FPCCPending
+}
 
 func ie64AMD64Cond(op byte) (byte, bool) {
 	switch op {
@@ -2101,6 +2180,24 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 // ===========================================================================
 // Data Movement Emitters
 // ===========================================================================
+
+// emitFoldedConst writes a precomputed constant to the destination register
+// through the normal destination-write path (same shape as emitMOVE's
+// immediate arm, widened to a full 64-bit value).
+func emitFoldedConst(cb *CodeBuffer, rd byte, value uint64) {
+	if rd == 0 {
+		return
+	}
+	dstReg, mapped := ie64ToAMD64Reg(rd)
+	if !mapped {
+		dstReg = amd64RAX
+	}
+	emitLoadImm64AMD64(cb, dstReg, value)
+	if !mapped {
+		emitStoreSpilledRegAMD64(cb, dstReg, rd)
+	}
+	ie64FoldedConstEmits.Add(1)
+}
 
 func emitMOVE(cb *CodeBuffer, ji *JITInstr) {
 	if ji.rd == 0 {

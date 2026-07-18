@@ -145,6 +145,38 @@ func TestWasmObservedConditionalTakenAndColdExit(t *testing.T) {
 	}
 }
 
+// Regression pin for the native cold-exit outlining slice: wasm already
+// keeps the cold exit inside the observed conditional's structured arm and
+// continues the hot path directly after it. The hot run must retire through
+// the whole region body (no exit at the conditional), and the cold run must
+// exit at the cold target with the conditional counted.
+func TestWasmObservedConditionalColdInArmHotFallsThrough(t *testing.T) {
+	program := make([]byte, 40)
+	putWasmRegionInstr(program, 0, OP_NOP64, 0, 0, 0, 0)
+	putWasmRegionInstr(program, 8, OP_BNE, 0, 3, 4, 24)
+	putWasmRegionInstr(program, 16, OP_ADD, 1, 1, 5, 0) // cold tail, not in region
+	putWasmRegionInstr(program, 24, OP_ADD, 1, 1, 5, 0) // discarded
+	putWasmRegionInstr(program, 32, OP_ADD, 1, 1, 6, 0)
+	blocks := []wasmRegionBlock{
+		{pc: PROG_START, instrs: scanBlock(program, 0)[:2], kind: ie64ObservedConditional, hotTarget: PROG_START + 32, coldTarget: PROG_START + 16},
+		{pc: PROG_START + 32, instrs: []JITInstr{{opcode: OP_ADD, rd: 1, rs: 1, rt: 6}, {opcode: OP_BRA, pcOffset: 8, imm32: ^uint32(39)}}, hotTarget: PROG_START},
+	}
+	compile := func([]byte) ([]byte, error) { return wasmCompileBlocks(blocks) }
+	// Hot: BNE true. The path falls through the conditional into the next
+	// block; the loop then consumes the chain budget, so the retired count
+	// is far beyond the conditional's own index.
+	hot := runWasmDiffCompiled(t, program, map[int]uint64{3: 1, 4: 2, 6: 2}, nil, compile)
+	if hot.retPC != PROG_START || hot.retCount <= 2 || hot.regs[1] == 0 {
+		t.Fatalf("hot=%+v, want fall-through into the loop body", hot)
+	}
+	// Cold: BNE false. The structured arm exits at the cold target with the
+	// conditional retired.
+	cold := runWasmDiffCompiled(t, program, map[int]uint64{3: 7, 4: 7, 6: 2}, nil, compile)
+	if cold.retPC != PROG_START+16 || cold.retCount != 2 || cold.regs[1] != 0 {
+		t.Fatalf("cold=%+v, want exit at cold target after 2 retired", cold)
+	}
+}
+
 func TestWasmObservedIndirectHitAndMismatch(t *testing.T) {
 	program := make([]byte, 24)
 	putWasmRegionInstr(program, 0, OP_JMP, 0, 3, 0, ^uint32(7))

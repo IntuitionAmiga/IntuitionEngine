@@ -1,5 +1,15 @@
 package main
 
+import "sync/atomic"
+
+// ie64LoopHoistEmits counts loops compiled with a hoisted invariant
+// instruction. Structural tests read it to prove the hoist was applied.
+var ie64LoopHoistEmits atomic.Uint64
+
+// ie64LoopHoistDisabled turns hoist selection off. Benchmark-only toggle so
+// both layouts run under identical conditions in one binary.
+var ie64LoopHoistDisabled bool
+
 // jitFallback values are an internal dispatcher protocol, not guest ABI.
 const (
 	jitFallbackMemory       uint32 = 1
@@ -22,6 +32,11 @@ type ie64LoopPlan struct {
 	bounded    bool
 	count      uint64
 	bodySize   uint32
+	// hoist is the index of the single loop-invariant integer instruction
+	// emitted once before the loop-head label and suppressed inside the
+	// loop, or -1. Only pure integer single-block loops qualify; region
+	// plans always carry -1.
+	hoist int
 }
 
 // Compilers are serialised by ie64CompileMu, so the emit-time plan can remain
@@ -52,7 +67,7 @@ func ie64AnalyseLoop(instrs []JITInstr, startPC uint64) *ie64LoopPlan {
 		if head < 0 || head >= back || ie64LoopHasExtraEntry(instrs, startPC, head, back) {
 			continue
 		}
-		p := &ie64LoopPlan{head: head, back: back, headPC: target, prefix: uint32(head), bodySize: uint32(back - head + 1)}
+		p := &ie64LoopPlan{head: head, back: back, headPC: target, prefix: uint32(head), bodySize: uint32(back - head + 1), hoist: -1}
 		written := uint32(0)
 		for i := head; i <= back; i++ {
 			written |= instrWrittenRegs(&instrs[i])
@@ -87,11 +102,112 @@ func ie64AnalyseLoop(instrs []JITInstr, startPC uint64) *ie64LoopPlan {
 			p.hoisted = nil
 		}
 		p.bounded, p.count = ie64BoundedCounterLoop(instrs, p)
-		if len(p.accesses) != 0 || p.bounded {
+		if len(p.accesses) == 0 {
+			p.hoist = ie64SelectLoopHoist(instrs, p)
+		}
+		if len(p.accesses) != 0 || p.bounded || p.hoist >= 0 {
 			return p
 		}
 	}
 	return nil
+}
+
+// ie64SelectLoopHoist picks at most one loop-invariant integer instruction
+// to emit once before the loop-head label. The loop must be pure integer
+// (no memory, FP, helpers, calls, returns or extra branches - the body
+// opcodes are restricted to the bounded-integer set). The candidate must
+// come from the constant-folding opcode list, write its destination exactly
+// once in the loop, take only immediate or loop-invariant register inputs,
+// and its destination must not be read earlier in the body (iteration one
+// would otherwise observe the pre-loop value). Dependent invariant chains
+// are rejected naturally: a second invariant reading the first's output
+// reads a register that is written in the loop. Returns -1 when no
+// instruction qualifies.
+func ie64SelectLoopHoist(instrs []JITInstr, p *ie64LoopPlan) int {
+	if ie64LoopHoistDisabled {
+		return -1
+	}
+	for i := p.head; i < p.back; i++ {
+		in := &instrs[i]
+		if in.fusedFlag != 0 || in.mmuBail || !ie64BoundedIntegerBodyOpcode(in.opcode) {
+			return -1
+		}
+	}
+	var writeCounts [32]int
+	for i := p.head; i <= p.back; i++ {
+		w := instrWrittenRegs(&instrs[i])
+		for r := 1; r < 32; r++ {
+			if w&(1<<r) != 0 {
+				writeCounts[r]++
+			}
+		}
+	}
+	writtenInLoop := uint32(0)
+	for i := p.head; i <= p.back; i++ {
+		writtenInLoop |= instrWrittenRegs(&instrs[i])
+	}
+	for i := p.head; i < p.back; i++ {
+		in := &instrs[i]
+		if !ie64HoistableOpcode(in.opcode) || in.rd == 0 {
+			continue
+		}
+		if writeCounts[in.rd] != 1 {
+			continue
+		}
+		if ie64IntegerReadRegs(in)&writtenInLoop != 0 {
+			continue
+		}
+		destReadEarlier := false
+		for j := p.head; j < i; j++ {
+			if ie64IntegerReadRegs(&instrs[j])&(1<<in.rd) != 0 {
+				destReadEarlier = true
+				break
+			}
+		}
+		if destReadEarlier {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+// ie64HoistableOpcode is the constant-folding opcode list: the pure integer
+// instructions eligible for loop hoisting.
+func ie64HoistableOpcode(op byte) bool {
+	switch op {
+	case OP_MOVE, OP_MOVEQ, OP_LEA, OP_ADD, OP_SUB, OP_AND64, OP_OR64, OP_EOR,
+		OP_LSL, OP_LSR, OP_ASR:
+		return true
+	}
+	return false
+}
+
+// ie64IntegerReadRegs returns the registers read by a pure integer body
+// instruction (the bounded-integer opcode set plus the loop's final BNE).
+func ie64IntegerReadRegs(in *JITInstr) uint32 {
+	var r uint32
+	switch in.opcode {
+	case OP_NOP64, OP_MOVEQ:
+	case OP_MOVE:
+		if in.xbit == 0 {
+			r = 1 << in.rs
+		}
+	case OP_MOVT:
+		r = 1 << in.rd // read-modify-write of the low half
+	case OP_LEA, OP_NEG, OP_NOT64, OP_CLZ, OP_CTZ, OP_POPCNT, OP_BSWAP, OP_SEXT:
+		r = 1 << in.rs
+	case OP_ADD, OP_SUB, OP_MULU, OP_MULS, OP_DIVU, OP_DIVS, OP_MOD64, OP_MODS,
+		OP_MULHU, OP_MULHS, OP_AND64, OP_OR64, OP_EOR,
+		OP_LSL, OP_LSR, OP_ASR, OP_ROL, OP_ROR:
+		r = 1 << in.rs
+		if in.xbit == 0 {
+			r |= 1 << in.rt
+		}
+	case OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BGT, OP_BLE, OP_BHI, OP_BLS:
+		r = 1<<in.rs | 1<<in.rt
+	}
+	return r &^ 1 // R0 reads are architecturally constant zero
 }
 
 func ie64CurrentAccessHoisted() bool {
@@ -106,7 +222,16 @@ func ie64AnalyseRegionLoop(region *ie64Region) (*ie64LoopPlan, []JITInstr) {
 			flat = append(flat, in)
 		}
 	}
-	return ie64AnalyseLoop(flat, region.entryPC), flat
+	plan := ie64AnalyseLoop(flat, region.entryPC)
+	if plan != nil {
+		// Hoisting is single-block only: region back-edge machinery has its
+		// own label placement and would bypass the hoisted instruction.
+		plan.hoist = -1
+		if len(plan.accesses) == 0 && !plan.bounded {
+			plan = nil
+		}
+	}
+	return plan, flat
 }
 
 func regionWrittenMask(blocks [][]JITInstr) uint32 {

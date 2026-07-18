@@ -626,6 +626,16 @@ trips are reserved for helper exits. On the node hot-loop benchmark
 (`TestWasmJIT_Node_EndToEndParity`, 2 million iterations) the chained JIT
 runs 5.3 times faster than the interpreter.
 
+### IE64 JIT Shared Analysis Order
+
+Each IE64 compilation unit runs its shared analyses in a fixed order before
+emission: FPSR condition-code liveness, loop analysis (including
+single-instruction hoist selection for single-block pure integer loops),
+constant-only folding, then FP residency planning. Loop hoisting is decided
+before folding, and a suppressed hoisted instruction is never replaced by a
+folded constant. Region compiles run the same order with folding applied per
+block; region plans never hoist.
+
 ### IE64 JIT 64-bit Execution Model
 
 The IE64 JIT (amd64 and arm64) executes code, accesses data, and operates the

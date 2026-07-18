@@ -433,6 +433,14 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 		loopPlan, _ = ie64AnalyseRegionLoop(r)
 	}
 	e := &wasmBlockEmitter{b: &wasmBody{}, needsMem: needsMem, needsSMC: needsSMC, needsFP: hasFP, gprPlan: gprPlan, fpPlan: fpPlan, loopPlan: loopPlan}
+	{
+		foldBlocks := make([][]JITInstr, len(blocks))
+		foldPCs := make([]uint64, len(blocks))
+		for i := range blocks {
+			foldBlocks[i], foldPCs[i] = blocks[i].instrs, blocks[i].pc
+		}
+		e.foldPlan = ie64AnalyseRegionConstFold(foldBlocks, foldPCs)
+	}
 	if loopPlan != nil {
 		e.retCountLocal = retCountLocal
 	}
@@ -499,7 +507,21 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 				if len(loopPlan.accesses) != 0 {
 					e.emitLoopPrechecks()
 				}
+				if loopPlan.hoist >= 0 {
+					// Hoisted invariant: emitted once, before the
+					// structured loop opens.
+					hj := &block.instrs[loopPlan.hoist]
+					e.instr(hj, uint32(loopPlan.hoist), block.pc+uint64(hj.pcOffset))
+					ie64LoopHoistEmits.Add(1)
+				}
 				e.b.loop()
+			}
+			if len(blocks) == 1 && loopPlan != nil && loopPlan.hoist >= 0 && int(idx) == loopPlan.hoist {
+				// Suppressed inside the loop: the host instruction ran once
+				// before the loop opened. The guest instruction stays in
+				// every index-based retired count.
+				idx++
+				continue
 			}
 			instrPC := block.pc + uint64(ins.pcOffset)
 			observedEdge := i == len(block.instrs)-1 && block.kind != ie64ObservedNone
@@ -663,6 +685,10 @@ type wasmBlockEmitter struct {
 	emitFPCC      bool
 	retCountLocal uint32
 	loopPlan      *ie64LoopPlan
+
+	// foldPlan is the constant-folding result aligned with the flat
+	// instruction index (idx) across all blocks; nil when nothing folds.
+	foldPlan []ie64FoldEntry
 }
 
 func (e *wasmBlockEmitter) prologue() {
@@ -836,6 +862,14 @@ func (e *wasmBlockEmitter) sext(size byte) {
 // ops have their own emitters with fast-path checks and helper exits.
 func (e *wasmBlockEmitter) instr(ins *JITInstr, idx uint32, instrPC uint64) {
 	b := e.b
+	if int(idx) < len(e.foldPlan) && e.foldPlan[idx].folded {
+		// Constant-only folding: emit the precomputed value through the
+		// normal destination-write path.
+		b.i64Const(int64(e.foldPlan[idx].value))
+		e.storeReg(ins.rd)
+		ie64FoldedConstEmits.Add(1)
+		return
+	}
 	switch ins.opcode {
 	case OP_NOP64:
 		return

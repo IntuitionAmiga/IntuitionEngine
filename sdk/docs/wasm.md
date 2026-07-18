@@ -87,6 +87,12 @@ resulting start-up time remain browser-dependent.
   to observe it. `TestWasmJIT_Node_MMIOPollParks` covers the generic MMIO poll
   parking service. It uses a synthetic status register rather than the VBlank
   device path.
+- **Constant-only folding also applies to wasm translation.** The shared
+  per-block analysis (`jit_ie64_const_fold.go`) precomputes pure integer
+  results with fully known inputs, and the translator emits them as
+  `i64.const` through the normal register-write path. The observed
+  conditional keeps its existing structured layout: the cold exit lives in
+  the conditional's arm and the hot path continues directly after it.
 - **No Vulkan.** The Voodoo uses the software rasteriser; Vulkan files carry
   `!js` build constraints, so the exclusion needs no `-tags novulkan`.
 - **Fixed 256 MiB guest RAM.** There is no `/proc/meminfo` and no mmap in the
