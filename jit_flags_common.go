@@ -16,7 +16,9 @@
 // (jit_*_emit_amd64.go) and can leak into block-state structs that survive
 // across compile/decompile cycles. Do NOT renumber.
 
-//go:build amd64 && (linux || windows || darwin)
+// This file is backend-neutral vocabulary (enum, liveness bitmap type,
+// materialise hook type) and must stay untagged so non-amd64 backends can
+// consume it.
 
 package main
 

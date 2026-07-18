@@ -65,14 +65,14 @@ The `JMP rel32` is initially unchained (points to the unchained exit path). When
 
 ### RTS Inline Cache
 
-RTS uses a 2-entry MRU (most recently used) cache in M68KJITContext. Before each `callNative()`, the dispatcher updates the cache with the current block's PC and chain entry:
+RTS uses an 8-entry MRU (most recently used) cache in M68KJITContext
+(`RTSCache0PC` .. `RTSCache7Addr`). Before each `callNative()`, the dispatcher
+shifts the entries and installs the current block's PC and chain entry at slot 0.
 
-```
-entry1 ← entry0  (shift)
-entry0 ← {block.startPC, block.chainEntry}
-```
-
-In RTS-emitted code, the popped return address is compared against both entries. On hit, RTS chains directly to the matching chain entry. On miss, it returns to the Go dispatcher.
+In RTS-emitted code, the popped return address is compared against the entries.
+On hit, RTS chains directly to the matching chain entry. On miss, it returns to
+the Go dispatcher. The cache is cleared on invalidation
+(`m68kClearJITRTSCache`) and can be disabled via `m68kJITDisableRTSCache`.
 
 ### Interrupt Safety
 
@@ -108,17 +108,50 @@ The JIT defers CCR extraction from host EFLAGS into R14. After x86-64 arithmetic
 
 This eliminates ~12 instructions of SETcc/SHL/OR extraction per flag-setting instruction in common sequences like CMP;BEQ or ADD;DBRA.
 
+## Layer Boundary (parity plan milestone 2)
+
+The M68020 JIT separates three layers:
+
+1. **Frontend (untagged, shared by all M68020 backends):** block scanner,
+   instruction representation and native-admission predicates
+   (`jit_m68k_common.go`, `jit_m68k_admission.go`), CCR liveness analysis
+   (`jit_m68k_ccr_liveness.go`), region scanning and formation
+   (`jit_region_scan_m68k.go`, `jit_m68k_region_form.go`), and the
+   dispatch/tier policy (`jit_m68k_policy.go`: kill switches, warmup gating,
+   fallback-burst sizing, interrupt-sample cadence, hotness and the
+   retired-count contract). These files must stay free of build tags and
+   emitter symbols.
+2. **Per-backend emitters:** `jit_m68k_emit_amd64.go` plus the FPU emitter
+   files own instruction lowering and region compilation
+   (`m68kCompileRegion`).
+3. **Per-backend execution/runtime:** `jit_m68k_exec.go` owns native
+   executable memory, chain patching, native dispatch, and amd64 runtime
+   policy. Native and wasm dispatch are deliberately not forced through one
+   abstraction.
+
+Dispatch seams are per target: `jit_m68k_dispatch.go` (amd64),
+`jit_m68k_dispatch_arm64.go` (arm64, interpreter until milestone 3),
+`jit_m68k_dispatch_wasm.go` (js/wasm, interpreter until milestone 5), and
+`jit_m68k_dispatch_stub.go` (everything else), so `m68kJitAvailable` flips
+per target without disturbing the amd64 path.
+
 ## File Inventory
 
 ### Implementation
 
 | File | Build tag | Purpose |
 |------|-----------|---------|
-| `jit_m68k_common.go` | (none) | M68KJITContext, block scanner, instruction length calculator, liveness analysis |
-| `jit_m68k_emit_amd64.go` | `amd64 && (linux \|\| windows \|\| darwin)` | x86-64 native code emitter: instructions, chain entry/exit, lazy CCR |
-| `jit_m68k_exec.go` | `amd64 && (linux \|\| windows \|\| darwin)` | JIT dispatcher: chain patching, budget management, RTS cache, STOP/interrupt handling |
+| `jit_m68k_common.go` | (none) | M68KJITContext, block scanner, instruction length calculator, native-admission predicates, leaf-fusion analysis, backward-branch detection |
+| `jit_m68k_abi.go` | `amd64 && (linux \|\| windows \|\| darwin)` | The single source of truth for the amd64 register mapping |
+| `jit_m68k_ccr_liveness.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Per-block CCR classification and liveness analysis |
+| `jit_m68k_emit_amd64.go` | `amd64 && (linux \|\| windows \|\| darwin)` | x86-64 native code emitter: instructions, chain entry/exit, lazy CCR, SMC range checks, region builder/compiler |
+| `jit_m68k_exec.go` | `amd64 && (linux \|\| windows \|\| darwin)` | JIT dispatcher: chain patching, budget management, RTS cache, helper exits, invalidation queue, region promotion, STOP/interrupt handling |
+| `jit_m68k_fpu_sse_amd64.go` / `jit_m68k_fpu_ea_amd64.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Native 68881 SSE emitters (reg-to-reg and EA forms), FP pinning |
+| `jit_m68k_fpu_pin_unix.go` / `jit_m68k_fpu_pin_windows.go` | amd64 unix / windows | Platform gate for xmm8-15 FP pinning |
+| `jit_m68k_lockstep.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Runtime JIT-versus-interpreter lockstep harness |
 | `jit_m68k_dispatch.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Routes `m68kJitExecute()` through JIT or interpreter |
 | `jit_m68k_dispatch_stub.go` | all other platforms | Interpreter fallback for non-JIT platforms |
+| `jit_region_backends.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Region walker registry, including `ScanRegionM68K` |
 | `jit_common.go` | (none) | Shared: CodeBuffer, CodeCache, JITBlock, chainSlot (reused from IE64) |
 | `jit_call.go` | shared IE64 JIT trampoline | `callNative()` via `runtime.asmcgocall` (reused from IE64) |
 | `jit_mmap.go` / `jit_mmap_darwin_amd64.go` / `jit_mmap_windows.go` | Linux / macOS amd64 / Windows | Executable memory allocator + `PatchRel32At` (reused from IE64) |
@@ -134,29 +167,19 @@ This eliminates ~12 instructions of SETcc/SHL/OR extraction per flag-setting ins
 
 ## M68KJITContext Layout
 
-```
-Offset  Field               Description
-0       DataRegsPtr         &cpu.DataRegs[0]
-8       AddrRegsPtr         &cpu.AddrRegs[0]
-16      MemPtr              &cpu.memory[0]
-24      MemSize             len(cpu.memory)
-28      IOThreshold         0xA0000 (fast-path boundary)
-32      SRPtr               &cpu.SR
-40      CpuPtr              &cpu
-48      NeedInval           Self-modification flag
-52      NeedIOFallback      I/O bail flag
-56      RetPC               Next PC after block execution
-60      RetCount            Instructions retired in block
-64      CodePageBitmapPtr   Pointer to code page bitmap
-72      ChainBudget         Blocks remaining before Go return (init=64)
-76      ChainCount          Accumulated instruction count during chaining
-80      RTSCache0PC         MRU entry 0: M68K PC
-88      RTSCache0Addr       MRU entry 0: chain entry address
-96      RTSCache1PC         MRU entry 1: M68K PC
-104     RTSCache1Addr       MRU entry 1: chain entry address
-```
+The authoritative layout is the `M68KJITContext` struct in
+`jit_m68k_common.go` and its `m68kCtxOff*` offset constants; the emitter
+consumes only those constants, so the doc does not duplicate the offsets.
+Notable fields: register-file and memory base pointers, `SRPtr`, `CpuPtr`,
+`NeedInval` plus the exact-range pair `InvalAddr`/`InvalSize`,
+`NeedIOFallback`, `RetPC`/`RetCount`, the code page bitmap pointer, the IO
+page bitmap pointer/length, `ChainBudget`/`ChainCount`, and the 8-entry RTS
+cache (`RTSCache0PC` .. `RTSCache7Addr`).
 
 ## Register Mapping (x86-64)
+
+The mapping is defined once in `jit_m68k_abi.go` and must never be re-derived
+inline.
 
 | x86-64 | M68K | Notes |
 |--------|------|-------|
@@ -166,11 +189,16 @@ Offset  Field               Description
 | R13 | A7/SP | Callee-saved, mapped |
 | R14 | CCR | Callee-saved, 5-bit XNZVC (lazy: may be stale when EFLAGS live) |
 | R15 | — | JITContext pointer |
-| RDI | — | &DataRegs[0] |
+| RDI | — | &DataRegs[0] (AddrRegs at a fixed delta) |
 | RSI | — | &cpu.memory[0] |
-| R8 | — | IOThreshold |
-| R9 | — | &AddrRegs[0] |
+| R8 | A6 | Pinned (freed by removing the IOThreshold pin) |
+| R9 | A5 | Pinned (freed by removing the AddrBase pin) |
 | RAX,RCX,RDX,R10,R11 | — | Scratch |
+
+Loop blocks containing native FP additionally pin FP0-FP7 to xmm8-xmm15
+(`m68kFPPinned`, `jit_m68k_fpu_sse_amd64.go`) on non-Windows hosts only;
+Windows treats xmm8-15 as callee-saved so pinning stays off there
+(`jit_m68k_fpu_pin_unix.go` / `jit_m68k_fpu_pin_windows.go`).
 
 Stack frame: 40 bytes (`[RSP+0]`=ctx backup, `[RSP+8]`=SR pointer, `[RSP+16]`=loop counter, `[RSP+24]`=X flag byte for lazy CCR).
 
@@ -188,40 +216,95 @@ With lazy CCR, extraction into R14 is deferred until needed. The X flag is saved
 
 ## Memory Access
 
-- **Fast path**: Word-aligned addresses < 0xA0000 use direct `[memBase + addr]` with BSWAP for big-endian conversion.
-- **I/O bail**: Addresses >= 0xA0000 or odd-aligned word/long access set `NeedIOFallback=1` and return to dispatcher, which re-executes via `StepOne()`.
+- **Fast path**: RAM addresses use direct `[memBase + addr]` with BSWAP for big-endian conversion.
+- **I/O classification**: an IO page bitmap (`m68kCtxOffIOPageBitmapPtr/Len`, scanned inline by emitted code) replaces the old fixed 0xA0000 `IOThreshold` cutoff. Accesses that hit an IO page either take an MMIO helper exit (`m68kExecuteJITMMIOMOVEHelper`, `m68kExecuteJITMMIOCLRHelper`) or set `NeedIOFallback=1` and return to the dispatcher for `StepOne()`.
 
 ## Self-Modifying Code Detection
 
-Uses a heap-allocated code page bitmap (`(memSize+4095)>>12` bytes, 4KB pages). When a block is cached, its pages are marked in the bitmap. Store instructions in JIT-compiled code check the bitmap after each write; writes to code pages set `NeedInval`, triggering full cache flush, bitmap clear, and RTS cache clear on return to the dispatcher.
+Uses a heap-allocated code page bitmap (`(memSize+4095)>>12` bytes, 4KB pages). When a block is cached, its pages are marked in the bitmap. Store instructions in JIT-compiled code check the bitmap after each write. Writes to code pages record an exact invalidation range in `ctx.InvalAddr`/`ctx.InvalSize` (`m68kEmitSMCRangeBailChecks`); on return the dispatcher invalidates only that range via `m68kInvalidateJITCodeRange`, falling back to a full cache flush only when no range is available (size 0). Cross-thread writes are queued via `m68kEnqueueJITInvalidation`, coalesced (`m68kCoalesceInvalRanges`), and drained at dispatch boundaries. The RTS cache is cleared on invalidation.
 
 ## Backward Branch Optimisation
 
 DBRA/Bcc loops targeting earlier instructions within the same block execute as native x86-64 backward jumps, avoiding dispatcher re-entry overhead. A budget counter (4095 iterations) limits execution before returning to the dispatcher for interrupt checking and GC safety.
 
-## Supported Instructions (Tier 1)
+## Supported Instructions
 
-MOVEQ, MOVE.B/W/L (all Tier 1 addressing modes), ADD, SUB, CMP, AND, OR, EOR, NOT, NEG, CLR, TST, SWAP, EXT/EXTB, BRA, BSR, Bcc (all 16 conditions), RTS, JSR, JMP, DBcc, Scc, ADDQ, SUBQ, LEA, PEA, LINK/UNLK, LSL, LSR, ASR, ADDA, SUBA, NOP.
+Native admission is decided per instruction by the `m68kIsNativeSupported*`
+predicate family in `jit_m68k_common.go` (roughly 90 predicates), gated by
+`m68kNeedsFallback` and `m68kNeedsConservativeFallback`. Native coverage
+includes the integer core (MOVE all sizes, MOVEQ, ALU group, shifts, rotates,
+CLR, TST, SWAP, EXT/EXTB, Scc, ADDQ/SUBQ, LEA, PEA, LINK/UNLK, ADDA/SUBA,
+NOP), all static and conditional control flow (BRA, BSR, Bcc, DBcc, JSR, JMP,
+RTS), plus MOVEM, MULU/MULS/MULL, DIVU/DIVS/DIVL, the bitfield group (BFTST,
+BFEXTU, BFEXTS, BFFFO and the write forms), PACK/UNPK, NBCD, TAS, CHK,
+MOVE to/from SR/CCR, and native 68881 FPU (see below).
 
-## Addressing Modes (Tier 1)
+## Addressing Modes
 
 Dn, An, (An), (An)+, -(An), (d16,An), (d8,An,Xn) brief, abs.W, abs.L, (d16,PC), (d8,PC,Xn) brief, #imm.
 
 Unsupported modes (68020 full format with memory indirection) bail to interpreter.
 
+## 68881 FPU
+
+FPU support is native, not fallback:
+
+- Register-to-register and EA forms are decoded by
+  `m68kDecodeNativeFPURegToReg` / `m68kDecodeNativeFPUEA`
+  (`jit_m68k_common.go`) and emitted as SSE scalar code
+  (`jit_m68k_fpu_sse_amd64.go`, `jit_m68k_fpu_ea_amd64.go`).
+- FBcc is emitted natively.
+- Lazy FPSR: intermediate FPSR condition-code updates are elided when the
+  next FPU instruction overwrites them without an observable fault point
+  (`m68kFPUNextInstrOverwritesCCNoFault`).
+- Transcendentals (and other non-mapping operations) are not compiled;
+  blocks containing them run through the interpreter burst path
+  (`m68kFPUInstrIsTranscendental`, `m68kInterpretTranscendentalBurst`).
+- Remaining FPU cases exit through the FPU helper
+  (`m68kExecuteJITFPUHelper`).
+
+## Region Formation
+
+Hot blocks are promoted into multi-block regions (default on,
+`m68kJITDisableRegions` kill switch). The region walker is `ScanRegionM68K`
+(`jit_region_backends.go`); the builder and compiler are `m68kFormRegion` /
+`m68kCompileRegion` (currently in `jit_m68k_emit_amd64.go`). Promotion is
+triggered by block hotness (`m68kTryPromoteJITRegion`). Regions reject
+fused-leaf blocks, keep conservative CCR behaviour across member blocks, and
+patch internal chain exits to local labels.
+
+## JSR Leaf-Call Fusion
+
+Short leaf subroutines called by JSR are fused inline
+(`m68kAnalyzeJSRLeafFusion`, `m68kIsLeafFusionSafe`,
+`jit_m68k_common.go`): fused push, inline body, synthetic return, with an
+I/O bailout and architecturally correct stack effects.
+
 ## Bail to Interpreter
 
-The following instructions always fall back to the interpreter via `StepOne()`:
+The following fall back to the interpreter via `StepOne()` or a fallback
+burst:
 
-- All FPU (Line F / 0xFxxx)
+- FPU transcendentals, extended/packed formats, and any FPU form without a
+  native decode
 - Line A traps (0xAxxx)
 - STOP, RTE, RTR, RESET, TRAP, TRAPV
 - MOVEC, MOVES, CAS, CAS2
-- BCD: ABCD, SBCD, PACK, UNPK
-- CHK, CHK2, CMP2, CALLM, RTM
-- MOVEP, TAS, BKPT
-- MOVEM (Tier 2, not yet JIT-compiled)
+- ABCD, SBCD
+- CHK2, CMP2, CALLM, RTM
+- MOVEP, BKPT
 - Any instruction using 68020 full-format addressing (memory indirect)
+
+## Differential and Lockstep Verification
+
+The JIT carries a runtime lockstep harness (`jit_m68k_lockstep.go`:
+`m68kJITLockstepSession/Snapshot/Boundary`) and an interpreter verify
+pre-pass (`m68kVerifyInterpPrePass`, `m68kReportVerifyDivergence`).
+Retired-instruction accounting (`m68kJITRetiredInstructionCount`,
+ChainCount + RetCount contract) is validated differentially against
+interpreter event counts (`jit_m68k_count_accounting_test.go`), alongside
+the large differential suite (`jit_m68k_differential_test.go`) and the
+Harte parity gate (`jit_m68k_harte_parity_test.go`).
 
 ## Benchmark Results
 

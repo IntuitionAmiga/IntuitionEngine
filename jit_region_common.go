@@ -16,7 +16,8 @@
 // instruction shape determines fall-through detection); the shared piece is
 // the budget arithmetic and the terminator-class enum.
 
-//go:build amd64 && (linux || windows || darwin)
+// This file is pure backend-neutral data (profiles and enums) and must
+// stay untagged so non-amd64 backends can consume the region profiles.
 
 package main
 

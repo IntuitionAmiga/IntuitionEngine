@@ -25,7 +25,9 @@
 // MOVE-to-CCR, MOVE-to-SR) are decoded from the opcode. Anything else
 // is treated as "passes both demands through, keeps live=true".
 
-//go:build amd64 && (linux || windows || darwin)
+// This file is architecture-neutral M68020 frontend analysis. It must
+// stay free of build tags and emitter symbols so every M68020 backend
+// (amd64, arm64, wasm) can consume it.
 
 package main
 

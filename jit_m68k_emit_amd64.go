@@ -9,8 +9,8 @@ import (
 	"errors"
 	"os"
 	"strconv"
-	"sync"
 	"strings"
+	"sync"
 )
 
 // ===========================================================================
@@ -317,41 +317,9 @@ func m68kInstrNeedsCCRMaterialization(ji *M68KJITInstr) bool {
 var m68kCurrentCS *m68kCompileState
 var m68kCompileMu sync.Mutex
 
-func m68kInstrMaySetGenericIOFallback(ji *M68KJITInstr) bool {
-	opcode := ji.opcode
-	group := opcode >> 12
-
-	switch group {
-	case 0x0: // CMPI
-		srcMode := (opcode >> 3) & 7
-		srcReg := opcode & 7
-		return opcode&0xFF00 == 0x0C00 && (opcode>>6)&3 != 3 &&
-			m68kEAMayUseMemHelper(srcMode, srcReg, false)
-	case 0x1, 0x2, 0x3: // MOVE
-		srcMode := (opcode >> 3) & 7
-		srcReg := opcode & 7
-		dstMode := (opcode >> 6) & 7
-		dstReg := (opcode >> 9) & 7
-		return m68kEAMayUseMemHelper(srcMode, srcReg, false) || m68kEAMayUseMemHelper(dstMode, dstReg, true)
-	case 0x9, 0xB, 0xD: // SUB/CMP/ADD EA,Dn paths
-		srcMode := (opcode >> 3) & 7
-		srcReg := opcode & 7
-		opmode := (opcode >> 6) & 7
-		if group == 0xB {
-			return opmode <= 2 && m68kEAMayUseMemHelper(srcMode, srcReg, false)
-		}
-		if group == 0x9 || group == 0xD {
-			return opmode <= 2 && m68kEAMayUseMemHelper(srcMode, srcReg, false)
-		}
-	case 0x4: // Misc family
-		if opcode&0xFF80 == 0x4C00 { // MULL/DIVL
-			srcMode := (opcode >> 3) & 7
-			srcReg := opcode & 7
-			return m68kEAMayUseMemHelper(srcMode, srcReg, false)
-		}
-	}
-	return false
-}
+// m68kInstrMaySetGenericIOFallback moved to the untagged
+// jit_m68k_admission.go (parity plan milestone 2): it is pure opcode
+// analysis that non-amd64 backends need.
 
 // m68kSaveXToStack emits SETB [RSP+24] to save CF (= M68K X flag) to the stack slot.
 func m68kSaveXToStack(cb *CodeBuffer) {
@@ -11473,52 +11441,9 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 // Region Compilation (Phase 4 sub-phase B.1.b)
 // ===========================================================================
 
-// m68kRegion is the compiled-region descriptor produced by m68kFormRegion.
-// blocks[i] is the pre-scanned instruction list for block i; blockPCs[i]
-// is the guest start PC of that block. entryPC == blockPCs[0].
-type m68kRegion struct {
-	blocks   [][]M68KJITInstr
-	blockPCs []uint32
-	entryPC  uint32
-}
-
-// m68kFormRegion is the cache-aware region builder consumed by the M68K
-// JIT exec loop. It walks the static control-flow graph from hotPC via
-// ScanRegionM68K's per-backend rules, then refuses any region whose
-// constituent blocks are not safe for region compile (fused-leaf
-// markers, fallback-required first instruction, scan failure). Returns
-// nil for single-block "regions" — caller falls back to per-block
-// compile.
-//
-// Unlike x86FormRegion this implementation does not gate on cache
-// presence: the region is built directly from memory. Cache-presence
-// gating can be layered on later if region recompile thrash becomes a
-// measured problem.
-func m68kFormRegion(hotPC uint32, memory []byte) *m68kRegion {
-	res := ScanRegionM68K(memory, hotPC)
-	if len(res.BlockPCs) < 2 {
-		return nil
-	}
-	region := &m68kRegion{entryPC: hotPC, blockPCs: res.BlockPCs}
-	for _, pc := range res.BlockPCs {
-		instrs := m68kScanBlock(memory, pc)
-		if len(instrs) == 0 ||
-			m68kNeedsConservativeFallback(memory, pc, instrs) ||
-			!m68kCanUseProductionNativeBlock(memory, pc, instrs) {
-			return nil
-		}
-		// Reject region if the block contains fused-leaf markers — the
-		// region path does not handle the synthetic-RTS bookkeeping that
-		// fused-leaf compile depends on.
-		for _, ji := range instrs {
-			if ji.fusedFlag != 0 {
-				return nil
-			}
-		}
-		region.blocks = append(region.blocks, instrs)
-	}
-	return region
-}
+// m68kRegion and m68kFormRegion moved to the untagged
+// jit_m68k_region_form.go (parity plan milestone 2): region formation is
+// shared frontend analysis; only region compilation is backend-specific.
 
 // m68kCompileRegion compiles a multi-block region as a single native
 // JITBlock. Mirrors x86CompileRegion's structure but without Tier-2 reg
