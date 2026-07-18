@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-17*
+*Last modified: 2026-07-18*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -638,6 +638,12 @@ constant-preserving and `LOAD` as invalidating only its destination; FP,
 control-flow and system instructions remain full barriers. Region compiles
 run the same order with folding applied per block; region plans never
 hoist.
+
+Native observed regions outline every adjacent-forward conditional cold exit
+after the emitted hot path. Each outlined exit retains its own retired-count
+base, architectural spill mask, and pending FPSR condition codes. Backward hot
+edges keep an inline exit; the wasm backend keeps cold exits inside structured
+conditional arms instead of using native out-of-line stubs.
 
 ### IE64 JIT 64-bit Execution Model
 
