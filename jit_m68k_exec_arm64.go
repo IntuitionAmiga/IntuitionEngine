@@ -55,6 +55,9 @@ func (cpu *M68KCPU) initM68KJIT() error {
 	}
 	cpu.m68kJitExecMem = execMem
 	cpu.m68kJitCache = NewCodeCache()
+	// The I/O page bitmap must exist before the context snapshot: the
+	// slice-2 emitter's inline access guards read it through the context.
+	cpu.m68kBuildJITIOPageBitmap()
 	cpu.m68kJitCtx = newM68KJITContext(cpu, nil, nil, nil)
 	cpu.m68kJitWarmupLimit = m68kJITCompileWarmupLimit()
 	return nil
@@ -269,11 +272,27 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		ctx.RetPC = 0
 		ctx.RetCount = 0
 		ctx.ChainCount = 0
+		ctx.NeedIOFallback = 0
 		cpu.m68kJitNativeActive.Store(true)
 		callNative(block.execAddr, m68kJITContextPtr(ctx))
 		cpu.m68kJitNativeActive.Store(false)
 		cpu.m68kJitExecMu.Unlock()
 		cpu.PC = ctx.RetPC
+
+		if ctx.NeedIOFallback != 0 {
+			// A guarded memory access hit an I/O page or the RAM bound.
+			// The block exited before the faulting instruction's side
+			// effects; RetCount holds the fully retired predecessors and
+			// RetPC the faulting instruction. Interpret that single
+			// instruction and re-enter the dispatch loop.
+			ctx.NeedIOFallback = 0
+			instructionCount += uint64(ctx.RetCount)
+			instructionCount += uint64(cpu.StepOne())
+			if cpu.PerfEnabled {
+				cpu.InstructionCount = instructionCount
+			}
+			continue
+		}
 
 		retired := m68kJITRetiredInstructionCount(ctx.RetCount, ctx.ChainCount, block.instrCount, false)
 		instructionCount += retired

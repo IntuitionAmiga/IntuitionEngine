@@ -3953,3 +3953,48 @@ func m68kGuestBlockBytesStillMatch(memory []byte, block *JITBlock) bool {
 	hash, ok := m68kHashGuestBlockBytes(memory, block)
 	return ok && hash == block.guestHash
 }
+
+// m68kBuildJITIOPageBitmap snapshots the MachineBus I/O page bitmap (plus
+// CPU-specific always-I/O pages) into cpu.m68kJitIOPageBitmap for the native
+// backends' inline access guards. Shared by the amd64 and arm64 dispatchers
+// (M68K JIT parity plan milestone 3): every native backend must route
+// MMIO-page accesses through the interpreter, and the coprocessor shared
+// window must skip the inline big-endian swap fast path.
+func (cpu *M68KCPU) m68kBuildJITIOPageBitmap() {
+	cpu.m68kJitIOPageBitmap = nil
+	if bus, ok := cpu.bus.(*MachineBus); ok && len(bus.ioPageBitmap) > 0 {
+		cpu.m68kJitIOPageBitmap = append([]bool(nil), bus.ioPageBitmap...)
+		if cpu.AmigaINTENA != nil {
+			page := uint32(0xDFF09A >> 8)
+			if page < uint32(len(cpu.m68kJitIOPageBitmap)) {
+				cpu.m68kJitIOPageBitmap[page] = true
+			}
+		}
+		if bus.videoStatusReader != nil {
+			page := uint32(0xF0008 >> 8)
+			if page < uint32(len(cpu.m68kJitIOPageBitmap)) {
+				cpu.m68kJitIOPageBitmap[page] = true
+			}
+		}
+	}
+	if cpu.CoprocMode {
+		// Coprocessor shared regions (mailbox + user data window) skip the
+		// BE byte-swap in the interpreter (isCoprocSharedAddr). Inlined JIT
+		// loads/stores always swap, so route these pages through the
+		// interpreter helpers by marking them as I/O.
+		if cpu.m68kJitIOPageBitmap == nil {
+			cpu.m68kJitIOPageBitmap = make([]bool, (uint32(len(cpu.memory))+255)>>8)
+		}
+		for page := uint32(0x400000 >> 8); page < uint32(0x800000>>8); page++ {
+			// M68K worker windows are carved out of the shared range
+			// (isCoprocSharedAddr): they are normal BE worker RAM and must
+			// keep the inlined JIT fast path.
+			if isWorkerCodeWindow(page << 8) {
+				continue
+			}
+			if page < uint32(len(cpu.m68kJitIOPageBitmap)) {
+				cpu.m68kJitIOPageBitmap[page] = true
+			}
+		}
+	}
+}

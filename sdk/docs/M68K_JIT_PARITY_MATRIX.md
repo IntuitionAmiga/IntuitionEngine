@@ -162,3 +162,68 @@ from day one:
   sizes, shifts/rotates, LEA/PEA, exceptions with per-instruction resume PC,
   exact-range native-exit SMC invalidation, chaining, 68881 staging, Harte
   exception gate, AROS boot gate on real hardware.
+
+## Milestone 3 slices 2 and 3 delivered: memory EAs, sizes, immediates, shifts
+
+Slice 2 (memory effective addresses and operation sizes):
+
+- EA modes lowered natively: Dn, An (word and long), (An), (An)+, -(An),
+  (d16,An), (xxx).L and #imm sources. Absolute short, index and PC-relative
+  formats remain interpreter fallback. The A7 byte rule (byte moves adjust
+  the stack pointer by two) is applied at compile time.
+- Sizes: byte, word and long for MOVE, MOVEA, TST, CLR, ADD, SUB, CMP, AND,
+  OR, EOR, ADDQ, SUBQ (including the flagless address-register forms) and
+  LEA. Byte and word register writes merge into the low bits only; flag
+  extraction uses the shift-to-top trick so ARM NZCV matches the sized
+  M68K result exactly.
+- Big-endian access: loads and stores byte-swap through REV/REV16; the
+  read-modify-write memory destinations swap in both directions.
+- Every guest access is guarded inline: both bounds against MemSize plus a
+  single-page I/O bitmap probe (the amd64 single-access page policy). A
+  failing guard exits through a per-instruction bail stub BEFORE any of the
+  faulting instruction's side effects: RetPC is the faulting instruction,
+  RetCount the fully retired predecessors, NeedIOFallback set, CCR flushed.
+  The dispatcher interprets that one instruction and re-enters the loop,
+  preserving exact retired accounting (verified differentially).
+- Memory-to-memory MOVE guards BOTH addresses before committing either EA
+  side effect; an uncommitted source postincrement or predecrement that
+  targets the destination's base register is folded in at compile time.
+- The I/O page bitmap builder moved to the shared frontend
+  (m68kBuildJITIOPageBitmap in jit_m68k_common.go); amd64 and arm64 both
+  call it at JIT initialisation.
+
+Slice 3 (immediates, single-operand forms, shifts and rotates):
+
+- ADDI, SUBI, CMPI, ANDI, ORI, EORI to data registers and memory (the CCR
+  and SR immediate forms stay interpreter fallback), NEG, NOT, SWAP, EXT.W,
+  EXT.L, EXTB.L and PEA.
+- Immediate-count shifts and rotates on data registers, all sizes: LSL,
+  LSR, ASL, ASR, ROL, ROR, ROXL, ROXR. Register-count forms and memory
+  shift forms remain interpreter fallback.
+- Interpreter parity quirks pinned by tests and honoured by the emitter:
+  ASL carry and overflow are the OR of every shifted-out bit; the
+  count-at-least-width shift forms use value-not-zero for carry; NOT, ANDI,
+  ORI and EORI preserve X, V and C (SetFlagsNZ); ROL and ROR apply the
+  rotate modulo AFTER the immediate zero-to-eight mapping, so ROL.B #8 and
+  ROR.B #8 are complete no-ops that preserve the whole CCR.
+- Known shared deviation, matching amd64: native pushes (PEA here, JSR on
+  amd64) do not perform the interpreter's stackLowerBound overflow check;
+  the stack floor bus error is an interpreter-only diagnostic path. Both
+  backends deviate identically, so differential parity between backends
+  holds.
+
+Test coverage: TestM68KARM64_DifferentialMemoryEAGrid (77 shapes),
+TestM68KARM64_DifferentialShiftImmGrid (50 shapes), both over the operand
+grid, three CCR seeds, comparing D/A registers, CCR, PC, retired counts and
+the data and stack memory windows; TestM68KARM64_IOBailUnit (bail contract:
+partial retirement, no side effects, pre-instruction CCR, bounds and I/O
+page variants); TestM68KARM64_DispatcherIOFallback (end-to-end dispatcher
+fallback with exact accounting). All green under qemu-aarch64; amd64 suite
+unaffected (8669 tests).
+
+Remaining milestone 3 work: absolute-short, index and PC-relative EA
+formats; register-count and memory shifts; MOVEM, MULU/MULS/DIVU/DIVS,
+BTST/BCHG/BCLR/BSET, Scc, TAS; branches and block terminators with
+chaining and interrupt-boundary status publication; exceptions with
+per-instruction resume PC; exact-range native-exit SMC invalidation; 68881
+or staged fallback; Harte exception gate; AROS boot on real hardware.
