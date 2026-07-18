@@ -11,6 +11,7 @@
 package main
 
 import (
+	"fmt"
 	"testing"
 )
 
@@ -1417,6 +1418,917 @@ func TestM68KARM64_StackBoundBail(t *testing.T) {
 			}
 			if cpu.DataRegs[0] != 5 {
 				t.Fatalf("D0=%08X, want 5", cpu.DataRegs[0])
+			}
+		})
+	}
+}
+
+// TestM68KARM64_DifferentialExtendedEAGrid exercises the slice-6 effective
+// address formats: absolute short, (d16,PC), and the brief-format index modes
+// (d8,An,Xn) and (d8,PC,Xn) with word/long index size and scale, comparing
+// native execution against the interpreter over an index-value grid.
+func TestM68KARM64_DifferentialExtendedEAGrid(t *testing.T) {
+	const absW = uint32(0x0400) // small positive absolute-short scratch
+	seed := func(cpu *M68KCPU) {
+		for i := uint32(0); i < 0x100; i++ {
+			cpu.memory[m68kARM64BufBase+i] = byte(i*7 + 3)
+			cpu.memory[absW+i] = byte(i*5 + 9)
+		}
+		cpu.AddrRegs[0] = m68kARM64BufBase + 0x40
+		cpu.AddrRegs[1] = m68kARM64BufBase + 0x60
+		cpu.DataRegs[0] = 0x0BADF00D
+		cpu.DataRegs[1] = 0x1234ABCD
+	}
+	cmpMem := func(t *testing.T, name string, ref, got *M68KCPU) {
+		t.Helper()
+		for _, base := range []uint32{absW, m68kARM64BufBase} {
+			for i := uint32(0); i < 0x100; i++ {
+				if ref.memory[base+i] != got.memory[base+i] {
+					t.Errorf("%s: mem[%08X] interp=%02X native=%02X", name, base+i,
+						ref.memory[base+i], got.memory[base+i])
+					return
+				}
+			}
+		}
+	}
+	type opCase struct {
+		name   string
+		words  []uint16
+		idxVal uint32 // seeded into D2 (the index register)
+	}
+	cases := []opCase{
+		{"MOVE.L (0,A0,D2.W),D1", []uint16{0x2230, 0x2000}, 0x0000},
+		{"MOVE.L (8,A0,D2.W),D1", []uint16{0x2230, 0x2008}, 0x0004},
+		{"MOVE.L (0,A0,D2.W)-neg,D1", []uint16{0x2230, 0x2000}, 0xFFFFFFFC},
+		{"MOVE.L (0,A0,D2.W)-hibits,D1", []uint16{0x2230, 0x2000}, 0x00010004},
+		{"MOVE.L (0,A0,D2.L),D1", []uint16{0x2230, 0x2800}, 0x00000008},
+		{"MOVE.L (0,A0,D2.L*4),D1", []uint16{0x2230, 0x2C00}, 0x00000004},
+		{"MOVE.W (0,A0,D2.W),D1", []uint16{0x3230, 0x2000}, 0x0006},
+		{"MOVE.B (0,A0,D2.W),D1", []uint16{0x1230, 0x2000}, 0x0003},
+		{"MOVE.L (0x0400).W,D1", []uint16{0x2238, 0x0400}, 0},
+		{"MOVE.W (0x0400).W,D1", []uint16{0x3238, 0x0400}, 0},
+		{"MOVE.W D1,(0x0400).W", []uint16{0x31C1, 0x0400}, 0},
+		{"MOVE.L (0,PC),D1", []uint16{0x223A, 0x0000}, 0},
+		{"MOVE.L (0,PC,D2.W),D1", []uint16{0x223B, 0x2000}, 0x0000},
+		{"LEA (8,A0,D2.W),A3", []uint16{0x47F0, 0x2008}, 0x0004},
+		{"LEA (0,PC,D2.W),A3", []uint16{0x47FB, 0x2000}, 0x0000},
+		{"ADD.L (0,A0,D2.W),D1", []uint16{0xD2B0, 0x2000}, 0x0008},
+		{"TST.L (0,A0,D2.W)", []uint16{0x4AB0, 0x2000}, 0x0004},
+	}
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	execMem, err := AllocExecMem(1 << 22)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	for _, tc := range cases {
+		tc := tc
+		ok := t.Run(tc.name, func(t *testing.T) {
+			for _, cpu := range []*M68KCPU{ref, got} {
+				end := m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.words...)
+				m68kARM64WriteWords(cpu, end, 0x4E75)
+			}
+			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM())
+			if prefix < 1 {
+				t.Fatalf("%s: supported prefix %d < 1 (mode not admitted)", tc.name, prefix)
+			}
+			block, err := m68kCompileBlockARM64(instrs[:1], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("%s: compile: %v", tc.name, err)
+			}
+			ctx := newM68KJITContext(got, nil, nil, nil)
+			for _, ccrIn := range []uint16{0x00, 0x1F, 0x10} {
+				for _, cpu := range []*M68KCPU{ref, got} {
+					seed(cpu)
+					cpu.DataRegs[2] = tc.idxVal
+					cpu.SR = (cpu.SR &^ 0x1F) | ccrIn
+					cpu.PC = m68kARM64TestPC
+				}
+				m68kARM64RunInterp(ref, 1)
+				wantPC := m68kARM64TestPC + 2*uint32(len(tc.words))
+				if ref.PC != wantPC {
+					t.Fatalf("%s: interpreter PC=%08X want %08X (exception?)", tc.name, ref.PC, wantPC)
+				}
+				ctx.RetPC = 0
+				ctx.RetCount = 0
+				ctx.NeedIOFallback = 0
+				callNative(block.execAddr, m68kJITContextPtr(ctx))
+				if ctx.NeedIOFallback != 0 {
+					t.Fatalf("%s: unexpected I/O bail (idx=%08X)", tc.name, tc.idxVal)
+				}
+				got.PC = ctx.RetPC
+				if ctx.RetCount != 1 {
+					t.Fatalf("%s: retired=%d want 1", tc.name, ctx.RetCount)
+				}
+				m68kARM64CompareState(t, tc.name, ref, got)
+				cmpMem(t, tc.name, ref, got)
+				if t.Failed() {
+					t.Fatalf("%s: divergence at ccrIn=%02X idx=%08X", tc.name, ccrIn, tc.idxVal)
+				}
+			}
+		})
+		if !ok {
+			t.Fatalf("%s: subtest failed, stopping grid", tc.name)
+		}
+	}
+}
+
+// TestM68KARM64_DifferentialMemShiftGrid exercises the slice-6 memory
+// shift/rotate-by-one forms across every operation, comparing native and
+// interpreter results including the C/X/V flag behaviour.
+func TestM68KARM64_DifferentialMemShiftGrid(t *testing.T) {
+	type opCase struct {
+		name  string
+		words []uint16
+	}
+	cases := []opCase{
+		{"ASR.W (A0)", []uint16{0xE0D0}},
+		{"ASL.W (A0)", []uint16{0xE1D0}},
+		{"LSR.W (A0)", []uint16{0xE2D0}},
+		{"LSL.W (A0)", []uint16{0xE3D0}},
+		{"ROXR.W (A0)", []uint16{0xE4D0}},
+		{"ROXL.W (A0)", []uint16{0xE5D0}},
+		{"ROR.W (A0)", []uint16{0xE6D0}},
+		{"ROL.W (A0)", []uint16{0xE7D0}},
+		{"ASL.W (A0)+", []uint16{0xE1D8}},
+		{"LSR.W 4(A0)", []uint16{0xE2E8, 0x0004}},
+		{"ROXL.W (0x0400).W", []uint16{0xE5F8, 0x0400}},
+	}
+	words := []uint16{0x0000, 0x0001, 0x8000, 0xFFFF, 0x1234, 0x8001, 0x7FFF, 0xAAAA}
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	for _, tc := range cases {
+		tc := tc
+		ok := t.Run(tc.name, func(t *testing.T) {
+			for _, cpu := range []*M68KCPU{ref, got} {
+				end := m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.words...)
+				m68kARM64WriteWords(cpu, end, 0x4E75)
+			}
+			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM())
+			if prefix < 1 {
+				t.Fatalf("%s: not admitted (prefix %d)", tc.name, prefix)
+			}
+			block, err := m68kCompileBlockARM64(instrs[:1], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("%s: compile: %v", tc.name, err)
+			}
+			ctx := newM68KJITContext(got, nil, nil, nil)
+			for _, w := range words {
+				for _, ccrIn := range []uint16{0x00, 0x1F, 0x10, 0x00} {
+					for _, cpu := range []*M68KCPU{ref, got} {
+						m68kARM64SeedMem(cpu)
+						cpu.memory[m68kARM64BufBase+0x10] = byte(w >> 8)
+						cpu.memory[m68kARM64BufBase+0x11] = byte(w)
+						cpu.memory[m68kARM64BufBase+0x14] = byte(w >> 8)
+						cpu.memory[m68kARM64BufBase+0x15] = byte(w)
+						cpu.memory[0x0400] = byte(w >> 8)
+						cpu.memory[0x0401] = byte(w)
+						cpu.SR = (cpu.SR &^ 0x1F) | ccrIn
+						cpu.PC = m68kARM64TestPC
+					}
+					m68kARM64RunInterp(ref, 1)
+					ctx.RetPC = 0
+					ctx.RetCount = 0
+					ctx.NeedIOFallback = 0
+					callNative(block.execAddr, m68kJITContextPtr(ctx))
+					if ctx.NeedIOFallback != 0 {
+						t.Fatalf("%s: unexpected bail (w=%04X)", tc.name, w)
+					}
+					got.PC = ctx.RetPC
+					m68kARM64CompareState(t, tc.name, ref, got)
+					for _, a := range []uint32{m68kARM64BufBase + 0x10, m68kARM64BufBase + 0x14, 0x0400} {
+						if ref.memory[a] != got.memory[a] || ref.memory[a+1] != got.memory[a+1] {
+							t.Errorf("%s: mem[%08X] interp=%02X%02X native=%02X%02X", tc.name, a,
+								ref.memory[a], ref.memory[a+1], got.memory[a], got.memory[a+1])
+						}
+					}
+					if t.Failed() {
+						t.Fatalf("%s: divergence at w=%04X ccrIn=%02X", tc.name, w, ccrIn)
+					}
+				}
+			}
+		})
+		if !ok {
+			t.Fatalf("%s: subtest failed, stopping grid", tc.name)
+		}
+	}
+}
+
+// TestM68KARM64_DifferentialMulDivGrid drives MULU/MULS/DIVU/DIVS word forms
+// over an operand grid (register, immediate and memory sources), comparing
+// native and interpreter results. Zero divisors are covered separately by the
+// bail test; overflow cases arise naturally from the grid.
+func TestM68KARM64_DifferentialMulDivGrid(t *testing.T) {
+	type opCase struct {
+		name   string
+		words  []uint16
+		isDiv  bool
+		memSrc bool
+	}
+	cases := []opCase{
+		{"MULU.W D0,D1", []uint16{0xC2C0}, false, false},
+		{"MULS.W D0,D1", []uint16{0xC3C0}, false, false},
+		{"MULU.W #$1234,D1", []uint16{0xC2FC, 0x1234}, false, false},
+		{"MULS.W #$FFFE,D1", []uint16{0xC3FC, 0xFFFE}, false, false},
+		{"MULU.W (A0),D1", []uint16{0xC2D0}, false, true},
+		{"DIVU.W D0,D1", []uint16{0x82C0}, true, false},
+		{"DIVS.W D0,D1", []uint16{0x83C0}, true, false},
+		{"DIVU.W #$0007,D1", []uint16{0x82FC, 0x0007}, true, false},
+		{"DIVS.W #$FFF9,D1", []uint16{0x83FC, 0xFFF9}, true, false},
+		{"DIVU.W (A0),D1", []uint16{0x82D0}, true, true},
+	}
+	vals := []uint32{
+		0x00000000, 0x00000001, 0x00000007, 0x0000FFFF, 0x00008000,
+		0x00010000, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0x0003ABCD,
+		0x00000003, 0x12345678, 0xFFFF0001,
+	}
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	for _, tc := range cases {
+		tc := tc
+		ok := t.Run(tc.name, func(t *testing.T) {
+			for _, cpu := range []*M68KCPU{ref, got} {
+				end := m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.words...)
+				m68kARM64WriteWords(cpu, end, 0x4E75)
+			}
+			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM())
+			if prefix < 1 {
+				t.Fatalf("%s: not admitted (prefix %d)", tc.name, prefix)
+			}
+			block, err := m68kCompileBlockARM64(instrs[:1], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("%s: compile: %v", tc.name, err)
+			}
+			ctx := newM68KJITContext(got, nil, nil, nil)
+			for _, a := range vals {
+				for _, b := range vals {
+					// Skip zero divisor for DIV register-source cases.
+					if tc.isDiv && !tc.memSrc && (a&0xFFFF) == 0 {
+						continue
+					}
+					for _, ccrIn := range []uint16{0x00, 0x1F, 0x10} {
+						for _, cpu := range []*M68KCPU{ref, got} {
+							cpu.DataRegs[0] = a
+							cpu.DataRegs[1] = b
+							if tc.memSrc {
+								cpu.AddrRegs[0] = m68kARM64BufBase + 0x10
+								div := uint16(a)
+								if tc.isDiv && div == 0 {
+									div = 1
+								}
+								cpu.memory[m68kARM64BufBase+0x10] = byte(div >> 8)
+								cpu.memory[m68kARM64BufBase+0x11] = byte(div)
+							}
+							cpu.SR = (cpu.SR &^ 0x1F) | ccrIn
+							cpu.PC = m68kARM64TestPC
+						}
+						m68kARM64RunInterp(ref, 1)
+						wantPC := m68kARM64TestPC + 2*uint32(len(tc.words))
+						if ref.PC != wantPC {
+							t.Fatalf("%s: interp PC=%08X want %08X (a=%08X b=%08X)", tc.name, ref.PC, wantPC, a, b)
+						}
+						ctx.RetPC = 0
+						ctx.RetCount = 0
+						ctx.NeedIOFallback = 0
+						callNative(block.execAddr, m68kJITContextPtr(ctx))
+						if ctx.NeedIOFallback != 0 {
+							t.Fatalf("%s: unexpected bail (a=%08X b=%08X)", tc.name, a, b)
+						}
+						got.PC = ctx.RetPC
+						m68kARM64CompareState(t, tc.name, ref, got)
+						if t.Failed() {
+							t.Fatalf("%s: divergence a=%08X b=%08X ccrIn=%02X", tc.name, a, b, ccrIn)
+						}
+					}
+				}
+			}
+		})
+		if !ok {
+			t.Fatalf("%s: subtest failed, stopping grid", tc.name)
+		}
+	}
+}
+
+// TestM68KARM64_DivZeroBail pins the zero-divide contract: a DIV with a zero
+// divisor must bail before touching Dn so the interpreter raises the trap.
+func TestM68KARM64_DivZeroBail(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		words []uint16
+	}{
+		{"DIVU.W D0,D1 zero", []uint16{0x7405, 0x82C0}}, // moveq #5,d0 (clobbered by div src? no) ...
+		{"DIVS.W D0,D1 zero", []uint16{0x7405, 0x83C0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu := m68kARM64NewCPU(t)
+			m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.words...)
+			m68kARM64WriteWords(cpu, m68kARM64TestPC+uint32(len(tc.words))*2, 0x4E75)
+			cpu.DataRegs[0] = 0x00000000 // zero divisor (low word)
+			cpu.DataRegs[1] = 0x12345678
+			d1Before := cpu.DataRegs[1]
+
+			instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+			execMem, err := AllocExecMem(1 << 20)
+			if err != nil {
+				t.Fatalf("AllocExecMem: %v", err)
+			}
+			defer execMem.Free()
+			block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			ctx := newM68KJITContext(cpu, nil, nil, nil)
+			callNative(block.execAddr, m68kJITContextPtr(ctx))
+			if ctx.NeedIOFallback != 1 {
+				t.Fatalf("NeedIOFallback=%d, want 1 (zero divide must bail)", ctx.NeedIOFallback)
+			}
+			if ctx.RetPC != m68kARM64TestPC+2 {
+				t.Fatalf("bail RetPC=%08X, want %08X (the DIV)", ctx.RetPC, m68kARM64TestPC+2)
+			}
+			if ctx.RetCount != 1 {
+				t.Fatalf("bail RetCount=%d, want 1 (moveq retired)", ctx.RetCount)
+			}
+			if cpu.DataRegs[1] != d1Before {
+				t.Fatalf("D1=%08X changed by bailed DIV", cpu.DataRegs[1])
+			}
+		})
+	}
+}
+
+// TestM68KARM64_DifferentialBitOpGrid drives BTST/BCHG/BCLR/BSET with dynamic
+// (Dn) and immediate bit sources over register (long) and memory (byte)
+// destinations, comparing native and interpreter results including the Z-only
+// flag behaviour.
+func TestM68KARM64_DifferentialBitOpGrid(t *testing.T) {
+	type opCase struct {
+		name    string
+		words   []uint16
+		dynamic bool // bit number sourced from D0
+		memDst  bool
+	}
+	cases := []opCase{
+		{"BTST D0,D1", []uint16{0x0101}, true, false},
+		{"BCHG D0,D1", []uint16{0x0141}, true, false},
+		{"BCLR D0,D1", []uint16{0x0181}, true, false},
+		{"BSET D0,D1", []uint16{0x01C1}, true, false},
+		{"BTST D0,(A0)", []uint16{0x0110}, true, true},
+		{"BCHG D0,(A0)", []uint16{0x0150}, true, true},
+		{"BCLR D0,(A0)", []uint16{0x0190}, true, true},
+		{"BSET D0,(A0)", []uint16{0x01D0}, true, true},
+		{"BTST #3,D1", []uint16{0x0801, 0x0003}, false, false},
+		{"BTST #17,D1", []uint16{0x0801, 0x0011}, false, false},
+		{"BSET #31,D1", []uint16{0x08C1, 0x001F}, false, false},
+		{"BCLR #0,D1", []uint16{0x0881, 0x0000}, false, false},
+		{"BCHG #5,(A0)", []uint16{0x0850, 0x0005}, false, true},
+		{"BSET #7,(A0)", []uint16{0x08D0, 0x0007}, false, true},
+		{"BTST #4,(A0)", []uint16{0x0810, 0x0004}, false, true},
+	}
+	bits := []uint32{0, 1, 7, 8, 15, 16, 31, 32, 0xFF, 0x1234}
+	vals := []uint32{0x00000000, 0x00000001, 0x00008000, 0xFFFFFFFF, 0x12345678, 0x80000001, 0x0000FF00, 0xA5A5A5A5}
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	for _, tc := range cases {
+		tc := tc
+		ok := t.Run(tc.name, func(t *testing.T) {
+			for _, cpu := range []*M68KCPU{ref, got} {
+				end := m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.words...)
+				m68kARM64WriteWords(cpu, end, 0x4E75)
+			}
+			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM())
+			if prefix < 1 {
+				t.Fatalf("%s: not admitted (prefix %d)", tc.name, prefix)
+			}
+			block, err := m68kCompileBlockARM64(instrs[:1], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("%s: compile: %v", tc.name, err)
+			}
+			ctx := newM68KJITContext(got, nil, nil, nil)
+			for _, bit := range bits {
+				for _, v := range vals {
+					for _, ccrIn := range []uint16{0x00, 0x1F, 0x0A} {
+						for _, cpu := range []*M68KCPU{ref, got} {
+							cpu.DataRegs[0] = bit
+							cpu.DataRegs[1] = v
+							if tc.memDst {
+								cpu.AddrRegs[0] = m68kARM64BufBase + 0x10
+								cpu.memory[m68kARM64BufBase+0x10] = byte(v)
+							}
+							cpu.SR = (cpu.SR &^ 0x1F) | ccrIn
+							cpu.PC = m68kARM64TestPC
+						}
+						m68kARM64RunInterp(ref, 1)
+						ctx.RetPC = 0
+						ctx.RetCount = 0
+						ctx.NeedIOFallback = 0
+						callNative(block.execAddr, m68kJITContextPtr(ctx))
+						if ctx.NeedIOFallback != 0 {
+							t.Fatalf("%s: unexpected bail (bit=%d v=%08X)", tc.name, bit, v)
+						}
+						got.PC = ctx.RetPC
+						m68kARM64CompareState(t, tc.name, ref, got)
+						if tc.memDst && ref.memory[m68kARM64BufBase+0x10] != got.memory[m68kARM64BufBase+0x10] {
+							t.Errorf("%s: mem interp=%02X native=%02X", tc.name,
+								ref.memory[m68kARM64BufBase+0x10], got.memory[m68kARM64BufBase+0x10])
+						}
+						if t.Failed() {
+							t.Fatalf("%s: divergence bit=%d v=%08X ccrIn=%02X", tc.name, bit, v, ccrIn)
+						}
+					}
+				}
+			}
+		})
+		if !ok {
+			t.Fatalf("%s: subtest failed, stopping grid", tc.name)
+		}
+	}
+}
+
+// TestM68KARM64_DifferentialSccGrid drives all 16 Scc conditions on register
+// and memory byte destinations across every CCR input, comparing native and
+// interpreter results (Scc leaves the CCR unchanged).
+func TestM68KARM64_DifferentialSccGrid(t *testing.T) {
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	type dstShape struct {
+		name string
+		base uint16 // opcode with cond=0
+		mem  bool
+	}
+	for _, shape := range []dstShape{
+		{"Dn", 0x50C1, false},  // Scc D1
+		{"(A0)", 0x50D0, true}, // Scc (A0)
+	} {
+		for cond := 0; cond < 16; cond++ {
+			word := shape.base | uint16(cond)<<8
+			name := fmt.Sprintf("Scond%d_%s", cond, shape.name)
+			ok := t.Run(name, func(t *testing.T) {
+				for _, cpu := range []*M68KCPU{ref, got} {
+					m68kARM64WriteWords(cpu, m68kARM64TestPC, word, 0x4E75)
+				}
+				instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
+				if p := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM()); p < 1 {
+					t.Fatalf("%s: not admitted", name)
+				}
+				block, err := m68kCompileBlockARM64(instrs[:1], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
+				if err != nil {
+					t.Fatalf("%s: compile: %v", name, err)
+				}
+				ctx := newM68KJITContext(got, nil, nil, nil)
+				for ccrIn := uint16(0); ccrIn < 32; ccrIn++ {
+					for _, cpu := range []*M68KCPU{ref, got} {
+						cpu.DataRegs[1] = 0x1122AA55
+						cpu.AddrRegs[0] = m68kARM64BufBase + 0x10
+						cpu.memory[m68kARM64BufBase+0x10] = 0x3C
+						cpu.SR = (cpu.SR &^ 0x1F) | ccrIn
+						cpu.PC = m68kARM64TestPC
+					}
+					m68kARM64RunInterp(ref, 1)
+					ctx.RetPC = 0
+					ctx.RetCount = 0
+					ctx.NeedIOFallback = 0
+					callNative(block.execAddr, m68kJITContextPtr(ctx))
+					if ctx.NeedIOFallback != 0 {
+						t.Fatalf("%s: unexpected bail", name)
+					}
+					got.PC = ctx.RetPC
+					m68kARM64CompareState(t, name, ref, got)
+					if shape.mem && ref.memory[m68kARM64BufBase+0x10] != got.memory[m68kARM64BufBase+0x10] {
+						t.Errorf("%s: mem interp=%02X native=%02X", name,
+							ref.memory[m68kARM64BufBase+0x10], got.memory[m68kARM64BufBase+0x10])
+					}
+					if t.Failed() {
+						t.Fatalf("%s: divergence at ccrIn=%02X", name, ccrIn)
+					}
+				}
+			})
+			if !ok {
+				t.Fatalf("%s failed", name)
+			}
+		}
+	}
+}
+
+// TestM68KARM64_DifferentialTAS drives TAS on register and memory byte
+// destinations, comparing native and interpreter results.
+func TestM68KARM64_DifferentialTAS(t *testing.T) {
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	bytes := []uint8{0x00, 0x01, 0x7F, 0x80, 0xFF, 0x55, 0x80, 0x3C}
+	for _, tc := range []struct {
+		name string
+		word uint16
+		mem  bool
+	}{
+		{"TAS D1", 0x4AC1, false},
+		{"TAS (A0)", 0x4AD0, true},
+	} {
+		tc := tc
+		ok := t.Run(tc.name, func(t *testing.T) {
+			for _, cpu := range []*M68KCPU{ref, got} {
+				m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.word, 0x4E75)
+			}
+			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
+			block, err := m68kCompileBlockARM64(instrs[:1], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			ctx := newM68KJITContext(got, nil, nil, nil)
+			for _, b := range bytes {
+				for _, ccrIn := range []uint16{0x00, 0x1F, 0x10} {
+					for _, cpu := range []*M68KCPU{ref, got} {
+						cpu.DataRegs[1] = 0x11223300 | uint32(b)
+						cpu.AddrRegs[0] = m68kARM64BufBase + 0x10
+						cpu.memory[m68kARM64BufBase+0x10] = b
+						cpu.SR = (cpu.SR &^ 0x1F) | ccrIn
+						cpu.PC = m68kARM64TestPC
+					}
+					m68kARM64RunInterp(ref, 1)
+					ctx.RetPC = 0
+					ctx.RetCount = 0
+					ctx.NeedIOFallback = 0
+					callNative(block.execAddr, m68kJITContextPtr(ctx))
+					if ctx.NeedIOFallback != 0 {
+						t.Fatalf("%s: unexpected bail", tc.name)
+					}
+					got.PC = ctx.RetPC
+					m68kARM64CompareState(t, tc.name, ref, got)
+					if tc.mem && ref.memory[m68kARM64BufBase+0x10] != got.memory[m68kARM64BufBase+0x10] {
+						t.Errorf("%s: mem interp=%02X native=%02X", tc.name,
+							ref.memory[m68kARM64BufBase+0x10], got.memory[m68kARM64BufBase+0x10])
+					}
+					if t.Failed() {
+						t.Fatalf("%s: divergence b=%02X ccrIn=%02X", tc.name, b, ccrIn)
+					}
+				}
+			}
+		})
+		if !ok {
+			t.Fatalf("%s failed", tc.name)
+		}
+	}
+}
+
+// TestM68KARM64_DifferentialMOVEM drives MOVEM in both directions across
+// word/long sizes, predecrement and postincrement, and the base-register-in-
+// list edge cases, comparing registers, the memory window, CCR and PC against
+// the interpreter.
+func TestM68KARM64_DifferentialMOVEM(t *testing.T) {
+	type opCase struct {
+		name  string
+		words []uint16
+		setup func(cpu *M68KCPU)
+	}
+	seedRegs := func(cpu *M68KCPU) {
+		for i := 0; i < 8; i++ {
+			cpu.DataRegs[i] = 0xD0000000 | uint32(i*0x11111111)
+		}
+		for i := 0; i < 7; i++ {
+			cpu.AddrRegs[i] = 0xA0000000 | uint32(i)<<8
+		}
+	}
+	cases := []opCase{
+		{
+			name:  "MOVEM.L D0-D3/A0-A1,-(A7)",
+			words: []uint16{0x48E7, 0xF0C0},
+			setup: func(cpu *M68KCPU) { seedRegs(cpu); cpu.AddrRegs[7] = m68kARM64BufBase + 0x80 },
+		},
+		{
+			name:  "MOVEM.L (A7)+,D0-D3/A0-A1",
+			words: []uint16{0x4CDF, 0x030F},
+			setup: func(cpu *M68KCPU) { seedRegs(cpu); cpu.AddrRegs[7] = m68kARM64BufBase + 0x10 },
+		},
+		{
+			name:  "MOVEM.W D0-D2,(A0)",
+			words: []uint16{0x4890, 0x0007},
+			setup: func(cpu *M68KCPU) { seedRegs(cpu); cpu.AddrRegs[0] = m68kARM64BufBase + 0x20 },
+		},
+		{
+			name:  "MOVEM.W (A0),D4-D6",
+			words: []uint16{0x4C90, 0x0070},
+			setup: func(cpu *M68KCPU) { seedRegs(cpu); cpu.AddrRegs[0] = m68kARM64BufBase + 0x20 },
+		},
+		{
+			name:  "MOVEM.L D0-D7/A0-A7,(A0)",
+			words: []uint16{0x48D0, 0xFFFF},
+			setup: func(cpu *M68KCPU) { seedRegs(cpu); cpu.AddrRegs[0] = m68kARM64BufBase + 0x10 },
+		},
+		{
+			name:  "MOVEM.L (A0)+,D0-D7/A0-A7",
+			words: []uint16{0x4CD8, 0xFFFF},
+			setup: func(cpu *M68KCPU) { seedRegs(cpu); cpu.AddrRegs[0] = m68kARM64BufBase + 0x10 },
+		},
+		{
+			name:  "MOVEM.L 8(A0),D0-D2",
+			words: []uint16{0x4CE8, 0x0008, 0x0007},
+			setup: func(cpu *M68KCPU) { seedRegs(cpu); cpu.AddrRegs[0] = m68kARM64BufBase + 0x20 },
+		},
+		{
+			name:  "MOVEM.L A7,-(A7) (base in list)",
+			words: []uint16{0x48E7, 0x0001},
+			setup: func(cpu *M68KCPU) { seedRegs(cpu); cpu.AddrRegs[7] = m68kARM64BufBase + 0x40 },
+		},
+		{
+			name:  "MOVEM.W A0-A3,-(A7) (word predec)",
+			words: []uint16{0x48A7, 0x00F0},
+			setup: func(cpu *M68KCPU) { seedRegs(cpu); cpu.AddrRegs[7] = m68kARM64BufBase + 0x40 },
+		},
+	}
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	for _, tc := range cases {
+		tc := tc
+		ok := t.Run(tc.name, func(t *testing.T) {
+			for _, cpu := range []*M68KCPU{ref, got} {
+				end := m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.words...)
+				m68kARM64WriteWords(cpu, end, 0x4E75)
+				for i := uint32(0); i < 0x100; i++ {
+					cpu.memory[m68kARM64BufBase+i] = byte(i*3 + 1)
+				}
+				tc.setup(cpu)
+				cpu.PC = m68kARM64TestPC
+			}
+			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM())
+			if prefix < 1 {
+				t.Fatalf("%s: not admitted (prefix %d)", tc.name, prefix)
+			}
+			block, err := m68kCompileBlockARM64(instrs[:1], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("%s: compile: %v", tc.name, err)
+			}
+			m68kARM64RunInterp(ref, 1)
+			ctx := newM68KJITContext(got, nil, nil, nil)
+			callNative(block.execAddr, m68kJITContextPtr(ctx))
+			if ctx.NeedIOFallback != 0 {
+				t.Fatalf("%s: unexpected bail", tc.name)
+			}
+			got.PC = ctx.RetPC
+			if ctx.RetCount != 1 {
+				t.Fatalf("%s: retired=%d want 1", tc.name, ctx.RetCount)
+			}
+			m68kARM64CompareState(t, tc.name, ref, got)
+			for i := uint32(0); i < 0x100; i++ {
+				if ref.memory[m68kARM64BufBase+i] != got.memory[m68kARM64BufBase+i] {
+					t.Fatalf("%s: mem[%08X] interp=%02X native=%02X", tc.name, m68kARM64BufBase+i,
+						ref.memory[m68kARM64BufBase+i], got.memory[m68kARM64BufBase+i])
+				}
+			}
+		})
+		if !ok {
+			t.Fatalf("%s: subtest failed", tc.name)
+		}
+	}
+}
+
+// TestM68KARM64_MOVEMIOBail pins the MOVEM whole-span guard: a MOVEM whose
+// access range hits an I/O page must bail before any transfer, leaving every
+// register and the memory window untouched so the interpreter replays it.
+func TestM68KARM64_MOVEMIOBail(t *testing.T) {
+	cpu := m68kARM64NewCPU(t)
+	// moveq #5,d2 ; movem.l d0-d3,(a0)
+	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7405, 0x48D0, 0x000F, 0x4E75)
+	cpu.m68kJitIOPageBitmap = make([]bool, (uint32(len(cpu.memory))+255)>>8)
+	ioAddr := uint32(0x9000)
+	cpu.m68kJitIOPageBitmap[ioAddr>>8] = true
+
+	instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	ctx := newM68KJITContext(cpu, nil, nil, nil)
+	for i := 0; i < 4; i++ {
+		cpu.DataRegs[i] = 0x11111111 * uint32(i+1)
+	}
+	cpu.AddrRegs[0] = ioAddr + 4 // span [ioAddr+4, ioAddr+20) lies inside the I/O page
+	d0, d1, d3 := cpu.DataRegs[0], cpu.DataRegs[1], cpu.DataRegs[3]
+	memBefore := cpu.memory[ioAddr]
+	callNative(block.execAddr, m68kJITContextPtr(ctx))
+
+	if ctx.NeedIOFallback != 1 {
+		t.Fatalf("NeedIOFallback=%d, want 1 (MOVEM into I/O page must bail)", ctx.NeedIOFallback)
+	}
+	if ctx.RetPC != m68kARM64TestPC+2 {
+		t.Fatalf("bail RetPC=%08X, want %08X (the MOVEM)", ctx.RetPC, m68kARM64TestPC+2)
+	}
+	if ctx.RetCount != 1 {
+		t.Fatalf("bail RetCount=%d, want 1", ctx.RetCount)
+	}
+	if cpu.DataRegs[2] != 5 {
+		t.Fatalf("D2=%08X, want 5 (moveq before the bail must commit)", cpu.DataRegs[2])
+	}
+	if cpu.DataRegs[0] != d0 || cpu.DataRegs[1] != d1 || cpu.DataRegs[3] != d3 {
+		t.Fatalf("MOVEM source registers changed by bailed MOVEM")
+	}
+	if cpu.AddrRegs[0] != ioAddr+4 {
+		t.Fatalf("A0=%08X changed by bailed MOVEM", cpu.AddrRegs[0])
+	}
+	if cpu.memory[ioAddr] != memBefore {
+		t.Fatalf("memory written by bailed MOVEM")
+	}
+}
+
+// TestM68KARM64_BoundarySRPublication pins the interrupt-boundary invariant:
+// a block's epilogue must publish the live CCR into cpu.SR (preserving the
+// supervisor and interrupt-mask bits) so a successor block or a boundary
+// interrupt observes the predecessor's flags exactly. This is the correctness
+// guarantee that stands in for native chaining in milestone 3.
+func TestM68KARM64_BoundarySRPublication(t *testing.T) {
+	cases := []struct {
+		name    string
+		words   []uint16
+		srIn    uint16
+		wantCCR uint16
+	}{
+		// moveq #-1,d0 sets N, clears Z/V/C, preserves X.
+		{"moveq neg sets N", []uint16{0x70FF, 0x4E71}, 0x2700, 0x08},
+		// moveq #0,d0 sets Z, preserves X (X=1 in from 0x2710).
+		{"moveq zero sets Z keeps X", []uint16{0x7000, 0x4E71}, 0x2710, 0x14},
+		// add.l with a carry-producing pair set below; here just check publish.
+		{"moveq pos clears NZ", []uint16{0x7001, 0x4E71}, 0x271F, 0x10},
+	}
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cpu := m68kARM64NewCPU(t)
+			m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.words...)
+			instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+			block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			cpu.SR = tc.srIn
+			ctx := newM68KJITContext(cpu, nil, nil, nil)
+			callNative(block.execAddr, m68kJITContextPtr(ctx))
+			if cpu.SR&0x1F != tc.wantCCR {
+				t.Fatalf("published CCR=%02X, want %02X", cpu.SR&0x1F, tc.wantCCR)
+			}
+			if cpu.SR&0xFF00 != tc.srIn&0xFF00 {
+				t.Fatalf("SR high bits=%04X changed, want %04X preserved", cpu.SR&0xFF00, tc.srIn&0xFF00)
+			}
+		})
+	}
+}
+
+// TestM68KARM64_ExceptionDelivery drives programs that raise processor
+// exceptions (TRAP, CHK, illegal instruction) through both the pure
+// interpreter and the JIT dispatcher, and requires identical final state.
+// Exception-generating instructions are never admitted into a native block,
+// so they fall back to the interpreter with the exact resume PC; this test
+// pins that per-instruction resume-PC contract end to end.
+func TestM68KARM64_ExceptionDelivery(t *testing.T) {
+	type prog struct {
+		name    string
+		main    []uint16 // written at 0x1000
+		vector  uint32   // exception vector address to point at the handler
+		handler []uint16 // written at 0x2000, must STOP
+		setup   func(cpu *M68KCPU)
+	}
+	handlerAddr := uint32(0x2000)
+	stopHandler := []uint16{0x747F, 0x4E72, 0x2700} // moveq #$7f,d2 ; stop #$2700
+	progs := []prog{
+		{
+			name:    "TRAP #0",
+			main:    []uint16{0x7005, 0x4E40, 0x7209, 0x4E72, 0x2700}, // moveq #5,d0 ; trap #0 ; moveq #9,d1 ; stop
+			vector:  0x80,                                             // TRAP #0 => vector 32
+			handler: stopHandler,
+		},
+		{
+			name:    "CHK out of range",
+			main:    []uint16{0x203C, 0x00, 0x0064, 0x4186, 0x4E72, 0x2700}, // move.l #100,d0 ; chk.w d6,d0 ; stop
+			vector:  0x18,                                                   // CHK => vector 6
+			handler: stopHandler,
+			setup:   func(cpu *M68KCPU) { cpu.DataRegs[6] = 0x0000000A }, // bound 10 < 100 => trap
+		},
+		{
+			name:    "illegal instruction",
+			main:    []uint16{0x4AFC, 0x7209, 0x4E72, 0x2700}, // illegal ; moveq #9,d1 ; stop
+			vector:  0x10,                                     // illegal => vector 4
+			handler: stopHandler,
+		},
+	}
+	for _, p := range progs {
+		p := p
+		t.Run(p.name, func(t *testing.T) {
+			ref := m68kARM64NewCPU(t)
+			got := m68kARM64NewCPU(t)
+			for _, cpu := range []*M68KCPU{ref, got} {
+				m68kARM64WriteWords(cpu, m68kARM64TestPC, p.main...)
+				m68kARM64WriteWords(cpu, handlerAddr, p.handler...)
+				// Vector points at the handler.
+				cpu.memory[p.vector] = byte(handlerAddr >> 24)
+				cpu.memory[p.vector+1] = byte(handlerAddr >> 16)
+				cpu.memory[p.vector+2] = byte(handlerAddr >> 8)
+				cpu.memory[p.vector+3] = byte(handlerAddr)
+				cpu.SR = 0x2700 // supervisor, IPL 7
+				cpu.AddrRegs[7] = 0x7000
+				cpu.stackLowerBound = 0 // this test uses a low supervisor stack
+				cpu.PC = m68kARM64TestPC
+				if p.setup != nil {
+					p.setup(cpu)
+				}
+			}
+
+			refCount := 0
+			for !ref.stopped.Load() && refCount < 200 {
+				refCount += ref.StepOne()
+			}
+
+			got.m68kJitEnabled = true
+			got.StoppedIdleHook = func(c *M68KCPU) { c.running.Store(false) }
+			got.running.Store(true)
+			got.M68KExecuteJIT()
+
+			m68kARM64CompareState(t, p.name, ref, got)
+			// Both must have entered the handler and stopped there.
+			if got.DataRegs[2] != 0x7F {
+				t.Fatalf("%s: handler did not run (D2=%08X)", p.name, got.DataRegs[2])
+			}
+			// Supervisor stack frames must match too.
+			for a := uint32(0x6FE0); a < 0x7000; a++ {
+				if ref.memory[a] != got.memory[a] {
+					t.Fatalf("%s: exception frame mem[%08X] interp=%02X jit=%02X", p.name, a,
+						ref.memory[a], got.memory[a])
+				}
+			}
+		})
+	}
+}
+
+// TestM68KARM64_FallbackAdmission pins that exception-generating and 68881
+// floating-point instructions are never lowered natively: each must terminate
+// the supported prefix so the dispatcher interprets it. This is the contract
+// behind the staged FPU fallback and the per-instruction exception resume PC.
+func TestM68KARM64_FallbackAdmission(t *testing.T) {
+	cases := []struct {
+		name  string
+		words []uint16
+	}{
+		{"TRAP #0", []uint16{0x4E40}},
+		{"TRAPV", []uint16{0x4E76}},
+		{"CHK.W D0,D1", []uint16{0x4380}},
+		{"illegal", []uint16{0x4AFC}},
+		{"Line-A", []uint16{0xA000}},
+		{"Line-F FPU", []uint16{0xF200, 0x0000}}, // FMOVE-class F-line
+		{"FPU FADD", []uint16{0xF200, 0x0022}},
+		{"RTE", []uint16{0x4E73}},
+		{"STOP", []uint16{0x4E72, 0x2700}},
+	}
+	cpu := m68kARM64NewCPU(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// A supported instruction first, then the probe: the prefix must
+			// cover only the leading supported instruction, never the probe.
+			words := append([]uint16{0x7001}, tc.words...) // moveq #1,d0 ; <probe>
+			m68kARM64WriteWords(cpu, m68kARM64TestPC, words...)
+			instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, cpu.memory, m68kARM64TestPC, cpu.ProfileTopOfRAM())
+			if prefix != 1 {
+				t.Fatalf("%s: prefix=%d, want 1 (probe must not be admitted)", tc.name, prefix)
 			}
 		})
 	}

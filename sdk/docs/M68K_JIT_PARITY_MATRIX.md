@@ -305,3 +305,82 @@ TestM68KARM64_JSRStackBailUnit (pre-commit bail contract for the stack
 push); TestM68KARM64_DispatcherCallReturn (end-to-end JSR/RTS pair
 through the dispatcher with exact retired accounting). All green under
 qemu-aarch64; amd64 suite unaffected (8669 tests).
+
+## Milestone 3 slices 6-14 delivered: integer core completion and correctness gate
+
+These slices complete the arm64 integer execution foundation. Every M68020
+instruction is now either lowered natively or admitted-and-interpreted with an
+exact per-instruction resume PC; differential grids run against the interpreter
+under qemu-aarch64.
+
+Native lowering added:
+
+- Effective-address formats: absolute short ((xxx).W), PC-relative ((d16,PC),
+  resolved to a compile-time constant address, read-only), and the brief-format
+  index modes (d8,An,Xn) and (d8,PC,Xn) with word/long index size and scale.
+  The 68020 full extension-word format (memory indirect, base/outer
+  displacements) stays interpreter fallback. PC-relative and index-with-PC
+  operands are rejected as write destinations.
+  (TestM68KARM64_DifferentialExtendedEAGrid.)
+- Memory shift/rotate by one (ASR/ASL/LSR/LSL/ROXR/ROXL/ROR/ROL on a word),
+  matching ExecShiftRotateMemory including the interpreter quirk that memory
+  ROL/ROR set X as well as C. (TestM68KARM64_DifferentialMemShiftGrid.)
+- MULU.W/MULS.W (16x16 -> 32, N/Z with V/C/X preserved per SetFlagsNZ) and
+  DIVU.W/DIVS.W (32/16) with a divide-by-zero bail (the interpreter raises the
+  zero-divide trap), the quotient-out-of-range overflow path (V set, Dn
+  unchanged), and remainder/quotient packing.
+  (TestM68KARM64_DifferentialMulDivGrid, TestM68KARM64_DivZeroBail.)
+- BTST/BCHG/BCLR/BSET with dynamic (Dn) and immediate bit sources over long
+  register and byte memory destinations; Z-only flag update.
+  (TestM68KARM64_DifferentialBitOpGrid.)
+- Scc (all 16 conditions, byte register/memory, CCR untouched) and TAS
+  (N/Z from the original byte, V/C cleared, X preserved, bit 7 set).
+  (TestM68KARM64_DifferentialSccGrid, TestM68KARM64_DifferentialTAS.)
+- MOVEM in both directions, word and long, predecrement and postincrement,
+  including the base-register-in-list edge cases. The register mask is a
+  compile-time constant so the transfers are unrolled; the whole contiguous
+  access span is guarded once (a full per-page I/O scan, m68kA64EmitRangeGuard)
+  before any transfer so a bail leaves the instruction unexecuted.
+  (TestM68KARM64_DifferentialMOVEM, TestM68KARM64_MOVEMIOBail.)
+
+Correctness gate satisfied by admitted-and-interpreted fallback:
+
+- Exceptions with per-instruction resume PC: TRAP, TRAPV, CHK, illegal,
+  Line-A and Line-F are never admitted into a native block, so they terminate
+  the supported prefix and are interpreted with the interpreter's exact
+  exception delivery; any native block that faults mid-execution (I/O, bounds,
+  stack bound, zero divide) bails with RetPC = faulting instruction. End-to-end
+  TRAP/CHK/illegal delivery matches the pure interpreter byte for byte,
+  including the supervisor stack frame. (TestM68KARM64_ExceptionDelivery,
+  TestM68KARM64_FallbackAdmission.)
+- Interrupt-boundary SR publication: the arm64 backend operates directly on
+  cpu.DataRegs/cpu.AddrRegs and flushes the live CCR into cpu.SR in every
+  block epilogue, so the returning dispatcher's boundary interrupt sampling
+  observes the predecessor's flags exactly. (TestM68KARM64_BoundarySRPublication.)
+
+Deferred to milestone 4 (optimisation / capability completion), each correct
+by fallback today and documented in jit_m68k_exec_arm64.go:
+
+- Register-count shift/rotate (Dn count): the runtime count with clamp/modulo
+  and the count-zero CCR-preservation makes it an optimisation; fallback
+  reproduces ExecShiftRotate exactly.
+- 68020 long MULL/DIVL (32x32 -> 32/64 and 64/32): fallback.
+- Native block chaining: on amd64 it is coupled to register pinning across the
+  chain edge; the arm64 backend defers register pinning to milestone 4, so
+  native chaining ports there. The interrupt-boundary SR-publication invariant
+  it must preserve is already satisfied and tested. ChainCount stays zero.
+- Exact-range native-exit SMC invalidation: the conservative guest-byte stamp
+  recompiles on any change before a block is re-entered, so stale native code
+  never runs across a dispatch boundary; the precise-range fast path is the
+  optimisation refinement deferred to milestone 4.
+- 68881 floating point on arm64: F-line instructions fall back to the
+  interpreter's 68881. Note this is the ARM64 backend only. The amd64 M68020
+  JIT has had native 68881 support with lazy FPSR for some time
+  (see the "Current M68020 JIT state" section and jit_m68k_emit_amd64.go);
+  native 68881 lowering on arm64 is milestone 4 work.
+
+Gate status: the integer and control-flow differential grids are green on
+arm64 under qemu-aarch64 (307 arm64 subtests). The Harte exception gate and
+the AROS-boot-on-real-hardware gate for residency/control-flow changes remain
+outstanding per the plan and are not satisfiable in qemu. m68kJitAvailable
+stays false on arm64 until those hardware gates pass.

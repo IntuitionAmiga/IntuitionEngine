@@ -110,6 +110,11 @@ func arm64ORR_W_lsl(rd, rn, rm byte, shift uint32) uint32 {
 	return 0x2A000000 | uint32(rm)<<16 | (shift&0x3F)<<10 | uint32(rn)<<5 | uint32(rd)
 }
 
+// lslv Wd, Wn, Wm (variable logical shift left, shift amount mod 32)
+func arm64LSLV_W(rd, rn, rm byte) uint32 {
+	return 0x1AC02000 | uint32(rm)<<16 | uint32(rn)<<5 | uint32(rd)
+}
+
 // rev16 Wd, Wn (byte swap within each halfword)
 func arm64REV16_W(rd, rn byte) uint32 {
 	return 0x5AC00400 | uint32(rn)<<5 | uint32(rd)
@@ -283,30 +288,63 @@ func m68kA64FlagsStatic(cb *CodeBuffer, negative, zero bool) {
 // Effective addresses (slice 2)
 // ===========================================================================
 
-// EA modes the slice-2 emitter lowers. Absolute short, index/extension
-// formats and PC-relative modes stay interpreter fallback.
+// EA modes the arm64 emitter lowers. Absolute short and PC-relative modes
+// resolve to a compile-time constant address and reuse m68kA64EAAbsL; the
+// brief-format index modes ((d8,An,Xn) and (d8,PC,Xn)) use m68kA64EAIndex.
+// The 68020 full extension-word format (memory indirect, base/outer
+// displacements) stays interpreter fallback.
 const (
-	m68kA64EADn   = iota // data register direct
-	m68kA64EAAn          // address register direct
-	m68kA64EAInd         // (An)
-	m68kA64EAPost        // (An)+
-	m68kA64EAPre         // -(An)
-	m68kA64EADisp        // (d16,An)
-	m68kA64EAAbsL        // (xxx).L
-	m68kA64EAImm         // #imm
+	m68kA64EADn    = iota // data register direct
+	m68kA64EAAn           // address register direct
+	m68kA64EAInd          // (An)
+	m68kA64EAPost         // (An)+
+	m68kA64EAPre          // -(An)
+	m68kA64EADisp         // (d16,An)
+	m68kA64EAAbsL         // (xxx).L, (xxx).W and (d16,PC) (constant address)
+	m68kA64EAImm          // #imm
+	m68kA64EAIndex        // (d8,An,Xn) and (d8,PC,Xn), brief format
 )
 
 type m68kA64EA struct {
 	kind int
-	reg  uint16 // Dn/An number
-	disp int32  // (d16,An)
-	abs  uint32 // (xxx).L
+	reg  uint16 // Dn/An number (base An for m68kA64EAIndex)
+	disp int32  // (d16,An); disp8 for m68kA64EAIndex
+	abs  uint32 // (xxx).L/.W and (d16,PC) constant; PC base for PC-index
 	imm  uint32 // #imm (already sized)
 	ext  int    // extension words consumed
+
+	// Brief-format index fields (m68kA64EAIndex).
+	idxReg    uint16 // index register number
+	idxIsAddr bool   // index is An (else Dn)
+	idxLong   bool   // index used as long (else sign-extended word)
+	scale     uint32 // index scale shift (0..3)
+	pcRel     bool   // base is the PC constant in abs, not An
+}
+
+// m68kA64ParseBriefIndex decodes a brief-format index extension word into an
+// m68kA64EAIndex. The 68020 full extension-word format (bit 8 set) stays
+// interpreter fallback. base is the An number (ignored when pcRel), pcBase is
+// the PC constant used as the base for (d8,PC,Xn).
+func m68kA64ParseBriefIndex(ext uint16, pcRel bool, base uint16, pcBase uint32) (m68kA64EA, bool) {
+	if ext&M68K_EXT_FULL_FORMAT != 0 {
+		return m68kA64EA{}, false
+	}
+	return m68kA64EA{
+		kind:      m68kA64EAIndex,
+		reg:       base,
+		disp:      int32(int8(ext & 0xFF)),
+		abs:       pcBase,
+		idxReg:    (ext >> 12) & 0x07,
+		idxIsAddr: (ext>>M68K_EXT_REG_TYPE_BIT)&1 != 0,
+		idxLong:   (ext>>M68K_EXT_SIZE_BIT)&1 != 0,
+		scale:     uint32((ext >> M68K_EXT_SCALE_START_BIT) & 3),
+		pcRel:     pcRel,
+		ext:       1,
+	}, true
 }
 
 // m68kA64ParseEA decodes a mode/reg pair with its extension words at extPC.
-// Returns ok=false for any shape outside the slice-2 set.
+// Returns ok=false for any shape outside the supported set.
 func m68kA64ParseEA(mode, reg uint16, size uint32, memory []byte, extPC uint32) (m68kA64EA, bool) {
 	rd16 := func(off uint32) (uint16, bool) {
 		if int(extPC)+int(off)+2 > len(memory) {
@@ -334,8 +372,20 @@ func m68kA64ParseEA(mode, reg uint16, size uint32, memory []byte, extPC uint32) 
 			return m68kA64EA{}, false
 		}
 		return m68kA64EA{kind: m68kA64EADisp, reg: reg, disp: int32(int16(w)), ext: 1}, true
+	case 6: // (d8,An,Xn) brief format
+		w, ok := rd16(0)
+		if !ok {
+			return m68kA64EA{}, false
+		}
+		return m68kA64ParseBriefIndex(w, false, reg, 0)
 	case 7:
 		switch reg {
+		case 0: // (xxx).W (sign-extended constant address)
+			w, ok := rd16(0)
+			if !ok {
+				return m68kA64EA{}, false
+			}
+			return m68kA64EA{kind: m68kA64EAAbsL, abs: uint32(int32(int16(w))), ext: 1}, true
 		case 1: // (xxx).L
 			hi, ok1 := rd16(0)
 			lo, ok2 := rd16(2)
@@ -343,6 +393,18 @@ func m68kA64ParseEA(mode, reg uint16, size uint32, memory []byte, extPC uint32) 
 				return m68kA64EA{}, false
 			}
 			return m68kA64EA{kind: m68kA64EAAbsL, abs: uint32(hi)<<16 | uint32(lo), ext: 2}, true
+		case 2: // (d16,PC): base is the address of the extension word
+			w, ok := rd16(0)
+			if !ok {
+				return m68kA64EA{}, false
+			}
+			return m68kA64EA{kind: m68kA64EAAbsL, abs: extPC + uint32(int32(int16(w))), ext: 1, pcRel: true}, true
+		case 3: // (d8,PC,Xn) brief format
+			w, ok := rd16(0)
+			if !ok {
+				return m68kA64EA{}, false
+			}
+			return m68kA64ParseBriefIndex(w, true, 0, extPC)
 		case 4: // #imm
 			switch size {
 			case 1, 2:
@@ -370,7 +432,7 @@ func m68kA64ParseEA(mode, reg uint16, size uint32, memory []byte, extPC uint32) 
 
 func (ea *m68kA64EA) isMem() bool {
 	switch ea.kind {
-	case m68kA64EAInd, m68kA64EAPost, m68kA64EAPre, m68kA64EADisp, m68kA64EAAbsL:
+	case m68kA64EAInd, m68kA64EAPost, m68kA64EAPre, m68kA64EADisp, m68kA64EAAbsL, m68kA64EAIndex:
 		return true
 	}
 	return false
@@ -430,9 +492,40 @@ func (e *m68kA64Emitter) patchSite(s m68kA64BranchSite, target int) {
 	}
 }
 
+// localFwdBcond emits a forward conditional branch inside the current
+// instruction and returns its unpatched site; bindLocal patches it to the
+// current position. Used for in-block control (division overflow, etc.) that
+// is not a bail to the interpreter.
+func (e *m68kA64Emitter) localFwdBcond(cond byte) m68kA64BranchSite {
+	s := m68kA64BranchSite{off: e.cb.Len(), base: 0x54000000 | uint32(cond)}
+	e.cb.Emit32(arm64Bcond(cond, 0))
+	return s
+}
+
+func (e *m68kA64Emitter) localFwdCBZ(rt byte) m68kA64BranchSite {
+	s := m68kA64BranchSite{off: e.cb.Len(), base: 0xB4000000 | uint32(rt)}
+	e.cb.Emit32(arm64CBZ(rt, 0))
+	return s
+}
+
+func (e *m68kA64Emitter) localFwdB() m68kA64BranchSite {
+	s := m68kA64BranchSite{off: e.cb.Len(), base: 0x14000000, imm26: true}
+	e.cb.Emit32(arm64B(0))
+	return s
+}
+
+func (e *m68kA64Emitter) bindLocal(s m68kA64BranchSite) {
+	e.patchSite(s, e.cb.Len())
+}
+
 func (e *m68kA64Emitter) branchToBail(cond byte) {
 	e.bails = append(e.bails, m68kA64BranchSite{off: e.cb.Len(), base: 0x54000000 | uint32(cond)})
 	e.cb.Emit32(arm64Bcond(cond, 0))
+}
+
+func (e *m68kA64Emitter) cbzToBail(rt byte) {
+	e.bails = append(e.bails, m68kA64BranchSite{off: e.cb.Len(), base: 0xB4000000 | uint32(rt)})
+	e.cb.Emit32(arm64CBZ(rt, 0))
 }
 
 func (e *m68kA64Emitter) cbnzToBail(rt byte) {
@@ -527,6 +620,35 @@ func m68kA64EmitEAAddr(cb *CodeBuffer, ea *m68kA64EA, size uint32, dst byte, ext
 	switch ea.kind {
 	case m68kA64EAAbsL:
 		m68kA64MovImm32(cb, dst, ea.abs)
+		if extraDelta != 0 {
+			m68kA64MovImm32(cb, m68kA64Tmp6, uint32(extraDelta))
+			cb.Emit32(arm64ADD_W(dst, dst, m68kA64Tmp6))
+		}
+		return
+	case m68kA64EAIndex:
+		// base + disp8 + (index sign-extended/long, scaled). No side effects,
+		// so extraDelta only ever pre-adjusts the base (rare) and folds in.
+		if ea.pcRel {
+			m68kA64MovImm32(cb, dst, ea.abs)
+		} else {
+			m68kA64LoadA(cb, dst, ea.reg)
+		}
+		if ea.idxIsAddr {
+			m68kA64LoadA(cb, m68kA64Tmp6, ea.idxReg)
+		} else {
+			m68kA64LoadD(cb, m68kA64Tmp6, ea.idxReg)
+		}
+		if !ea.idxLong {
+			cb.Emit32(arm64SXTH_W(m68kA64Tmp6, m68kA64Tmp6))
+		}
+		if ea.scale != 0 {
+			cb.Emit32(arm64LSL_W_imm(m68kA64Tmp6, m68kA64Tmp6, ea.scale))
+		}
+		cb.Emit32(arm64ADD_W(dst, dst, m68kA64Tmp6))
+		if d := ea.disp + extraDelta; d != 0 {
+			m68kA64MovImm32(cb, m68kA64Tmp6, uint32(d))
+			cb.Emit32(arm64ADD_W(dst, dst, m68kA64Tmp6))
+		}
 		return
 	}
 	m68kA64LoadA(cb, dst, ea.reg)
@@ -589,19 +711,26 @@ const (
 	m68kA64ClassQuickA   // ADDQ/SUBQ #q,An (no flags)
 	m68kA64ClassQuickMem // ADDQ/SUBQ #q,<ea>
 	m68kA64ClassLEA
-	m68kA64ClassNEG   // NEG <ea>
-	m68kA64ClassNOT   // NOT <ea>
-	m68kA64ClassSWAP  // SWAP Dn
-	m68kA64ClassEXT   // EXT.W/EXT.L/EXTB.L Dn (q = opmode)
-	m68kA64ClassPEA   // PEA <ea>
-	m68kA64ClassShift // immediate-count shift/rotate on Dn
-	m68kA64ClassBRA   // unconditional branch (block terminator; q = target)
-	m68kA64ClassBcc   // conditional branch (block-ending; kind = cond, q = target)
-	m68kA64ClassDBcc  // decrement and branch (block-ending; kind = cond, q = target)
-	m68kA64ClassBSR   // branch to subroutine (block terminator; q = target)
-	m68kA64ClassJSR   // jump to subroutine (block terminator; src = EA)
-	m68kA64ClassJMP   // jump (block terminator; src = EA)
-	m68kA64ClassRTS   // return from subroutine (block terminator)
+	m68kA64ClassNEG      // NEG <ea>
+	m68kA64ClassNOT      // NOT <ea>
+	m68kA64ClassSWAP     // SWAP Dn
+	m68kA64ClassEXT      // EXT.W/EXT.L/EXTB.L Dn (q = opmode)
+	m68kA64ClassPEA      // PEA <ea>
+	m68kA64ClassShift    // immediate-count shift/rotate on Dn
+	m68kA64ClassShiftMem // memory shift/rotate by one (kind = operation 0..7)
+	m68kA64ClassMulW     // MULU/MULS.W <ea>,Dn (sub = signed)
+	m68kA64ClassDivW     // DIVU/DIVS.W <ea>,Dn (sub = signed)
+	m68kA64ClassBitOp    // BTST/BCHG/BCLR/BSET (kind = op, sub = dynamic bit, q = bit source)
+	m68kA64ClassScc      // Scc <ea> byte (kind = condition)
+	m68kA64ClassTAS      // TAS <ea> byte
+	m68kA64ClassMOVEM    // MOVEM (sub = mem-to-reg, q = mask, dst = EA)
+	m68kA64ClassBRA      // unconditional branch (block terminator; q = target)
+	m68kA64ClassBcc      // conditional branch (block-ending; kind = cond, q = target)
+	m68kA64ClassDBcc     // decrement and branch (block-ending; kind = cond, q = target)
+	m68kA64ClassBSR      // branch to subroutine (block terminator; q = target)
+	m68kA64ClassJSR      // jump to subroutine (block terminator; src = EA)
+	m68kA64ClassJMP      // jump (block terminator; src = EA)
+	m68kA64ClassRTS      // return from subroutine (block terminator)
 )
 
 // Shift/rotate kinds (bits 4-3 of the opcode), carried in q; sub carries
@@ -690,7 +819,7 @@ func m68kA64DecodeInner(ji *M68KJITInstr, memory []byte, instrPC uint32) (m68kA6
 				dst: m68kA64EA{kind: m68kA64EAAn, reg: dstReg}}, true
 		}
 		dst, ok := m68kA64ParseEA(dstMode, dstReg, size, memory, extPC)
-		if !ok || dst.kind == m68kA64EAImm || dst.kind == m68kA64EAAn {
+		if !ok || dst.kind == m68kA64EAImm || dst.kind == m68kA64EAAn || dst.pcRel {
 			return bad, false
 		}
 		d := m68kA64DecodedOp{class: m68kA64ClassMOVE, size: size, src: src, dst: dst}
@@ -699,13 +828,20 @@ func m68kA64DecodeInner(ji *M68KJITInstr, memory []byte, instrPC uint32) (m68kA6
 		}
 		return d, true
 
+	case op&0xFFC0 == 0x4AC0: // TAS <ea> (checked before TST; TST's mask catches TAS)
+		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, 1, memory, extPC)
+		if !ok || ea.kind == m68kA64EAAn || ea.kind == m68kA64EAImm || ea.pcRel {
+			return bad, false
+		}
+		return m68kA64DecodedOp{class: m68kA64ClassTAS, size: 1, dst: ea}, true
+
 	case op&0xFF00 == 0x4A00: // TST
 		size := m68kA64SizeFromBits((op >> 6) & 3)
 		if size == 0 {
 			return bad, false
 		}
 		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, size, memory, extPC)
-		if !ok || ea.kind == m68kA64EAImm || ea.kind == m68kA64EAAn {
+		if !ok || ea.kind == m68kA64EAImm || ea.kind == m68kA64EAAn || ea.pcRel {
 			return bad, false
 		}
 		return m68kA64DecodedOp{class: m68kA64ClassTST, size: size, src: ea}, true
@@ -716,7 +852,7 @@ func m68kA64DecodeInner(ji *M68KJITInstr, memory []byte, instrPC uint32) (m68kA6
 			return bad, false
 		}
 		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, size, memory, extPC)
-		if !ok || ea.kind == m68kA64EAImm || ea.kind == m68kA64EAAn {
+		if !ok || ea.kind == m68kA64EAImm || ea.kind == m68kA64EAAn || ea.pcRel {
 			return bad, false
 		}
 		return m68kA64DecodedOp{class: m68kA64ClassCLR, size: size, dst: ea}, true
@@ -733,6 +869,48 @@ func m68kA64DecodeInner(ji *M68KJITInstr, memory []byte, instrPC uint32) (m68kA6
 		}
 		return m68kA64DecodedOp{class: m68kA64ClassLEA, size: 4, src: ea,
 			dst: m68kA64EA{kind: m68kA64EAAn, reg: (op >> 9) & 7}}, true
+
+	case op&0xFB80 == 0x4880: // MOVEM (checked after EXT, which owns the mode-0 forms)
+		if int(extPC)+2 > len(memory) {
+			return bad, false
+		}
+		mask := uint16(memory[extPC])<<8 | uint16(memory[extPC+1])
+		memToReg := op&0x0400 != 0
+		size := uint32(2)
+		if op&0x0040 != 0 {
+			size = 4
+		}
+		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, size, memory, extPC+2)
+		if !ok {
+			return bad, false
+		}
+		switch ea.kind {
+		case m68kA64EAInd, m68kA64EADisp, m68kA64EAAbsL, m68kA64EAIndex:
+			if ea.pcRel && !memToReg {
+				return bad, false // PC-relative is a mem-to-reg source only
+			}
+		case m68kA64EAPost:
+			if !memToReg {
+				return bad, false // (An)+ is mem-to-reg only
+			}
+		case m68kA64EAPre:
+			if memToReg {
+				return bad, false // -(An) is reg-to-mem only
+			}
+		default:
+			return bad, false // Dn, An, immediate invalid
+		}
+		ea.ext++ // the register-mask extension word
+		return m68kA64DecodedOp{class: m68kA64ClassMOVEM, size: size, sub: memToReg,
+			q: uint32(mask), dst: ea}, true
+
+	case op&0xF0C0 == 0x50C0 && (op>>3)&7 != 1: // Scc <ea> (mode An is DBcc)
+		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, 1, memory, extPC)
+		if !ok || ea.kind == m68kA64EAAn || ea.kind == m68kA64EAImm || ea.pcRel {
+			return bad, false
+		}
+		return m68kA64DecodedOp{class: m68kA64ClassScc, size: 1,
+			kind: int((op >> 8) & 0xF), dst: ea}, true
 
 	case op&0xF000 == 0x5000: // ADDQ/SUBQ
 		size := m68kA64SizeFromBits((op >> 6) & 3)
@@ -754,7 +932,7 @@ func m68kA64DecodeInner(ji *M68KJITInstr, memory []byte, instrPC uint32) (m68kA6
 				dst: m68kA64EA{kind: m68kA64EAAn, reg: reg}}, true
 		}
 		ea, ok := m68kA64ParseEA(mode, reg, size, memory, extPC)
-		if !ok || ea.kind == m68kA64EAImm {
+		if !ok || ea.kind == m68kA64EAImm || ea.pcRel {
 			return bad, false
 		}
 		if ea.kind == m68kA64EADn {
@@ -779,7 +957,7 @@ func m68kA64DecodeInner(ji *M68KJITInstr, memory []byte, instrPC uint32) (m68kA6
 			return bad, false
 		}
 		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, size, memory, extPC)
-		if !ok || ea.kind == m68kA64EAImm || ea.kind == m68kA64EAAn {
+		if !ok || ea.kind == m68kA64EAImm || ea.kind == m68kA64EAAn || ea.pcRel {
 			return bad, false
 		}
 		class := m68kA64ClassNEG
@@ -801,7 +979,7 @@ func m68kA64DecodeInner(ji *M68KJITInstr, memory []byte, instrPC uint32) (m68kA6
 		}
 		extPC += uint32(imm.ext) * 2
 		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, size, memory, extPC)
-		if !ok || ea.kind == m68kA64EAImm || ea.kind == m68kA64EAAn {
+		if !ok || ea.kind == m68kA64EAImm || ea.kind == m68kA64EAAn || ea.pcRel {
 			// Rejects the CCR/SR forms (EA = immediate) along with
 			// unsupported destinations.
 			return bad, false
@@ -830,6 +1008,68 @@ func m68kA64DecodeInner(ji *M68KJITInstr, memory []byte, instrPC uint32) (m68kA6
 		return m68kA64DecodedOp{class: m68kA64ClassALUToMem, size: size, q: uint32(alu),
 			src: imm, dst: ea}, true
 
+	case op&0xF000 == 0xE000 && (op>>6)&3 == 3: // memory shift/rotate by one
+		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, 2, memory, extPC)
+		if !ok || !ea.isMem() || ea.pcRel {
+			return bad, false
+		}
+		return m68kA64DecodedOp{class: m68kA64ClassShiftMem, size: 2,
+			kind: int((op >> 8) & 7), dst: ea}, true
+
+	case op&0xF100 == 0x0100: // BTST/BCHG/BCLR/BSET Dn,<ea> (dynamic bit)
+		operation := int((op >> 6) & 3)
+		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, 1, memory, extPC)
+		if !ok || ea.kind == m68kA64EAAn || ea.kind == m68kA64EAImm {
+			return bad, false // rejects MOVEP (mode An) and illegal forms
+		}
+		if operation != 0 && ea.pcRel {
+			return bad, false // only BTST may read a PC-relative operand
+		}
+		return m68kA64DecodedOp{class: m68kA64ClassBitOp, kind: operation, sub: true,
+			q: uint32((op >> 9) & 7), dst: ea}, true
+
+	case op&0xFF00 == 0x0800: // BTST/BCHG/BCLR/BSET #n,<ea> (immediate bit)
+		operation := int((op >> 6) & 3)
+		if int(extPC)+2 > len(memory) {
+			return bad, false
+		}
+		bitNum := uint32(memory[extPC])<<8 | uint32(memory[extPC+1])
+		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, 1, memory, extPC+2)
+		if !ok || ea.kind == m68kA64EAAn || ea.kind == m68kA64EAImm {
+			return bad, false
+		}
+		if operation != 0 && ea.pcRel {
+			return bad, false
+		}
+		ea.ext++ // the bit-number extension word
+		return m68kA64DecodedOp{class: m68kA64ClassBitOp, kind: operation, sub: false,
+			q: bitNum & 0xFF, dst: ea}, true
+
+	case op&0xF1C0 == 0xC0C0 || op&0xF1C0 == 0xC1C0: // MULU/MULS.W <ea>,Dn
+		src, ok := m68kA64ParseEA((op>>3)&7, op&7, 2, memory, extPC)
+		if !ok || src.kind == m68kA64EAAn {
+			return bad, false
+		}
+		return m68kA64DecodedOp{class: m68kA64ClassMulW, size: 2, sub: op&0x0100 != 0,
+			src: src, dst: m68kA64EA{kind: m68kA64EADn, reg: (op >> 9) & 7}}, true
+
+	case op&0xF1C0 == 0x80C0 || op&0xF1C0 == 0x81C0: // DIVU/DIVS.W <ea>,Dn
+		src, ok := m68kA64ParseEA((op>>3)&7, op&7, 2, memory, extPC)
+		// Reject the pre/post modes: ExecDivu/ExecDivs resolve the memory
+		// source with GetEffectiveAddress, which does not commit the (An)+
+		// or -(An) side effect the MUL path does, so only side-effect-free
+		// sources are safe to lower without diverging.
+		if !ok || src.kind == m68kA64EAAn || src.kind == m68kA64EAPost || src.kind == m68kA64EAPre {
+			return bad, false
+		}
+		return m68kA64DecodedOp{class: m68kA64ClassDivW, size: 2, sub: op&0x0100 != 0,
+			src: src, dst: m68kA64EA{kind: m68kA64EADn, reg: (op >> 9) & 7}}, true
+
+	// Register-count shift/rotate (op&0x0020 set) stays interpreter fallback:
+	// the count is a runtime Dn value with clamp/modulo and count==0 CCR
+	// preservation, so lowering it is an optimisation, not a correctness
+	// capability. Fallback reproduces ExecShiftRotate exactly. Deferred to a
+	// milestone 4 optimisation slice.
 	case op&0xF000 == 0xE000 && (op>>6)&3 != 3 && op&0x0020 == 0: // shift/rotate, imm count, Dn
 		size := m68kA64SizeFromBits((op >> 6) & 3)
 		c := uint32((op >> 9) & 7)
@@ -895,7 +1135,7 @@ func m68kA64DecodeInner(ji *M68KJITInstr, memory []byte, instrPC uint32) (m68kA6
 			return bad, false
 		}
 		ea, ok := m68kA64ParseEA((op>>3)&7, op&7, size, memory, extPC)
-		if !ok || !ea.isMem() {
+		if !ok || !ea.isMem() || ea.pcRel {
 			return bad, false
 		}
 		return m68kA64DecodedOp{class: m68kA64ClassALUToMem, size: size, q: uint32(alu),
@@ -1388,8 +1628,118 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		m68kA64StoreA(cb, m68kA64Tmp0, 7)
 		return nil
 
+	case m68kA64ClassMulW:
+		// MULU/MULS.W: 16x16 -> 32. N/Z from the 32-bit product; V, C and X
+		// preserved (SetFlagsNZ, an IE deviation from the M68000PRM).
+		signed := dec.sub
+		e.loadOperand(&dec.src, 2, m68kA64Tmp1, true)
+		m68kA64LoadD(cb, m68kA64Tmp2, dec.dst.reg)
+		if signed {
+			cb.Emit32(arm64SXTH_W(m68kA64Tmp1, m68kA64Tmp1))
+			cb.Emit32(arm64SXTH_W(m68kA64Tmp2, m68kA64Tmp2))
+		} else {
+			cb.Emit32(arm64UXTH(m68kA64Tmp1, m68kA64Tmp1))
+			cb.Emit32(arm64UXTH(m68kA64Tmp2, m68kA64Tmp2))
+		}
+		cb.Emit32(arm64MUL_W(m68kA64Tmp3, m68kA64Tmp2, m68kA64Tmp1))
+		m68kA64StoreD(cb, m68kA64Tmp3, dec.dst.reg)
+		m68kA64FlagsLogicPreserveVC(cb, m68kA64Tmp3, 4)
+		return nil
+
+	case m68kA64ClassDivW:
+		return e.emitDivW(dec)
+
+	case m68kA64ClassBitOp:
+		return e.emitBitOp(dec)
+
+	case m68kA64ClassMOVEM:
+		return e.emitMovem(dec)
+
+	case m68kA64ClassScc:
+		// Set a byte to 0xFF when the condition holds, else 0x00; CCR is not
+		// affected (ExecScc).
+		dst := &dec.dst
+		e.emitCondTest(dec.kind, m68kA64Tmp0)                // 0/1
+		cb.Emit32(arm64SUBS_W(m68kA64Tmp1, 31, m68kA64Tmp0)) // 0x00 or 0xFFFFFFFF
+		if dst.kind == m68kA64EADn {
+			m68kA64MergeSizedToD(cb, dst.reg, m68kA64Tmp1, m68kA64Tmp2, m68kA64Tmp3, 1)
+		} else {
+			m68kA64EmitEAAddr(cb, dst, 1, m68kA64Tmp2, 0)
+			e.emitGuard(m68kA64Tmp2, 1)
+			m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp2, m68kA64Tmp3, 1)
+			m68kA64EmitEACommit(cb, dst, 1, m68kA64Tmp2, m68kA64Tmp6)
+		}
+		return nil
+
+	case m68kA64ClassTAS:
+		// Atomic test-and-set on a byte: N/Z from the original byte, V and C
+		// cleared, X preserved, then bit 7 is set and written back (ExecTas).
+		dst := &dec.dst
+		if dst.kind == m68kA64EADn {
+			m68kA64LoadD(cb, m68kA64Tmp1, dst.reg)
+			m68kA64FlagsMove(cb, m68kA64Tmp1, 1)
+			cb.Emit32(arm64MOVZ_W(m68kA64Tmp3, 0x80, 0))
+			cb.Emit32(arm64ORR_W(m68kA64Tmp2, m68kA64Tmp1, m68kA64Tmp3))
+			m68kA64MergeSizedToD(cb, dst.reg, m68kA64Tmp2, m68kA64Tmp3, m68kA64Tmp4, 1)
+		} else {
+			m68kA64EmitEAAddr(cb, dst, 1, m68kA64Tmp0, 0)
+			e.emitGuard(m68kA64Tmp0, 1)
+			m68kA64EmitLoadBE(cb, m68kA64Tmp1, m68kA64Tmp0, 1)
+			m68kA64FlagsMove(cb, m68kA64Tmp1, 1)
+			cb.Emit32(arm64MOVZ_W(m68kA64Tmp3, 0x80, 0))
+			cb.Emit32(arm64ORR_W(m68kA64Tmp2, m68kA64Tmp1, m68kA64Tmp3))
+			m68kA64EmitStoreBE(cb, m68kA64Tmp2, m68kA64Tmp0, m68kA64Tmp3, 1)
+			m68kA64EmitEACommit(cb, dst, 1, m68kA64Tmp0, m68kA64Tmp6)
+		}
+		return nil
+
 	case m68kA64ClassShift:
 		return e.emitShift(dec, instrPC)
+
+	case m68kA64ClassShiftMem:
+		// Memory shift/rotate by one on a word. Parity with
+		// ExecShiftRotateMemory: V cleared, C and X both take the shifted-out
+		// bit (memory ROL/ROR set X too, unlike the register forms).
+		dst := &dec.dst
+		m68kA64EmitEAAddr(cb, dst, 2, m68kA64Tmp0, 0)
+		e.emitGuard(m68kA64Tmp0, 2)
+		m68kA64EmitLoadBE(cb, m68kA64Tmp1, m68kA64Tmp0, 2) // zero-extended word
+		switch dec.kind {
+		case 0: // ASR
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp1, 0, 1))
+			cb.Emit32(arm64SXTH_W(m68kA64Tmp3, m68kA64Tmp1))
+			cb.Emit32(arm64ASR_W_imm(m68kA64Tmp3, m68kA64Tmp3, 1))
+		case 1, 3: // ASL / LSL
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp1, 15, 1))
+			cb.Emit32(arm64LSL_W_imm(m68kA64Tmp3, m68kA64Tmp1, 1))
+		case 2: // LSR
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp1, 0, 1))
+			cb.Emit32(arm64LSR_W_imm(m68kA64Tmp3, m68kA64Tmp1, 1))
+		case 4: // ROXR
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp1, 0, 1))
+			cb.Emit32(arm64LSR_W_imm(m68kA64Tmp3, m68kA64Tmp1, 1))
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp6, m68kA64CCR, m68kA64BitX, 1))
+			cb.Emit32(arm64ORR_W_lsl(m68kA64Tmp3, m68kA64Tmp3, m68kA64Tmp6, 15))
+		case 5: // ROXL
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp1, 15, 1))
+			cb.Emit32(arm64LSL_W_imm(m68kA64Tmp3, m68kA64Tmp1, 1))
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp6, m68kA64CCR, m68kA64BitX, 1))
+			cb.Emit32(arm64ORR_W(m68kA64Tmp3, m68kA64Tmp3, m68kA64Tmp6))
+		case 6: // ROR
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp1, 0, 1))
+			cb.Emit32(arm64LSR_W_imm(m68kA64Tmp3, m68kA64Tmp1, 1))
+			cb.Emit32(arm64ORR_W_lsl(m68kA64Tmp3, m68kA64Tmp3, m68kA64Tmp2, 15))
+		case 7: // ROL
+			cb.Emit32(arm64UBFX_W(m68kA64Tmp2, m68kA64Tmp1, 15, 1))
+			cb.Emit32(arm64LSL_W_imm(m68kA64Tmp3, m68kA64Tmp1, 1))
+			cb.Emit32(arm64ORR_W(m68kA64Tmp3, m68kA64Tmp3, m68kA64Tmp2))
+		default:
+			return fmt.Errorf("m68k arm64 emitter: mem shift op %d at %08X", dec.kind, instrPC)
+		}
+		m68kA64EmitStoreBE(cb, m68kA64Tmp3, m68kA64Tmp0, m68kA64Tmp5, 2)
+		m68kA64EmitEACommit(cb, dst, 2, m68kA64Tmp0, m68kA64Tmp6)
+		m68kA64FlagsShift(cb, m68kA64Tmp3, 2, m68kA64Tmp2, 0xFF, false)
+		return nil
 
 	case m68kA64ClassQuickMem:
 		size := dec.size
@@ -1409,6 +1759,264 @@ func (e *m68kA64Emitter) emitInstr(dec *m68kA64DecodedOp, ji *M68KJITInstr, inst
 		return nil
 	}
 	return fmt.Errorf("m68k arm64 emitter: unsupported opcode %04X at %08X", op, instrPC)
+}
+
+// emitRangeGuard validates a contiguous guest access [startReg, startReg+len)
+// against the RAM bounds and the I/O page bitmap, scanning every page the
+// range touches (unlike emitGuard, which probes only the first and last
+// bytes). A failure branches to the current instruction's bail stub, leaving
+// the instruction unexecuted. startReg is preserved; Tmp2, Tmp3 and Tmp6 are
+// clobbered, so startReg must not be one of them.
+func (e *m68kA64Emitter) emitRangeGuard(startReg byte, length uint32) {
+	cb := e.cb
+	// Start in bounds (also guards the end-bound add against 32-bit wrap).
+	cb.Emit32(arm64CMP_W(startReg, m68kA64MemSize))
+	e.branchToBail(m68kA64CondCS)
+	// End in bounds.
+	cb.Emit32(arm64ADD_W_imm(m68kA64Tmp6, startReg, length))
+	cb.Emit32(arm64CMP_W(m68kA64Tmp6, m68kA64MemSize))
+	e.branchToBail(m68kA64CondHI)
+	// I/O bitmap scan over every touched page.
+	noBmp := e.localFwdCBZ(m68kA64IOBmp)
+	cb.Emit32(arm64LSR_W_imm(m68kA64Tmp2, startReg, 8)) // current page
+	cb.Emit32(arm64ADD_W_imm(m68kA64Tmp3, startReg, length-1))
+	cb.Emit32(arm64LSR_W_imm(m68kA64Tmp3, m68kA64Tmp3, 8)) // last page
+	loop := cb.Len()
+	cb.Emit32(arm64CMP_W(m68kA64Tmp2, m68kA64IOBmpLen))
+	pastBmp := e.localFwdBcond(m68kA64CondCS) // page beyond bitmap: plain RAM
+	cb.Emit32(arm64LDRB_reg(m68kA64Tmp6, m68kA64IOBmp, m68kA64Tmp2))
+	e.cbnzToBail(m68kA64Tmp6)
+	e.bindLocal(pastBmp)
+	cb.Emit32(arm64CMP_W(m68kA64Tmp2, m68kA64Tmp3))
+	done := e.localFwdBcond(m68kA64CondCS) // current >= last page: finished
+	cb.Emit32(arm64ADD_W_imm(m68kA64Tmp2, m68kA64Tmp2, 1))
+	e.cb.Emit32(arm64B(0))
+	// Patch the unconditional back-branch to the loop head.
+	e.patchSite(m68kA64BranchSite{off: cb.Len() - 4, base: 0x14000000, imm26: true}, loop)
+	e.bindLocal(done)
+	e.bindLocal(noBmp)
+}
+
+// emitMovem lowers MOVEM in both directions. The register mask is a
+// compile-time constant, so the transfers are unrolled. Every access lies in
+// one contiguous span, guarded as a whole before any transfer so a bail
+// leaves the instruction unexecuted (the interpreter then replays it). Parity
+// with ExecMovem: predecrement writes registers A7..A0, D7..D0 decrementing
+// the base before each write (committing it each step so a base register in
+// the list stores its decremented value); every other form transfers D0..D7,
+// A0..A7 ascending; word transfers to registers sign-extend to long; (An)+
+// leaves the base at the final address; the CCR is untouched.
+func (e *m68kA64Emitter) emitMovem(dec *m68kA64DecodedOp) error {
+	cb := e.cb
+	mask := uint16(dec.q)
+	size := dec.size
+	memToReg := dec.sub
+	dst := &dec.dst
+	predec := dst.kind == m68kA64EAPre
+	postinc := dst.kind == m68kA64EAPost
+	n := 0
+	for i := 0; i < 16; i++ {
+		if mask&(1<<uint(i)) != 0 {
+			n++
+		}
+	}
+	byteLen := uint32(n) * size
+	if n == 0 {
+		// Empty mask: no memory access. (An)+ still writes back the base
+		// unchanged, which is a no-op; nothing else happens.
+		return nil
+	}
+
+	// Base/running address into Tmp0 and span start into Tmp5 for the guard.
+	if predec {
+		m68kA64LoadA(cb, m68kA64Tmp0, dst.reg) // running base = An
+		m68kA64MovImm32(cb, m68kA64Tmp5, byteLen)
+		cb.Emit32(arm64SUBS_W(m68kA64Tmp5, m68kA64Tmp0, m68kA64Tmp5)) // span start = An - len
+	} else {
+		m68kA64EmitEAAddr(cb, dst, size, m68kA64Tmp0, 0)
+		cb.Emit32(arm64MOV_W(m68kA64Tmp5, m68kA64Tmp0))
+	}
+	e.emitRangeGuard(m68kA64Tmp5, byteLen)
+
+	switch {
+	case predec:
+		for i := 0; i < 16; i++ {
+			if mask&(1<<uint(i)) == 0 {
+				continue
+			}
+			cb.Emit32(arm64SUB_W_imm(m68kA64Tmp0, m68kA64Tmp0, size))
+			m68kA64StoreA(cb, m68kA64Tmp0, dst.reg) // commit running base
+			if i < 8 {
+				m68kA64LoadA(cb, m68kA64Tmp1, uint16(7-i))
+			} else {
+				m68kA64LoadD(cb, m68kA64Tmp1, uint16(15-i))
+			}
+			m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp3, size)
+		}
+	case !memToReg:
+		for i := 0; i < 16; i++ {
+			if mask&(1<<uint(i)) == 0 {
+				continue
+			}
+			if i < 8 {
+				m68kA64LoadD(cb, m68kA64Tmp1, uint16(i))
+			} else {
+				m68kA64LoadA(cb, m68kA64Tmp1, uint16(i-8))
+			}
+			m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp3, size)
+			cb.Emit32(arm64ADD_W_imm(m68kA64Tmp0, m68kA64Tmp0, size))
+		}
+	default: // mem-to-reg
+		for i := 0; i < 16; i++ {
+			if mask&(1<<uint(i)) == 0 {
+				continue
+			}
+			m68kA64EmitLoadBE(cb, m68kA64Tmp1, m68kA64Tmp0, size)
+			if size == 2 {
+				cb.Emit32(arm64SXTH_W(m68kA64Tmp1, m68kA64Tmp1))
+			}
+			if i < 8 {
+				m68kA64StoreD(cb, m68kA64Tmp1, uint16(i))
+			} else {
+				m68kA64StoreA(cb, m68kA64Tmp1, uint16(i-8))
+			}
+			cb.Emit32(arm64ADD_W_imm(m68kA64Tmp0, m68kA64Tmp0, size))
+		}
+		if postinc {
+			m68kA64StoreA(cb, m68kA64Tmp0, dst.reg) // final address
+		}
+	}
+	return nil
+}
+
+// emitBitOp lowers BTST/BCHG/BCLR/BSET. Parity with ExecBitManip: the tested
+// bit sets Z (Z = tested bit was zero) and no other flag changes; a register
+// destination is a long operand with the bit taken modulo 32, a memory
+// destination is a byte with the bit modulo 8. BTST only tests; the others
+// write the modified operand back.
+func (e *m68kA64Emitter) emitBitOp(dec *m68kA64DecodedOp) error {
+	cb := e.cb
+	dst := &dec.dst
+	memDst := dst.isMem()
+	op := dec.kind
+
+	// Bit number (mod 8 for memory bytes, mod 32 for long registers).
+	if dec.sub {
+		m68kA64LoadD(cb, m68kA64Tmp2, uint16(dec.q))
+	} else {
+		m68kA64MovImm32(cb, m68kA64Tmp2, dec.q)
+	}
+	modMask := uint32(31)
+	if memDst {
+		modMask = 7
+	}
+	m68kA64MovImm32(cb, m68kA64Tmp4, modMask)
+	cb.Emit32(arm64AND_W(m68kA64Tmp2, m68kA64Tmp2, m68kA64Tmp4))
+	// mask = 1 << bitNum
+	cb.Emit32(arm64MOVZ_W(m68kA64Tmp3, 1, 0))
+	cb.Emit32(arm64LSLV_W(m68kA64Tmp3, m68kA64Tmp3, m68kA64Tmp2))
+
+	// Load the operand.
+	if memDst {
+		m68kA64EmitEAAddr(cb, dst, 1, m68kA64Tmp0, 0)
+		e.emitGuard(m68kA64Tmp0, 1)
+		m68kA64EmitLoadBE(cb, m68kA64Tmp1, m68kA64Tmp0, 1)
+	} else {
+		m68kA64LoadD(cb, m68kA64Tmp1, dst.reg)
+	}
+
+	// Z = (operand & mask) == 0; all other CCR bits preserved.
+	cb.Emit32(arm64AND_W(m68kA64Tmp4, m68kA64Tmp1, m68kA64Tmp3))
+	cb.Emit32(arm64CMP_W_imm(m68kA64Tmp4, 0))
+	cb.Emit32(arm64CSET_W(m68kA64Tmp4, m68kA64CondEQ))
+	m68kA64MovImm32(cb, m68kA64Tmp5, 0x1F&^(1<<m68kA64BitZ))
+	cb.Emit32(arm64AND_W(m68kA64CCR, m68kA64CCR, m68kA64Tmp5))
+	cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp4, m68kA64BitZ))
+
+	if op != 0 { // BCHG/BCLR/BSET modify and write back
+		switch op {
+		case 1: // BCHG
+			cb.Emit32(arm64EOR_W(m68kA64Tmp1, m68kA64Tmp1, m68kA64Tmp3))
+		case 2: // BCLR
+			cb.Emit32(arm64MVN_W(m68kA64Tmp5, m68kA64Tmp3))
+			cb.Emit32(arm64AND_W(m68kA64Tmp1, m68kA64Tmp1, m68kA64Tmp5))
+		case 3: // BSET
+			cb.Emit32(arm64ORR_W(m68kA64Tmp1, m68kA64Tmp1, m68kA64Tmp3))
+		}
+		if memDst {
+			m68kA64EmitStoreBE(cb, m68kA64Tmp1, m68kA64Tmp0, m68kA64Tmp5, 1)
+		} else {
+			m68kA64StoreD(cb, m68kA64Tmp1, dst.reg) // long register write-back
+		}
+	}
+	if memDst {
+		m68kA64EmitEACommit(cb, dst, 1, m68kA64Tmp0, m68kA64Tmp6)
+	}
+	return nil
+}
+
+// emitDivW lowers DIVU.W/DIVS.W <ea>,Dn. Parity with ExecDivu/ExecDivs:
+// division by zero bails (leaving the instruction unexecuted so the
+// interpreter raises the zero-divide exception); a quotient that does not fit
+// in a signed/unsigned 16-bit word sets V and leaves Dn unchanged; otherwise
+// Dn becomes (remainder<<16)|(quotient&0xFFFF) with N/Z from the quotient and
+// V, C cleared, X preserved.
+func (e *m68kA64Emitter) emitDivW(dec *m68kA64DecodedOp) error {
+	cb := e.cb
+	signed := dec.sub
+	// Divisor (word) into Tmp1; no side effect commits (pre/post rejected).
+	e.loadOperand(&dec.src, 2, m68kA64Tmp1, false)
+	if signed {
+		cb.Emit32(arm64SXTH_W(m68kA64Tmp1, m68kA64Tmp1))
+	} else {
+		cb.Emit32(arm64UXTH(m68kA64Tmp1, m68kA64Tmp1))
+	}
+	e.cbzToBail(m68kA64Tmp1) // divisor == 0: reproduce the trap via fallback
+
+	m68kA64LoadD(cb, m68kA64Tmp2, dec.dst.reg) // full 32-bit dividend
+	// Quotient into Tmp3, overflow test into the carry flag.
+	if signed {
+		cb.Emit32(arm64SDIV_W(m68kA64Tmp3, m68kA64Tmp2, m68kA64Tmp1))
+		// Overflow when quotient is outside [-32768, 32767]. Biasing by
+		// 0x8000 maps that to the unsigned range [0, 0xFFFF]; anything above
+		// (including the wrapped INT_MIN/-1 case) fails the unsigned compare.
+		m68kA64MovImm32(cb, m68kA64Tmp5, 0x8000)
+		cb.Emit32(arm64ADDS_W(m68kA64Tmp4, m68kA64Tmp3, m68kA64Tmp5))
+		m68kA64MovImm32(cb, m68kA64Tmp5, 0x10000)
+		cb.Emit32(arm64CMP_W(m68kA64Tmp4, m68kA64Tmp5))
+	} else {
+		cb.Emit32(arm64UDIV_W(m68kA64Tmp3, m68kA64Tmp2, m68kA64Tmp1))
+		m68kA64MovImm32(cb, m68kA64Tmp5, 0x10000)
+		cb.Emit32(arm64CMP_W(m68kA64Tmp3, m68kA64Tmp5))
+	}
+	overflow := e.localFwdBcond(m68kA64CondCS) // quotient out of range
+
+	// No overflow: remainder = dividend - quotient*divisor.
+	cb.Emit32(arm64MSUB(m68kA64Tmp4, m68kA64Tmp3, m68kA64Tmp1, m68kA64Tmp2))
+	cb.Emit32(arm64UXTH(m68kA64Tmp4, m68kA64Tmp4)) // remainder low word
+	cb.Emit32(arm64UXTH(m68kA64Tmp5, m68kA64Tmp3)) // quotient low word
+	cb.Emit32(arm64ORR_W_lsl(m68kA64Tmp5, m68kA64Tmp5, m68kA64Tmp4, 16))
+	m68kA64StoreD(cb, m68kA64Tmp5, dec.dst.reg)
+	// CCR: keep X, clear V and C, set N/Z from the quotient word.
+	m68kA64MovImm32(cb, m68kA64Tmp6, 0x10)
+	cb.Emit32(arm64AND_W(m68kA64CCR, m68kA64CCR, m68kA64Tmp6))
+	cb.Emit32(arm64UXTH(m68kA64Tmp4, m68kA64Tmp3))
+	cb.Emit32(arm64CMP_W_imm(m68kA64Tmp4, 0))
+	cb.Emit32(arm64CSET_W(m68kA64Tmp4, m68kA64CondEQ)) // Z
+	cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp4, m68kA64BitZ))
+	cb.Emit32(arm64UBFX_W(m68kA64Tmp4, m68kA64Tmp3, 15, 1)) // N = quotient bit 15
+	cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp4, m68kA64BitN))
+	toEnd := e.localFwdB()
+
+	// Overflow: Dn unchanged, keep X, clear N/Z/C, set V.
+	e.bindLocal(overflow)
+	m68kA64MovImm32(cb, m68kA64Tmp6, 0x10)
+	cb.Emit32(arm64AND_W(m68kA64CCR, m68kA64CCR, m68kA64Tmp6))
+	m68kA64MovImm32(cb, m68kA64Tmp6, 1<<m68kA64BitV)
+	cb.Emit32(arm64ORR_W(m68kA64CCR, m68kA64CCR, m68kA64Tmp6))
+
+	e.bindLocal(toEnd)
+	return nil
 }
 
 // m68kA64FlagsShift assembles the CCR after a shift or rotate: N/Z from the

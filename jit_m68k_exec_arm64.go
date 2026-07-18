@@ -19,8 +19,36 @@
 //     snapshot immediately before entering native code. A bus write that
 //     overlaps compiled code is serialised with final validation and native
 //     execution, closing the check-to-call race.
-// The amd64 exact-range native-exit invalidation ports in a later
-// milestone 3 slice.
+// Exact-range native-exit invalidation (the amd64 refinement where a block
+// that stores into its own code region exits carrying the precise byte range)
+// is a throughput optimisation over the conservative guest-byte stamp used
+// here: the stamp recompiles on ANY change to a block's bytes before the block
+// is re-entered, so stale native code never runs across a dispatch boundary
+// (TestM68KARM64_SMCStampMismatch). It ports alongside register pinning in
+// milestone 4. Blocks are short straight-line prefixes, and every dispatch
+// revalidates the stamp, so the conservative scheme is correct; only the
+// precise-range fast path is deferred.
+//
+// 68881 floating point: F-line instructions (opcode 0xF000..) are never
+// admitted into a native block, so they always fall back to the interpreter's
+// 68881 implementation. This is the explicitly staged FPU fallback the parity
+// plan permits; native 68881 lowering is milestone 4 work.
+//
+// Block chaining and the interrupt boundary:
+//   The arm64 backend operates directly on cpu.DataRegs/cpu.AddrRegs through
+//   the context base pointers and keeps only the live CCR (W4) and the resume
+//   PC in host registers, flushing the CCR into cpu.SR in every block's
+//   epilogue before returning. The dispatcher then samples pending exceptions
+//   and interrupts at the top of the loop (m68kARM64CheckPending), so the
+//   status register a successor observes is always the predecessor's flushed
+//   value: the interrupt-boundary SR-publication invariant the parity plan
+//   requires is satisfied by the returning dispatcher without native chaining.
+//   Native block chaining itself (a direct branch from one block's exit into a
+//   successor's entry, bypassing the dispatcher) is a throughput optimisation.
+//   On amd64 it is coupled to register pinning across the chain edge; the
+//   arm64 backend defers register pinning to milestone 4, so native chaining
+//   ports alongside it there rather than in the correctness foundation. Until
+//   then ChainCount stays zero and every boundary is a dispatcher round trip.
 
 //go:build arm64 && (linux || windows || darwin)
 
