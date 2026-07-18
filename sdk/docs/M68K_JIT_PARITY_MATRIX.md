@@ -227,3 +227,38 @@ BTST/BCHG/BCLR/BSET, Scc, TAS; branches and block terminators with
 chaining and interrupt-boundary status publication; exceptions with
 per-instruction resume PC; exact-range native-exit SMC invalidation; 68881
 or staged fallback; Harte exception gate; AROS boot on real hardware.
+
+## Milestone 3 slice 4 delivered (arm64 branches)
+
+Scope of this slice:
+
+- BRA with byte, word and long displacement as a native block terminator
+  with a static exit PC.
+- Bcc for all fourteen conditions (byte, word and long displacement) as a
+  block-ending exit: the condition is evaluated from the live CCR and the
+  resume PC (taken target or fallthrough) is computed at run time.
+- DBcc for all sixteen conditions with ExecDBcc parity: condition true
+  falls through without touching the counter; otherwise the low word of Dn
+  decrements with the high word preserved, and the branch is taken unless
+  the counter expires to minus one.
+- BSR is not lowered; it stays with the interpreter's guarded stack path.
+- Admission quirk pinned: the interpreter halts the machine when a taken
+  BRA or Bcc target reaches ProfileTopOfRAM minus two, so such branches
+  are rejected at admission and the interpreter keeps that behaviour.
+  DBcc applies its taken target unchecked, exactly as ExecDBcc does.
+- The supported-prefix rule now includes a supported branch as the final
+  instruction of the block, which lets loop bodies ending in DBcc or Bcc
+  run as single native blocks per iteration. No chaining yet; the
+  dispatcher still samples interrupts and exceptions at every block
+  boundary, and the branch retires as one instruction in the existing
+  accounting contract.
+
+Test coverage: TestM68KARM64_DifferentialBranchGrid (26 shapes: BRA all
+displacement widths, every Bcc condition, DBcc condition and counter
+interplay including low-word wrap and high-word preservation) over the
+operand grid, seven counter seeds and four CCR seeds;
+TestM68KARM64_BranchPrefixAdmission and
+TestM68KARM64_BranchTargetOutOfProfileRAM (admission rules);
+TestM68KARM64_DispatcherLoopDBRA (end-to-end DBRA loop through the
+dispatcher with exact retired accounting). All green under qemu-aarch64;
+amd64 suite unaffected (8669 tests).

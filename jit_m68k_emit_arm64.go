@@ -43,6 +43,7 @@ import (
 // ARM64 condition codes used for flag extraction and guards.
 const (
 	m68kA64CondEQ = 0x0
+	m68kA64CondNE = 0x1
 	m68kA64CondCS = 0x2 // also HS
 	m68kA64CondCC = 0x3 // also LO
 	m68kA64CondMI = 0x4
@@ -411,6 +412,13 @@ type m68kA64Emitter struct {
 	cb    *CodeBuffer
 	bails []m68kA64BranchSite // guard branches of the CURRENT instruction
 	stubs []m68kA64BailStub
+
+	// Block exit shape, set by a final branch instruction. dynExit means the
+	// resume PC was computed at run time into W14 (Tmp5); staticExit
+	// overrides the fallthrough resume PC with a compile-time target (BRA).
+	dynExit       bool
+	staticExit    uint32
+	hasStaticExit bool
 }
 
 func (e *m68kA64Emitter) patchSite(s m68kA64BranchSite, target int) {
@@ -566,6 +574,9 @@ const (
 	m68kA64ClassEXT   // EXT.W/EXT.L/EXTB.L Dn (q = opmode)
 	m68kA64ClassPEA   // PEA <ea>
 	m68kA64ClassShift // immediate-count shift/rotate on Dn
+	m68kA64ClassBRA   // unconditional branch (block terminator; q = target)
+	m68kA64ClassBcc   // conditional branch (block-ending; kind = cond, q = target)
+	m68kA64ClassDBcc  // decrement and branch (block-ending; kind = cond, q = target)
 )
 
 // Shift/rotate kinds (bits 4-3 of the opcode), carried in q; sub carries
@@ -875,14 +886,93 @@ func m68kARM64InstrSupported(ji *M68KJITInstr, memory []byte, instrPC uint32) bo
 	return ok
 }
 
+// m68kA64DecodeBranch classifies a block-ending branch: BRA (byte, word or
+// long displacement), Bcc (conditions 2-15) or DBcc. BSR is not lowered (it
+// pushes through the interpreter's guarded stack path).
+//
+// The interpreter halts the machine when a taken BRA/Bcc target reaches
+// ProfileTopOfRAM-2 (decodeGroup6/ExecBRA); such branches are rejected here
+// so the interpreter keeps that behaviour. DBcc applies its taken target
+// unchecked in the interpreter, so no target check is made for it.
+func m68kA64DecodeBranch(ji *M68KJITInstr, memory []byte, instrPC uint32, topOfRAM uint32) (m68kA64DecodedOp, bool) {
+	op := ji.opcode
+	bad := m68kA64DecodedOp{}
+	rd16 := func(off uint32) (uint16, bool) {
+		p := instrPC + 2 + off
+		if int(p)+2 > len(memory) {
+			return 0, false
+		}
+		return uint16(memory[p])<<8 | uint16(memory[p+1]), true
+	}
+	switch {
+	case op&0xF000 == 0x6000: // BRA/BSR/Bcc
+		cond := (op >> 8) & 0xF
+		if cond == 1 { // BSR
+			return bad, false
+		}
+		disp8 := int8(op)
+		var target uint32
+		ext := 0
+		switch disp8 {
+		case 0: // word displacement
+			w, ok := rd16(0)
+			if !ok {
+				return bad, false
+			}
+			target = instrPC + 2 + uint32(int32(int16(w)))
+			ext = 1
+		case -1: // long displacement (68020)
+			hi, ok1 := rd16(0)
+			lo, ok2 := rd16(2)
+			if !ok1 || !ok2 {
+				return bad, false
+			}
+			target = instrPC + 2 + (uint32(hi)<<16 | uint32(lo))
+			ext = 2
+		default:
+			target = instrPC + 2 + uint32(int32(disp8))
+		}
+		if 2+uint32(ext)*2 != uint32(ji.length) {
+			return bad, false
+		}
+		if target >= topOfRAM-M68K_WORD_SIZE {
+			return bad, false // interpreter halts on this taken target
+		}
+		class := m68kA64ClassBcc
+		if cond == 0 {
+			class = m68kA64ClassBRA
+		}
+		return m68kA64DecodedOp{class: class, kind: int(cond), q: target}, true
+
+	case op&0xF0F8 == 0x50C8: // DBcc
+		if ji.length != 4 {
+			return bad, false
+		}
+		w, ok := rd16(0)
+		if !ok {
+			return bad, false
+		}
+		target := instrPC + 2 + uint32(int32(int16(w)))
+		return m68kA64DecodedOp{class: m68kA64ClassDBcc, kind: int((op >> 8) & 0xF), q: target,
+			dst: m68kA64EA{kind: m68kA64EADn, reg: op & 7}}, true
+	}
+	return bad, false
+}
+
 // m68kARM64SupportedPrefix returns the number of leading instructions the
-// arm64 backend can execute natively. The prefix never includes a block
-// terminator or an unsupported instruction.
-func m68kARM64SupportedPrefix(instrs []M68KJITInstr, memory []byte, startPC uint32) int {
+// arm64 backend can execute natively. A supported branch (BRA, Bcc, DBcc)
+// ends the prefix and is included as its final instruction; any other block
+// terminator or unsupported instruction ends the prefix without being
+// included.
+func m68kARM64SupportedPrefix(instrs []M68KJITInstr, memory []byte, startPC uint32, topOfRAM uint32) int {
 	n := 0
 	for i := range instrs {
 		ji := &instrs[i]
-		if m68kIsBlockTerminator(ji.opcode) || !m68kARM64InstrSupported(ji, memory, startPC+ji.pcOffset) {
+		instrPC := startPC + ji.pcOffset
+		if _, ok := m68kA64DecodeBranch(ji, memory, instrPC, topOfRAM); ok {
+			return n + 1
+		}
+		if m68kIsBlockTerminator(ji.opcode) || !m68kARM64InstrSupported(ji, memory, instrPC) {
 			break
 		}
 		n++
@@ -1447,7 +1537,123 @@ func (e *m68kA64Emitter) emitShift(dec *m68kA64DecodedOp, instrPC uint32) error 
 // guarded memory access that fails takes the per-instruction bail stub:
 // CCR/SR are flushed, RetPC is the faulting instruction, RetCount is the
 // number of fully retired instructions, and NeedIOFallback is set.
-func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecMem, memory []byte) (*JITBlock, error) {
+// emitCondTest materialises an M68K condition (CheckCondition semantics) as
+// 0/1 in rc, reading the live CCR in W4. Clobbers Tmp5 and Tmp6; callers
+// needing Tmp5 afterwards must load it after this call.
+func (e *m68kA64Emitter) emitCondTest(cond int, rc byte) {
+	cb := e.cb
+	// maskTest sets rc from a CCR bit mask: whenSet selects "any masked bit
+	// set" versus "all masked bits clear".
+	maskTest := func(mask uint32, whenSet bool) {
+		m68kA64MovImm32(cb, m68kA64Tmp6, mask)
+		cb.Emit32(arm64AND_W(rc, m68kA64CCR, m68kA64Tmp6))
+		cb.Emit32(arm64CMP_W_imm(rc, 0))
+		if whenSet {
+			cb.Emit32(arm64CSET_W(rc, m68kA64CondNE))
+		} else {
+			cb.Emit32(arm64CSET_W(rc, m68kA64CondEQ))
+		}
+	}
+	// nxv leaves N^V in bit 1 of Tmp6 (N is CCR bit 3, V is CCR bit 1).
+	nxv := func() {
+		cb.Emit32(arm64LSR_W_imm(m68kA64Tmp6, m68kA64CCR, 2))
+		cb.Emit32(arm64EOR_W(m68kA64Tmp6, m68kA64Tmp6, m68kA64CCR))
+	}
+	switch cond {
+	case M68K_CC_T:
+		cb.Emit32(arm64MOVZ_W(rc, 1, 0))
+	case M68K_CC_F:
+		cb.Emit32(arm64MOVZ_W(rc, 0, 0))
+	case M68K_CC_HI:
+		maskTest(0x5, false) // C=0 and Z=0
+	case M68K_CC_LS:
+		maskTest(0x5, true) // C=1 or Z=1
+	case M68K_CC_CC:
+		maskTest(0x1, false)
+	case M68K_CC_CS:
+		maskTest(0x1, true)
+	case M68K_CC_NE:
+		maskTest(0x4, false)
+	case M68K_CC_EQ:
+		maskTest(0x4, true)
+	case M68K_CC_VC:
+		maskTest(0x2, false)
+	case M68K_CC_VS:
+		maskTest(0x2, true)
+	case M68K_CC_PL:
+		maskTest(0x8, false)
+	case M68K_CC_MI:
+		maskTest(0x8, true)
+	case M68K_CC_GE, M68K_CC_LT:
+		nxv()
+		m68kA64MovImm32(cb, m68kA64Tmp5, 2)
+		cb.Emit32(arm64AND_W(rc, m68kA64Tmp6, m68kA64Tmp5))
+		cb.Emit32(arm64CMP_W_imm(rc, 0))
+		if cond == M68K_CC_GE {
+			cb.Emit32(arm64CSET_W(rc, m68kA64CondEQ)) // N==V
+		} else {
+			cb.Emit32(arm64CSET_W(rc, m68kA64CondNE)) // N!=V
+		}
+	case M68K_CC_GT, M68K_CC_LE:
+		nxv()
+		m68kA64MovImm32(cb, m68kA64Tmp5, 2)
+		cb.Emit32(arm64AND_W(m68kA64Tmp6, m68kA64Tmp6, m68kA64Tmp5)) // (N^V)<<1
+		m68kA64MovImm32(cb, m68kA64Tmp5, 4)
+		cb.Emit32(arm64AND_W(rc, m68kA64CCR, m68kA64Tmp5)) // Z<<2
+		cb.Emit32(arm64ORR_W(rc, rc, m68kA64Tmp6))
+		cb.Emit32(arm64CMP_W_imm(rc, 0))
+		if cond == M68K_CC_GT {
+			cb.Emit32(arm64CSET_W(rc, m68kA64CondEQ)) // Z=0 and N==V
+		} else {
+			cb.Emit32(arm64CSET_W(rc, m68kA64CondNE)) // Z=1 or N!=V
+		}
+	}
+}
+
+// emitBranch lowers a block-ending branch. BRA resolves to a static exit PC;
+// Bcc and DBcc compute the resume PC into Tmp5 at run time. DBcc parity with
+// ExecDBcc: condition true takes the fallthrough with no decrement; otherwise
+// the low word of Dn decrements (high word preserved) and the branch is taken
+// unless the counter expires to -1.
+func (e *m68kA64Emitter) emitBranch(dec *m68kA64DecodedOp, ji *M68KJITInstr, instrPC uint32) {
+	cb := e.cb
+	fall := instrPC + uint32(ji.length)
+	switch dec.class {
+	case m68kA64ClassBRA:
+		e.staticExit = dec.q
+		e.hasStaticExit = true
+
+	case m68kA64ClassBcc:
+		e.emitCondTest(dec.kind, m68kA64Tmp0)
+		m68kA64MovImm32(cb, m68kA64Tmp5, fall)
+		skip := m68kA64BranchSite{off: cb.Len(), base: 0xB4000000 | uint32(m68kA64Tmp0)}
+		cb.Emit32(arm64CBZ(m68kA64Tmp0, 0))
+		m68kA64MovImm32(cb, m68kA64Tmp5, dec.q)
+		e.patchSite(skip, cb.Len())
+		e.dynExit = true
+
+	case m68kA64ClassDBcc:
+		e.emitCondTest(dec.kind, m68kA64Tmp0)
+		m68kA64MovImm32(cb, m68kA64Tmp5, fall)
+		condTrue := m68kA64BranchSite{off: cb.Len(), base: 0xB5000000 | uint32(m68kA64Tmp0)}
+		cb.Emit32(arm64CBNZ(m68kA64Tmp0, 0))
+		dn := dec.dst.reg
+		m68kA64LoadD(cb, m68kA64Tmp1, dn)
+		cb.Emit32(arm64UXTH(m68kA64Tmp2, m68kA64Tmp1)) // counter before decrement
+		cb.Emit32(arm64SUB_W_imm(m68kA64Tmp3, m68kA64Tmp2, 1))
+		m68kA64MergeSizedToD(cb, dn, m68kA64Tmp3, m68kA64Tmp4, m68kA64Tmp6, 2)
+		// Counter was zero: it expired to -1, fall through.
+		expired := m68kA64BranchSite{off: cb.Len(), base: 0xB4000000 | uint32(m68kA64Tmp2)}
+		cb.Emit32(arm64CBZ(m68kA64Tmp2, 0))
+		m68kA64MovImm32(cb, m68kA64Tmp5, dec.q)
+		done := cb.Len()
+		e.patchSite(condTrue, done)
+		e.patchSite(expired, done)
+		e.dynExit = true
+	}
+}
+
+func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecMem, memory []byte, topOfRAM uint32) (*JITBlock, error) {
 	if len(instrs) == 0 {
 		return nil, fmt.Errorf("m68k arm64 emitter: empty block at %08X", startPC)
 	}
@@ -1469,11 +1675,20 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 	for i := range instrs {
 		ji := &instrs[i]
 		instrPC := startPC + ji.pcOffset
+		e.bails = nil
+		if i == len(instrs)-1 {
+			// A block-ending branch is only ever admitted as the final
+			// instruction (m68kARM64SupportedPrefix stops on it).
+			if bdec, ok := m68kA64DecodeBranch(ji, memory, instrPC, topOfRAM); ok {
+				e.emitBranch(&bdec, ji, instrPC)
+				endPC = instrPC + uint32(ji.length)
+				break
+			}
+		}
 		dec, ok := m68kA64Decode(ji, memory, instrPC)
 		if !ok {
 			return nil, fmt.Errorf("m68k arm64 emitter: unsupported opcode %04X at %08X", ji.opcode, instrPC)
 		}
-		e.bails = nil
 		if err := e.emitInstr(&dec, ji, instrPC); err != nil {
 			return nil, err
 		}
@@ -1483,7 +1698,9 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 		endPC = instrPC + uint32(ji.length)
 	}
 
-	// Success epilogue: merge CCR into SR, publish RetPC and RetCount.
+	// Success epilogue: merge CCR into SR, publish RetPC and RetCount. The
+	// resume PC is the block fallthrough, a static branch target (BRA) or
+	// the run-time value a Bcc/DBcc left in Tmp5 (flushSR only touches Tmp0).
 	flushSR := func() {
 		cb.Emit32(arm64LDRH_imm(m68kA64Tmp0, m68kA64SRAddr, 0))
 		cb.Emit32(arm64LSR_W_imm(m68kA64Tmp0, m68kA64Tmp0, 5))
@@ -1491,8 +1708,16 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 		cb.Emit32(arm64STRH_imm(m68kA64Tmp0, m68kA64SRAddr, 0))
 	}
 	flushSR()
-	m68kA64MovImm32(cb, m68kA64Tmp0, endPC)
-	cb.Emit32(arm64STR_W_imm(m68kA64Tmp0, m68kA64Ctx, m68kCtxOffRetPC/4))
+	if e.dynExit {
+		cb.Emit32(arm64STR_W_imm(m68kA64Tmp5, m68kA64Ctx, m68kCtxOffRetPC/4))
+	} else {
+		exitPC := endPC
+		if e.hasStaticExit {
+			exitPC = e.staticExit
+		}
+		m68kA64MovImm32(cb, m68kA64Tmp0, exitPC)
+		cb.Emit32(arm64STR_W_imm(m68kA64Tmp0, m68kA64Ctx, m68kCtxOffRetPC/4))
+	}
 	m68kA64MovImm32(cb, m68kA64Tmp0, uint32(len(instrs)))
 	cb.Emit32(arm64STR_W_imm(m68kA64Tmp0, m68kA64Ctx, m68kCtxOffRetCount/4))
 	cb.Emit32(arm64MOVZ(0, 0, 0)) // mov x0, #0 — clean return value

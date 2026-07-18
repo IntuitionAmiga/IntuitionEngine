@@ -235,9 +235,9 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 					continue
 				}
 				instrs := m68kScanBlock(cpu.memory, pc)
-				prefix := m68kARM64SupportedPrefix(instrs, cpu.memory, pc)
+				prefix := m68kARM64SupportedPrefix(instrs, cpu.memory, pc, cpu.ProfileTopOfRAM())
 				if prefix >= m68kARM64MinPrefix {
-					compiled, err := m68kCompileBlockARM64(instrs[:prefix], pc, execMem, cpu.memory)
+					compiled, err := m68kCompileBlockARM64(instrs[:prefix], pc, execMem, cpu.memory, cpu.ProfileTopOfRAM())
 					if err == nil {
 						m68kStampGuestBlockBytes(cpu.memory, compiled)
 						cpu.m68kARM64PublishCodeEnv(compiled)

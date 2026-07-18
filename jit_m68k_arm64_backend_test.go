@@ -80,7 +80,7 @@ func TestM68KARM64_SupportedPrefix(t *testing.T) {
 	// moveq #1,d0 ; add.l d0,d1 ; jsr (a0) [unsupported] ; rts
 	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7001, 0xD280, 0x4E90, 0x4E75)
 	instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
-	prefix := m68kARM64SupportedPrefix(instrs, cpu.memory, m68kARM64TestPC)
+	prefix := m68kARM64SupportedPrefix(instrs, cpu.memory, m68kARM64TestPC, cpu.ProfileTopOfRAM())
 	if prefix != 2 {
 		t.Fatalf("supported prefix = %d, want 2", prefix)
 	}
@@ -131,11 +131,11 @@ func TestM68KARM64_DifferentialALUGrid(t *testing.T) {
 			}
 			// Compile once per case; reuse across the operand grid.
 			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
-			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM())
 			if prefix < tc.count {
 				t.Fatalf("%s: supported prefix %d < want %d", tc.name, prefix, tc.count)
 			}
-			block, err := m68kCompileBlockARM64(instrs[:tc.count], m68kARM64TestPC, execMem, got.memory)
+			block, err := m68kCompileBlockARM64(instrs[:tc.count], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
 			if err != nil {
 				t.Fatalf("%s: compile: %v", tc.name, err)
 			}
@@ -226,7 +226,7 @@ func TestM68KARM64_SMCStampMismatch(t *testing.T) {
 		t.Fatalf("AllocExecMem: %v", err)
 	}
 	defer execMem.Free()
-	block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, execMem, cpu.memory)
+	block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestM68KARM64_NativeSmoke(t *testing.T) {
 		t.Fatalf("AllocExecMem: %v", err)
 	}
 	defer execMem.Free()
-	block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, execMem, cpu.memory)
+	block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestM68KARM64_CrossThreadInvalidationQueue(t *testing.T) {
 
 	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7001, 0xD280, 0x4E75)
 	instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
-	block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, cpu.m68kGetJITExecMem(), cpu.memory)
+	block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, cpu.m68kGetJITExecMem(), cpu.memory, cpu.ProfileTopOfRAM())
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -511,11 +511,11 @@ func TestM68KARM64_DifferentialMemoryEAGrid(t *testing.T) {
 				m68kARM64WriteWords(cpu, end, 0x4E75) // rts terminator
 			}
 			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
-			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM())
 			if prefix < tc.count {
 				t.Fatalf("%s: supported prefix %d < want %d", tc.name, prefix, tc.count)
 			}
-			block, err := m68kCompileBlockARM64(instrs[:tc.count], m68kARM64TestPC, execMem, got.memory)
+			block, err := m68kCompileBlockARM64(instrs[:tc.count], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
 			if err != nil {
 				t.Fatalf("%s: compile: %v", tc.name, err)
 			}
@@ -576,7 +576,7 @@ func TestM68KARM64_IOBailUnit(t *testing.T) {
 		t.Fatalf("AllocExecMem: %v", err)
 	}
 	defer execMem.Free()
-	block, err := m68kCompileBlockARM64(instrs[:3], m68kARM64TestPC, execMem, cpu.memory)
+	block, err := m68kCompileBlockARM64(instrs[:3], m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
@@ -764,11 +764,11 @@ func TestM68KARM64_DifferentialShiftImmGrid(t *testing.T) {
 				m68kARM64WriteWords(cpu, end, 0x4E75)
 			}
 			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
-			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM())
 			if prefix < tc.count {
 				t.Fatalf("%s: supported prefix %d < want %d", tc.name, prefix, tc.count)
 			}
-			block, err := m68kCompileBlockARM64(instrs[:tc.count], m68kARM64TestPC, execMem, got.memory)
+			block, err := m68kCompileBlockARM64(instrs[:tc.count], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
 			if err != nil {
 				t.Fatalf("%s: compile: %v", tc.name, err)
 			}
@@ -822,5 +822,201 @@ func TestM68KARM64_DifferentialShiftImmGrid(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s: subtest failed, stopping grid", tc.name)
 		}
+	}
+}
+
+// ===========================================================================
+// Milestone 3 slice 4: branches — BRA, Bcc (all conditions) and DBcc as
+// block-ending exits with dynamic resume PC.
+// ===========================================================================
+
+// TestM68KARM64_BranchPrefixAdmission pins the admission rule: a supported
+// branch ends the native block and is included as its final instruction.
+func TestM68KARM64_BranchPrefixAdmission(t *testing.T) {
+	cpu := m68kARM64NewCPU(t)
+	// moveq #1,d0 ; moveq #2,d1 ; beq.s +4 ; moveq #3,d2 ; rts
+	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7001, 0x7202, 0x6704, 0x7403, 0x4E75)
+	instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+	prefix := m68kARM64SupportedPrefix(instrs, cpu.memory, m68kARM64TestPC, cpu.ProfileTopOfRAM())
+	if prefix != 3 {
+		t.Fatalf("supported prefix = %d, want 3 (branch included as final instruction)", prefix)
+	}
+	// BRA is also included and ends the block.
+	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7001, 0x6006)
+	instrs = m68kScanBlock(cpu.memory, m68kARM64TestPC)
+	prefix = m68kARM64SupportedPrefix(instrs, cpu.memory, m68kARM64TestPC, cpu.ProfileTopOfRAM())
+	if prefix != 2 {
+		t.Fatalf("BRA prefix = %d, want 2", prefix)
+	}
+}
+
+// TestM68KARM64_DifferentialBranchGrid drives BRA, every Bcc condition and a
+// set of DBcc conditions over the operand grid. The final PC (taken or not),
+// registers, CCR and retired count must match the interpreter exactly.
+func TestM68KARM64_DifferentialBranchGrid(t *testing.T) {
+	type opCase struct {
+		name  string
+		words []uint16
+		count int
+	}
+	cases := []opCase{
+		// Unconditional
+		{"BRA.S +8", []uint16{0x7001, 0x6008}, 2},
+		{"BRA.S -16", []uint16{0x7001, 0x60F0}, 2},
+		{"BRA.W +256", []uint16{0x7001, 0x6000, 0x0100}, 2},
+		{"BRA.L +1024", []uint16{0x7001, 0x60FF, 0x0000, 0x0400}, 2},
+		// Bcc byte displacement, every condition, flags from CMP.L D0,D1
+		{"BHI.S", []uint16{0xB280, 0x6208}, 2},
+		{"BLS.S", []uint16{0xB280, 0x6308}, 2},
+		{"BCC.S", []uint16{0xB280, 0x6408}, 2},
+		{"BCS.S", []uint16{0xB280, 0x6508}, 2},
+		{"BNE.S", []uint16{0xB280, 0x6608}, 2},
+		{"BEQ.S", []uint16{0xB280, 0x6708}, 2},
+		{"BVC.S", []uint16{0xB280, 0x6808}, 2},
+		{"BVS.S", []uint16{0xB280, 0x6908}, 2},
+		{"BPL.S", []uint16{0xB280, 0x6A08}, 2},
+		{"BMI.S", []uint16{0xB280, 0x6B08}, 2},
+		{"BGE.S", []uint16{0xB280, 0x6C08}, 2},
+		{"BLT.S", []uint16{0xB280, 0x6D08}, 2},
+		{"BGT.S", []uint16{0xB280, 0x6E08}, 2},
+		{"BLE.S", []uint16{0xB280, 0x6F08}, 2},
+		// Bcc word displacement and backward targets
+		{"BNE.W +512", []uint16{0xB280, 0x6600, 0x0200}, 2},
+		{"BEQ.W -256", []uint16{0xB280, 0x6700, 0xFF00}, 2},
+		{"BLT.S -8", []uint16{0xB280, 0x6DF8}, 2},
+		// DBcc: counter and condition interplay (flags from CMP.L D0,D1)
+		{"DBRA D2", []uint16{0xB280, 0x51CA, 0xFFFC}, 2},
+		{"DBT D2", []uint16{0xB280, 0x50CA, 0xFFFC}, 2},
+		{"DBEQ D2", []uint16{0xB280, 0x57CA, 0xFFFC}, 2},
+		{"DBNE D2", []uint16{0xB280, 0x56CA, 0xFFFC}, 2},
+		{"DBMI D2", []uint16{0xB280, 0x5BCA, 0xFFFC}, 2},
+		{"DBLT D2", []uint16{0xB280, 0x5DCA, 0xFFFC}, 2},
+		{"DBGE D2 fwd", []uint16{0xB280, 0x5CCA, 0x0040}, 2},
+	}
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	execMem, err := AllocExecMem(1 << 22)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	// DBcc counter values: zero (expires), small, low-word wrap, upper-word
+	// preservation.
+	d2Values := []uint32{0x00000000, 0x00000001, 0x00000002, 0x0000FFFF,
+		0x00010000, 0xABCD0001, 0xABCD0000}
+	for _, tc := range cases {
+		tc := tc
+		ok := t.Run(tc.name, func(t *testing.T) {
+			for _, cpu := range []*M68KCPU{ref, got} {
+				m68kARM64WriteWords(cpu, m68kARM64TestPC, tc.words...)
+			}
+			instrs := m68kScanBlock(got.memory, m68kARM64TestPC)
+			prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM())
+			if prefix < tc.count {
+				t.Fatalf("%s: supported prefix %d < want %d", tc.name, prefix, tc.count)
+			}
+			block, err := m68kCompileBlockARM64(instrs[:tc.count], m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
+			if err != nil {
+				t.Fatalf("%s: compile: %v", tc.name, err)
+			}
+			ctx := newM68KJITContext(got, nil, nil, nil)
+			for _, a := range m68kARM64GridValues {
+				for _, b := range m68kARM64GridValues {
+					for _, d2 := range d2Values {
+						seed := [8]uint32{a, b, d2, 0x22222222, 0x33333333, 0x44444444, 0x55555555, 0x66666666}
+						for _, ccrIn := range []uint16{0x00, 0x1F, 0x10, 0x0A} {
+							for _, cpu := range []*M68KCPU{ref, got} {
+								m68kARM64SeedRegs(cpu, seed, ccrIn)
+								cpu.PC = m68kARM64TestPC
+							}
+							ref.running.Store(true)
+							m68kARM64RunInterp(ref, tc.count)
+							if !ref.running.Load() {
+								t.Fatalf("%s a=%08X b=%08X: interpreter halted (branch target out of profile RAM)", tc.name, a, b)
+							}
+							ctx.RetPC = 0
+							ctx.RetCount = 0
+							ctx.NeedIOFallback = 0
+							callNative(block.execAddr, m68kJITContextPtr(ctx))
+							if ctx.NeedIOFallback != 0 {
+								t.Fatalf("%s a=%08X b=%08X: unexpected I/O bail", tc.name, a, b)
+							}
+							got.PC = ctx.RetPC
+							if ctx.RetCount != uint32(tc.count) {
+								t.Fatalf("%s a=%08X b=%08X: retired=%d want %d", tc.name, a, b, ctx.RetCount, tc.count)
+							}
+							m68kARM64CompareState(t, tc.name, ref, got)
+							if t.Failed() {
+								t.Fatalf("%s: first divergence at a=%08X b=%08X d2=%08X ccrIn=%02X", tc.name, a, b, d2, ccrIn)
+							}
+						}
+					}
+				}
+			}
+		})
+		if !ok {
+			t.Fatalf("%s: subtest failed, stopping grid", tc.name)
+		}
+	}
+}
+
+// TestM68KARM64_DispatcherLoopDBRA runs a real DBRA loop through the full
+// dispatcher: the loop body plus its DBRA must execute as one native block
+// per iteration, with exact retired accounting against the interpreter.
+func TestM68KARM64_DispatcherLoopDBRA(t *testing.T) {
+	program := []uint16{
+		0x7009,         // moveq #9,d0
+		0x7200,         // moveq #0,d1
+		0x5281,         // loop: addq.l #1,d1
+		0xD481,         // add.l d1,d2
+		0x51C8, 0xFFFA, // dbra d0,loop
+		0x4E72, 0x2700, // stop #$2700
+	}
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	for _, cpu := range []*M68KCPU{ref, got} {
+		m68kARM64WriteWords(cpu, m68kARM64TestPC, program...)
+		cpu.PC = m68kARM64TestPC
+	}
+
+	refCount := 0
+	for !ref.stopped.Load() && refCount < 1000 {
+		refCount += ref.StepOne()
+	}
+
+	got.m68kJitEnabled = true
+	got.PerfEnabled = true
+	got.m68kJitForceNative = true
+	got.StoppedIdleHook = func(c *M68KCPU) { c.running.Store(false) }
+	got.running.Store(true)
+	got.M68KExecuteJIT()
+
+	m68kARM64CompareState(t, "dbra-loop", ref, got)
+	if got.DataRegs[1] != 10 {
+		t.Errorf("D1=%d, want 10 loop iterations", got.DataRegs[1])
+	}
+	if got.InstructionCount != uint64(refCount) {
+		t.Errorf("retired count: interp=%d jit=%d", refCount, got.InstructionCount)
+	}
+}
+
+// TestM68KARM64_BranchTargetOutOfProfileRAM pins the admission quirk: the
+// interpreter halts the machine when a taken BRA/Bcc target lands beyond
+// ProfileTopOfRAM-2, so the native backend must refuse such branches and
+// leave them to the interpreter.
+func TestM68KARM64_BranchTargetOutOfProfileRAM(t *testing.T) {
+	cpu := m68kARM64NewCPU(t)
+	top := cpu.ProfileTopOfRAM()
+	// moveq #1,d0 ; bra.w to a target beyond top of RAM (via a tiny topOfRAM
+	// override passed straight to the admission check).
+	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7001, 0x6000, 0x0100)
+	instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+	if got := m68kARM64SupportedPrefix(instrs, cpu.memory, m68kARM64TestPC, top); got != 2 {
+		t.Fatalf("in-range BRA prefix = %d, want 2", got)
+	}
+	// With a top of RAM below the branch target, the branch must be rejected
+	// and the prefix must stop before it.
+	if got := m68kARM64SupportedPrefix(instrs, cpu.memory, m68kARM64TestPC, m68kARM64TestPC+0x40); got != 1 {
+		t.Fatalf("out-of-range BRA prefix = %d, want 1 (branch rejected)", got)
 	}
 }
