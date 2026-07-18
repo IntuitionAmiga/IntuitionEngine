@@ -503,16 +503,22 @@ Delivered and differentially verified against the interpreter under wazero
   a grid including NaN, both infinities, subnormals and negative zero.
 
 Gate status (milestone 5): the integer, memory, control-flow and FPU
-differential grids are green under wazero (102 subtests). The remaining
-milestone 5 item is the js/wasm browser dispatcher (the analogue of the IE64
-wasmJITRuntime plus jit_exec_wasm.go) and the browser smoke run, which cannot
-run in the headless/wazero environment. Before it can be enabled it must resolve
-the wasm32 context layout (the shared M68KJITContext offsets assume an 8-byte
-uintptr; wasm pointers are 4 bytes) and provide synchronous per-block
-instantiation with a PC-keyed instance cache, boundary interrupt sampling,
-NeedIOFallback single-stepping and SMC invalidation. Until then m68kJitAvailable
-stays false on wasm and execution routes to the interpreter, as on arm64 pending
-its hardware gates.
+differential grids are green under wazero (102 subtests). The js/wasm browser
+dispatcher is now wired (jit_m68k_dispatch_wasm.go): it translates a supported
+block prefix, compiles it synchronously (new WebAssembly.Module; the blocks are
+far below the 4 KiB main-thread limit), instantiates it against Go's own linear
+memory (globalThis.__goMem imported as env.mem) and caches it by guest PC, with a
+pre-entry stamp check for self-modifying code, boundary interrupt sampling,
+NeedIOFallback single-stepping and cooperative yielding. The wasm32 context
+layout is handled without the M68KJITContext struct: the dispatcher builds a
+dedicated byte image laid out per the m68kCtxOff* constants and fills the pointer
+fields with the guest CPU's real Go addresses, which are exactly the linear
+offsets the block dereferences. This is the same image layout the wazero
+differential tests populate, so the browser executes byte-for-byte what the tests
+verify. The backend is gated by M68K_WASM_JIT (default on, =0 disables) and the
+presence of __goMem, independent of the m68kJitAvailable flag the native
+backends use. The remaining validation is the browser smoke run against real 68k
+guests, diffed against interpreter output.
 
 Deferred to milestone 6 (documented, not silently capped): read-modify-write
 ALU to a memory destination, structured in-block loops for proven-in-block

@@ -5,6 +5,7 @@ Demos/ie32/vga_mode13h_fire.iex
 Demos/ie32/vga_modex_circles.iex
 Demos/ie32/vga_text_hello.iex
 Demos/ie32/voodoo_mega_demo.iex
+Demos/ie64/mandelbrot_ie64.ie64
 Demos/ie64/rotozoomer_ie64.ie64
 Demos/m6502/robocop_intro_65.ie65
 Demos/m6502/rotozoomer_65.ie65
