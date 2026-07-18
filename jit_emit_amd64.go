@@ -1208,18 +1208,21 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 		if ie64ActiveLoopPlan != nil && len(ie64ActiveLoopPlan.accesses) != 0 && i == ie64ActiveLoopPlan.head {
 			emitIE64LoopPrecheckAMD64(cb, &br, writtenSoFar, ie64ActiveLoopPlan)
 		}
-		if ie64ActiveLoopPlan != nil && ie64ActiveLoopPlan.hoist >= 0 && i == ie64ActiveLoopPlan.head {
-			// Hoisted invariant: emitted once, immediately before the
-			// loop-head label, so back-edge targets land after it.
-			hj := &instrs[ie64ActiveLoopPlan.hoist]
-			emitInstruction(cb, hj, startPC, false, &br, writtenSoFar, ie64ActiveLoopPlan.hoist, instrOffsets, &pendingChains)
-			writtenSoFar |= instrWrittenRegs(hj)
+		if ie64ActiveLoopPlan != nil && len(ie64ActiveLoopPlan.hoists) != 0 && i == ie64ActiveLoopPlan.head {
+			// Hoisted invariants: emitted once, in program order,
+			// immediately before the loop-head label, so back-edge targets
+			// land after them.
+			for _, hi := range ie64ActiveLoopPlan.hoists {
+				hj := &instrs[hi]
+				emitInstruction(cb, hj, startPC, false, &br, writtenSoFar, hi, instrOffsets, &pendingChains)
+				writtenSoFar |= instrWrittenRegs(hj)
+			}
 			ie64LoopHoistEmits.Add(1)
 		}
 		instrOffsets[i] = cb.Len()
 		ji := &instrs[i]
 		ie64CurrentLoopInstr = i
-		if ie64ActiveLoopPlan != nil && i == ie64ActiveLoopPlan.hoist {
+		if ie64ActiveLoopPlan != nil && ie64ActiveLoopPlan.hoistSet[i] {
 			// Suppressed inside the loop: the host instruction ran once
 			// before the loop head. The guest instruction stays in every
 			// index-based retired count.
@@ -1512,7 +1515,7 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 	}
 	var fwdFixups []fwdFixup
 	var pendingChains []ie64PendingChainSlot
-	var coldStub *ie64ColdExitStubAMD64
+	var coldStubs []ie64ColdExitStubAMD64
 
 	prevBase := ie64CurrentInstrCountBase
 	defer func() { ie64CurrentInstrCountBase = prevBase }()
@@ -1605,14 +1608,14 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 					// through this conditional fixup. The pending FPCC and
 					// count base are captured so the stub replays the exact
 					// existing cold-exit sequence.
-					coldStub = &ie64ColdExitStubAMD64{
+					coldStubs = append(coldStubs, ie64ColdExitStubAMD64{
 						jccOff:       amd64Jcc_rel32(cb, cond^1),
 						coldTarget:   region.observed[bi].coldTarget,
 						count:        uint32(i + 1),
 						countBase:    ie64CurrentInstrCountBase,
 						writtenSoFar: writtenSoFar,
 						pendingFPCC:  ie64PendingFPCC,
-					}
+					})
 					// Fall through into the next emitted block. The
 					// block-end flush below settles any sunk CC on this
 					// edge, exactly like the previous explicit hot edge.
@@ -1748,11 +1751,13 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		emitEpilogue(cb, br.written, br.used)
 	}
 
-	// Outlined cold exit stub: reached only through its conditional fixup.
-	// Every normal path above has already terminated or branched. The stub
-	// replays the exact cold-exit sequence with the state captured at the
-	// conditional: count base, written-so-far spill mask and pending FPCC.
-	if coldStub != nil {
+	// Outlined cold exit stubs: each reached only through its conditional
+	// fixup. Every normal path above has already terminated or branched.
+	// Each stub replays the exact cold-exit sequence with the state captured
+	// at its conditional: count base, written-so-far spill mask and pending
+	// FPCC.
+	for s := range coldStubs {
+		coldStub := &coldStubs[s]
 		patchRel32(cb, coldStub.jccOff, cb.Len())
 		ie64CurrentInstrCountBase = coldStub.countBase
 		ie64PendingFPCC = coldStub.pendingFPCC

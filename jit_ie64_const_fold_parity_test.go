@@ -75,9 +75,9 @@ func TestConstFold_ChainParityAndApplied(t *testing.T) {
 	}
 }
 
-// A memory barrier must clear tracked constants: the ADD after the LOAD
-// consumes a register the LOAD produced, and the ADD reading the pre-barrier
-// constant register must still be correct (it is simply not folded).
+// Memory traffic no longer clears unrelated constants, but a LOAD result is
+// unknown: the ADD consumes the loaded register at runtime and must still be
+// correct (it is simply not folded).
 func TestConstFold_BarrierParity(t *testing.T) {
 	if !jitAvailable {
 		t.Skip("JIT not available on this platform")
@@ -98,8 +98,8 @@ func TestConstFold_BarrierParity(t *testing.T) {
 	}
 }
 
-// Unsupported instruction writing a tracked register invalidates it; the
-// dependent ADD must consume the runtime value.
+// A whitelisted instruction with unknown inputs invalidates its tracked
+// destination; the dependent ADD must consume the runtime value.
 func TestConstFold_UnsupportedWriteParity(t *testing.T) {
 	if !jitAvailable {
 		t.Skip("JIT not available on this platform")

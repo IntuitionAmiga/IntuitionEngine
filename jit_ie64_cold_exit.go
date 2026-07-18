@@ -29,20 +29,12 @@ var ie64ColdExitOutlines atomic.Uint64
 // toggle so both layouts run under identical conditions in one binary.
 var ie64ColdExitOutlineDisabled bool
 
-// ie64ColdExitOutlineEligible reports whether the region qualifies for the
-// outlined cold-exit layout: exactly one observed conditional. The caller
-// must additionally require the conditional's hot successor to be the next
-// emitted block (an adjacent forward edge); backward hot edges and regions
-// with several observed conditionals retain the current layout.
+// ie64ColdExitOutlineEligible reports whether observed conditionals may use
+// the outlined cold-exit layout. Every adjacent forward conditional in a
+// region qualifies; the caller must still require the conditional's hot
+// successor to be the next emitted block (an adjacent forward edge), so
+// backward hot edges retain the current layout. Each qualifying site gets
+// its own stub with independently captured state.
 func ie64ColdExitOutlineEligible(observed []ie64ObservedBlock) bool {
-	if ie64ColdExitOutlineDisabled {
-		return false
-	}
-	n := 0
-	for i := range observed {
-		if observed[i].kind == ie64ObservedConditional {
-			n++
-		}
-	}
-	return n == 1
+	return !ie64ColdExitOutlineDisabled
 }

@@ -100,3 +100,44 @@ func TestLoopHoist_DestLiveAfterLoop(t *testing.T) {
 		t.Fatalf("R3 = 0x%X R5 = 0x%X", jit.regs[3], jit.regs[5])
 	}
 }
+
+// buildHoistChainProgram: counted loop containing a dependent invariant
+// chain (MOVE then LSL of its result) consumed by a varying accumulator.
+// R2 counts down from n; R3 and R6 are the chain; R4 accumulates.
+func buildHoistChainProgram(n uint32) func(mem []byte) {
+	return func(mem []byte) {
+		base := uint64(PROG_START)
+		put := func(off uint64, ins []byte) { copy(mem[base+off:], ins) }
+		put(0x00, ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, n))
+		put(0x08, ie64Instr(OP_MOVE, 3, IE64_SIZE_Q, 1, 0, 0, 0x123)) // invariant
+		put(0x10, ie64Instr(OP_LSL, 6, IE64_SIZE_Q, 1, 3, 0, 4))      // invariant chain: R3<<4
+		put(0x18, ie64Instr(OP_ADD, 4, IE64_SIZE_Q, 0, 4, 6, 0))
+		put(0x20, ie64Instr(OP_SUB, 2, IE64_SIZE_Q, 1, 2, 0, 1))
+		put(0x28, ie64Instr(OP_BNE, 0, 0, 0, 2, 0, ^uint32(0x1f))) // -> 0x08
+		put(0x30, ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	}
+}
+
+// A dependent invariant chain hoists entirely and matches the interpreter.
+func TestLoopHoist_ChainParityAndApplied(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available on this platform")
+	}
+	before := ie64LoopHoistEmits.Load()
+	jit := assertFoldParity(t, "hoist/chain", buildHoistChainProgram(1000))
+	if ie64LoopHoistEmits.Load() == before {
+		t.Fatal("invariant chain was not hoisted")
+	}
+	if jit.regs[4] != 1000*(0x123<<4) {
+		t.Fatalf("R4 = 0x%X, want 0x%X", jit.regs[4], uint64(1000*(0x123<<4)))
+	}
+}
+
+// Budget exit with two suppressed guest instructions per iteration: retired
+// counts must match the interpreter exactly across mid-loop exits.
+func TestLoopHoist_ChainBudgetExitCounting(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("JIT not available on this platform")
+	}
+	assertFoldParity(t, "hoist/chain-budget", buildHoistChainProgram(50000))
+}

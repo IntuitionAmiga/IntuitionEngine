@@ -19,7 +19,10 @@
 
 package main
 
-import "sync/atomic"
+import (
+	"math/bits"
+	"sync/atomic"
+)
 
 // ie64FoldedConstEmits counts folded constants actually emitted by any
 // backend. Structural tests read it to prove the fold was applied.
@@ -83,13 +86,20 @@ func ie64ConstFoldSupported(op byte) bool {
 	return ie64HoistableOpcode(op)
 }
 
+// ie64FoldBarrierRelaxDisabled reverts LOAD/STORE to full barriers.
+// Benchmark-only toggle so the relaxed and conservative variants run under
+// identical conditions in one binary.
+var ie64FoldBarrierRelaxDisabled bool
+
 // ie64ConstFoldBarrier reports whether the opcode clears all tracked
-// constants: memory traffic, FP state, control flow and system/atomic
-// instructions. R0 is restored to known zero afterwards by the caller.
+// constants: FP state, control flow and system/atomic instructions. Plain
+// LOAD/STORE are not barriers: STORE writes no register, and LOAD is handled
+// by the analysis as a destination-only invalidation. R0 is restored to
+// known zero afterwards by the caller.
 func ie64ConstFoldBarrier(op byte) bool {
 	switch {
 	case op == OP_LOAD || op == OP_STORE:
-		return true
+		return ie64FoldBarrierRelaxDisabled
 	case op >= OP_BRA && op <= OP_JSR_IND: // branches, JMP, JSR/RTS, PUSH/POP
 		return true
 	case op >= OP_FMOV && op <= OP_DPOW: // FP32 and FP64 families
@@ -148,6 +158,15 @@ func ie64AnalyseConstFold(instrs []JITInstr, startPC uint64) []ie64FoldEntry {
 		}
 		if ie64ConstFoldBarrier(in.opcode) {
 			clearAll()
+			continue
+		}
+		if in.opcode == OP_STORE {
+			continue // reads registers, writes memory only
+		}
+		if in.opcode == OP_LOAD {
+			if in.rd != 0 {
+				known &^= 1 << in.rd
+			}
 			continue
 		}
 		if !ie64ConstFoldSupported(in.opcode) {
@@ -209,6 +228,12 @@ func ie64ConstFoldEval(in *JITInstr, known uint32, vals *[32]uint64) (uint64, bo
 			return 0, false
 		}
 		return maskToSize(reg(in.rs), in.size), true
+	case OP_MOVT:
+		// Read-modify-write of the destination's low half.
+		if !regKnown(in.rd) {
+			return 0, false
+		}
+		return (reg(in.rd) & 0x00000000FFFFFFFF) | (uint64(in.imm32) << 32), true
 	case OP_MOVEQ:
 		return uint64(int64(int32(in.imm32))), true
 	case OP_LEA:
@@ -216,7 +241,46 @@ func ie64ConstFoldEval(in *JITInstr, known uint32, vals *[32]uint64) (uint64, bo
 			return 0, false
 		}
 		return uint64(int64(reg(in.rs)) + int64(int32(in.imm32))), true
-	case OP_ADD, OP_SUB, OP_AND64, OP_OR64, OP_EOR:
+	case OP_NEG:
+		if !regKnown(in.rs) {
+			return 0, false
+		}
+		return maskToSize(uint64(-int64(reg(in.rs))), in.size), true
+	case OP_NOT64:
+		if !regKnown(in.rs) {
+			return 0, false
+		}
+		return maskToSize(^reg(in.rs), in.size), true
+	case OP_CLZ:
+		if !regKnown(in.rs) {
+			return 0, false
+		}
+		return uint64(bits.LeadingZeros32(uint32(reg(in.rs)))), true
+	case OP_CTZ:
+		if !regKnown(in.rs) {
+			return 0, false
+		}
+		return uint64(bits.TrailingZeros32(uint32(reg(in.rs)))), true
+	case OP_POPCNT:
+		if !regKnown(in.rs) {
+			return 0, false
+		}
+		return uint64(bits.OnesCount32(uint32(reg(in.rs)))), true
+	case OP_BSWAP:
+		if !regKnown(in.rs) {
+			return 0, false
+		}
+		return uint64(bits.ReverseBytes32(uint32(reg(in.rs)))), true
+	case OP_SEXT:
+		if !regKnown(in.rs) {
+			return 0, false
+		}
+		switch in.size {
+		case IE64_SIZE_B, IE64_SIZE_W, IE64_SIZE_L:
+			return uint64(signExtendToInt64(reg(in.rs), in.size)), true
+		}
+		return reg(in.rs), true
+	case OP_ADD, OP_SUB, OP_MULU, OP_MULS, OP_AND64, OP_OR64, OP_EOR:
 		if !regKnown(in.rs) {
 			return 0, false
 		}
@@ -231,6 +295,10 @@ func ie64ConstFoldEval(in *JITInstr, known uint32, vals *[32]uint64) (uint64, bo
 			r = a + op3
 		case OP_SUB:
 			r = a - op3
+		case OP_MULU:
+			r = a * op3
+		case OP_MULS:
+			r = uint64(int64(a) * int64(op3))
 		case OP_AND64:
 			r = a & op3
 		case OP_OR64:
@@ -239,6 +307,65 @@ func ie64ConstFoldEval(in *JITInstr, known uint32, vals *[32]uint64) (uint64, bo
 			r = a ^ op3
 		}
 		return maskToSize(r, in.size), true
+	case OP_DIVU, OP_DIVS, OP_MOD64, OP_MODS:
+		if !regKnown(in.rs) {
+			return 0, false
+		}
+		op3, ok := operand3()
+		if !ok {
+			return 0, false
+		}
+		a := reg(in.rs)
+		switch in.opcode {
+		case OP_DIVU:
+			if op3 == 0 {
+				return 0, true
+			}
+			return maskToSize(a/op3, in.size), true
+		case OP_DIVS:
+			if op3 == 0 {
+				return 0, true
+			}
+			return maskToSize(uint64(int64(a)/int64(op3)), in.size), true
+		case OP_MOD64:
+			if op3 == 0 {
+				return 0, true
+			}
+			return maskToSize(a%op3, in.size), true
+		default: // OP_MODS
+			sa := signExtendToInt64(a, in.size)
+			sb := signExtendToInt64(op3, in.size)
+			if sb == 0 {
+				return 0, true
+			}
+			return maskToSize(uint64(sa%sb), in.size), true
+		}
+	case OP_MULHU, OP_MULHS:
+		if !regKnown(in.rs) {
+			return 0, false
+		}
+		op3, ok := operand3()
+		if !ok {
+			return 0, false
+		}
+		if in.opcode == OP_MULHU {
+			hi, _ := bits.Mul64(reg(in.rs), op3)
+			return hi, true
+		}
+		return mulHighSigned(int64(reg(in.rs)), int64(op3)), true
+	case OP_ROL, OP_ROR:
+		if !regKnown(in.rs) {
+			return 0, false
+		}
+		op3, ok := operand3()
+		if !ok {
+			return 0, false
+		}
+		v := maskToSize(reg(in.rs), in.size)
+		if in.opcode == OP_ROL {
+			return maskToSize(rotateLeftToSize(v, op3, in.size), in.size), true
+		}
+		return maskToSize(rotateRightToSize(v, op3, in.size), in.size), true
 	case OP_LSL, OP_LSR, OP_ASR:
 		if !regKnown(in.rs) {
 			return 0, false

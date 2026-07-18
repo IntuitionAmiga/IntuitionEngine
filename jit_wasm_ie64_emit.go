@@ -507,16 +507,18 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 				if len(loopPlan.accesses) != 0 {
 					e.emitLoopPrechecks()
 				}
-				if loopPlan.hoist >= 0 {
-					// Hoisted invariant: emitted once, before the
-					// structured loop opens.
-					hj := &block.instrs[loopPlan.hoist]
-					e.instr(hj, uint32(loopPlan.hoist), block.pc+uint64(hj.pcOffset))
+				if len(loopPlan.hoists) != 0 {
+					// Hoisted invariants: emitted once, in program order,
+					// before the structured loop opens.
+					for _, hi := range loopPlan.hoists {
+						hj := &block.instrs[hi]
+						e.instr(hj, uint32(hi), block.pc+uint64(hj.pcOffset))
+					}
 					ie64LoopHoistEmits.Add(1)
 				}
 				e.b.loop()
 			}
-			if len(blocks) == 1 && loopPlan != nil && loopPlan.hoist >= 0 && int(idx) == loopPlan.hoist {
+			if len(blocks) == 1 && loopPlan != nil && loopPlan.hoistSet[int(idx)] {
 				// Suppressed inside the loop: the host instruction ran once
 				// before the loop opened. The guest instruction stays in
 				// every index-based retired count.

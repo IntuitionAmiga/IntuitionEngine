@@ -17,6 +17,7 @@ import "os"
 func init() {
 	if os.Getenv("IE64_BENCH_DISABLE_OPTS") == "1" {
 		ie64ConstFoldDisabled = true
+		ie64FoldBarrierRelaxDisabled = true
 		ie64ColdExitOutlineDisabled = true
 		ie64LoopHoistDisabled = true
 	}

@@ -92,9 +92,9 @@ func TestColdExitOutline_RejectsBackwardHotEdge(t *testing.T) {
 	}
 }
 
-// More than one observed conditional: current layout retained, both cold
-// exits still behave.
-func TestColdExitOutline_RejectsMultipleConditionals(t *testing.T) {
+// More than one observed conditional: every adjacent-forward conditional is
+// outlined, and each cold exit still behaves with exact accounting.
+func TestColdExitOutline_MultipleConditionalsAllOutlined(t *testing.T) {
 	rig := newJITTestRig(t)
 	observed := &ie64ObservedRegion{entryPC: 0x100, blocks: []ie64ObservedBlock{
 		{pc: 0x100, instrs: []JITInstr{{opcode: OP_BEQ, rs: 3, rt: 4, imm32: 0x100}}, kind: ie64ObservedConditional, hotTarget: 0x200, coldTarget: 0x108},
@@ -105,10 +105,48 @@ func TestColdExitOutline_RejectsMultipleConditionals(t *testing.T) {
 	rig.cpu.regs[5], rig.cpu.regs[6] = 1, 2 // second cold
 	before := ie64ColdExitOutlines.Load()
 	runObservedNative(t, rig, observed)
-	if ie64ColdExitOutlines.Load() != before {
-		t.Fatal("region with two observed conditionals must retain the current layout")
+	if got := ie64ColdExitOutlines.Load() - before; got != 2 {
+		t.Fatalf("outlined %d cold exits, want 2 (one per adjacent forward conditional)", got)
 	}
 	if rig.ctx.RetPC != 0x208 || rig.ctx.RetCount != 2 {
 		t.Fatalf("second cold exit PC=%#x count=%d, want 0x208/2", rig.ctx.RetPC, rig.ctx.RetCount)
+	}
+}
+
+// First-conditional cold outcome in a multi-conditional region: the first
+// outlined stub must exit with its own captured accounting, not the second's.
+func TestColdExitOutline_MultipleConditionalsFirstCold(t *testing.T) {
+	rig := newJITTestRig(t)
+	observed := &ie64ObservedRegion{entryPC: 0x100, blocks: []ie64ObservedBlock{
+		{pc: 0x100, instrs: []JITInstr{{opcode: OP_BEQ, rs: 3, rt: 4, imm32: 0x100}}, kind: ie64ObservedConditional, hotTarget: 0x200, coldTarget: 0x108},
+		{pc: 0x200, instrs: []JITInstr{{opcode: OP_BEQ, rs: 5, rt: 6, imm32: 0x100}}, kind: ie64ObservedConditional, hotTarget: 0x300, coldTarget: 0x208},
+		{pc: 0x300, instrs: []JITInstr{{opcode: OP_BRA, imm32: ^uint32(0x1ff)}}},
+	}}
+	rig.cpu.regs[3], rig.cpu.regs[4] = 1, 2 // first cold
+	rig.cpu.regs[5], rig.cpu.regs[6] = 7, 7
+	runObservedNative(t, rig, observed)
+	if rig.ctx.RetPC != 0x108 || rig.ctx.RetCount != 1 {
+		t.Fatalf("first cold exit PC=%#x count=%d, want 0x108/1", rig.ctx.RetPC, rig.ctx.RetCount)
+	}
+}
+
+// Mixed shapes: a backward hot edge keeps the current layout while an
+// adjacent forward conditional in the same region is still outlined.
+func TestColdExitOutline_MixedBackwardAndForward(t *testing.T) {
+	rig := newJITTestRig(t)
+	observed := &ie64ObservedRegion{entryPC: 0x100, blocks: []ie64ObservedBlock{
+		{pc: 0x100, instrs: []JITInstr{{opcode: OP_BEQ, rs: 3, rt: 4, imm32: 0x100}}, kind: ie64ObservedConditional, hotTarget: 0x200, coldTarget: 0x108},
+		{pc: 0x200, instrs: []JITInstr{{opcode: OP_ADD, rd: 1, rs: 1, rt: 2, size: IE64_SIZE_Q}, {opcode: OP_BNE, rs: 5, rt: 0, pcOffset: 8, imm32: ^uint32(0x107)}}, kind: ie64ObservedConditional, hotTarget: 0x100, coldTarget: 0x210},
+	}}
+	rig.cpu.regs[2] = 1
+	rig.cpu.regs[3], rig.cpu.regs[4] = 7, 7 // forward conditional hot
+	rig.cpu.regs[5] = 1                     // backward conditional hot -> loops
+	before := ie64ColdExitOutlines.Load()
+	runObservedNative(t, rig, observed)
+	if got := ie64ColdExitOutlines.Load() - before; got != 1 {
+		t.Fatalf("outlined %d cold exits, want 1 (backward hot edge keeps current layout)", got)
+	}
+	if rig.ctx.RetPC != 0x100 || rig.ctx.RetCount < jitBudget || rig.cpu.regs[1] == 0 {
+		t.Fatalf("hot loop PC=%#x count=%d R1=%d", rig.ctx.RetPC, rig.ctx.RetCount, rig.cpu.regs[1])
 	}
 }

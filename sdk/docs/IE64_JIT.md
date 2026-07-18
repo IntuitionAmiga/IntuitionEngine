@@ -23,48 +23,57 @@ without recording an MMIO deoptimisation. This protocol is internal to the JIT.
 Qualifying loops use the specialised paths on native and wasm backends. MMU
 loops, changing pointers and stack accesses retain the established checks.
 
-### Conservative optimisation slices
+### Optimisation slices
 
-Three further conservative slices were implemented and benchmarked with
-`benchstat`. All three showed significant targeted improvements without
-related regressions and are retained.
+Three optimisation slices were implemented conservatively, benchmarked with
+`benchstat`, then extended to their aggressive forms. All showed significant
+targeted improvements without related regressions and are retained.
 
 **Constant-only folding** (`jit_ie64_const_fold.go`) runs a forward analysis
 over one basic block and precomputes results whose inputs are all statically
-known. The whitelist is `MOVE`, `MOVEQ`, `LEA`, `ADD`, `SUB`, `AND`, `OR`,
-`EOR`, `LSL`, `LSR` and `ASR`. R0 is treated as permanently known zero and
-writes to it are ignored. Exact IE64 size masking, sign extension and
-shift-count masking are preserved. Tracked constants are cleared at memory,
-FP, control-flow and system instructions, at fused markers, and at every
-in-block branch target, because such a target is reachable on a path that
-skips earlier setters. A register written by any unsupported instruction is
-invalidated. The backends (amd64, ARM64 and wasm) emit the folded value
-through their normal destination-write paths. Regions fold each block
-independently. No copies are tracked, no guest writes are removed and no
-architectural state is deferred.
+known. The whitelist covers the full pure integer set: `MOVE`, `MOVT`,
+`MOVEQ`, `LEA`, `ADD`, `SUB`, `MULU`, `MULS`, `DIVU`, `DIVS`, `MOD`, `MODS`,
+`MULHU`, `MULHS`, `NEG`, `NOT`, `AND`, `OR`, `EOR`, `LSL`, `LSR`, `ASR`,
+`ROL`, `ROR`, `CLZ`, `CTZ`, `POPCNT`, `BSWAP` and `SEXT`. Every evaluation
+mirrors the interpreter exactly, including size masking, sign extension,
+shift-count masking, the divide-by-zero result of zero and the 32-bit
+semantics of the bit-count and byte-swap group. `MOVT` is a read-modify-write
+and folds only when its destination is already known. R0 is treated as
+permanently known zero and writes to it are ignored. Plain memory traffic is
+not a barrier: `STORE` writes no register and preserves all tracked
+constants, while `LOAD` invalidates only its destination. Tracked constants
+are still cleared entirely at FP, control-flow and system instructions, at
+fused markers, and at every in-block branch target, because such a target is
+reachable on a path that skips earlier setters. A whitelisted instruction
+with unknown inputs invalidates its destination. The backends (amd64, ARM64
+and wasm) emit the folded value through their normal destination-write
+paths. Regions fold each block independently. No copies are tracked, no
+guest writes are removed and no architectural state is deferred.
 
-**Outlined cold exit for observed conditionals** (amd64 and ARM64 only)
-applies to a native observed region containing exactly one observed
-conditional whose hot successor is the next emitted block. The host
-condition is inverted so the hot successor is reached by fall-through, and
-the existing cold-exit sequence is emitted once after all normal region
-bodies and exits. The stub is reached only through the conditional fixup and
-replays the captured count base, spill mask and pending FPSR condition
-codes. Backward hot edges, non-adjacent forward targets and regions with
-several observed conditionals retain the previous layout. The wasm backend
-already keeps the cold exit inside the conditional's structured arm; a
-regression test pins that layout.
+**Outlined cold exits for observed conditionals** (amd64 and ARM64 only)
+apply to every observed conditional in a native observed region whose hot
+successor is the next emitted block. Each such host condition is inverted so
+the hot successor is reached by fall-through, and each cold-exit sequence is
+emitted once after all normal region bodies and exits. Every stub is reached
+only through its own conditional fixup and replays the count base, spill
+mask and pending FPSR condition codes captured at its site. Backward hot
+edges and non-adjacent forward targets retain the previous layout. The wasm
+backend already keeps the cold exit inside the conditional's structured arm;
+a regression test pins that layout.
 
-**Single-instruction loop hoisting** extends the single-entry loop analysis.
-A pure integer single-block loop may hoist at most one instruction from the
-constant-folding opcode list. Every input must be an immediate or a register
-not written anywhere in the loop, the destination must be written exactly
-once in the loop, and the destination must not be read earlier in the body.
-Dependent invariant chains are rejected. The instruction is emitted once,
-immediately before the loop-head label, so back-edge targets land after it,
-and its in-loop emission is suppressed. The suppressed guest instruction
-stays in every index-based retired count. In wasm it is emitted before the
-structured `loop` opens. Region plans never hoist.
+**Loop-invariant instruction hoisting** extends the single-entry loop
+analysis. A pure integer single-block loop hoists every qualifying
+instruction from the constant-folding opcode list, selected to a fixpoint so
+dependent invariant chains hoist entirely. Each candidate's inputs must be
+immediates, registers not written anywhere in the loop, or destinations of
+already-hoisted instructions defined earlier in the body; the candidate's
+destination must be written exactly once in the loop and must not be read
+earlier in the body (either rule violated would let iteration one observe
+the wrong value). The hoisted instructions are emitted once, in program
+order, immediately before the loop-head label, so back-edge targets land
+after them, and their in-loop emissions are suppressed. Suppressed guest
+instructions stay in every index-based retired count. In wasm they are
+emitted before the structured `loop` opens. Region plans never hoist.
 
 ---
 

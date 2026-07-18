@@ -133,7 +133,7 @@ func TestIE64ConstFoldR0(t *testing.T) {
 func TestIE64ConstFoldUnsupportedWriteInvalidates(t *testing.T) {
 	ins := []JITInstr{
 		foldIns(OP_MOVE, 1, 0, 0, IE64_SIZE_Q, 1, 7, 0),
-		foldIns(OP_MULU, 1, 5, 6, IE64_SIZE_Q, 0, 0, 1), // unsupported write to R1
+		foldIns(OP_MULU, 1, 5, 6, IE64_SIZE_Q, 0, 0, 1), // unknown inputs write to R1
 		foldIns(OP_ADD, 2, 1, 0, IE64_SIZE_Q, 1, 1, 2),  // R1 unknown -> no fold
 		foldIns(OP_MOVE, 3, 0, 0, IE64_SIZE_Q, 1, 4, 3), // still folds after
 	}
@@ -156,12 +156,10 @@ func TestIE64ConstFoldBarriers(t *testing.T) {
 		}
 	}
 	cases := map[string]JITInstr{
-		"memory-load":  foldIns(OP_LOAD, 4, 5, 0, IE64_SIZE_Q, 0, 0, 1),
-		"memory-store": foldIns(OP_STORE, 4, 5, 0, IE64_SIZE_Q, 0, 0, 1),
-		"fp":           foldIns(OP_FADD, 4, 5, 6, 0, 0, 0, 1),
-		"fp64":         foldIns(OP_DADD, 4, 5, 6, 0, 0, 0, 1),
-		"branch":       foldIns(OP_BEQ, 0, 5, 6, 0, 0, 512, 1),
-		"push":         foldIns(OP_PUSH64, 0, 4, 0, 0, 0, 0, 1),
+		"fp":     foldIns(OP_FADD, 4, 5, 6, 0, 0, 0, 1),
+		"fp64":   foldIns(OP_DADD, 4, 5, 6, 0, 0, 0, 1),
+		"branch": foldIns(OP_BEQ, 0, 5, 6, 0, 0, 512, 1),
+		"push":   foldIns(OP_PUSH64, 0, 4, 0, 0, 0, 0, 1),
 	}
 	for name, barrier := range cases {
 		t.Run(name, func(t *testing.T) {

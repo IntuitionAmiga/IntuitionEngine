@@ -629,12 +629,15 @@ runs 5.3 times faster than the interpreter.
 ### IE64 JIT Shared Analysis Order
 
 Each IE64 compilation unit runs its shared analyses in a fixed order before
-emission: FPSR condition-code liveness, loop analysis (including
-single-instruction hoist selection for single-block pure integer loops),
-constant-only folding, then FP residency planning. Loop hoisting is decided
-before folding, and a suppressed hoisted instruction is never replaced by a
-folded constant. Region compiles run the same order with folding applied per
-block; region plans never hoist.
+emission: FPSR condition-code liveness, loop analysis (including fixpoint
+hoist selection of loop-invariant chains for single-block pure integer
+loops), constant-only folding, then FP residency planning. Loop hoisting is
+decided before folding, and suppressed hoisted instructions are never
+replaced by folded constants. Folding treats plain `STORE` as
+constant-preserving and `LOAD` as invalidating only its destination; FP,
+control-flow and system instructions remain full barriers. Region compiles
+run the same order with folding applied per block; region plans never
+hoist.
 
 ### IE64 JIT 64-bit Execution Model
 

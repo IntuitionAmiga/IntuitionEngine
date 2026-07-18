@@ -89,10 +89,12 @@ resulting start-up time remain browser-dependent.
   device path.
 - **Constant-only folding also applies to wasm translation.** The shared
   per-block analysis (`jit_ie64_const_fold.go`) precomputes pure integer
-  results with fully known inputs, and the translator emits them as
-  `i64.const` through the normal register-write path. The observed
-  conditional keeps its existing structured layout: the cold exit lives in
-  the conditional's arm and the hot path continues directly after it.
+  results with fully known inputs over the full integer whitelist, folds
+  through plain `LOAD`/`STORE` traffic, and the translator emits results as
+  `i64.const` through the normal register-write path. Loop-invariant chains
+  are hoisted before the structured `loop` opens. The observed conditional
+  keeps its existing structured layout: the cold exit lives in the
+  conditional's arm and the hot path continues directly after it.
 - **No Vulkan.** The Voodoo uses the software rasteriser; Vulkan files carry
   `!js` build constraints, so the exclusion needs no `-tags novulkan`.
 - **Fixed 256 MiB guest RAM.** There is no `/proc/meminfo` and no mmap in the
