@@ -601,3 +601,114 @@ Explicit deferrals and decisions (milestone 6):
 - Transcendentals, extended/packed operand formats, FPU EA operand forms and
   control/FMOVEM: interpreter fallback, the same split every native backend
   draws.
+
+## Milestone 7 delivered: optimisation slices
+
+Every slice ran the optimisation gate: a failing shape or instrumentation
+test first, differential parity kept green throughout, benchmark after
+correctness. All slices are on by default with an environment kill switch.
+Benchmarks below are the slice's own microbenchmark on the amd64 dev
+machine (Xeon W-11955M); the AROS boot run remains the standing hardware
+gate for anything touching chain edges or register residency.
+
+- Generation-tagged direct dispatch cache: already reached the M68020
+  through the shared CodeCache (CodeCache.Get/Put consult the embedded
+  JITDispatchCache and every invalidation path bumps the generation), so
+  the milestone 1 matrix row was stale, not missing. New tests
+  (jit_m68k_dispatch_cache_test.go) pin the direct-hit path and expiry
+  across range invalidation, block removal and full reset. IE_JIT_DISPATCH_CACHE=0
+  disables, as on IE64.
+- Constant-address proof (abs.W, abs.L, (d16,PC)): m68kConstAddrProof
+  (jit_m68k_const_addr.go, untagged) snapshots the guard inputs the
+  runtime consults (len(cpu.memory) and the I/O page bitmap built once
+  after the bus seals). A constant access proven inside RAM and off every
+  I/O page drops its bounds check and bitmap probe; stores keep their SMC
+  check, and the IE_M68K_JIT_WATCH_WRITE_ADDR diagnostic suppresses write
+  elision. Applied in the guarded MOVE emitter and the shared
+  read/write-EA helpers. 206 to 164 ns/op on the absolute-address
+  round-trip benchmark. IE_M68K_JIT_DISABLE_CONST_ADDR=1 disables.
+- Constant folding with the M68020 CCR proof: m68kAnalyseConstFold
+  (jit_m68k_const_fold.go, untagged) tracks compile-time known data
+  registers through MOVEQ, MOVE #imm, ADDQ/SUBQ, ADDI/SUBI/ANDI/ORI/EORI/
+  CMPI, and the Dn,Dn ALU/CMP/EOR forms. Each fold entry carries the
+  exact CCR bits (full NZVC+X for add/sub with X=C; N/Z with V/C/X
+  preserved for AND/OR/EOR; NZVC with X kept for MOVE and CMP), so the
+  emitted constant CCR is bit-identical to the interpreter. In-block
+  branch targets clear tracking; non-whitelisted instructions invalidate
+  everything. Perf-neutral on the straight-line microbenchmark (the fold
+  replaces already-cheap register ALU); retained as capability parity
+  with IE64's fold slice. IE_M68K_JIT_DISABLE_CONST_FOLD=1 disables.
+- Bounded counter-loop budget removal: m68kBoundedCounterDBccLoop
+  (jit_m68k_loop_analysis.go, untagged) proves a DBcc loop's worst-case
+  retirement from a constant seed (MOVEQ or MOVE.W immediately before the
+  loop head), a body that never rewrites the counter, no branches in the
+  body and no side entries. When trips*body+block fits the 4095 budget,
+  the per-iteration safety-cap check (LoopCount versus the constant
+  budget) disappears while the retired-count accounting stays. The live
+  ChainBudget check is retained even when proven: the dispatcher seeds
+  ChainBudget dynamically (IRQ-sampling remainder, 0 in verify mode) and
+  chained predecessors arrive with it already drawn down, so no
+  compile-time proof against the constant budget bounds it
+  (TestM68KJIT_BoundedLoopHonoursReducedChainBudget pins this). 479 to
+  366 ns/op on the 51-trip counted loop.
+  IE_M68K_JIT_DISABLE_BOUNDED_LOOP=1 disables.
+- Invariant memory-check hoisting: m68kAnalyseLoopInvariantGuards finds
+  single-entry DBcc loops whose (d16,An) accesses use a base register
+  never written up to the DBcc, validates those accesses once in a loop
+  precheck at block entry (bail with nothing retired on failure, so the
+  interpreter owns the architectural fault path) and elides the
+  per-iteration bounds/I/O guards in the guarded MOVE emitter. Store SMC
+  checks are never elided. Instruction hoisting proper is recorded as
+  rejected by M68020 semantics: every ALU instruction writes the CCR and
+  the CCR is observable at the DBcc each iteration; the folding slice
+  covers the constant subset. 542 to 481 ns/op on the invariant-access
+  loop. IE_M68K_JIT_DISABLE_LOOP_HOIST=1 disables.
+- Cold-exit outlining (native backends only): the NeedInval/NeedIOFallback
+  exit bodies (RetPC + full epilogue) that were emitted inline behind a
+  skip jump now collect per block and emit once after the hot code; the
+  test inverts to a forward Jcc into the stub. Sites materialise the CCR
+  before the branch, so stubs run with a canonical R14. 481 to 446 ns/op
+  on the same loop. IE_M68K_JIT_DISABLE_COLD_OUTLINE=1 disables.
+- Region GPR residency (amd64): m68kBuildRegionRegMap ranks a region's
+  data/address registers by static use count and binds the top five to
+  the reassignable host slots (RBX, RBP, R12, R9, R8); A7 and the CCR
+  never move. The chain-edge contract is preserved by construction:
+  region chain entries load their pins from the register file after the
+  entry label (predecessors always spill before an edge), every chain
+  exit's lightweight epilogue spills the custom set then reloads the
+  fixed map for its fixed-map successor, and region-internal edges land
+  on per-block reload stubs that restore the custom pins. Falls back to
+  the fixed map when the ranking reproduces it.
+  IE_M68K_JIT_DISABLE_REGION_RESIDENCY=1 disables. The AROS boot gate
+  applies before this ships enabled on real workloads (register-pinning
+  changes are exactly what that gate catches).
+- Observed (trace-recorded) regions: when a hot block forms no static
+  region, m68kObservedRecorder (jit_m68k_observed_region.go, untagged)
+  records the dispatcher-visible successor path until it closes on the
+  entry or hits the 8-block cap; interior revisits and single-block self
+  loops reject. The path is generation-tagged against invalidation,
+  revalidated by the same admission predicates as static formation and
+  compiled through m68kCompileRegion, whose stamp guards, chain exits and
+  covered-ranges SMC invalidation apply unchanged — a diverging run
+  chain-exits at the divergence, so the observed layout is a layout hint,
+  never a correctness assumption. IE_M68K_JIT_DISABLE_OBSERVED_REGIONS=1
+  disables.
+- Monomorphic indirect-target specialisation: dynamic JMP (An)/(d16,An)
+  and JSR indirect exits now probe the same target-keyed 8-entry MRU the
+  RTS uses (the dispatcher already warms it with every dispatched block)
+  and tail-branch into the cached chain entry on a hit, with the same
+  budget, invalidation-generation and pending-async divergence exits as
+  the RTS cache. The transfer is committed before the probe, so every
+  divergence exits with RetPC = target. Follows the RTS cache's opt-in
+  policy switch (IE_M68K_JIT_ENABLE_RTS_CACHE=1) plus its own
+  IE_M68K_JIT_DISABLE_INDIRECT_CACHE=1 kill switch.
+
+Explicitly not ported in milestone 7, with reasons: MMIO poll-loop
+specialisation and helper resume stay deferred pending a benchmark (their
+matrix rows); cross-block CCR liveness stays permanently excluded
+(unsound at interrupt boundaries); IE64 instruction hoisting is rejected
+by M68020 CCR semantics as recorded above. The arm64 and wasm backends
+consume the untagged analyses (const-addr proof, const fold, bounded
+loop, hoist plan, observed recorder) in a follow-up lowering pass; this
+milestone's emitters are amd64, matching the matrix's "amd64 first"
+decisions.

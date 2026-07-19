@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -315,6 +316,12 @@ func m68kInstrNeedsCCRMaterialization(ji *M68KJITInstr) bool {
 // m68kCompileMu serialises the two top-level compile entry points (observed
 // nil-deref via the shared m68kCurrentCS without it).
 var m68kCurrentCS *m68kCompileState
+
+// m68kCurrentConstProof is the compile-scoped constant-address proof
+// context (set under m68kCompileMu by m68kCompileBlockWithMemProof, nil
+// otherwise). Consulted by the EA emitters to elide bounds/I/O guards on
+// compile-time constant addresses proven to be plain RAM.
+var m68kCurrentConstProof *m68kConstAddrProof
 var m68kCompileMu sync.Mutex
 
 // m68kInstrMaySetGenericIOFallback moved to the untagged
@@ -420,6 +427,12 @@ func m68kMaterializeCCR(cb *CodeBuffer, cs *m68kCompileState) {
 // m68kDataRegToAMD64 maps an M68K data register (0-7) to an x86-64 register.
 // Returns the x86-64 register and whether it's mapped (resident).
 func m68kDataRegToAMD64(dreg uint16) (byte, bool) {
+	if m := m68kCurrentRegionMap; m != nil {
+		if h := m.dataHost[dreg&7]; h != 0 {
+			return h, true
+		}
+		return 0, false
+	}
 	switch dreg {
 	case 0:
 		return m68kAMD64RegD0, true
@@ -431,6 +444,15 @@ func m68kDataRegToAMD64(dreg uint16) (byte, bool) {
 
 // m68kAddrRegToAMD64 maps an M68K address register (0-7) to an x86-64 register.
 func m68kAddrRegToAMD64(areg uint16) (byte, bool) {
+	if m := m68kCurrentRegionMap; m != nil {
+		if areg == 7 {
+			return m68kAMD64RegA7, true // A7 never remaps
+		}
+		if h := m.addrHost[areg&7]; h != 0 {
+			return h, true
+		}
+		return 0, false
+	}
 	switch areg {
 	case 0:
 		return m68kAMD64RegA0, true
@@ -496,11 +518,44 @@ func m68kStoreAddrReg(cb *CodeBuffer, areg uint16, src byte) {
 	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(areg), src)
 }
 
+// m68kRegionRegMap is a region-scoped guest-to-host pin assignment
+// (milestone 7 region GPR residency slice). The five reassignable host
+// slots (RBX, RBP, R12, R9, R8) bind the region's hottest data/address
+// registers; A7 (R13) and the CCR (R14) stay fixed. entries[i] pairs slot
+// host register i with the guest register it carries.
+type m68kRegionRegMap struct {
+	dataHost [8]byte // Dn -> host register, 0 = unmapped
+	addrHost [8]byte // An -> host register (A7 handled by the fixed map)
+	entries  []m68kRegionPinEntry
+}
+
+type m68kRegionPinEntry struct {
+	host   byte
+	isAddr bool
+	guest  uint16
+}
+
+// m68kCurrentRegionMap is the compile-scoped custom pin map (set under
+// m68kCompileMu by the region compiler). nil selects the fixed map.
+var m68kCurrentRegionMap *m68kRegionRegMap
+
 // m68kEmitSpillMappedRegs writes the host-pinned M68K registers (D0/D1 and
-// A0/A5/A6/A7) back to the CPU register file. Emitted at every block exit and
-// before any handoff to Go/interpreter so stale host state is never observed.
-// The address file is reached through the folded RDI base.
+// A0/A5/A6/A7, or the region-scoped custom set) back to the CPU register
+// file. Emitted at every block exit and before any handoff to
+// Go/interpreter so stale host state is never observed. The address file
+// is reached through the folded RDI base.
 func m68kEmitSpillMappedRegs(cb *CodeBuffer) {
+	if m := m68kCurrentRegionMap; m != nil {
+		for _, e := range m.entries {
+			if e.isAddr {
+				amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(e.guest), e.host)
+			} else {
+				amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, int32(e.guest)*4, e.host)
+			}
+		}
+		amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(7), m68kAMD64RegA7)
+		return
+	}
 	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, 0*4, m68kAMD64RegD0)
 	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, 1*4, m68kAMD64RegD1)
 	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(0), m68kAMD64RegA0)
@@ -509,9 +564,33 @@ func m68kEmitSpillMappedRegs(cb *CodeBuffer) {
 	amd64MOV_mem_reg32(cb, m68kAMD64RegDataBase, m68kAddrRegFileDisp(7), m68kAMD64RegA7)
 }
 
+// m68kEmitLoadFixedMapRegs loads the FIXED-map pins from the register
+// file regardless of any active custom map. Region chain exits use it to
+// restore the global chain-edge register contract before tail-branching
+// into a fixed-map successor.
+func m68kEmitLoadFixedMapRegs(cb *CodeBuffer) {
+	amd64MOV_reg_mem32(cb, m68kAMD64RegD0, m68kAMD64RegDataBase, 0*4)
+	amd64MOV_reg_mem32(cb, m68kAMD64RegD1, m68kAMD64RegDataBase, 1*4)
+	amd64MOV_reg_mem32(cb, m68kAMD64RegA0, m68kAMD64RegDataBase, m68kAddrRegFileDisp(0))
+	amd64MOV_reg_mem32(cb, m68kAMD64RegA5, m68kAMD64RegDataBase, m68kAddrRegFileDisp(5))
+	amd64MOV_reg_mem32(cb, m68kAMD64RegA6, m68kAMD64RegDataBase, m68kAddrRegFileDisp(6))
+	amd64MOV_reg_mem32(cb, m68kAMD64RegA7, m68kAMD64RegDataBase, m68kAddrRegFileDisp(7))
+}
+
 // m68kEmitLoadMappedRegs loads the host-pinned M68K registers from the CPU
 // register file. Emitted at block/chain entry (mirror of m68kEmitSpillMappedRegs).
 func m68kEmitLoadMappedRegs(cb *CodeBuffer) {
+	if m := m68kCurrentRegionMap; m != nil {
+		for _, e := range m.entries {
+			if e.isAddr {
+				amd64MOV_reg_mem32(cb, e.host, m68kAMD64RegDataBase, m68kAddrRegFileDisp(e.guest))
+			} else {
+				amd64MOV_reg_mem32(cb, e.host, m68kAMD64RegDataBase, int32(e.guest)*4)
+			}
+		}
+		amd64MOV_reg_mem32(cb, m68kAMD64RegA7, m68kAMD64RegDataBase, m68kAddrRegFileDisp(7))
+		return
+	}
 	amd64MOV_reg_mem32(cb, m68kAMD64RegD0, m68kAMD64RegDataBase, 0*4)                    // D0 -> RBX
 	amd64MOV_reg_mem32(cb, m68kAMD64RegD1, m68kAMD64RegDataBase, 1*4)                    // D1 -> RBP
 	amd64MOV_reg_mem32(cb, m68kAMD64RegA0, m68kAMD64RegDataBase, m68kAddrRegFileDisp(0)) // A0 -> R12
@@ -1004,7 +1083,10 @@ func m68kEmitChainEntry(cb *CodeBuffer, br *m68kBlockRegs) int {
 	// (or from CF in the live-arith case, which the corresponding
 	// m68kSaveXToStack writes into the slot before any clobber), so the
 	// slot already reflects R14 bit 4 across the chain edge.
-	m68kEmitLoadMappedRegs(cb)
+	regionMap := m68kCurrentRegionMap
+	if regionMap == nil {
+		m68kEmitLoadMappedRegs(cb)
+	}
 
 	// Extract CCR from SR: R14 = *SRPtr & 0x1F
 	amd64MOV_reg_mem(cb, amd64RAX, amd64RSP, int32(m68kAMD64OffSRPtr))
@@ -1022,6 +1104,14 @@ func m68kEmitChainEntry(cb *CodeBuffer, br *m68kBlockRegs) int {
 
 	// Chained jumps from other blocks land here.
 	entryOff := cb.Len()
+
+	// Region residency: a custom pin map cannot inherit live registers
+	// from a fixed-map predecessor, so BOTH entry paths load the region's
+	// pins from the register file (every chain exit spills before the
+	// tail branch, so the file is current at every edge).
+	if regionMap != nil {
+		m68kEmitLoadMappedRegs(cb)
+	}
 
 	if br.hasBackwardBranch {
 		amd64MOV_mem_imm32(cb, amd64RSP, int32(m68kAMD64OffLoopCount), 0)
@@ -1056,6 +1146,13 @@ func m68kEmitLightweightEpilogue(cb *CodeBuffer, br *m68kBlockRegs) {
 	amd64SHR_imm(cb, amd64RAX, 4)
 	emitMemOp(cb, false, 0x88, amd64RAX, amd64RSP, m68kAMD64OffXFlag) // MOV [RSP+24], AL
 	m68kEmitSpillMappedRegs(cb)
+	// Region residency: a custom pin map has just spilled its own set; the
+	// fixed-map successors of any chain edge expect the GLOBAL contract
+	// (D0/D1/A0/A5/A6/A7 live in their fixed hosts), so reload it from the
+	// register file before the tail branch.
+	if m68kCurrentRegionMap != nil {
+		m68kEmitLoadFixedMapRegs(cb)
+	}
 	// Flush pinned fp0-7 to the memory file across the chain edge (mirror of the
 	// full epilogue). The successor reloads them at its chain entry, so memory is
 	// the rendezvous. Must precede the RAX-clobbering SR merge.
@@ -1256,6 +1353,18 @@ func m68kEmitChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, targe
 	cb.EmitBytes(0xE9, 0, 0, 0, 0) // JMP rel32 (placeholder)
 	jmpDispOffset := jmpOff + 1    // displacement starts at byte after opcode
 
+	// Region residency: the unpatched placeholder (displacement 0, which is
+	// also what UnpatchChainsInRange restores) falls through HERE, after the
+	// lightweight epilogue spilled the custom pins and reloaded the FIXED
+	// map for a chain edge that never happens. The .unchained spill below
+	// would then write fixed-map guest values into the custom guests' file
+	// slots (D2 receiving A0 and so on). Restore the custom pins from the
+	// already-spilled, correct register file on this fall-through path only;
+	// the pre-epilogue Jcc bails skip the pad and keep their live hosts.
+	if m68kCurrentRegionMap != nil {
+		m68kEmitLoadMappedRegs(cb)
+	}
+
 	// .unchained label
 	unchainedLabel := cb.Len()
 	patchRel32(cb, unchainedOff1, unchainedLabel)
@@ -1265,8 +1374,10 @@ func m68kEmitChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, targe
 	for _, off := range asyncExitOffs {
 		patchRel32(cb, off, unchainedLabel)
 	}
-	// Patch the initial JMP to point to unchained (will be overwritten when target compiles)
-	patchRel32(cb, jmpDispOffset, unchainedLabel)
+	// Patch the initial JMP to fall through to the region pad / unchained
+	// path (will be overwritten when the target compiles). Displacement 0
+	// matches what UnpatchChainsInRange restores.
+	patchRel32(cb, jmpDispOffset, jmpDispOffset+4)
 
 	// Bail: spill registers + merge CCR into SR so the dispatcher sees a
 	// consistent snapshot. m68kMaterializeCCR is idempotent so this call
@@ -5228,6 +5339,185 @@ func m68kEmitSMCRangeBailChecks(cb *CodeBuffer, startReg, countReg byte, bailSit
 	amd64MOV_reg_mem32(cb, startReg, amd64RSP, 20)
 }
 
+// m68kConstAddrDirectOK reports whether the compile-scoped constant-address
+// proof admits a guard-free access at addr. Write accesses additionally
+// refuse elision while the IE_M68K_JIT_WATCH_WRITE_ADDR diagnostic is
+// active, since the watch trap lives in the guarded path.
+func m68kConstAddrDirectOK(addr uint32, size int, isWrite bool) bool {
+	if m68kCurrentConstProof == nil {
+		return false
+	}
+	if isWrite {
+		if _, ok := m68kJITNativeWatchWriteAddr(); ok {
+			return false
+		}
+	}
+	return m68kCurrentConstProof.DirectRAM(addr, uint32(m68kAccessSizeBytes(size)))
+}
+
+// m68kConstAbsAddr decodes the constant effective address of an absolute
+// short (reg 0) or long (reg 1) EA whose extension words start at extPC.
+func m68kConstAbsAddr(memory []byte, extPC uint32, reg uint16) (uint32, bool) {
+	if reg == 0 {
+		if extPC+2 > uint32(len(memory)) {
+			return 0, false
+		}
+		w := uint16(memory[extPC])<<8 | uint16(memory[extPC+1])
+		return uint32(int32(int16(w))), true
+	}
+	if extPC+4 > uint32(len(memory)) {
+		return 0, false
+	}
+	return uint32(memory[extPC])<<24 | uint32(memory[extPC+1])<<16 |
+		uint32(memory[extPC+2])<<8 | uint32(memory[extPC+3]), true
+}
+
+// m68kCurrentLoopHoist is the compile-scoped invariant-guard hoist plan
+// (set under m68kCompileMu). The guarded MOVE emitter consults it to elide
+// per-iteration bounds/I/O checks the loop precheck already validated.
+var m68kCurrentLoopHoist *m68kLoopHoistPlan
+
+// m68kEmitLoopGuardPrecheck emits the loop precheck: every invariant
+// (d16,An) access in the plan is bounds- and I/O-checked once at block
+// entry. On failure the block bails with nothing retired (RetPC = block
+// start, count 0), so the dispatcher re-runs the code on the interpreter's
+// architectural path. Register state is untouched on the bail.
+func m68kEmitLoopGuardPrecheck(cb *CodeBuffer, plan *m68kLoopHoistPlan, startPC uint32, br *m68kBlockRegs) {
+	bailSites := make([]int, 0, 8)
+	for _, acc := range plan.accesses {
+		r := m68kResolveAddrReg(cb, acc.an, amd64R10)
+		if r != amd64R10 {
+			amd64MOV_reg_reg32(cb, amd64R10, r)
+		}
+		if acc.disp != 0 {
+			amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, acc.disp)
+		}
+		amd64MOV_reg_imm32(cb, amd64RDX, acc.width)
+		m68kEmitMemRangeBailChecks(cb, amd64R10, amd64RDX, &bailSites)
+	}
+	if len(bailSites) == 0 {
+		return
+	}
+	doneOff := amd64JMP_rel32(cb)
+	for _, off := range bailSites {
+		patchRel32(cb, off, cb.Len())
+	}
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
+	m68kEmitRetPC(cb, startPC, 0)
+	m68kEmitEpilogue(cb, br)
+	patchRel32(cb, doneOff, cb.Len())
+	m68kLoopHoistEmits.Add(1)
+}
+
+// m68kEmitFoldedConst emits a constant-folded instruction (milestone 7
+// constant-folding slice): the precomputed register value through the
+// normal destination-write path plus the precomputed CCR bits. The CCR
+// update first materialises any pending lazy state (partial masks must
+// merge into a canonical R14) and leaves the flag state materialised.
+// When the instruction's CCR output is dead per the liveness analysis the
+// flag update is skipped entirely; the register write clobbers no host
+// EFLAGS, so pending lazy state stays valid.
+func m68kEmitFoldedConst(cb *CodeBuffer, e *m68kFoldEntry, cs *m68kCompileState) {
+	if e.setsReg {
+		amd64MOV_reg_imm32(cb, amd64RAX, e.value)
+		m68kStoreDataReg(cb, uint16(e.reg), amd64RAX)
+	}
+	if !m68kCCRDeadAtCurrent() {
+		if e.ccrMask == 0x1F {
+			// Full overwrite: any pending lazy state is dead.
+			amd64MOV_reg_imm32(cb, m68kAMD64RegCCR, uint32(e.ccrVal))
+		} else {
+			m68kMaterializeCCR(cb, cs)
+			amd64ALU_reg_imm32(cb, 4, m68kAMD64RegCCR, int32(0x1F&^uint32(e.ccrMask)))
+			if e.ccrVal != 0 {
+				amd64ALU_reg_imm32(cb, 1, m68kAMD64RegCCR, int32(e.ccrVal))
+			}
+		}
+		if e.ccrMask&m68kFoldCCR_X != 0 {
+			amd64MOV_reg_imm32(cb, amd64RAX, uint32((e.ccrVal>>4)&1))
+			emitMemOp(cb, false, 0x88, amd64RAX, amd64RSP, m68kAMD64OffXFlag)
+		}
+		cs.flagState = flagsMaterialized
+	}
+	m68kFoldedConstEmits.Add(1)
+}
+
+// m68kConstEAAddr decodes the compile-time constant effective address of
+// an abs.W, abs.L or (d16,PC) EA, if the EA is one of those forms.
+func m68kConstEAAddr(mode, reg uint16, memory []byte, extPC uint32) (uint32, bool) {
+	if mode != 7 {
+		return 0, false
+	}
+	switch reg {
+	case 0, 1:
+		return m68kConstAbsAddr(memory, extPC, reg)
+	case 2:
+		if extPC+2 > uint32(len(memory)) {
+			return 0, false
+		}
+		disp := int16(uint16(memory[extPC])<<8 | uint16(memory[extPC+1]))
+		return uint32(int64(extPC) + int64(disp)), true
+	}
+	return 0, false
+}
+
+// m68kEmitMemReadConst emits a guard-free big-endian read of a proven
+// plain-RAM constant address into dstReg. Callers must have passed
+// m68kConstAddrDirectOK. Clobbers R10.
+func m68kEmitMemReadConst(cb *CodeBuffer, addr uint32, dstReg byte, size int) {
+	amd64MOV_reg_imm32(cb, amd64R10, addr)
+	switch size {
+	case M68K_SIZE_BYTE:
+		emitREX_SIB(cb, false, dstReg, amd64R10, m68kAMD64RegMemBase)
+		cb.EmitBytes(0x0F, 0xB6, modRM(0, dstReg, 4), sibByte(0, amd64R10, m68kAMD64RegMemBase))
+	case M68K_SIZE_WORD:
+		emitMemOpSIB(cb, false, 0x8B, dstReg, m68kAMD64RegMemBase, amd64R10, 0)
+		if isExtReg(dstReg) {
+			cb.EmitBytes(0x66, rexByte(false, false, false, true))
+		} else {
+			cb.EmitBytes(0x66)
+		}
+		cb.EmitBytes(0xC1, modRM(3, 0, dstReg), 8) // ROL r16, 8
+		amd64MOVZX_W(cb, dstReg, dstReg)
+	case M68K_SIZE_LONG:
+		emitMemOpSIB(cb, false, 0x8B, dstReg, m68kAMD64RegMemBase, amd64R10, 0)
+		emitREX(cb, false, 0, dstReg)
+		cb.EmitBytes(0x0F, 0xC8+regBits(dstReg)) // BSWAP
+	}
+}
+
+// m68kEmitMemWriteConst emits a guard-free big-endian store of valReg to a
+// proven plain-RAM constant address. The store-side SMC invalidation check
+// is kept: constant-address proof elides only the bounds and I/O guards.
+// Clobbers R10, R11 (and RAX when valReg needs relocating for byte ops).
+func m68kEmitMemWriteConst(cb *CodeBuffer, addr uint32, valReg byte, size int) {
+	if size == M68K_SIZE_BYTE && (valReg == amd64RCX || valReg == amd64RDX || valReg == amd64R11) {
+		amd64MOV_reg_reg32(cb, amd64RAX, valReg)
+		valReg = amd64RAX
+	}
+	amd64MOV_reg_imm32(cb, amd64R10, addr)
+	switch size {
+	case M68K_SIZE_BYTE:
+		emitMemOpSIB(cb, false, 0x88, valReg, m68kAMD64RegMemBase, amd64R10, 0)
+	case M68K_SIZE_WORD:
+		amd64MOV_reg_reg32(cb, amd64R11, valReg)
+		if isExtReg(amd64R11) {
+			cb.EmitBytes(0x66, rexByte(false, false, false, true))
+		} else {
+			cb.EmitBytes(0x66)
+		}
+		cb.EmitBytes(0xC1, modRM(3, 0, amd64R11), 8)
+		cb.EmitBytes(0x66)
+		emitMemOpSIB(cb, false, 0x89, amd64R11, m68kAMD64RegMemBase, amd64R10, 0)
+	case M68K_SIZE_LONG:
+		amd64MOV_reg_reg32(cb, amd64R11, valReg)
+		emitREX(cb, false, 0, amd64R11)
+		cb.EmitBytes(0x0F, 0xC8+regBits(amd64R11))
+		emitMemOpSIB(cb, false, 0x89, amd64R11, m68kAMD64RegMemBase, amd64R10, 0)
+	}
+	m68kEmitSMCInvalidateRangeCheck(cb, amd64R10, size)
+}
+
 func m68kEmitMemRead(cb *CodeBuffer, addrReg, dstReg byte, size int, bailLabel *int) {
 	bailSites := make([]int, 0, 5)
 	if size == M68K_SIZE_BYTE {
@@ -5502,6 +5792,10 @@ func m68kEmitReadSourceEA(cb *CodeBuffer, mode, reg uint16, size int,
 			}
 			w := uint16(memory[extPC])<<8 | uint16(memory[extPC+1])
 			addr := uint32(int32(int16(w))) // sign-extend
+			if m68kConstAddrDirectOK(addr, size, false) {
+				m68kEmitMemReadConst(cb, addr, dstReg, size)
+				return 2
+			}
 			amd64MOV_reg_imm32(cb, amd64R10, addr)
 			bail := 0
 			m68kEmitMemRead(cb, amd64R10, dstReg, size, &bail)
@@ -5513,6 +5807,10 @@ func m68kEmitReadSourceEA(cb *CodeBuffer, mode, reg uint16, size int,
 			}
 			addr := uint32(memory[extPC])<<24 | uint32(memory[extPC+1])<<16 |
 				uint32(memory[extPC+2])<<8 | uint32(memory[extPC+3])
+			if m68kConstAddrDirectOK(addr, size, false) {
+				m68kEmitMemReadConst(cb, addr, dstReg, size)
+				return 4
+			}
 			amd64MOV_reg_imm32(cb, amd64R10, addr)
 			bail := 0
 			m68kEmitMemRead(cb, amd64R10, dstReg, size, &bail)
@@ -5527,6 +5825,10 @@ func m68kEmitReadSourceEA(cb *CodeBuffer, mode, reg uint16, size int,
 			// Actually, for PC-relative, the base PC is the address of the extension word
 			pcBase := extPC
 			addr := uint32(int64(pcBase) + int64(disp))
+			if m68kConstAddrDirectOK(addr, size, false) {
+				m68kEmitMemReadConst(cb, addr, dstReg, size)
+				return 2
+			}
 			amd64MOV_reg_imm32(cb, amd64R10, addr)
 			bail := 0
 			m68kEmitMemRead(cb, amd64R10, dstReg, size, &bail)
@@ -5672,6 +5974,14 @@ func m68kEmitWriteDestEA(cb *CodeBuffer, mode, reg uint16, size int,
 		// Absolute destinations use mode 7/reg 0 (.W) and 1 (.L).
 		// Other mode-7 forms are invalid as write destinations for MOVE.
 		if reg <= 1 {
+			if addr, ok := m68kConstAbsAddr(memory, extPC, reg); ok &&
+				m68kConstAddrDirectOK(addr, size, true) {
+				m68kEmitMemWriteConst(cb, addr, valReg, size)
+				if reg == 1 {
+					return 4
+				}
+				return 2
+			}
 			extBytes := m68kEmitComputeEAAddr(cb, mode, reg, memory, extPC, 0, amd64R10)
 			bail := 0
 			m68kEmitMemWrite(cb, amd64R10, valReg, size, &bail)
@@ -6825,11 +7135,32 @@ func m68kEmitSMCInvalidateByteRangeCheck(cb *CodeBuffer, addrReg byte, accessByt
 	}
 }
 
+// m68kColdExitStub records a deferred cold exit (milestone 7 cold-exit
+// outlining slice): the taken edge of a NeedInval/NeedIOFallback test whose
+// RetPC+epilogue body is emitted once, after the block's hot code, instead
+// of inline behind a skip jump. The site materialises the CCR before the
+// branch, so the stub runs with a canonical R14.
+type m68kColdExitStub struct {
+	jccOff int
+	pc     uint32
+	count  uint32
+}
+
+// m68kCurrentColdExits is the compile-scoped stub collection (set under
+// m68kCompileMu); nil disables outlining for the current compile.
+var m68kCurrentColdExits *[]m68kColdExitStub
+
 func m68kEmitExitIfInvalidated(cb *CodeBuffer, nextPC uint32, count uint32, br *m68kBlockRegs) {
 	if cs := m68kCurrentCS; cs != nil {
 		m68kMaterializeCCR(cb, cs)
 	}
 	amd64ALU_mem_imm8(cb, 7, m68kAMD64RegCtx, int32(m68kCtxOffNeedInval), 0)
+	if m68kCurrentColdExits != nil {
+		*m68kCurrentColdExits = append(*m68kCurrentColdExits, m68kColdExitStub{
+			jccOff: amd64Jcc_rel32(cb, amd64CondNE), pc: nextPC, count: count,
+		})
+		return
+	}
 	doneOff := amd64Jcc_rel32(cb, amd64CondE)
 	m68kEmitRetPC(cb, nextPC, count)
 	m68kEmitEpilogue(cb, br)
@@ -6842,11 +7173,43 @@ func m68kEmitExitIfIOFallback(cb *CodeBuffer, instrPC uint32, count uint32, br *
 		m68kMaterializeCCR(cb, cs)
 	}
 	amd64ALU_mem_imm8(cb, 7, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 0)
+	if m68kCurrentColdExits != nil {
+		*m68kCurrentColdExits = append(*m68kCurrentColdExits, m68kColdExitStub{
+			jccOff: amd64Jcc_rel32(cb, amd64CondNE), pc: instrPC, count: count,
+		})
+		return
+	}
 	doneOff := amd64Jcc_rel32(cb, amd64CondE)
 	m68kEmitRetPC(cb, instrPC, count)
 	m68kEmitEpilogue(cb, br)
 
 	patchRel32(cb, doneOff, cb.Len())
+}
+
+// m68kEmitColdExitStubs emits every deferred cold exit after the block's
+// hot code and patches the recorded branch sites. The sites materialised
+// the CCR before branching, so each stub's epilogue must not re-run a
+// stale lazy materialisation: the compile state is forced to materialised
+// around the stub emission.
+func m68kEmitColdExitStubs(cb *CodeBuffer, stubs []m68kColdExitStub, br *m68kBlockRegs) {
+	if len(stubs) == 0 {
+		return
+	}
+	cs := m68kCurrentCS
+	var saved m68kFlagState
+	if cs != nil {
+		saved = cs.flagState
+		cs.flagState = flagsMaterialized
+	}
+	for i := range stubs {
+		patchRel32(cb, stubs[i].jccOff, cb.Len())
+		m68kEmitRetPC(cb, stubs[i].pc, stubs[i].count)
+		m68kEmitEpilogue(cb, br)
+	}
+	if cs != nil {
+		cs.flagState = saved
+	}
+	m68kColdExitOutlines.Add(1)
 }
 
 func m68kEmitFallbackAtInstr(cb *CodeBuffer, instrPC uint32, br *m68kBlockRegs, instrIdx int) {
@@ -7182,8 +7545,18 @@ func m68kEmitMOVE_Guarded(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, start
 		default:
 			m68kEmitComputeEAAddr(cb, dstMode, dstReg, memory, dstExtPC, instrPC, amd64R10)
 		}
-		amd64MOV_reg_imm32(cb, amd64RDX, m68kAccessSizeBytes(size))
-		m68kEmitMemRangeBailChecks(cb, amd64R10, amd64RDX, &bailOffs)
+		constDst := false
+		if addr, ok := m68kConstEAAddr(dstMode, dstReg, memory, dstExtPC); ok &&
+			m68kConstAddrDirectOK(addr, size, true) {
+			constDst = true // proven plain RAM: bounds/I/O guards elided
+		}
+		if m68kCurrentLoopHoist != nil && m68kCurrentLoopHoist.elide[m68kCurrentInstrIdx] {
+			constDst = true // loop precheck already validated this access
+		}
+		if !constDst {
+			amd64MOV_reg_imm32(cb, amd64RDX, m68kAccessSizeBytes(size))
+			m68kEmitMemRangeBailChecks(cb, amd64R10, amd64RDX, &bailOffs)
+		}
 		amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, m68kAMD64OffScratch8)
 		m68kEmitStoreDirectRAM(cb, amd64R10, amd64RAX, size)
 		switch dstMode {
@@ -7223,8 +7596,18 @@ func m68kEmitMOVE_Guarded(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, start
 	default:
 		m68kEmitComputeEAAddr(cb, srcMode, srcReg, memory, extPC, instrPC, amd64R10)
 	}
-	amd64MOV_reg_imm32(cb, amd64RDX, m68kAccessSizeBytes(size))
-	m68kEmitMemRangeBailChecks(cb, amd64R10, amd64RDX, &bailOffs)
+	constSrc := false
+	if addr, ok := m68kConstEAAddr(srcMode, srcReg, memory, extPC); ok &&
+		m68kConstAddrDirectOK(addr, size, false) {
+		constSrc = true // proven plain RAM: bounds/I/O guards elided
+	}
+	if m68kCurrentLoopHoist != nil && m68kCurrentLoopHoist.elide[m68kCurrentInstrIdx] {
+		constSrc = true // loop precheck already validated this access
+	}
+	if !constSrc {
+		amd64MOV_reg_imm32(cb, amd64RDX, m68kAccessSizeBytes(size))
+		m68kEmitMemRangeBailChecks(cb, amd64R10, amd64RDX, &bailOffs)
+	}
 	m68kEmitLoadDirectRAM(cb, amd64R10, amd64RAX, size)
 	switch srcMode {
 	case 3:
@@ -8139,6 +8522,202 @@ func m68kEmitRTS(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m68kBlock
 	m68kEmitEpilogue(cb, br)
 }
 
+// m68kBuildRegionRegMap ranks the region's guest registers by static use
+// count and binds the top five to the reassignable host slots. Returns nil
+// when the ranking reproduces the fixed map (no benefit) or the slice is
+// disabled.
+func m68kBuildRegionRegMap(allInstrs []M68KJITInstr) *m68kRegionRegMap {
+	if m68kJITRegionResidencyDisabled {
+		return nil
+	}
+	var dataCount [8]int
+	var addrCount [8]int
+	for i := range allInstrs {
+		br := m68kAnalyzeBlockRegs(allInstrs[i : i+1])
+		for r := 0; r < 8; r++ {
+			if br.dataRead&(1<<r) != 0 {
+				dataCount[r]++
+			}
+			if br.dataWritten&(1<<r) != 0 {
+				dataCount[r]++
+			}
+			if r < 7 {
+				if br.addrRead&(1<<r) != 0 {
+					addrCount[r]++
+				}
+				if br.addrWritten&(1<<r) != 0 {
+					addrCount[r]++
+				}
+			}
+		}
+	}
+	type cand struct {
+		count  int
+		isAddr bool
+		guest  uint16
+	}
+	var cands []cand
+	for r := uint16(0); r < 8; r++ {
+		if dataCount[r] > 0 {
+			cands = append(cands, cand{count: dataCount[r], guest: r})
+		}
+	}
+	for r := uint16(0); r < 7; r++ {
+		if addrCount[r] > 0 {
+			cands = append(cands, cand{count: addrCount[r], isAddr: true, guest: r})
+		}
+	}
+	// Deterministic ranking: count desc, data before addr, low index first.
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].count != cands[j].count {
+			return cands[i].count > cands[j].count
+		}
+		if cands[i].isAddr != cands[j].isAddr {
+			return !cands[i].isAddr
+		}
+		return cands[i].guest < cands[j].guest
+	})
+	hosts := []byte{m68kAMD64RegD0, m68kAMD64RegD1, m68kAMD64RegA0, m68kAMD64RegA5, m68kAMD64RegA6}
+	if len(cands) > len(hosts) {
+		cands = cands[:len(hosts)]
+	}
+	if len(cands) == 0 {
+		return nil
+	}
+	// If the chosen set is exactly the fixed set, keep the fixed map.
+	fixed := map[[2]uint16]bool{{0, 0}: true, {0, 1}: true, {1, 0}: true, {1, 5}: true, {1, 6}: true}
+	allFixed := true
+	for _, c := range cands {
+		k := [2]uint16{0, c.guest}
+		if c.isAddr {
+			k[0] = 1
+		}
+		if !fixed[k] {
+			allFixed = false
+			break
+		}
+	}
+	if allFixed {
+		return nil
+	}
+	m := &m68kRegionRegMap{}
+	for i, c := range cands {
+		h := hosts[i]
+		if c.isAddr {
+			m.addrHost[c.guest] = h
+		} else {
+			m.dataHost[c.guest] = h
+		}
+		m.entries = append(m.entries, m68kRegionPinEntry{host: h, isAddr: c.isAddr, guest: c.guest})
+	}
+	return m
+}
+
+// m68kEmitIndirectTargetChainProbe emits the dynamic-target exit for an
+// indirect JMP/JSR (milestone 7 indirect-target specialisation): the
+// computed target PC in RAX (already verified even and in range, all
+// architectural side effects committed) probes the same target-keyed
+// 8-entry MRU the RTS uses and, on a hit, tail-branches into the cached
+// block's chain entry instead of returning to the Go dispatcher. Misses
+// and post-epilogue divergences (budget, invalidation, pending async work)
+// exit unchained with RetPC = target; the transfer is already committed,
+// so no state is undone. The caller must have a materialised CCR.
+func m68kEmitIndirectTargetChainProbe(cb *CodeBuffer, br *m68kBlockRegs, instrIdx int) {
+	// The probe CMPs clobber EFLAGS; fold any lazy CCR state first.
+	if cs := m68kCurrentCS; cs != nil {
+		m68kMaterializeCCR(cb, cs)
+	}
+	probe := func(pcOff, addrOff int32) (missOff, hitOff int) {
+		amd64ALU_reg_mem32_cmp(cb, amd64RAX, m68kAMD64RegCtx, pcOff)
+		missOff = amd64Jcc_rel32(cb, amd64CondNE)
+		amd64MOV_reg_mem(cb, amd64R10, m68kAMD64RegCtx, addrOff)
+		hitOff = amd64JMP_rel32(cb)
+		return
+	}
+	var hits []int
+	var lastMiss int
+	entries := [][2]int32{
+		{int32(m68kCtxOffRTSCache0PC), int32(m68kCtxOffRTSCache0Addr)},
+		{int32(m68kCtxOffRTSCache1PC), int32(m68kCtxOffRTSCache1Addr)},
+		{int32(m68kCtxOffRTSCache2PC), int32(m68kCtxOffRTSCache2Addr)},
+		{int32(m68kCtxOffRTSCache3PC), int32(m68kCtxOffRTSCache3Addr)},
+		{int32(m68kCtxOffRTSCache4PC), int32(m68kCtxOffRTSCache4Addr)},
+		{int32(m68kCtxOffRTSCache5PC), int32(m68kCtxOffRTSCache5Addr)},
+		{int32(m68kCtxOffRTSCache6PC), int32(m68kCtxOffRTSCache6Addr)},
+		{int32(m68kCtxOffRTSCache7PC), int32(m68kCtxOffRTSCache7Addr)},
+	}
+	for i, e := range entries {
+		miss, hit := probe(e[0], e[1])
+		hits = append(hits, hit)
+		if i == len(entries)-1 {
+			lastMiss = miss
+		} else {
+			patchRel32(cb, miss, cb.Len())
+		}
+	}
+	// Last entry's hit falls through differently: rewrite as shared hit.
+	for _, off := range hits {
+		patchRel32(cb, off, cb.Len())
+	}
+	amd64TEST_reg_reg(cb, amd64R10, amd64R10)
+	emptySlotOff := amd64Jcc_rel32(cb, amd64CondE)
+	amd64MOV_mem_reg(cb, amd64RSP, 32, amd64R10)
+	amd64MOV_mem_reg32(cb, amd64RSP, 40, amd64RAX)
+
+	m68kEmitLightweightEpilogue(cb, br)
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, 32)
+
+	// Prefix accounting mirrors the RTS cache: the linear prefix charges
+	// ChainCount and ChainBudget; the transfer instruction itself counts
+	// only on a successful chain.
+	if instrIdx > 0 {
+		amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffChainCount))
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrIdx))
+		amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffChainCount), amd64RAX)
+		amd64ALU_mem_imm32(cb, 5, m68kAMD64RegCtx, int32(m68kCtxOffChainBudget), int32(instrIdx))
+	}
+	amd64ALU_mem_imm32(cb, 5, m68kAMD64RegCtx, int32(m68kCtxOffChainBudget), 1)
+	budgetOff := amd64Jcc_rel32(cb, amd64CondLE)
+	amd64ALU_mem_imm8(cb, 7, m68kAMD64RegCtx, int32(m68kCtxOffNeedInval), 0)
+	invalOff := amd64Jcc_rel32(cb, amd64CondNE)
+	invalGenOff := m68kEmitInvalGenerationChangedCheck(cb)
+	asyncExitOffs := m68kEmitPendingAsyncExitChecks(cb)
+	amd64MOV_reg_mem(cb, amd64R10, amd64RSP, 32)
+	amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffChainCount))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, 1)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffChainCount), amd64RAX)
+	emitREX(cb, false, 0, amd64R10)
+	cb.EmitBytes(0xFF, modRM(3, 4, amd64R10&7))
+
+	// The jump is committed: every divergence exits with RetPC = target and
+	// RetCount = 1 (the transfer itself; the prefix is in ChainCount).
+	patchRel32(cb, budgetOff, cb.Len())
+	amd64ALU_mem_imm32(cb, 0, m68kAMD64RegCtx, int32(m68kCtxOffChainBudget), 1)
+	patchRel32(cb, invalOff, cb.Len())
+	patchRel32(cb, invalGenOff, cb.Len())
+	for _, off := range asyncExitOffs {
+		patchRel32(cb, off, cb.Len())
+	}
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, 40)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetPC), amd64RAX)
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetCount), 1)
+	m68kEmitFullEpilogueEnd(cb)
+
+	// Miss: unchained exit with the committed target.
+	patchRel32(cb, lastMiss, cb.Len())
+	patchRel32(cb, emptySlotOff, cb.Len())
+	amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetPC), amd64RAX)
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetCount), uint32(instrIdx+1))
+	m68kEmitEpilogue(cb, br)
+	m68kIndirectCacheEmits.Add(1)
+}
+
+// m68kIndirectCacheEnabled reports whether the indirect-target probe may
+// be emitted for the current compile.
+func m68kIndirectCacheEnabled() bool {
+	return !m68kJITIndirectCacheDisabled && !m68kJITDisableChains() && !m68kJITDisableRTSCache()
+}
+
 func m68kEmitRTSNoChain(cb *CodeBuffer, ji *M68KJITInstr, startPC uint32, br *m68kBlockRegs, instrIdx int) {
 	instrPC := startPC + ji.pcOffset
 
@@ -8393,6 +8972,11 @@ func m68kEmitJSR(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 		if chainSlots != nil {
 			*chainSlots = append(*chainSlots, info)
 		}
+	} else if m68kIndirectCacheEnabled() {
+		// Dynamic target (already verified even and in range above): probe
+		// the inline target cache before falling back to the dispatcher.
+		amd64MOV_reg_reg32(cb, amd64RAX, amd64R10)
+		m68kEmitIndirectTargetChainProbe(cb, br, instrIdx)
 	} else {
 		// Dynamic target: normal unchained exit
 		amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetPC), amd64R10)
@@ -8425,8 +9009,27 @@ func m68kEmitJMP(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint32
 	reg := ji.opcode & 7
 
 	switch mode {
-	case 2: // (An) — dynamic target, cannot chain
+	case 2: // (An) — dynamic target: inline target-cache probe
 		r := m68kResolveAddrReg(cb, reg, amd64RAX)
+		if m68kIndirectCacheEnabled() {
+			if r != amd64RAX {
+				amd64MOV_reg_reg32(cb, amd64RAX, r)
+			}
+			// Only even, in-range targets may probe; others exit unchained
+			// for the dispatcher's architectural odd/out-of-range handling.
+			amd64TEST_reg_imm8(cb, amd64RAX, 1)
+			oddOff := amd64Jcc_rel32(cb, amd64CondNE)
+			amd64MOV_reg_mem32(cb, amd64R11, m68kAMD64RegCtx, int32(m68kCtxOffMemSize))
+			amd64ALU_reg_reg32(cb, 0x39, amd64RAX, amd64R11)
+			rangeOff := amd64Jcc_rel32(cb, amd64CondAE)
+			m68kEmitIndirectTargetChainProbe(cb, br, instrIdx)
+			patchRel32(cb, oddOff, cb.Len())
+			patchRel32(cb, rangeOff, cb.Len())
+			amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetPC), amd64RAX)
+			amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetCount), uint32(instrIdx+1))
+			m68kEmitEpilogue(cb, br)
+			return
+		}
 		amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetPC), r)
 		amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffRetCount), uint32(instrIdx+1))
 		m68kEmitEpilogue(cb, br)
@@ -8826,6 +9429,17 @@ func m68kEmitDBcc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint3
 		targetIdx := m68kFindInstrByPC(instrs, targetPCOffset, instrIdx)
 
 		if targetIdx >= 0 && targetIdx < len(instrOffsets) {
+			// Milestone 7 bounded counter-loop slice: a constant-seeded DBcc
+			// counter whose worst-case retirement fits m68kJitBudget makes the
+			// per-iteration safety-cap check (LoopCount vs m68kJitBudget)
+			// provably redundant. The live ChainBudget check must stay even
+			// when proven: the dispatcher seeds ChainBudget dynamically (the
+			// IRQ-sampling remainder, or 0 in verify mode) and chained
+			// predecessors arrive with it already drawn down, so no
+			// compile-time proof against the constant budget bounds it.
+			// The retired-count accounting below is kept unconditionally.
+			bounded := m68kBoundedCounterDBccLoop(instrs, instrIdx, targetIdx, memory, startPC, m68kJitBudget)
+
 			// Budget check
 			bodySize := uint32(instrIdx - targetIdx + 1)
 			amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(m68kAMD64OffLoopCount))
@@ -8840,9 +9454,12 @@ func m68kEmitDBcc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint3
 			amd64ALU_mem_imm32(cb, 5, m68kAMD64RegCtx, int32(m68kCtxOffChainBudget), int32(bodySize))
 			budgetExitOff := amd64Jcc_rel32(cb, amd64CondLE)
 
-			amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(m68kAMD64OffLoopCount))
-			amd64ALU_reg_imm32_32bit(cb, 7, amd64RAX, int32(m68kJitBudget))
-			safetyExitOff := amd64Jcc_rel32(cb, amd64CondAE)
+			safetyExitOff := -1
+			if !bounded {
+				amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(m68kAMD64OffLoopCount))
+				amd64ALU_reg_imm32_32bit(cb, 7, amd64RAX, int32(m68kJitBudget))
+				safetyExitOff = amd64Jcc_rel32(cb, amd64CondAE)
+			}
 
 			// Budget OK → JMP back
 			targetNativeOffset := instrOffsets[targetIdx]
@@ -8851,7 +9468,9 @@ func m68kEmitDBcc(cb *CodeBuffer, ji *M68KJITInstr, memory []byte, startPC uint3
 
 			// Budget exceeded → chain exit to target.
 			patchRel32(cb, budgetExitOff, cb.Len())
-			patchRel32(cb, safetyExitOff, cb.Len())
+			if safetyExitOff >= 0 {
+				patchRel32(cb, safetyExitOff, cb.Len())
+			}
 			amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(m68kAMD64OffLoopCount))
 			amd64ALU_reg_imm32_32bit(cb, 5, amd64RAX, int32(bodySize))
 			amd64MOV_mem_reg32(cb, amd64RSP, int32(m68kAMD64OffLoopCount), amd64RAX)
@@ -11331,8 +11950,17 @@ func m68kJitDiagDisableLoopOptEnabled() bool { return m68kJitDiagDisableLoopOpt 
 
 // m68kCompileBlockWithMem compiles with access to memory for reading branch displacements.
 func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *ExecMem, memory []byte) (*JITBlock, error) {
+	return m68kCompileBlockWithMemProof(instrs, startPC, execMem, memory, nil)
+}
+
+// m68kCompileBlockWithMemProof additionally publishes a constant-address
+// proof context (milestone 7 const-addr slice) to the per-EA emitters for
+// the duration of this compile. nil proof keeps every runtime guard.
+func m68kCompileBlockWithMemProof(instrs []M68KJITInstr, startPC uint32, execMem *ExecMem, memory []byte, proof *m68kConstAddrProof) (*JITBlock, error) {
 	m68kCompileMu.Lock()
 	defer m68kCompileMu.Unlock()
+	m68kCurrentConstProof = proof
+	defer func() { m68kCurrentConstProof = nil }()
 	cb := NewCodeBuffer(m68kCodeBufferCapacity(len(instrs)))
 
 	br := m68kAnalyzeBlockRegs(instrs)
@@ -11385,8 +12013,39 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 	m68kCurrentLive = live
 	defer func() { m68kCurrentLive = nil; m68kCurrentInstrIdx = 0; m68kFPPinned = false }()
 
+	// Milestone 7 constant folding: precompute whitelisted pure ALU results
+	// (register value + exact CCR bits) reachable from block-local constants.
+	foldPlan := m68kAnalyseConstFold(instrs, startPC, memory)
+
+	// Milestone 7 invariant memory-check hoisting: validate loop-invariant
+	// (d16,An) accesses once at block entry, elide their per-iteration
+	// guards inside the loop body.
+	hoistPlan := m68kAnalyseLoopInvariantGuards(instrs, startPC, memory)
+	m68kCurrentLoopHoist = hoistPlan
+	defer func() { m68kCurrentLoopHoist = nil }()
+	if hoistPlan != nil {
+		m68kEmitLoopGuardPrecheck(cb, hoistPlan, startPC, &br)
+	}
+
+	// Milestone 7 cold-exit outlining: NeedInval/NeedIOFallback exit
+	// bodies collect here and emit once after the hot code.
+	var coldExits []m68kColdExitStub
+	if !m68kJITColdOutlineDisabled {
+		m68kCurrentColdExits = &coldExits
+	}
+	defer func() { m68kCurrentColdExits = nil }()
+
 	for i := range instrs {
 		m68kCurrentInstrIdx = i
+
+		if foldPlan != nil && foldPlan[i].folded {
+			// Full-mask folds overwrite the whole CCR; partial folds
+			// materialise pending lazy state themselves. A dead-CCR fold
+			// touches no host EFLAGS, so lazy state survives untouched.
+			instrOffsets[i] = cb.Len()
+			m68kEmitFoldedConst(cb, &foldPlan[i], &cs)
+			continue
+		}
 
 		// Materialize CCR before non-flag instructions that clobber EFLAGS
 		if cs.flagState != flagsMaterialized {
@@ -11417,14 +12076,7 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 		// continuing natively.
 		if !m68kIsBlockTerminator(ji.opcode) && m68kInstrMaySetGenericIOFallback(ji) {
 			instrPC := startPC + ji.pcOffset
-			if cs.flagState != flagsMaterialized {
-				m68kMaterializeCCR(cb, &cs)
-			}
-			amd64ALU_mem_imm8(cb, 7, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 0)
-			noIOBailOff := amd64Jcc_rel32(cb, amd64CondE)
-			m68kEmitRetPC(cb, instrPC, uint32(i))
-			m68kEmitEpilogue(cb, &br)
-			patchRel32(cb, noIOBailOff, cb.Len())
+			m68kEmitExitIfIOFallback(cb, instrPC, uint32(i), &br)
 		}
 	}
 
@@ -11453,6 +12105,9 @@ func m68kCompileBlockWithMem(instrs []M68KJITInstr, startPC uint32, execMem *Exe
 		m68kEmitRetPC(cb, endPC, uint32(len(instrs)))
 		m68kEmitEpilogue(cb, &br)
 	}
+
+	// Deferred cold exits land after the hot code.
+	m68kEmitColdExitStubs(cb, coldExits, &br)
 
 	m68kCurrentCS = nil
 
@@ -11540,6 +12195,17 @@ func m68kCompileRegion(region *m68kRegion, execMem *ExecMem, memory []byte) (*JI
 	// scaffolding; the small extra cost is bounded and correct.
 	br.hasBackwardBranch = true
 
+	// Milestone 7 region GPR residency: bind the region's hottest data and
+	// address registers to the five reassignable host slots for the whole
+	// region. Entry/exit contracts are register-file based (chain entry
+	// loads after entryOff; every chain exit spills then restores the
+	// fixed map), so fixed-map neighbours are unaffected.
+	m68kCurrentRegionMap = m68kBuildRegionRegMap(allInstrs)
+	defer func() { m68kCurrentRegionMap = nil }()
+	if m68kCurrentRegionMap != nil {
+		m68kRegionResidencyEmits.Add(1)
+	}
+
 	cb := NewCodeBuffer(m68kCodeBufferCapacity(len(allInstrs)))
 	m68kEmitPrologue(cb, region.entryPC, &br)
 	chainEntryOff := m68kEmitChainEntry(cb, &br)
@@ -11611,13 +12277,29 @@ func m68kCompileRegion(region *m68kRegion, execMem *ExecMem, memory []byte) (*JI
 		totalInstrCount += len(blk)
 	}
 
+	// Region residency: an internal edge arrives through a chain exit
+	// whose lightweight epilogue spilled the custom pins and restored the
+	// FIXED map (the external chain-edge contract). Internal targets
+	// therefore land on a per-block reload stub that re-loads the custom
+	// pins from the register file before falling into the block label.
+	internalLabels := blockLabels
+	if m68kCurrentRegionMap != nil {
+		internalLabels = make([]int, len(blockLabels))
+		for bi := range blockLabels {
+			internalLabels[bi] = cb.Len()
+			m68kEmitLoadMappedRegs(cb)
+			off := amd64JMP_rel32(cb)
+			patchRel32(cb, off, blockLabels[bi])
+		}
+	}
+
 	// Patch in-region chain exits to internal block labels. Mark the
 	// jmpDispOffset as -1 so the post-write chainSlots loop skips them.
 	for i := range allChainExits {
 		ce := &allChainExits[i]
 		for bi, bpc := range region.blockPCs {
 			if bpc == ce.targetPC {
-				patchRel32(cb, ce.jmpDispOffset, blockLabels[bi])
+				patchRel32(cb, ce.jmpDispOffset, internalLabels[bi])
 				allChainExits[i].jmpDispOffset = -1
 				break
 			}
