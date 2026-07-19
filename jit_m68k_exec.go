@@ -375,6 +375,7 @@ func (cpu *M68KCPU) initM68KJIT() error {
 		cpu.m68kJitWarmupLimit = m68kJITCompileWarmupLimit()
 	}
 	cpu.m68kBuildJITIOPageBitmap()
+	cpu.m68kJitConstProof = m68kNewConstAddrProof(cpu)
 	pageCount := (uint32(len(cpu.memory)) + 4095) >> 12
 	cpu.m68kJitCodeBitmap = make([]byte, pageCount)
 	cpu.m68kJitCodePageMin = make([]uint16, pageCount)
@@ -405,6 +406,7 @@ func (cpu *M68KCPU) freeM68KJIT() {
 	cpu.m68kJitCache = nil
 	cpu.m68kJitCtx = nil
 	cpu.m68kJitIOPageBitmap = nil
+	cpu.m68kJitConstProof = nil
 	cpu.m68kJitCodeBitmap = nil
 	cpu.m68kJitCodePageMin = nil
 	cpu.m68kJitCodePageMax = nil
@@ -1601,32 +1603,47 @@ func (cpu *M68KCPU) m68kTryPromoteJITRegion(block *JITBlock, execMem *ExecMem, m
 	block.lastPromoteAt = block.execCount
 	region := m68kFormRegion(uint32(block.startPC), memory)
 	if region == nil || !m68kTierController.ShouldPromoteRegion(len(region.blocks)) {
+		// Milestone 7 observed regions: no static region forms from this hot
+		// entry, so start recording the dispatcher-visible successor path.
+		if !m68kJITObservedRegionsDisabled && !cpu.m68kJitObserved.active {
+			cpu.m68kJitObserved.start(uint32(block.startPC), cpu.m68kJitInvalGen.Load())
+		}
 		return block
 	}
+	if newBlock := cpu.m68kCompileAndInstallRegion(region, block.execCount, execMem, memory, disableChains); newBlock != nil {
+		return newBlock
+	}
+	return block
+}
+
+// m68kCompileAndInstallRegion validates, compiles and installs a region
+// (static or observed). Returns the installed region block, or nil when
+// any diagnostic gate, admission check or the compile itself refuses.
+func (cpu *M68KCPU) m68kCompileAndInstallRegion(region *m68kRegion, execCount uint32, execMem *ExecMem, memory []byte, disableChains bool) *JITBlock {
 	if disabledPCs := m68kJITDiagnosticDisabledPCs(); len(disabledPCs) != 0 {
 		for _, pc := range region.blockPCs {
 			if _, disabled := disabledPCs[pc]; disabled {
-				return block
+				return nil
 			}
 		}
 	}
 	if disabledRanges := m68kJITDiagnosticDisabledPCRanges(); len(disabledRanges) != 0 {
 		for i, instrs := range region.blocks {
 			if i < len(region.blockPCs) && m68kJITDiagnosticInstrsTouchRanges(region.blockPCs[i], instrs, disabledRanges) {
-				return block
+				return nil
 			}
 		}
 	}
 	for _, pc := range region.blockPCs {
 		if !cpu.m68kCanCompileNativePC(pc) {
-			return block
+			return nil
 		}
 	}
 	newBlock, err := m68kCompileRegion(region, execMem, memory)
 	if err != nil {
-		return block
+		return nil
 	}
-	newBlock.execCount = block.execCount
+	newBlock.execCount = execCount
 	newBlock.tier = 1
 	m68kStampGuestBlockBytes(memory, newBlock)
 	// Mark before Put: see the block-compile site for the envelope-gate
@@ -1655,6 +1672,35 @@ func (cpu *M68KCPU) m68kTryPromoteJITRegion(block *JITBlock, execMem *ExecMem, m
 	}
 	cpu.m68kJitRegionPromotions.Add(1)
 	return newBlock
+}
+
+// m68kObserveJITDispatch appends the dispatched PC to the in-flight
+// observed-path recorder and, when the path closes, compiles and installs
+// the observed region. Any invalidation since recording began abandons
+// the path (the recorded PCs may describe overwritten code).
+func (cpu *M68KCPU) m68kObserveJITDispatch(pc uint32, execMem *ExecMem, disableChains bool) {
+	r := &cpu.m68kJitObserved
+	if r.generation != cpu.m68kJitInvalGen.Load() {
+		r.reset()
+		return
+	}
+	done, reject := r.appendSuccessor(pc)
+	if reject {
+		r.reset()
+		return
+	}
+	if !done {
+		return
+	}
+	path := append([]uint32(nil), r.path()...)
+	r.reset()
+	region := m68kBuildObservedRegion(path, cpu.memory)
+	if region == nil {
+		return
+	}
+	if nb := cpu.m68kCompileAndInstallRegion(region, 0, execMem, cpu.memory, disableChains); nb != nil {
+		m68kObservedRegionPromotions.Add(1)
+	}
 }
 
 func (cpu *M68KCPU) m68kRecordJITNativePC(pc uint32) {
@@ -2227,6 +2273,12 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 		// instead of entering a block whose guest bytes were just overwritten.
 		genAtDispatch := cpu.m68kJitInvalGen.Load()
 
+		// Milestone 7 observed regions: feed the recorder the dispatched
+		// successor path; a closed path compiles through the region path.
+		if cpu.m68kJitObserved.active {
+			cpu.m68kObserveJITDispatch(pc, execMem, disableChains)
+		}
+
 		// Try cache lookup
 		block := cpu.m68kJitCache.Get(uint64(pc))
 		if block == nil {
@@ -2354,7 +2406,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 
 			// Compile block
 			var err error
-			block, err = m68kCompileBlockWithMem(compileInstrs, pc, execMem, cpu.memory)
+			block, err = m68kCompileBlockWithMemProof(compileInstrs, pc, execMem, cpu.memory, cpu.m68kJitConstProof)
 			if err != nil {
 				cpu.m68kRecordJITCompileFailure(pc, err)
 				// Strict mode: emitter/compiler bugs must surface, not hide

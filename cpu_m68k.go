@@ -734,6 +734,8 @@ type M68KCPU struct {
 	m68kJitWarmupCounts   map[uint32]uint8
 	m68kJitWarmupLimit    uint8
 	m68kJitIOPageBitmap   []bool
+	m68kJitConstProof     *m68kConstAddrProof
+	m68kJitObserved       m68kObservedRecorder
 	m68kJitCodeBitmap     []byte // code page bitmap for self-mod detection
 	m68kJitCodePageMin    []uint16
 	m68kJitCodePageMax    []uint16

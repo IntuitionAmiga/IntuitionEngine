@@ -2,13 +2,23 @@
 
 ## Overview
 
-The M68020 JIT compiler translates basic blocks of 68020 machine code into native x86-64 instructions at runtime. It follows the same architecture as the IE64 JIT: scan a block of instructions, compile to native code, cache the result, and dispatch via `callNative()`.
+The M68020 JIT compiler translates basic blocks of 68020 machine code into
+amd64 or arm64 native code, or into wasm functions in the browser. Each backend
+scans a block, compiles and caches it, then runs it through its own dispatcher.
 
 **Memory model (PLAN_MAX_RAM.md):** the M68K CPU is a flat 32-bit guest with explicit source-owned profile bounds. PC-fetch, prefetch, branch-target and stack-tune checks consult `cpu.profileTopOfRAM` (`profile_bounds.go`), not a fixed 32 MB constant. EmuTOS and AROS install their profile top via `cpu.SetProfileTopOfRAM` at boot from `EmuTOS_PROFILE_TOP` / `AROS_PROFILE_TOP`; tests that construct an `M68KCPU` without a loader inherit `len(memory)` as the default. Active visible RAM and total guest RAM are exposed through the SYSINFO MMIO pairs (`SYSINFO_ACTIVE_RAM_LO/HI`, `SYSINFO_TOTAL_RAM_LO/HI`) for guest-side discovery.
 
-**Platform support:** amd64/linux, amd64/darwin, and amd64/windows. ARM64 backend is planned but not yet implemented.
+**Platform support:** amd64 on Linux, macOS and Windows; arm64 on Linux, macOS
+and Windows; and js/wasm. The native backends use executable memory. The wasm
+backend uses an M68020-specific module cache and reuses only the generic wasm
+encoder. The arm64 production default remains gated until the documented
+real-hardware AROS boot check is complete.
 
-**Activation:** M68K JIT is enabled by default on supported platforms when a CPU is created via `NewM68KRunner()`. Disable with the `-nojit` CLI flag, which also disables the IE64 JIT.
+**Activation:** The amd64 JIT is enabled by default when a CPU is created via
+`NewM68KRunner()`. The arm64 backend remains production-gated and is enabled by
+its differential tests. The wasm backend is enabled by default when `__goMem`
+is available; `M68K_WASM_JIT=0` disables it. The `-nojit` CLI flag disables
+native JIT execution, including the IE64 JIT.
 
 ## Architecture
 

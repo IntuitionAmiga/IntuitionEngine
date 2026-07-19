@@ -64,13 +64,23 @@ resulting start-up time remain browser-dependent.
 
 ## What is different from native
 
-- **IE64 has a wasm JIT tier; the other CPUs interpret.** Hot IE64 blocks are
+- **IE64 and M68K have wasm JIT tiers; the other CPUs interpret.** Hot IE64 blocks are
   translated into runtime wasm modules and installed asynchronously while the
   interpreter continues. The tier is enabled by default and is disabled while
   the architectural timer or MMU is active. `IE64_WASM_JIT=0` or
   `/demo/?jit=0` disables it. The complete backend, helper, region, SMC,
   instruction-coverage and diagnostic contract is documented in
   [`IE64_JIT.md`](IE64_JIT.md).
+- **M68K uses an ISA-specific wasm runtime.** Supported M68020 integer, memory,
+  control-flow and cleanly mappable 68881 blocks compile synchronously into
+  small modules. Unsupported instructions fall back one instruction at a time
+  with exact resume PC and retired-count accounting. Big-endian accesses,
+  effective-address side effects, stack bounds, SMC exits and structured
+  counted loops are handled by the M68K backend. `M68K_WASM_JIT=0` disables
+  this tier. Extended and packed 68881 formats, transcendental operations and
+  FPU memory/control forms remain interpreter fallback. See
+  [`M68K_JIT.md`](M68K_JIT.md) and
+  [`M68K_JIT_PARITY_MATRIX.md`](M68K_JIT_PARITY_MATRIX.md).
 - **Observed promotion records direct invocation results.** For an eligible
   conditional or register-indirect entry, invocation 64 bypasses the chain
   driver and records the resulting successor. Later recording calls also
@@ -108,6 +118,7 @@ resulting start-up time remain browser-dependent.
   dispatch iterations, since one iteration there can be a whole chained run.
   The browser x86 interpreter does not yet call this hook. On the yielding
   paths, after each guest slice (default 16 ms, one display frame) the CPU
+  M68K wasm dispatcher also yields on a tight dispatch cadence. The CPU
   goroutine parks until the browser's next requestAnimationFrame, resuming
   through a zero-delay timeout so the paint happens first; a 50 ms timeout
   races the frame so hidden tabs (where rAF stops) keep executing.
@@ -154,7 +165,8 @@ reference surface. The wasm build changes some observable host and device
 behaviour as described above, including RAM sizing, VBlank visibility, file
 storage and unavailable desktop integrations. Subject to those limits, a
 `.bas` or `.ie*` programme that runs on the native VM can run on the browser
-VM. Hot IE64 code can use the wasm JIT; the other CPUs remain interpreted.
+VM. Hot IE64 and supported M68K code can use their wasm JITs; the other CPUs
+remain interpreted.
 
 ## Testing
 

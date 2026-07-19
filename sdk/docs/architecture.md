@@ -51,7 +51,7 @@ flowchart LR
         X86["x86 interpreter / amd64 JIT path"]
         JIE64["IE64 JIT<br/>amd64 + arm64"]
         J6502["6502 JIT<br/>amd64"]
-        JM68K["M68K JIT<br/>amd64"]
+        JM68K["M68K JIT<br/>amd64 + arm64 + wasm"]
         JZ80["Z80 JIT<br/>amd64 only"]
         JX86["x86 JIT<br/>amd64 only"]
         CPUMON["Debug CPU adapters<br/>IE32, IE64, M68K, Z80, 6502, x86"]
@@ -289,7 +289,7 @@ flowchart LR
 flowchart TB
     HOST["Host runtime<br/>main.go flags, memory sizing,<br/>debug monitor, Lua/IEScript"]
     EXEC["Guest execution<br/>ProgramExecutor + CoprocessorManager<br/>IE32, IE64, M68K, Z80, 6502, x86"]
-    JIT["JIT dispatch<br/>IE64: amd64/arm64<br/>6502, M68K, Z80, x86: amd64"]
+    JIT["JIT dispatch<br/>IE64: amd64/arm64/wasm<br/>M68K: amd64/arm64/wasm<br/>6502, Z80, x86: amd64"]
     BUS["MachineBus<br/>host-sized RAM, profile clamps,<br/>MapIO / MapIOByte / MapIO64,<br/>ioPageBitmap fast path"]
     MEM["Memory discovery<br/>SYSINFO_TOTAL_RAM_LO/HI<br/>SYSINFO_ACTIVE_RAM_LO/HI<br/>IE64 CR_RAM_SIZE_BYTES"]
     OS["OS and loader shims<br/>EmuTOS + GEMDOS/XBIOS<br/>AROS + DOS/audio DMA<br/>Boot HostFS"]
@@ -455,7 +455,7 @@ flowchart LR
 | Subsystem | Runtime surface | Primary files | Wired registration / dispatch |
 |-----------|-----------------|---------------|-------------------------------|
 | CPU cores | IE32, IE64, M68K, Z80, 6502, x86 | `cpu_*.go`, `cpu_*_runner.go` | `main.go` selects runners by file extension, OS mode, or EXEC MMIO |
-| JIT | IE64 on amd64/arm64; 6502, M68K, Z80, x86 on amd64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` | Build tags plus `runtime.GOARCH`; non-supported hosts use dispatch stubs |
+| JIT | IE64 and M68K on amd64, arm64 and wasm; 6502, Z80 and x86 on amd64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch*.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` | Build tags plus `runtime.GOARCH`; unsupported hosts use dispatch stubs. M68K arm64 remains production-gated pending its real-hardware AROS boot check |
 | Bus and RAM | Host-sized guest RAM, profile clamps, MMIO, byte/64-bit handlers | `machine_bus.go`, `memory_sizing.go`, `profile_bounds.go`, `sysinfo_mmio.go` | `main.go` registers devices before execution; `MachineBus.SealMappings` prevents late maps |
 | Machine lifecycle | Load resolution, reset quiesce, CPU/profile recreation, monitor/runtime rewiring | `machine_lifecycle.go`, `main.go` | `main.go` owns concrete devices; `Machine` applies reset/load orchestration through injected dependencies and profile targets |
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
