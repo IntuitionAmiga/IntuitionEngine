@@ -799,11 +799,11 @@ func (e *m68kWasmEmitter) epilogue(retPC uint32, retCount int) {
 // Memory effective addresses, guarded big-endian access, mid-block bail
 // ---------------------------------------------------------------------------
 
-// emitBail closes the block early with the faulting instruction unexecuted:
-// it flushes the CCR (still the pre-instruction value, since the guard runs
-// before any state mutation), publishes RetPC=faulting PC, RetCount=retired
-// predecessors and NeedIOFallback, then returns from the wasm function. The
-// dispatcher interprets the one faulting instruction.
+// emitBail closes the block early, publishes RetPC=faulting PC,
+// RetCount=retired predecessors and NeedIOFallback, then returns from the wasm
+// function. Guards normally precede their instruction's mutation. For a fused
+// synthetic RTS, earlier JSR and leaf effects are already committed and curPC
+// is the real RTS source PC, so only that return is interpreted.
 func (e *m68kWasmEmitter) emitBail() {
 	e.flushCCR()
 	e.storeCtxConst(m68kCtxOffRetPC, int32(e.curPC))
@@ -1638,12 +1638,9 @@ func (e *m68kWasmEmitter) emitCLR(op wm68kOp) {
 func m68kWasmSupportedPrefix(instrs []M68KJITInstr, memory []byte, startPC uint32) int {
 	n := 0
 	for i := range instrs {
-		if instrs[i].fusedFlag != 0 {
-			// JSR leaf fusion markers are not lowered here. The frontend does
-			// not currently produce them (no production call site sets
-			// fusedFlag on M68K), but reject defensively so a future frontend
-			// change cannot silently miscompile.
-			break
+		if instrs[i].fusedFlag&(m68kFusedJSRLeafCall|m68kFusedRTSLeafReturn) != 0 {
+			n++
+			continue
 		}
 		instrPC := startPC + instrs[i].pcOffset
 		op, ok := m68kWasmDecode(&instrs[i], memory, instrPC)
@@ -1697,6 +1694,7 @@ func wm68kDetectLoop(instrs []M68KJITInstr, memory []byte, startPC uint32) bool 
 func m68kWasmCompileBlock(instrs []M68KJITInstr, memory []byte, startPC uint32) ([]byte, error) {
 	body := &wasmBody{}
 	e := &m68kWasmEmitter{b: body, startPC: startPC}
+	foldPlan := m68kAnalyseConstFold(instrs, startPC, memory)
 	e.loopMode = os.Getenv("M68K_WASM_LOOPS") != "0" &&
 		wm68kDetectLoop(instrs, memory, startPC)
 
@@ -1722,16 +1720,34 @@ func m68kWasmCompileBlock(instrs []M68KJITInstr, memory []byte, startPC uint32) 
 	terminated := false
 	for i := range instrs {
 		instrPC := startPC + instrs[i].pcOffset
+		e.curPC = instrPC
+		e.curRetired = i
+		e.curLen = uint32(instrs[i].length)
+		if instrs[i].fusedFlag&m68kFusedJSRLeafCall != 0 {
+			e.emitFusedJSRPush(instrPC + uint32(instrs[i].length))
+			if end := instrs[i].pcOffset + uint32(instrs[i].length); end > blockBytes {
+				blockBytes = end
+			}
+			continue
+		}
+		if instrs[i].fusedFlag&m68kFusedRTSLeafReturn != 0 {
+			e.curPC = m68kInstrBailPC(startPC, &instrs[i])
+			e.emitFusedRTSPop()
+			continue
+		}
 		op, ok := m68kWasmDecode(&instrs[i], memory, instrPC)
 		if !ok {
 			return nil, errM68KWasmUnsupported
 		}
-		e.curPC = instrPC
-		e.curRetired = i
-		e.curLen = uint32(instrs[i].length)
 		e.flagsDead = ccrLive != nil && !ccrLive[i] &&
 			!(e.loopMode && wm68kInstrStores(op))
-		blockBytes += uint32(instrs[i].length)
+		if end := instrs[i].pcOffset + uint32(instrs[i].length); end > blockBytes {
+			blockBytes = end
+		}
+		if foldPlan != nil && i < len(foldPlan) && foldPlan[i].folded {
+			e.emitConstFold(foldPlan[i])
+			continue
+		}
 		if wm68kIsTerminator(op.class) {
 			if i != len(instrs)-1 {
 				return nil, errM68KWasmUnsupported // terminator must be last
@@ -1824,6 +1840,39 @@ func (e *m68kWasmEmitter) emitPopStackGuard() {
 	e.emitBail()
 	b.end()
 	b.end()
+}
+
+func (e *m68kWasmEmitter) emitFusedJSRPush(returnPC uint32) {
+	e.emitPushStackGuard()
+	e.emitEAAddr(wm68kOperand{kind: wm68kOpMem, memKind: wm68kMemPre, reg: 7}, 4)
+	e.b.i32Const(int32(returnPC))
+	e.b.localSet(wm68kLMB)
+	e.storeMemValueBE(4, wm68kLMB)
+}
+
+func (e *m68kWasmEmitter) emitFusedRTSPop() {
+	e.emitPopStackGuard()
+	e.emitEAAddr(wm68kOperand{kind: wm68kOpMem, memKind: wm68kMemPost, reg: 7}, 4)
+	e.pushMemValueBE(4)
+	e.b.localSet(wm68kLT0)
+}
+
+func (e *m68kWasmEmitter) emitConstFold(f m68kFoldEntry) {
+	b := e.b
+	if f.setsReg {
+		b.localGet(wm68kLDBase)
+		b.i32Const(int32(f.value))
+		b.i32Store(2, uint32(f.reg)*4)
+	}
+	if f.ccrMask != 0 && !e.flagsDead {
+		b.localGet(wm68kLCCR)
+		b.i32Const(int32(uint8(^f.ccrMask) & 0x1F))
+		b.op(wasmOpI32And)
+		b.i32Const(int32(f.ccrVal & f.ccrMask))
+		b.op(wasmOpI32Or)
+		b.localSet(wm68kLCCR)
+	}
+	m68kFoldedConstEmits.Add(1)
 }
 
 // pushCCRBit pushes bit `bit` of the modelled CCR (0 or 1).

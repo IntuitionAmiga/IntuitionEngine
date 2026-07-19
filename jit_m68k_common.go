@@ -5,6 +5,7 @@ package main
 import (
 	"hash/crc32"
 	"math/bits"
+	"sync/atomic"
 	"unsafe"
 )
 
@@ -294,10 +295,14 @@ func newM68KJITContext(cpu *M68KCPU, codePageBitmap []byte, codePageMin []uint16
 type M68KJITInstr struct {
 	opcode    uint16 // first word of instruction
 	pcOffset  uint32 // byte offset from block start
+	sourcePC  uint32 // original guest PC for an inlined leaf instruction
+	hasSource bool   // sourcePC is present; address zero is a valid source
 	length    uint16 // total instruction length in bytes (2-10+)
 	group     uint8  // opcode >> 12
 	fusedFlag uint8  // see m68kFused* constants
 }
+
+var m68kFusedLeafExpansions atomic.Uint64
 
 // Fusion flags for M68KJITInstr.fusedFlag.
 const (
@@ -3304,14 +3309,20 @@ func m68kScanBlock(memory []byte, startPC uint32) []M68KJITInstr {
 // emitted instructions can fail mid-block, so the dispatcher never has to
 // re-execute the leaf — only the JSR (which never executed in JIT) gets
 // re-issued by the interpreter on full-block restart.
-func m68kAnalyzeJSRLeafFusion(memory []byte, targetPC uint32) ([]M68KJITInstr, bool) {
+func m68kAnalyzeJSRLeafFusion(memory []byte, targetPC, profileTop uint32) ([]M68KJITInstr, bool) {
 	const maxBodyInstrs = 4
 	memSize := uint32(len(memory))
+	if profileTop == 0 || profileTop > memSize {
+		profileTop = memSize
+	}
 	pc := targetPC
 	body := make([]M68KJITInstr, 0, maxBodyInstrs)
 
 	for i := 0; i < maxBodyInstrs+1; i++ {
-		if pc+2 > memSize {
+		// Match the interpreter's instruction-fetch checks. An odd PC raises an
+		// address error; the final word at profileTop-2 is outside its accepted
+		// fetch envelope and raises a bus error even when sparse backing exists.
+		if pc&1 != 0 || profileTop <= M68K_WORD_SIZE || pc >= profileTop-M68K_WORD_SIZE || pc+2 > memSize {
 			return nil, false
 		}
 		opcode := uint16(memory[pc])<<8 | uint16(memory[pc+1])
@@ -3322,15 +3333,138 @@ func m68kAnalyzeJSRLeafFusion(memory []byte, targetPC uint32) ([]M68KJITInstr, b
 			return nil, false
 		}
 		length := m68kInstrLength(memory, pc)
+		// Fused body instructions execute at the call-site restart PC. Until the
+		// IR carries a separate decode PC, only self-contained opcode words can
+		// be moved there without reading extension data from the JSR bytes.
+		if length != 2 {
+			return nil, false
+		}
 		body = append(body, M68KJITInstr{
-			opcode:   opcode,
-			pcOffset: 0,
-			length:   uint16(length),
-			group:    uint8(opcode >> 12),
+			opcode:    opcode,
+			pcOffset:  0,
+			sourcePC:  pc,
+			hasSource: true,
+			length:    uint16(length),
+			group:     uint8(opcode >> 12),
 		})
 		pc += uint32(length)
 	}
 	return nil, false
+}
+
+// m68kFuseJSRLeafCalls expands statically resolved JSR leaves inside an
+// already-scanned caller block. The synthetic call marker retains the JSR's
+// architectural PC so a guarded push bail re-executes the original call. The
+// synthetic return records the real RTS source PC separately: by that point
+// the push and leaf body are committed, so a guarded pop bail must execute the
+// original RTS rather than restart the call. The body is limited by
+// m68kAnalyzeJSRLeafFusion to two-byte register instructions.
+func m68kFuseJSRLeafCalls(instrs []M68KJITInstr, startPC uint32, memory []byte, profileTop uint32) []M68KJITInstr {
+	if len(instrs) == 0 || memory == nil {
+		return instrs
+	}
+	out := make([]M68KJITInstr, 0, len(instrs)+4)
+	for i := range instrs {
+		ji := instrs[i]
+		if ji.opcode&0xFFC0 != 0x4E80 || len(out)+3 >= jitMaxBlockSize {
+			out = append(out, ji)
+			continue
+		}
+		instrPC := startPC + ji.pcOffset
+		target, ok := m68kResolveStaticJSRTarget(ji.opcode, instrPC, memory)
+		if !ok {
+			out = append(out, ji)
+			continue
+		}
+		body, ok := m68kAnalyzeJSRLeafFusion(memory, target, profileTop)
+		if !ok || len(out)+len(body)+3 > jitMaxBlockSize {
+			out = append(out, ji)
+			continue
+		}
+		ji.fusedFlag = m68kFusedJSRLeafCall
+		out = append(out, ji)
+		for _, bodyJI := range body {
+			bodyJI.pcOffset = ji.pcOffset
+			out = append(out, bodyJI)
+		}
+		rtsPC := target
+		for _, bodyJI := range body {
+			rtsPC += uint32(bodyJI.length)
+		}
+		out = append(out, M68KJITInstr{opcode: 0x4E75, pcOffset: ji.pcOffset, sourcePC: rtsPC, hasSource: true,
+			length: 2, group: 4, fusedFlag: m68kFusedRTSLeafReturn})
+		m68kFusedLeafExpansions.Add(1)
+		// The raw scanner stopped at the JSR terminator. Fusion removes that
+		// control-flow boundary, so continue scanning at the architectural
+		// return PC and adopt caller-relative offsets.
+		returnPC := instrPC + uint32(ji.length)
+		cont := m68kScanBlock(memory, returnPC)
+		for _, contJI := range cont {
+			if len(out) >= jitMaxBlockSize {
+				break
+			}
+			contJI.pcOffset += returnPC - startPC
+			out = append(out, contJI)
+		}
+		return out
+	}
+	return out
+}
+
+// m68kInstrBailPC returns the architectural instruction whose fault path must
+// be resumed by the interpreter. Fused instructions normally retain the
+// caller-relative pcOffset so successful execution can continue in the caller.
+// The synthetic RTS is different: its JSR push and leaf body have already
+// retired, so a guarded pop failure must resume the real RTS at sourcePC rather
+// than restart the original call.
+func m68kInstrBailPC(startPC uint32, ji *M68KJITInstr) uint32 {
+	if ji != nil && ji.fusedFlag&m68kFusedRTSLeafReturn != 0 && ji.hasSource {
+		return ji.sourcePC
+	}
+	if ji == nil {
+		return startPC
+	}
+	return startPC + ji.pcOffset
+}
+
+func m68kInstrCoveredRanges(startPC uint32, instrs []M68KJITInstr) [][2]uint64 {
+	mainEnd := startPC
+	var ranges [][2]uint64
+	for i := range instrs {
+		ji := &instrs[i]
+		if ji.hasSource {
+			ranges = append(ranges, [2]uint64{uint64(ji.sourcePC), uint64(ji.sourcePC) + uint64(ji.length)})
+		}
+		if end := startPC + ji.pcOffset + uint32(ji.length); end > mainEnd {
+			mainEnd = end
+		}
+	}
+	if mainEnd > startPC {
+		ranges = append([][2]uint64{{uint64(startPC), uint64(mainEnd)}}, ranges...)
+	}
+	return ranges
+}
+
+func m68kResolveStaticJSRTarget(opcode uint16, instrPC uint32, memory []byte) (uint32, bool) {
+	if opcode&0xFFC0 != 0x4E80 {
+		return 0, false
+	}
+	mode, reg := (opcode>>3)&7, opcode&7
+	if instrPC+4 > uint32(len(memory)) {
+		return 0, false
+	}
+	switch {
+	case mode == 7 && reg == 0:
+		w := int16(uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3]))
+		return uint32(int32(w)), true
+	case mode == 7 && reg == 1 && instrPC+6 <= uint32(len(memory)):
+		return uint32(memory[instrPC+2])<<24 | uint32(memory[instrPC+3])<<16 |
+			uint32(memory[instrPC+4])<<8 | uint32(memory[instrPC+5]), true
+	case mode == 7 && reg == 2:
+		w := int16(uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3]))
+		return uint32(int64(instrPC) + 2 + int64(w)), true
+	}
+	return 0, false
 }
 
 // m68kIsLeafFusionSafe returns true iff the opcode is a register-only

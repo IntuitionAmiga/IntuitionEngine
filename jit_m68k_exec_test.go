@@ -12029,6 +12029,107 @@ func runM68KJITStopProgram(t *testing.T, startPC uint32, opcodes ...uint16) *M68
 	return runM68KJITStopProgramWithSetup(t, startPC, nil, false, opcodes...)
 }
 
+func TestM68KJIT_ProductionJSRLeafFusion(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+	const leaf = uint32(0x1800)
+	const stack = uint32(0x20000)
+	before := m68kFusedLeafExpansions.Load()
+	cpu := runM68KJITStopProgramWithSetup(t, 0x1000, func(cpu *M68KCPU) {
+		writeM68KWords(cpu, leaf, 0x7005, 0x4E75)
+		cpu.stackLowerBound = 0
+		cpu.stackUpperBound = uint32(len(cpu.memory))
+		cpu.AddrRegs[7] = stack
+	}, false,
+		0x4EB9, uint16(leaf>>16), uint16(leaf),
+		0x7207,
+		0x6002,
+		0x4E71,
+	)
+	if cpu.m68kJitNativeBlocksExecuted.Load() == 0 {
+		cpu.m68kJitCompileFailMu.Lock()
+		failures := make(map[uint32]string, len(cpu.m68kJitCompileFailErrors))
+		for pc, message := range cpu.m68kJitCompileFailErrors {
+			failures[pc] = message
+		}
+		cpu.m68kJitCompileFailMu.Unlock()
+		t.Fatalf("fused caller never executed natively; compile failures=%v", failures)
+	}
+	if cpu.DataRegs[0] != 5 || cpu.DataRegs[1] != 7 {
+		cpu.m68kJitNativePCMu.Lock()
+		entries := make(map[uint32]uint64, len(cpu.m68kJitNativePCCounts))
+		for pc, count := range cpu.m68kJitNativePCCounts {
+			entries[pc] = count
+		}
+		cpu.m68kJitNativePCMu.Unlock()
+		cpu.m68kJitCompileFailMu.Lock()
+		failures := make(map[uint32]string, len(cpu.m68kJitCompileFailErrors))
+		for pc, message := range cpu.m68kJitCompileFailErrors {
+			failures[pc] = message
+		}
+		cpu.m68kJitCompileFailMu.Unlock()
+		t.Fatalf("post-fusion registers D0=%d D1=%d, want 5 and 7; native entries=%v JSR fallbacks=%d RTS fallbacks=%d IO exits=%d inval exits=%d PC=%08X A7=%08X compile failures=%v",
+			cpu.DataRegs[0], cpu.DataRegs[1], entries, cpu.m68kJitFallbackOpcodeCounts[0x4EB9].Load(),
+			cpu.m68kJitFallbackOpcodeCounts[0x4E75].Load(), cpu.m68kJitMMIOGuardExits.Load(),
+			cpu.m68kJitNativeInvalExits.Load(), cpu.PC, cpu.AddrRegs[7], failures)
+	}
+	if cpu.AddrRegs[7] != stack {
+		t.Fatalf("A7=%08X, want restored %08X", cpu.AddrRegs[7], stack)
+	}
+	if m68kFusedLeafExpansions.Load() == before {
+		t.Fatal("production scanner did not expand the JSR leaf")
+	}
+}
+
+func TestM68KJIT_FusedLeafRTSBailPreservesCommittedEffects(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+	const (
+		startPC = uint32(0x1000)
+		leaf    = uint32(0x1800)
+		stack   = uint32(0x8004)
+	)
+	cpu := newM68KTestProgramCPU(t, startPC)
+	writeM68KWords(cpu, startPC, 0x4EB9, uint16(leaf>>16), uint16(leaf), 0x7207, 0x6002)
+	writeM68KWords(cpu, leaf, 0x7005, 0x4E75)
+	cpu.stackLowerBound = 0
+	cpu.stackUpperBound = stack - 4
+	cpu.AddrRegs[7] = stack
+	if err := cpu.initM68KJIT(); err != nil {
+		t.Fatalf("initM68KJIT: %v", err)
+	}
+	t.Cleanup(cpu.freeM68KJIT)
+	instrs := m68kFuseJSRLeafCalls(m68kScanBlock(cpu.memory, startPC), startPC, cpu.memory, cpu.ProfileTopOfRAM())
+	execMem, err := AllocExecMem(64 * 1024)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	block, err := m68kCompileBlockWithMem(instrs, startPC, execMem, cpu.memory)
+	if err != nil {
+		t.Fatalf("compile fused block: %v", err)
+	}
+	ctx := cpu.m68kJitCtx
+	callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
+	if ctx.NeedIOFallback == 0 {
+		t.Fatal("synthetic RTS ceiling fault did not request interpreter fallback")
+	}
+	if got, want := ctx.RetPC, leaf+2; got != want {
+		t.Fatalf("RetPC=%08X, want architectural RTS PC %08X", got, want)
+	}
+	if got, want := ctx.RetCount, uint32(2); got != want {
+		t.Fatalf("RetCount=%d, want committed JSR and leaf body count %d", got, want)
+	}
+	if cpu.DataRegs[0] != 5 || cpu.AddrRegs[7] != stack-4 {
+		t.Fatalf("committed effects lost: D0=%08X A7=%08X", cpu.DataRegs[0], cpu.AddrRegs[7])
+	}
+	if got := cpu.Read32(stack - 4); got != startPC+6 {
+		t.Fatalf("stacked return PC=%08X, want %08X", got, startPC+6)
+	}
+}
+
 func runM68KInterpreterStopProgram(t *testing.T, startPC uint32, opcodes ...uint16) *M68KCPU {
 	t.Helper()
 

@@ -63,7 +63,8 @@ type m68kWasmBlock struct {
 	startPC    uint32
 	endPC      uint32
 	instrCount int
-	guest      []byte // snapshot of the covered guest bytes for the SMC stamp
+	ranges     [][2]uint32
+	guest      [][]byte // snapshots of caller and fused-leaf guest bytes
 }
 
 type m68kWasmRuntime struct {
@@ -199,6 +200,7 @@ func (rt *m68kWasmRuntime) compile(pc uint32) (blk *m68kWasmBlock) {
 		return nil
 	}
 	instrs := m68kScanBlock(cpu.memory, pc)
+	instrs = m68kFuseJSRLeafCalls(instrs, pc, cpu.memory, cpu.ProfileTopOfRAM())
 	// Never compile an instruction that extends past the profile-visible RAM
 	// ceiling: fetching it is itself a bus error the interpreter must raise.
 	kept := 0
@@ -237,23 +239,38 @@ func (rt *m68kWasmRuntime) compile(pc uint32) (blk *m68kWasmBlock) {
 	if !fn.Truthy() {
 		return nil
 	}
-	guest := make([]byte, endPC-pc)
-	copy(guest, cpu.memory[pc:endPC])
-	for page := pc >> 12; page <= (endPC-1)>>12 && int(page) < len(rt.codePageBitmap); page++ {
-		rt.codePageBitmap[page] = 1
+	covered := m68kInstrCoveredRanges(pc, instrs)
+	ranges := make([][2]uint32, 0, len(covered))
+	guest := make([][]byte, 0, len(covered))
+	for _, r := range covered {
+		lo, hi := uint32(r[0]), uint32(r[1])
+		if hi < lo || int(hi) > len(cpu.memory) {
+			return nil
+		}
+		ranges = append(ranges, [2]uint32{lo, hi})
+		snapshot := append([]byte(nil), cpu.memory[lo:hi]...)
+		guest = append(guest, snapshot)
+		for page := lo >> 12; page <= (hi-1)>>12 && int(page) < len(rt.codePageBitmap); page++ {
+			rt.codePageBitmap[page] = 1
+		}
 	}
-	return &m68kWasmBlock{fn: fn, startPC: pc, endPC: endPC, instrCount: prefix, guest: guest}
+	return &m68kWasmBlock{fn: fn, startPC: pc, endPC: endPC, instrCount: prefix, ranges: ranges, guest: guest}
 }
 
 // stampMatches verifies the block's covered guest bytes are unchanged.
 func (rt *m68kWasmRuntime) stampMatches(blk *m68kWasmBlock) bool {
-	if int(blk.endPC) > len(rt.cpu.memory) {
-		return false
-	}
-	live := rt.cpu.memory[blk.startPC:blk.endPC]
-	for i := range blk.guest {
-		if live[i] != blk.guest[i] {
+	for ri, r := range blk.ranges {
+		if r[1] < r[0] || int(r[1]) > len(rt.cpu.memory) || ri >= len(blk.guest) {
 			return false
+		}
+		live := rt.cpu.memory[r[0]:r[1]]
+		if len(live) != len(blk.guest[ri]) {
+			return false
+		}
+		for i := range live {
+			if live[i] != blk.guest[ri][i] {
+				return false
+			}
 		}
 	}
 	return true
@@ -376,8 +393,10 @@ func (rt *m68kWasmRuntime) dispatch() {
 		}
 
 		if rt.ctxU32(m68kCtxOffNeedIOFallback) != 0 {
-			// The block exited before a guarded access's side effects; RetCount
-			// holds the retired predecessors and PC the faulting instruction.
+			// RetCount holds the retired predecessors and PC the faulting
+			// instruction. Most guards run before their instruction's effects;
+			// a fused synthetic RTS is allowed to follow an already-committed
+			// JSR push and leaf body, and therefore reports the real RTS PC.
 			instructionCount += uint64(rt.ctxU32(m68kCtxOffRetCount))
 			instructionCount += uint64(cpu.StepOne())
 			if cpu.PerfEnabled {

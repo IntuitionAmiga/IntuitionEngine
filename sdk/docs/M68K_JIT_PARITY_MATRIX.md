@@ -136,10 +136,8 @@ from day one:
   plan and is deliberately unused here. Adds the missing flag-setting A64
   encoders (ADDS/SUBS reg+imm, CSET, shifted ORR, 32-bit CMP immediate —
   the IE64 helper `arm64CMP_imm` is 64-bit and reads sign from bit 63).
-- Flag semantics are parity with the interpreter, not the M68000PRM: IE's
-  AND/OR/EOR preserve V and C (interpreter `SetFlagsNZ`, amd64
-  `emitCCR_LogicPreserveVC`); the arm64 backend replicates this via
-  `m68kA64FlagsLogicPreserveVC`. MOVE/MOVEQ/CLR/TST clear V and C, ADD/SUB
+- Logical AND/OR/EOR preserve X and clear V and C, matching M68020
+  architectural semantics and the interpreter. MOVE/MOVEQ/CLR/TST also clear V and C, ADD/SUB
   set full XNZVC, CMP sets NZVC and preserves X.
 - `jit_m68k_exec_arm64.go`: dispatcher with per-block-boundary interrupt and
   exception sampling, warmup-tier interpretation, single-instruction
@@ -154,9 +152,8 @@ from day one:
   re-checking the `m68kJitInvalGen` snapshot immediately before native entry
   so a write between the stamp check and the call forces a re-loop (the same
   residual tail the amd64 dispatcher documents).
-  `m68kJitAvailable` stays false on arm64 until the full milestone 3 gate
-  (complete integer core, Harte exception cases, AROS boot on real hardware);
-  tests opt in via `m68kJitEnabled`.
+  Production availability was held until the full milestone 3 gate; that gate
+  has since passed on real arm64 hardware.
 - `jit_m68k_arm64_backend_test.go`: operand-grid ALU differential (12x12
   values x 3 CCR seeds per shape), full-dispatcher differential including an
   unsupported-opcode fallback and STOP, retired-count equality, SMC stamp
@@ -382,11 +379,9 @@ by fallback today and documented in jit_m68k_exec_arm64.go:
   (see the "Current M68020 JIT state" section and jit_m68k_emit_amd64.go);
   native 68881 lowering on arm64 is milestone 4 work.
 
-Gate status: the integer and control-flow differential grids are green on
-arm64 under qemu-aarch64 (307 arm64 subtests). The Harte exception gate and
-the AROS-boot-on-real-hardware gate for residency/control-flow changes remain
-outstanding per the plan and are not satisfiable in qemu. m68kJitAvailable
-stays false on arm64 until those hardware gates pass.
+Gate status at delivery: the integer and control-flow differential grids were
+green under qemu-aarch64 (307 arm64 subtests). The subsequent real-hardware
+AROS boot gate has passed and the arm64 backend is production-enabled.
 
 ## Milestone 4 delivered: arm64 capability completion and optimisation slices
 
@@ -394,12 +389,9 @@ All seven milestone 4 slices are implemented on arm64 and validated by the qemu
 differential suite. Every change was checked against the interpreter differential
 under qemu-aarch64. The optimisation slices are ON by default, each with an
 environment kill switch (M68K_ARM64_CCR_LIVENESS=0, M68K_ARM64_CHAIN=0,
-M68K_ARM64_PIN=0). m68kJitAvailable remains false on arm64 until the Harte
-exception gate and the AROS-boot gate pass on real hardware, so these run in the
-test-only arm64 path today; the x13s benchmark (measure the wins) and the
-AROS-boot correctness run for pinning and chaining remain the outstanding
-hardware gates, and M68K_ARM64_PIN=0 is the escape hatch until pinning clears the
-AROS boot.
+M68K_ARM64_PIN=0). The real-hardware AROS boot gate has passed, so
+`m68kJitAvailable` is enabled on arm64. Target-specific performance measurement
+remains separate from the correctness gate.
 
 Capability completion (native lowering, qemu differential-verified):
 
@@ -487,8 +479,8 @@ Delivered and differentially verified against the interpreter under wazero
 - Integer blocks: NOP, MOVEQ, MOVE/MOVEA, ADD/SUB/CMP/AND/OR/EOR register and
   immediate forms, ADDQ/SUBQ to Dn and An, TST, CLR, in all three sizes, with
   full CCR materialised on every flag-setting instruction. Overflow and carry
-  match the interpreter bit for bit via a top-of-word alignment, and AND/OR/EOR
-  preserve V and C exactly as the interpreter does.
+  match the interpreter bit for bit via a top-of-word alignment. AND/OR/EOR
+  preserve X and clear V and C.
 - Memory effective addresses: (An), (An)+, -(An), (d16,An), (xxx).W, (xxx).L and
   (d16,PC), with big-endian access, byte/word/long sizes, inline RAM-bounds and
   I/O-page guards, and a mid-block bail that exits before the faulting
@@ -587,12 +579,13 @@ differential parity third. The wasm differential suite is 149 subtests green.
 
 Explicit deferrals and decisions (milestone 6):
 
-- JSR leaf-call fusion: no backend lowering was added because the M68020
-  frontend is dormant here — no production call site sets fusedFlag
-  (m68kAnalyzeJSRLeafFusion has only test callers), so no fused instruction
-  stream can reach any backend today. The wasm prefix admission rejects
-  fusedFlag defensively so a future frontend change cannot silently
-  miscompile. Lowering belongs with reviving the frontend, not before it.
+- JSR leaf-call fusion is active in the production scanner and lowered by all
+  three backends. The fused call and synthetic return retain the architectural
+  A7 and stack-memory effects. Fused leaf source ranges participate in the SMC
+  byte stamp, including address zero and wasm's multi-range module stamp. Odd
+  targets and leaves whose complete fetch range falls outside ProfileTopOfRAM
+  are rejected before fusion, leaving architectural address and bus errors to
+  the interpreter.
 - Observed-region promotion and multi-block regions: deferred per the plan
   ("unless a browser workload measures a need"). No browser workload has been
   measured against the wasm M68020 backend yet; the structured in-block loop
@@ -681,7 +674,11 @@ gate for anything touching chain edges or register residency.
   exit's lightweight epilogue spills the custom set then reloads the
   fixed map for its fixed-map successor, and region-internal edges land
   on per-block reload stubs that restore the custom pins. Falls back to
-  the fixed map when the ranking reproduces it.
+  the fixed map when the ranking reproduces it. Coprocessor workers also use
+  the fixed map: their large dynamically observed service paths include a
+  wider mixture of MOVEM, indexed, indirect-call and FPU forms than the
+  custom-map differential grid. Region compilation and chaining remain
+  enabled for workers.
   IE_M68K_JIT_DISABLE_REGION_RESIDENCY=1 disables. The AROS boot gate
   applies before this ships enabled on real workloads (register-pinning
   changes are exactly what that gate catches).
@@ -726,20 +723,18 @@ there keep that resolution. A deferral is explicit and does not imply parity.
 |---|---|---|---|---|
 | Generation-tagged dispatch cache | implemented | implemented | backend cache | Native M68020 uses the shared `CodeCache.dispatch`; `jit_m68k_dispatch_cache_test.go` proves hit and invalidation-generation expiry. wasm uses the PC-keyed module cache in `jit_m68k_dispatch_wasm.go` |
 | Constant-address proof | implemented | analysis only | analysis only | amd64 lowering uses `m68kConstAddrProof` in `jit_m68k_const_addr.go`; other emitters retain their bounds and I/O guards pending a measured lowering need |
-| Region GPR residency | implemented | block residency | deferred | amd64 regions use `m68kBuildRegionRegMap`; arm64 has block pinning in `jit_m68k_emit_arm64.go`. wasm locals already hold block state. Cross-edge arm64 residency remains gated by real-hardware AROS boot |
-| Constant folding | implemented | analysis only | analysis only | `m68kAnalyseConstFold` supplies the M68020-specific CCR proof. amd64 lowers it. arm64 and wasm keep their existing native operations pending a measured lowering need |
+| Region GPR residency | implemented for the main CPU; fixed-map worker regions | block residency | deferred | amd64 main-CPU regions use `m68kBuildRegionRegMap`; coprocessor regions retain the fixed chain-edge map after a real worker workload exposed unsafe custom-map coverage. arm64 has block pinning in `jit_m68k_emit_arm64.go`. wasm locals already hold block state. Cross-edge arm64 residency remains gated by real-hardware AROS boot |
+| Constant folding | implemented | implemented | implemented | `m68kAnalyseConstFold` supplies the M68020-specific CCR proof and all three emitters lower its register and CCR constants. Logical folds preserve X and clear V/C |
 | Loop-invariant instruction hoisting | rejected | rejected | rejected | M68020 integer ALU instructions update CCR, which DBcc observes on every iteration. Constant folding covers the safe constant subset |
 | Invariant memory-check hoisting | implemented | deferred | deferred | amd64 uses `m68kAnalyseLoopInvariantGuards`. The other backends retain per-access guards pending a measured need |
 | Bounded counter-loop budget removal | implemented | deferred | implemented differently | amd64 uses `m68kBoundedCounterDBccLoop` while retaining the live chain budget. wasm structured loops retain their explicit 1024-iteration interrupt/yield budget; removing it would be unsafe. arm64 retains its live budget |
 | Observed regions | implemented | deferred | deferred by benchmark | amd64 records and validates dispatcher-visible paths with `m68kObservedRecorder`. arm64 keeps static regions. wasm structured loops cover the measured self-loop shape; no browser workload justifies multi-module observed regions yet |
 | Cold-exit outlining | implemented | deferred | n/a | amd64 outlines NeedInval and NeedIOFallback exits. arm64 lowering is deferred pending a benchmark. wasm structured control flow has no equivalent native fall-through layout |
 | Monomorphic indirect-target specialisation | implemented | deferred | dispatcher equivalent | amd64 JMP/JSR indirect exits probe the shared eight-entry MRU. arm64 retains dispatcher lookup. wasm returns the target to its PC-keyed module dispatcher |
-| JSR leaf fusion | implemented | deferred | rejected for current frontend | amd64 lowering is live. arm64 lowering is deferred until the real-hardware control-flow gate. wasm rejects dormant `fusedFlag` input; no production scanner emits it |
+| JSR leaf fusion | implemented | implemented | implemented | `m68kFuseJSRLeafCalls` expands eligible static calls in every production dispatcher. Each backend lowers the guarded stack push, inline body and guarded synthetic pop; covered-range stamps include the leaf bytes |
 | MMIO poll-loop specialisation | deferred by benchmark | deferred by benchmark | deferred by benchmark | M68020 guests currently use helper or fallback paths. No measured workload justifies a specialised poll recogniser |
 | Helper resume inside a block | deferred by benchmark | deferred by benchmark | rejected | Native M68020 helper exits resume through the dispatcher. wasm single-steps the faulting instruction. No benchmark demonstrates that a mid-block resume ABI pays for its complexity |
 
-Validation still requiring an external environment is recorded rather than
-claimed complete: real-arm64 AROS boot for residency and control-flow changes,
-real-arm64 performance measurements, and a browser smoke run for the M68K wasm
-dispatcher. Differential correctness is covered locally by native tests,
-qemu-aarch64 and wazero; those do not substitute for the external gates.
+The arm64 execution and AROS boot gate has been completed on real hardware.
+Performance figures still require target-specific measurement, and the browser
+smoke run remains distinct from wazero differential coverage.

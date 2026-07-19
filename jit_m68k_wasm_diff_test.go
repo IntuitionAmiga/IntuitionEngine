@@ -82,6 +82,7 @@ func runM68KWasmBlock(t *testing.T, program []byte, initD, initA [8]uint32, init
 		prep(mem)
 	}
 	all := m68kScanBlock(mem, m68kWasmTestPC)
+	all = m68kFuseJSRLeafCalls(all, m68kWasmTestPC, mem, uint32(len(mem)))
 	// The scanner runs past the program into zero-filled RAM; keep only the
 	// instructions that lie within the program image.
 	var instrs []M68KJITInstr
@@ -474,6 +475,57 @@ func TestM68KWasm_BranchGrid(t *testing.T) {
 				m68kWasmDiffMem(t, tc.name, initD, initA, 0x2000|ccr, tc.count, tc.prep, 0x6F00, 0x7100, tc.words...)
 			}
 		})
+	}
+}
+
+func TestM68KWasm_JSRLeafFusionParity(t *testing.T) {
+	const leaf = uint32(0x1800)
+	prep := func(mem []byte) {
+		mem[leaf] = 0x70 // MOVEQ #5,D0
+		mem[leaf+1] = 0x05
+		mem[leaf+2] = 0x4E // RTS
+		mem[leaf+3] = 0x75
+	}
+	var initD, initA [8]uint32
+	initA[7] = 0x7000
+	m68kWasmDiffMem(t, "fused JSR leaf", initD, initA, 0x201F, 5, prep, 0x6FF0, 0x7010,
+		0x4EB9, uint16(leaf>>16), uint16(leaf), // JSR leaf
+		0x7207, // MOVEQ #7,D1 after return
+		0x6002, // BRA.S terminator
+	)
+}
+
+func TestM68KWasm_FusedLeafRTSBailPreservesCommittedEffects(t *testing.T) {
+	const (
+		leaf  = uint32(0x1800)
+		stack = uint32(0x7004)
+	)
+	saved := m68kWasmTestStackBounds
+	m68kWasmTestStackBounds = [2]uint32{0, stack - 4}
+	defer func() { m68kWasmTestStackBounds = saved }()
+	prep := func(mem []byte) {
+		mem[leaf], mem[leaf+1] = 0x70, 0x05
+		mem[leaf+2], mem[leaf+3] = 0x4E, 0x75
+	}
+	var initD, initA [8]uint32
+	initA[7] = stack
+	got := runM68KWasmBlock(t, m68kWasmWords(
+		0x4EB9, uint16(leaf>>16), uint16(leaf), 0x7207, 0x6002), initD, initA, 0x201F, prep, nil)
+	if got.needIOFallback == 0 || got.pc != leaf+2 || got.count != 2 {
+		t.Fatalf("synthetic RTS bail: NeedIO=%d RetPC=%08X RetCount=%d", got.needIOFallback, got.pc, got.count)
+	}
+	if got.dregs[0] != 5 || got.aregs[7] != stack-4 {
+		t.Fatalf("committed effects lost: D0=%08X A7=%08X", got.dregs[0], got.aregs[7])
+	}
+}
+
+func TestM68KWasm_ConstFoldShapeAndParity(t *testing.T) {
+	var initD, initA [8]uint32
+	before := m68kFoldedConstEmits.Load()
+	m68kWasmDiffMem(t, "constant fold", initD, initA, 0x201F, 3, nil, 0, 0,
+		0x7005, 0x5680, 0x6002)
+	if got := m68kFoldedConstEmits.Load() - before; got != 2 {
+		t.Fatalf("wasm folded emits = %d, want 2", got)
 	}
 }
 

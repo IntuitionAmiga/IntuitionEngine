@@ -1620,6 +1620,12 @@ func (cpu *M68KCPU) m68kTryPromoteJITRegion(block *JITBlock, execMem *ExecMem, m
 // (static or observed). Returns the installed region block, or nil when
 // any diagnostic gate, admission check or the compile itself refuses.
 func (cpu *M68KCPU) m68kCompileAndInstallRegion(region *m68kRegion, execCount uint32, execMem *ExecMem, memory []byte, disableChains bool) *JITBlock {
+	// Coprocessor workers execute broad, dynamically observed service paths
+	// over shared memory. Keep their region edges on the fixed register
+	// contract used by ordinary blocks. This retains region compilation and
+	// chaining without exposing worker code to the narrower custom-map opcode
+	// coverage used by main-CPU regions.
+	region.forceFixedRegisterMap = cpu.CoprocMode
 	if disabledPCs := m68kJITDiagnosticDisabledPCs(); len(disabledPCs) != 0 {
 		for _, pc := range region.blockPCs {
 			if _, disabled := disabledPCs[pc]; disabled {
@@ -1801,8 +1807,11 @@ func (cpu *M68KCPU) m68kRecordJITCompileFailure(pc uint32, err error) {
 // moved to the untagged jit_m68k_admission.go (parity plan milestone 2).
 
 func m68kCanPrefixInstruction(ji *M68KJITInstr) bool {
-	if ji == nil || ji.fusedFlag != 0 {
+	if ji == nil {
 		return false
+	}
+	if ji.fusedFlag&(m68kFusedJSRLeafCall|m68kFusedRTSLeafReturn) != 0 {
+		return true
 	}
 	opcode := ji.opcode
 	if m68kIsBlockTerminator(opcode) {
@@ -2295,6 +2304,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				}
 				continue
 			}
+			instrs = m68kFuseJSRLeafCalls(instrs, pc, cpu.memory, cpu.ProfileTopOfRAM())
 
 			// Interpreter-admission for transcendental blocks: a helper-only FPU
 			// data op (FSIN/FCOS/FMOD/…) compiles to a per-instruction block-exit

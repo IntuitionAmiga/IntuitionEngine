@@ -152,6 +152,102 @@ func TestM68KJIT_ScanBlockDoesNotFuseJSRLeaf(t *testing.T) {
 	}
 }
 
+func TestM68KJIT_FuseJSRLeafCalls(t *testing.T) {
+	mem := make([]byte, 0x3000)
+	const start = uint32(0x1000)
+	const leaf = uint32(0x2000)
+	beWords(mem, int(start), 0x4EB9, uint16(leaf>>16), uint16(leaf), 0x7207, 0x4E72, 0x2700)
+	beWords(mem, int(leaf), 0x7005, 0x4E75)
+	raw := m68kScanBlock(mem, start)
+	got := m68kFuseJSRLeafCalls(raw, start, mem, uint32(len(mem)))
+	if len(got) != 5 {
+		t.Fatalf("fused instruction count = %d, want 5", len(got))
+	}
+	if got[0].fusedFlag != m68kFusedJSRLeafCall || got[1].opcode != 0x7005 ||
+		got[2].fusedFlag != m68kFusedRTSLeafReturn || got[3].opcode != 0x7207 {
+		t.Fatalf("unexpected fused stream: %+v", got)
+	}
+	if bailPC := m68kInstrBailPC(start, &got[2]); bailPC != leaf+2 {
+		t.Fatalf("synthetic RTS bail PC = %08X, want architectural RTS %08X", bailPC, leaf+2)
+	}
+	prefix := m68kProductionNativePrefix(mem, start, got)
+	if len(prefix) != 4 {
+		t.Fatalf("production fused prefix length=%d, want 4; stream=%+v prefix=%+v", len(prefix), got, prefix)
+	}
+	execMem, err := AllocExecMem(64 * 1024)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	if _, err := m68kCompileBlockWithMem(prefix, start, execMem, mem); err != nil {
+		t.Fatalf("compile production fused prefix: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if got[i].pcOffset != 0 {
+			t.Fatalf("fused instruction %d pcOffset = %d, want call-site offset 0", i, got[i].pcOffset)
+		}
+	}
+	ranges := m68kInstrCoveredRanges(start, got)
+	block := &JITBlock{startPC: uint64(start), endPC: uint64(start + 10), coveredRanges: ranges}
+	m68kStampGuestBlockBytes(mem, block)
+	mem[leaf+1] ^= 1
+	if m68kGuestBlockBytesStillMatch(mem, block) {
+		t.Fatal("fused block stamp did not cover the inlined leaf source")
+	}
+}
+
+func TestM68KJIT_JSRLeafFusionRejectsExtensionWords(t *testing.T) {
+	mem := make([]byte, 0x3000)
+	const leaf = uint32(0x2000)
+	beWords(mem, int(leaf), 0x0680, 0, 1, 0x4E75) // ADDI.L #1,D0; RTS
+	if _, ok := m68kAnalyzeJSRLeafFusion(mem, leaf, uint32(len(mem))); ok {
+		t.Fatal("leaf with extension words was admitted without a separate decode PC")
+	}
+}
+
+func TestM68KJIT_JSRLeafFusionRejectsArchitecturallyInvalidTargets(t *testing.T) {
+	mem := make([]byte, 0x4000)
+	const caller = uint32(0x1000)
+	tests := []struct {
+		name       string
+		target     uint32
+		profileTop uint32
+	}{
+		{name: "odd address", target: 0x2001, profileTop: uint32(len(mem))},
+		{name: "above profile RAM", target: 0x3000, profileTop: 0x2800},
+		{name: "RTS crosses profile fetch envelope", target: 0x27FC, profileTop: 0x2800},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clear(mem)
+			beWords(mem, int(caller), 0x4EB9, uint16(tc.target>>16), uint16(tc.target))
+			beWords(mem, int(tc.target), 0x7005, 0x4E75)
+			raw := m68kScanBlock(mem, caller)
+			got := m68kFuseJSRLeafCalls(raw, caller, mem, tc.profileTop)
+			if len(got) != 1 || got[0].fusedFlag != 0 {
+				t.Fatalf("architecturally invalid target fused: %+v", got)
+			}
+		})
+	}
+}
+
+func TestM68KJIT_JSRLeafFusionAddressZeroCoveredBySMCStamp(t *testing.T) {
+	mem := make([]byte, 0x3000)
+	const caller = uint32(0x1000)
+	beWords(mem, 0, 0x7005, 0x4E75)
+	beWords(mem, int(caller), 0x4EB9, 0, 0, 0x7207, 0x6002)
+	got := m68kFuseJSRLeafCalls(m68kScanBlock(mem, caller), caller, mem, uint32(len(mem)))
+	if len(got) < 3 || !got[1].hasSource || got[1].sourcePC != 0 {
+		t.Fatalf("address-zero source presence lost: %+v", got)
+	}
+	block := &JITBlock{startPC: uint64(caller), endPC: uint64(caller + 10), coveredRanges: m68kInstrCoveredRanges(caller, got)}
+	m68kStampGuestBlockBytes(mem, block)
+	mem[1] ^= 1
+	if m68kGuestBlockBytesStillMatch(mem, block) {
+		t.Fatal("address-zero fused leaf mutation did not invalidate the block stamp")
+	}
+}
+
 func TestM68KJIT_AROSAssignLibraryCallBlockIsProductionNative(t *testing.T) {
 	const pc = uint32(0x1000)
 	mem := make([]byte, 0x2000)
@@ -248,7 +344,7 @@ func TestM68KJIT_JSRLeafFusionRejectsMemoryNEGX(t *testing.T) {
 		0x4E75, // RTS
 	)
 
-	if _, ok := m68kAnalyzeJSRLeafFusion(mem, target); ok {
+	if _, ok := m68kAnalyzeJSRLeafFusion(mem, target, uint32(len(mem))); ok {
 		t.Fatalf("memory NEGX leaf was accepted for fusion")
 	}
 }

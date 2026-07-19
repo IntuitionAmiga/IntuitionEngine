@@ -1613,6 +1613,10 @@ func m68kARM64SupportedPrefix(instrs []M68KJITInstr, memory []byte, startPC uint
 	n := 0
 	for i := range instrs {
 		ji := &instrs[i]
+		if ji.fusedFlag&(m68kFusedJSRLeafCall|m68kFusedRTSLeafReturn) != 0 {
+			n++
+			continue
+		}
 		instrPC := startPC + ji.pcOffset
 		if _, ok := m68kA64DecodeBranch(ji, memory, instrPC, topOfRAM); ok {
 			return n + 1
@@ -3268,6 +3272,33 @@ func (e *m68kA64Emitter) emitPushRet(retAddr uint32) {
 	m68kA64StoreA(cb, m68kA64Tmp0, 7)
 }
 
+func (e *m68kA64Emitter) emitPopRetDiscard() {
+	cb := e.cb
+	m68kA64LoadA(cb, m68kA64Tmp0, 7)
+	cb.Emit32(arm64LDR_imm(m68kA64Tmp1, m68kA64Ctx, m68kCtxOffStackUpperBoundPtr/8))
+	cb.Emit32(arm64LDR_W_imm(m68kA64Tmp1, m68kA64Tmp1, 0))
+	cb.Emit32(arm64CMP_W(m68kA64Tmp0, m68kA64Tmp1))
+	e.branchToBail(m68kA64CondCS)
+	e.emitGuard(m68kA64Tmp0, 4)
+	m68kA64EmitLoadBE(cb, m68kA64Tmp1, m68kA64Tmp0, 4)
+	cb.Emit32(arm64ADD_W_imm(m68kA64Tmp0, m68kA64Tmp0, 4))
+	m68kA64StoreA(cb, m68kA64Tmp0, 7)
+}
+
+func (e *m68kA64Emitter) emitConstFold(f m68kFoldEntry) {
+	if f.setsReg {
+		m68kA64MovImm32(e.cb, m68kA64Tmp0, f.value)
+		m68kA64StoreD(e.cb, m68kA64Tmp0, uint16(f.reg))
+	}
+	if f.ccrMask != 0 && !e.ccrDead {
+		m68kA64MovImm32(e.cb, m68kA64Tmp0, uint32(^f.ccrMask)&0x1F)
+		e.cb.Emit32(arm64AND_W(m68kA64CCR, m68kA64CCR, m68kA64Tmp0))
+		m68kA64MovImm32(e.cb, m68kA64Tmp0, uint32(f.ccrVal&f.ccrMask))
+		e.cb.Emit32(arm64ORR_W_lsl(m68kA64CCR, m68kA64CCR, m68kA64Tmp0, 0))
+	}
+	m68kFoldedConstEmits.Add(1)
+}
+
 // buildPinPlan selects the guest registers a block uses and pins each to a
 // callee-saved host register (data registers first, then address registers
 // excluding A7 to avoid stack-pointer hazards), up to m68kA64PinMaxSlots. A
@@ -3415,6 +3446,7 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 	}
 	cb := NewCodeBuffer(len(instrs)*160 + 128)
 	e := &m68kA64Emitter{cb: cb}
+	foldPlan := m68kAnalyseConstFold(instrs, startPC, memory)
 	if m68kARM64CCRLivenessEnabled() {
 		e.ccrLive = m68kCCRLiveness(instrs)
 	}
@@ -3466,6 +3498,26 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 		instrPC := startPC + ji.pcOffset
 		e.bails = nil
 		e.ccrDead = e.ccrLive != nil && i < len(e.ccrLive) && !e.ccrLive[i]
+		if foldPlan != nil && i < len(foldPlan) && foldPlan[i].folded {
+			e.emitConstFold(foldPlan[i])
+			endPC = instrPC + uint32(ji.length)
+			continue
+		}
+		if ji.fusedFlag&m68kFusedJSRLeafCall != 0 {
+			e.emitPushRet(instrPC + uint32(ji.length))
+			if len(e.bails) > 0 {
+				e.stubs = append(e.stubs, m68kA64BailStub{sites: e.bails, pc: instrPC, retired: uint32(i)})
+			}
+			endPC = instrPC + uint32(ji.length)
+			continue
+		}
+		if ji.fusedFlag&m68kFusedRTSLeafReturn != 0 {
+			e.emitPopRetDiscard()
+			if len(e.bails) > 0 {
+				e.stubs = append(e.stubs, m68kA64BailStub{sites: e.bails, pc: m68kInstrBailPC(startPC, ji), retired: uint32(i)})
+			}
+			continue
+		}
 		if i == len(instrs)-1 {
 			// A block-ending branch is only ever admitted as the final
 			// instruction (m68kARM64SupportedPrefix stops on it).
@@ -3571,11 +3623,12 @@ func m68kCompileBlockARM64(instrs []M68KJITInstr, startPC uint32, execMem *ExecM
 		return nil, err
 	}
 	block := &JITBlock{
-		startPC:    uint64(startPC),
-		endPC:      uint64(endPC),
-		instrCount: len(instrs),
-		execAddr:   addr,
-		execSize:   len(code),
+		startPC:       uint64(startPC),
+		endPC:         uint64(endPC),
+		instrCount:    len(instrs),
+		execAddr:      addr,
+		execSize:      len(code),
+		coveredRanges: m68kInstrCoveredRanges(startPC, instrs),
 	}
 	if e.chain {
 		block.chainEntry = addr + uintptr(chainEntryOff)

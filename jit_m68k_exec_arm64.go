@@ -361,6 +361,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 					continue
 				}
 				instrs := m68kScanBlock(cpu.memory, pc)
+		instrs = m68kFuseJSRLeafCalls(instrs, pc, cpu.memory, cpu.ProfileTopOfRAM())
 				prefix := m68kARM64SupportedPrefix(instrs, cpu.memory, pc, cpu.ProfileTopOfRAM())
 				if prefix >= m68kARM64MinPrefix {
 					compiled, err := m68kCompileBlockARM64(instrs[:prefix], pc, execMem, cpu.memory, cpu.ProfileTopOfRAM())

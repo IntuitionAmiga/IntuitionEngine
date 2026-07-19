@@ -540,14 +540,14 @@ never emitted unless the host supports them.
 | Host platform | JIT-enabled guest cores | Dispatch files |
 |---------------|-------------------------|----------------|
 | Linux amd64 | IE64, 6502, M68K, Z80, x86 | `jit_dispatch.go`, amd64 per-core dispatch files |
-| Linux arm64 | IE64 | `jit_dispatch.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false |
+| Linux arm64 | IE64, M68K | `jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false |
 | Windows amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
-| Windows arm64 | IE64 | IE64 dispatch only; per-core non-IE64 stubs |
+| Windows arm64 | IE64, M68K | IE64 and M68K dispatch; other non-IE64 cores use stubs |
 | macOS amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
-| macOS arm64 | IE64 | IE64 dispatch plus Darwin arm64 JIT write-protect helpers |
-| Browser (js/wasm) | IE64 (wasm bytecode backend) | `jit_exec_wasm.go`, `jit_wasm_runtime.go` |
+| macOS arm64 | IE64, M68K | IE64 and M68K dispatch plus Darwin arm64 JIT write-protect helpers |
+| Browser (js/wasm) | IE64, M68K (wasm bytecode backends) | `jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go` |
 
-On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles, and non-IE64 guest cores remain interpreter-only on arm64 hosts.
+On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles. IE64 and M68K have arm64 backends; the other guest cores remain interpreter-only.
 
 On js/wasm the native backends are absent (the browser gives Go no executable
 memory), and IE64 has a wasm bytecode backend instead; see "IE64 wasm JIT

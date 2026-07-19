@@ -11,12 +11,12 @@ scans a block, compiles and caches it, then runs it through its own dispatcher.
 **Platform support:** amd64 on Linux, macOS and Windows; arm64 on Linux, macOS
 and Windows; and js/wasm. The native backends use executable memory. The wasm
 backend uses an M68020-specific module cache and reuses only the generic wasm
-encoder. The arm64 production default remains gated until the documented
-real-hardware AROS boot check is complete.
+encoder. The arm64 backend has passed its real-hardware execution gate and is
+available through the normal M68K JIT activation path.
 
 **Activation:** The amd64 JIT is enabled by default when a CPU is created via
-`NewM68KRunner()`. The arm64 backend remains production-gated and is enabled by
-its differential tests. The wasm backend is enabled by default when `__goMem`
+`NewM68KRunner()`. The arm64 backend is also enabled by default. The wasm
+backend is enabled by default when `__goMem`
 is available; `M68K_WASM_JIT=0` disables it. The `-nojit` CLI flag disables
 native JIT execution, including the IE64 JIT.
 
@@ -140,8 +140,8 @@ The M68020 JIT separates three layers:
    abstraction.
 
 Dispatch seams are per target: `jit_m68k_dispatch.go` (amd64),
-`jit_m68k_dispatch_arm64.go` (arm64, interpreter until milestone 3),
-`jit_m68k_dispatch_wasm.go` (js/wasm, interpreter until milestone 5), and
+`jit_m68k_dispatch_arm64.go` (arm64),
+`jit_m68k_dispatch_wasm.go` (js/wasm), and
 `jit_m68k_dispatch_stub.go` (everything else), so `m68kJitAvailable` flips
 per target without disturbing the amd64 path.
 

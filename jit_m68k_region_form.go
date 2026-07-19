@@ -15,9 +15,10 @@ package main
 // blocks[i] is the pre-scanned instruction list for block i; blockPCs[i]
 // is the guest start PC of that block. entryPC == blockPCs[0].
 type m68kRegion struct {
-	blocks   [][]M68KJITInstr
-	blockPCs []uint32
-	entryPC  uint32
+	blocks                [][]M68KJITInstr
+	blockPCs              []uint32
+	entryPC               uint32
+	forceFixedRegisterMap bool
 }
 
 // m68kFormRegion is the cache-aware region builder consumed by the M68K

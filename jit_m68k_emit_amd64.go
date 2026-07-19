@@ -12136,13 +12136,14 @@ func m68kCompileBlockWithMemProof(instrs []M68KJITInstr, startPC uint32, execMem
 	}
 
 	return &JITBlock{
-		startPC:    uint64(startPC),
-		endPC:      uint64(endPC),
-		instrCount: len(instrs),
-		execAddr:   addr,
-		execSize:   len(code),
-		chainEntry: chainEntry,
-		chainSlots: slots,
+		startPC:       uint64(startPC),
+		endPC:         uint64(endPC),
+		instrCount:    len(instrs),
+		execAddr:      addr,
+		execSize:      len(code),
+		chainEntry:    chainEntry,
+		chainSlots:    slots,
+		coveredRanges: m68kInstrCoveredRanges(startPC, instrs),
 	}, nil
 }
 
@@ -12200,7 +12201,10 @@ func m68kCompileRegion(region *m68kRegion, execMem *ExecMem, memory []byte) (*JI
 	// region. Entry/exit contracts are register-file based (chain entry
 	// loads after entryOff; every chain exit spills then restores the
 	// fixed map), so fixed-map neighbours are unaffected.
-	m68kCurrentRegionMap = m68kBuildRegionRegMap(allInstrs)
+	m68kCurrentRegionMap = nil
+	if !region.forceFixedRegisterMap {
+		m68kCurrentRegionMap = m68kBuildRegionRegMap(allInstrs)
+	}
 	defer func() { m68kCurrentRegionMap = nil }()
 	if m68kCurrentRegionMap != nil {
 		m68kRegionResidencyEmits.Add(1)
@@ -12416,7 +12420,7 @@ func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint
 		return
 	}
 	if ji.fusedFlag&m68kFusedRTSLeafReturn != 0 {
-		instrPC := blockStartPC + ji.pcOffset
+		bailPC := m68kInstrBailPC(blockStartPC, ji)
 		// Materialize lazy CCR before clobbering EFLAGS via the I/O CMP
 		// and A7 ADD path.
 		if cs := m68kCurrentCS; cs != nil && cs.flagState != flagsMaterialized {
@@ -12438,7 +12442,7 @@ func m68kEmitInstructionFull(cb *CodeBuffer, ji *M68KJITInstr, blockStartPC uint
 			patchRel32(cb, off, cb.Len())
 		}
 		amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedIOFallback), 1)
-		m68kEmitRetPC(cb, instrPC, uint32(instrIdx))
+		m68kEmitRetPC(cb, bailPC, uint32(instrIdx))
 		m68kEmitEpilogue(cb, br)
 		patchRel32(cb, successOff, cb.Len())
 		return

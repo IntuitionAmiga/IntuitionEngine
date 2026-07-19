@@ -76,8 +76,10 @@ resulting start-up time remain browser-dependent.
   small modules. Unsupported instructions fall back one instruction at a time
   with exact resume PC and retired-count accounting. Big-endian accesses,
   effective-address side effects, stack bounds, SMC exits and structured
-  counted loops are handled by the M68K backend. `M68K_WASM_JIT=0` disables
-  this tier. Extended and packed 68881 formats, transcendental operations and
+  counted loops are handled by the M68K backend. Constant-only integer chains
+  use the shared M68020 fold proof, and eligible static JSR leaves are expanded
+  with their architectural stack push and pop preserved. `M68K_WASM_JIT=0`
+  disables this tier. Extended and packed 68881 formats, transcendental operations and
   FPU memory/control forms remain interpreter fallback. See
   [`M68K_JIT.md`](M68K_JIT.md) and
   [`M68K_JIT_PARITY_MATRIX.md`](M68K_JIT_PARITY_MATRIX.md).

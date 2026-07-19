@@ -104,3 +104,35 @@ func TestM68KJIT_RegionResidencyParity(t *testing.T) {
 	}
 	assertM68KCoreStateEqual(t, jit, interp)
 }
+
+func TestM68KJIT_CoprocessorRegionUsesFixedRegisterMap(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+	rig := newM68KDiffJITTestRig(t)
+	w := func(pc uint32, words ...uint16) {
+		for i, x := range words {
+			rig.cpu.Write16(pc+uint32(i*2), x)
+		}
+	}
+	w(0x100, 0x7405, 0xD682, 0x6000, 0x0200)
+	w(0x304, 0x5283, 0xB583, 0x6000, 0xFDF6)
+
+	region := m68kFormRegion(0x100, rig.cpu.memory)
+	if region == nil || m68kBuildRegionRegMap(append(append([]M68KJITInstr(nil), region.blocks[0]...), region.blocks[1]...)) == nil {
+		t.Fatal("test region is not eligible for custom register residency")
+	}
+	region.forceFixedRegisterMap = true
+	before := m68kRegionResidencyEmits.Load()
+	rig.execMem.Reset()
+	block, err := m68kCompileRegion(region, rig.execMem, rig.cpu.memory)
+	if err != nil {
+		t.Fatalf("m68kCompileRegion: %v", err)
+	}
+	if block == nil {
+		t.Fatal("fixed-map coprocessor region did not compile")
+	}
+	if got := m68kRegionResidencyEmits.Load(); got != before {
+		t.Fatalf("coprocessor region emitted custom residency: counter %d -> %d", before, got)
+	}
+}

@@ -16,6 +16,97 @@ import (
 	"testing"
 )
 
+func TestM68KARM64_ProductionAvailable(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Fatal("arm64 M68K JIT remains production-gated after real-hardware validation")
+	}
+}
+
+func TestM68KARM64_JSRLeafFusionParity(t *testing.T) {
+	t.Setenv("M68K_ARM64_CHAIN", "0")
+	const leaf = uint32(0x1800)
+	ref := m68kARM64NewCPU(t)
+	got := m68kARM64NewCPU(t)
+	for _, cpu := range []*M68KCPU{ref, got} {
+		m68kARM64WriteWords(cpu, m68kARM64TestPC,
+			0x4EB9, uint16(leaf>>16), uint16(leaf), 0x7207, 0x6002)
+		m68kARM64WriteWords(cpu, leaf, 0x7005, 0x4E75)
+		cpu.AddrRegs[7] = 0x00FF0000
+		cpu.SR = 0x201F
+		cpu.PC = m68kARM64TestPC
+	}
+	instrs := m68kFuseJSRLeafCalls(m68kScanBlock(got.memory, m68kARM64TestPC), m68kARM64TestPC, got.memory, got.ProfileTopOfRAM())
+	if prefix := m68kARM64SupportedPrefix(instrs, got.memory, m68kARM64TestPC, got.ProfileTopOfRAM()); prefix != len(instrs) {
+		t.Fatalf("supported prefix = %d, want fused stream %d", prefix, len(instrs))
+	}
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	block, err := m68kCompileBlockARM64(instrs, m68kARM64TestPC, execMem, got.memory, got.ProfileTopOfRAM())
+	if err != nil {
+		t.Fatalf("compile fused block: %v", err)
+	}
+	m68kARM64RunInterp(ref, len(instrs))
+	ctx := newM68KJITContext(got, nil, nil, nil)
+	callNative(block.execAddr, m68kJITContextPtr(ctx))
+	got.PC = ctx.RetPC
+	if ctx.RetCount != uint32(len(instrs)) {
+		t.Fatalf("retired = %d, want %d", ctx.RetCount, len(instrs))
+	}
+	m68kARM64CompareState(t, "fused JSR leaf", ref, got)
+}
+
+func TestM68KARM64_FusedLeafRTSBailPreservesCommittedEffects(t *testing.T) {
+	const (
+		leaf  = uint32(0x1800)
+		stack = uint32(0x8004)
+	)
+	cpu := m68kARM64NewCPU(t)
+	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x4EB9, uint16(leaf>>16), uint16(leaf), 0x7207, 0x6002)
+	m68kARM64WriteWords(cpu, leaf, 0x7005, 0x4E75)
+	cpu.stackLowerBound = 0
+	cpu.stackUpperBound = stack - 4
+	cpu.AddrRegs[7] = stack
+	instrs := m68kFuseJSRLeafCalls(m68kScanBlock(cpu.memory, m68kARM64TestPC), m68kARM64TestPC, cpu.memory, cpu.ProfileTopOfRAM())
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	block, err := m68kCompileBlockARM64(instrs, m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
+	if err != nil {
+		t.Fatalf("compile fused block: %v", err)
+	}
+	ctx := newM68KJITContext(cpu, nil, nil, nil)
+	callNative(block.execAddr, m68kJITContextPtr(ctx))
+	if ctx.NeedIOFallback == 0 || ctx.RetPC != leaf+2 || ctx.RetCount != 2 {
+		t.Fatalf("synthetic RTS bail: NeedIO=%d RetPC=%08X RetCount=%d", ctx.NeedIOFallback, ctx.RetPC, ctx.RetCount)
+	}
+	if cpu.DataRegs[0] != 5 || cpu.AddrRegs[7] != stack-4 {
+		t.Fatalf("committed effects lost: D0=%08X A7=%08X", cpu.DataRegs[0], cpu.AddrRegs[7])
+	}
+}
+
+func TestM68KARM64_ConstFoldShape(t *testing.T) {
+	cpu := m68kARM64NewCPU(t)
+	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7005, 0x5680, 0x6002)
+	instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	before := m68kFoldedConstEmits.Load()
+	if _, err := m68kCompileBlockARM64(instrs, m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM()); err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if got := m68kFoldedConstEmits.Load() - before; got != 2 {
+		t.Fatalf("arm64 folded emits = %d, want 2", got)
+	}
+}
+
 const m68kARM64TestPC = uint32(0x1000)
 
 func m68kARM64WriteWords(cpu *M68KCPU, addr uint32, words ...uint16) uint32 {
