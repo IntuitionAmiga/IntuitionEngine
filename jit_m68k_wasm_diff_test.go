@@ -27,9 +27,26 @@ const (
 	m68kWasmTestFPSR     = uint32(0x4548)
 	m68kWasmTestFPCR     = uint32(0x454C)
 	m68kWasmTestFPIAR    = uint32(0x4550)
+	m68kWasmTestStackLo  = uint32(0x4560) // cell holding cpu.stackLowerBound
+	m68kWasmTestStackHi  = uint32(0x4564) // cell holding cpu.stackUpperBound
+	m68kWasmTestCodeBmp  = uint32(0x4600) // per-4KiB-page code bitmap (SMC tests)
 	m68kWasmTestGuestOff = uint32(0x8000)
 	m68kWasmTestGuestLen = uint32(0x8000)
 )
+
+// m68kWasmTestStackBounds is the stack floor/ceiling pair the harness installs
+// in the wasm context and the interpreter alike. Individual tests override and
+// restore it to exercise the milestone 6 stack-bound guards.
+var m68kWasmTestStackBounds = [2]uint32{0, 0xFFFFFFF0}
+
+// m68kWasmTestReinvoke, when true, makes the harness re-enter a block that
+// exits at its own start PC (a budget-bounded loop), accumulating RetCount
+// across invocations, exactly as the dispatcher does.
+var m68kWasmTestReinvoke = false
+
+// m68kWasmTestCodePages, when true, marks the guest page holding the program
+// in the code-page bitmap so stores to it set NeedInval (loop SMC tests).
+var m68kWasmTestCodePages = false
 
 type m68kWasmState struct {
 	dregs          [8]uint32
@@ -48,6 +65,7 @@ type m68kWasmState struct {
 type m68kFPSeed struct {
 	fp   [8]uint64
 	fpsr uint32
+	fpcr uint32
 }
 
 // runM68KWasmBlock compiles the supported prefix at m68kWasmTestPC and executes
@@ -106,11 +124,20 @@ func runM68KWasmBlock(t *testing.T, program []byte, initD, initA [8]uint32, init
 	lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffFPSRPtr, m68kWasmTestFPSR)
 	lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffFPCRPtr, m68kWasmTestFPCR)
 	lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffFPIARPtr, m68kWasmTestFPIAR)
+	lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffStackLowerBoundPtr, m68kWasmTestStackLo)
+	lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffStackUpperBoundPtr, m68kWasmTestStackHi)
+	lm.WriteUint32Le(m68kWasmTestStackLo, m68kWasmTestStackBounds[0])
+	lm.WriteUint32Le(m68kWasmTestStackHi, m68kWasmTestStackBounds[1])
+	if m68kWasmTestCodePages {
+		lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffCodePageBitmapPtr, m68kWasmTestCodeBmp)
+		lm.WriteByte(m68kWasmTestCodeBmp+(m68kWasmTestPC>>12), 1)
+	}
 	if fp != nil {
 		for i, v := range fp.fp {
 			lm.WriteUint64Le(m68kWasmTestFPRegs+uint32(i)*8, v)
 		}
 		lm.WriteUint32Le(m68kWasmTestFPSR, fp.fpsr)
+		lm.WriteUint32Le(m68kWasmTestFPCR, fp.fpcr)
 	}
 
 	for i := 0; i < 8; i++ {
@@ -124,8 +151,29 @@ func runM68KWasmBlock(t *testing.T, program []byte, initD, initA [8]uint32, init
 	if err != nil {
 		t.Fatalf("instantiate block: %v", err)
 	}
-	if _, err := mod.ExportedFunction("block").Call(ctx, uint64(m68kWasmTestCtxOff)); err != nil {
+	blockFn := mod.ExportedFunction("block")
+	if _, err := blockFn.Call(ctx, uint64(m68kWasmTestCtxOff)); err != nil {
 		t.Fatalf("block call: %v", err)
+	}
+	totalCount, _ := lm.ReadUint32Le(m68kWasmTestCtxOff + m68kCtxOffRetCount)
+	if m68kWasmTestReinvoke {
+		// Emulate the dispatcher's loop: a budget-bounded loop block exits at
+		// its own head; re-enter until it leaves (or bails), accumulating the
+		// retired count across invocations.
+		for i := 0; i < 512; i++ {
+			pc, _ := lm.ReadUint32Le(m68kWasmTestCtxOff + m68kCtxOffRetPC)
+			fb, _ := lm.ReadUint32Le(m68kWasmTestCtxOff + m68kCtxOffNeedIOFallback)
+			if pc != m68kWasmTestPC || fb != 0 {
+				break
+			}
+			lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffRetCount, 0)
+			lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffNeedIOFallback, 0)
+			if _, err := blockFn.Call(ctx, uint64(m68kWasmTestCtxOff)); err != nil {
+				t.Fatalf("block re-invoke: %v", err)
+			}
+			c, _ := lm.ReadUint32Le(m68kWasmTestCtxOff + m68kCtxOffRetCount)
+			totalCount += c
+		}
 	}
 
 	var s m68kWasmState
@@ -135,7 +183,7 @@ func runM68KWasmBlock(t *testing.T, program []byte, initD, initA [8]uint32, init
 	}
 	s.sr, _ = lm.ReadUint16Le(m68kWasmTestSROff)
 	s.pc, _ = lm.ReadUint32Le(m68kWasmTestCtxOff + m68kCtxOffRetPC)
-	s.count, _ = lm.ReadUint32Le(m68kWasmTestCtxOff + m68kCtxOffRetCount)
+	s.count = totalCount
 	s.needIOFallback, _ = lm.ReadUint32Le(m68kWasmTestCtxOff + m68kCtxOffNeedIOFallback)
 	s.guest, _ = lm.Read(m68kWasmTestGuestOff, uint32(len(mem)))
 	for i := 0; i < 8; i++ {
@@ -164,15 +212,15 @@ func runM68KWasmInterp(t *testing.T, program []byte, initD, initA [8]uint32, ini
 			cpu.FPU.SetFP64(i, math.Float64frombits(v))
 		}
 		cpu.FPU.FPSR = fp.fpsr
+		cpu.FPU.FPCR = fp.fpcr
 	}
 	cpu.SR = initSR
 	cpu.PC = m68kWasmTestPC
-	// The minimal wasm backend does not yet enforce the stack floor/ceiling
-	// (deferred to milestone 6, like the arm64 review fix). Relax the
-	// interpreter's bounds so the differential compares the push/pop mechanics
-	// against the small test RAM rather than the default 0x00FE0000 floor.
-	cpu.stackLowerBound = 0
-	cpu.stackUpperBound = 0xFFFFFFF0
+	// Both engines run under the same stack floor/ceiling; the harness default
+	// relaxes the interpreter's 0x00FE0000 floor to fit the small test RAM,
+	// and the milestone 6 stack-bound tests override the pair.
+	cpu.stackLowerBound = m68kWasmTestStackBounds[0]
+	cpu.stackUpperBound = m68kWasmTestStackBounds[1]
 	for i := 0; i < steps; i++ {
 		cpu.StepOne()
 	}
@@ -429,6 +477,49 @@ func TestM68KWasm_BranchGrid(t *testing.T) {
 	}
 }
 
+// m68kWasmDiffLoop runs a (possibly self-looping) block with dispatcher-style
+// re-invocation on the wasm side, then drives the interpreter for exactly the
+// number of instructions the block retired, and compares the full state. This
+// covers the milestone 6 structured in-block loops, whose retired count is
+// dynamic, including the budget exit at the loop head.
+func m68kWasmDiffLoop(t *testing.T, name string, initD, initA [8]uint32, initSR uint16, prep func([]byte), dataLo, dataHi uint32, words ...uint16) {
+	t.Helper()
+	saved := m68kWasmTestReinvoke
+	m68kWasmTestReinvoke = true
+	defer func() { m68kWasmTestReinvoke = saved }()
+
+	program := m68kWasmWords(words...)
+	w := runM68KWasmBlock(t, program, initD, initA, initSR, prep, nil)
+	if w.needIOFallback != 0 {
+		t.Fatalf("%s: unexpected NeedIOFallback", name)
+	}
+	if w.count == 0 {
+		t.Fatalf("%s: zero retired count", name)
+	}
+	interp := runM68KWasmInterp(t, program, initD, initA, initSR, int(w.count), prep, nil)
+
+	for i := 0; i < 8; i++ {
+		if interp.DataRegs[i] != w.dregs[i] {
+			t.Errorf("%s: D%d interp=%08X wasm=%08X", name, i, interp.DataRegs[i], w.dregs[i])
+		}
+		if interp.AddrRegs[i] != w.aregs[i] {
+			t.Errorf("%s: A%d interp=%08X wasm=%08X", name, i, interp.AddrRegs[i], w.aregs[i])
+		}
+	}
+	if interp.SR&0x1F != w.sr&0x1F {
+		t.Errorf("%s: CCR interp=%02X wasm=%02X", name, interp.SR&0x1F, w.sr&0x1F)
+	}
+	if interp.PC != w.pc {
+		t.Errorf("%s: PC interp=%08X wasm=%08X (retired=%d)", name, interp.PC, w.pc, w.count)
+	}
+	for a := dataLo; a < dataHi; a++ {
+		if interp.memory[a] != w.guest[a] {
+			t.Errorf("%s: guest[%04X] interp=%02X wasm=%02X", name, a, interp.memory[a], w.guest[a])
+			break
+		}
+	}
+}
+
 func TestM68KWasm_DBccGrid(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -447,7 +538,10 @@ func TestM68KWasm_DBccGrid(t *testing.T) {
 					var initD, initA [8]uint32
 					initD[0] = cv
 					initD[3] = cv
-					m68kWasmDiffMem(t, tc.name, initD, initA, 0x2000|ccr, 1, nil, 0, 0, tc.words...)
+					// These single-instruction DBcc blocks target their own
+					// start PC, so milestone 6 compiles them as structured
+					// in-block loops with a dynamic retired count.
+					m68kWasmDiffLoop(t, tc.name, initD, initA, 0x2000|ccr, nil, 0, 0, tc.words...)
 				}
 			}
 		})
@@ -514,6 +608,331 @@ func TestM68KWasm_FPUGrid(t *testing.T) {
 					seed.fp[0] = math.Float64bits(a) // src FP0
 					seed.fp[1] = math.Float64bits(b) // dst FP1
 					m68kWasmDiffFP(t, o.name, seed, 1, fpCase(0, 1, o.opmode)...)
+				}
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 6
+// ---------------------------------------------------------------------------
+
+// TestM68KWasm_RMWMemGrid covers the read-modify-write ALU forms with a memory
+// destination: ADD/SUB/AND/OR/EOR Dn,<ea> and ADDQ/SUBQ #q,<ea>.
+func TestM68KWasm_RMWMemGrid(t *testing.T) {
+	prep := seedMemPattern(0x5F00, 0x6200)
+	cases := []struct {
+		name  string
+		words []uint16
+		count int
+	}{
+		{"ADD.L D0,(A1)", []uint16{0xD191}, 1},
+		{"ADD.W D0,(A1)", []uint16{0xD151}, 1},
+		{"ADD.B D0,(A1)", []uint16{0xD111}, 1},
+		{"SUB.L D0,(A1)", []uint16{0x9191}, 1},
+		{"SUB.W D0,(A1)+", []uint16{0x9159}, 1},
+		{"SUB.B D0,-(A6)", []uint16{0x9126}, 1},
+		{"AND.L D0,(A1)", []uint16{0xC191}, 1},
+		{"AND.B D0,(8,A1)", []uint16{0xC129, 0x0008}, 1},
+		{"OR.W D0,(A1)", []uint16{0x8151}, 1},
+		{"OR.L D0,(abs.W)", []uint16{0x81B8, 0x6000}, 1},
+		{"EOR.L D0,(A1)", []uint16{0xB191}, 1},
+		{"EOR.W D0,(A1)+", []uint16{0xB159}, 1},
+		{"EOR.B D0,(-4,A1)", []uint16{0xB129, 0xFFFC}, 1},
+		{"ADDQ.L #1,(A1)", []uint16{0x5291}, 1},
+		{"ADDQ.W #8,(A1)", []uint16{0x5051}, 1},
+		{"ADDQ.B #4,(A1)+", []uint16{0x5819}, 1},
+		{"SUBQ.L #2,(A1)", []uint16{0x5591}, 1},
+		{"SUBQ.W #1,-(A6)", []uint16{0x5366}, 1},
+		{"SUBQ.B #3,(8,A1)", []uint16{0x5729, 0x0008}, 1},
+		{"ADDQ.L #1,(abs.W)", []uint16{0x52B8, 0x6000}, 1},
+		{"chain ADD.L D0,(A1)/BEQ", []uint16{0xD191, 0x6702}, 2},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			for _, d0 := range []uint32{0x00000000, 0x00000001, 0x7FFFFFFF, 0x80000000, 0xFFFFFFFF, 0xCAFEF00D} {
+				var initD, initA [8]uint32
+				initD[0] = d0
+				initA[1] = 0x6000
+				initA[6] = 0x6100
+				for _, ccr := range []uint16{0x00, 0x1F} {
+					m68kWasmDiffMem(t, tc.name, initD, initA, 0x2000|ccr, tc.count, prep, 0x5F00, 0x6200, tc.words...)
+				}
+			}
+		})
+	}
+}
+
+// TestM68KWasm_StackBounds proves the milestone 6 stack floor/ceiling guards:
+// a push that would cross the floor and a pop at or above the ceiling bail to
+// the interpreter before any side effect, matching Push32/Pop32 bus errors.
+func TestM68KWasm_StackBounds(t *testing.T) {
+	saved := m68kWasmTestStackBounds
+	defer func() { m68kWasmTestStackBounds = saved }()
+
+	t.Run("BSR under floor bails", func(t *testing.T) {
+		m68kWasmTestStackBounds = [2]uint32{0x7000, 0xFFFFFFF0}
+		program := m68kWasmWords(0x7405, 0x6100, 0x0FFC) // moveq #5,d2 ; bsr.w
+		var initD, initA [8]uint32
+		initA[7] = 0x7002 // push would land at 0x6FFE < floor
+		w := runM68KWasmBlock(t, program, initD, initA, 0x2000, nil, nil)
+		if w.needIOFallback == 0 {
+			t.Fatalf("expected NeedIOFallback on stack-floor violation")
+		}
+		if w.count != 1 || w.pc != m68kWasmTestPC+2 {
+			t.Errorf("bail count=%d pc=%08X, want 1 / %08X", w.count, w.pc, m68kWasmTestPC+2)
+		}
+		if w.aregs[7] != 0x7002 {
+			t.Errorf("A7 changed to %08X on bailed push", w.aregs[7])
+		}
+	})
+
+	t.Run("JSR wrap bails", func(t *testing.T) {
+		m68kWasmTestStackBounds = [2]uint32{0, 0xFFFFFFF0}
+		program := m68kWasmWords(0x4EA9, 0x0008) // jsr (8,A1)
+		var initD, initA [8]uint32
+		initA[1] = 0x2000
+		initA[7] = 0x0002 // oldSP < 4: Push32 underflow wrap
+		w := runM68KWasmBlock(t, program, initD, initA, 0x2000, nil, nil)
+		if w.needIOFallback == 0 {
+			t.Fatalf("expected NeedIOFallback on push wrap")
+		}
+		if w.aregs[7] != 0x0002 {
+			t.Errorf("A7 changed to %08X on bailed push", w.aregs[7])
+		}
+	})
+
+	t.Run("RTS above ceiling bails", func(t *testing.T) {
+		m68kWasmTestStackBounds = [2]uint32{0, 0x7000}
+		program := m68kWasmWords(0x4E75) // rts
+		var initD, initA [8]uint32
+		initA[7] = 0x7000 // A7 >= ceiling: Pop32 bus error
+		w := runM68KWasmBlock(t, program, initD, initA, 0x2000, nil, nil)
+		if w.needIOFallback == 0 {
+			t.Fatalf("expected NeedIOFallback on stack-ceiling violation")
+		}
+		if w.aregs[7] != 0x7000 {
+			t.Errorf("A7 changed to %08X on bailed pop", w.aregs[7])
+		}
+	})
+
+	t.Run("bounded push/pop still runs", func(t *testing.T) {
+		m68kWasmTestStackBounds = [2]uint32{0x6000, 0x7800}
+		var initD, initA [8]uint32
+		initA[1] = 0x2000
+		initA[7] = 0x7000
+		m68kWasmDiffMem(t, "JSR in bounds", initD, initA, 0x2000, 1, nil, 0x6F00, 0x7100, 0x4E91)
+	})
+}
+
+// TestM68KWasm_FPUGridM6 covers the milestone 6 FPU additions: FSGLMUL,
+// FSGLDIV, FINTRZ and FINT across all four FPCR rounding modes.
+func TestM68KWasm_FPUGridM6(t *testing.T) {
+	vals := []float64{0.0, 1.0, -1.0, 2.5, -3.75, 0.5, -0.5, 1.5, -2.5,
+		1e300, -1e-300, math.Inf(1), math.Inf(-1), math.NaN(), 123456.789, -0.0}
+	fpCase := func(src, dst, opmode int) []uint16 {
+		return []uint16{0xF200, uint16(src<<10 | dst<<7 | opmode)}
+	}
+	t.Run("FSGLMUL", func(t *testing.T) {
+		for _, a := range vals {
+			for _, b := range vals {
+				seed := &m68kFPSeed{}
+				seed.fp[0] = math.Float64bits(a)
+				seed.fp[1] = math.Float64bits(b)
+				m68kWasmDiffFP(t, "FSGLMUL", seed, 1, fpCase(0, 1, 0x27)...)
+			}
+		}
+	})
+	t.Run("FSGLDIV", func(t *testing.T) {
+		for _, a := range vals {
+			for _, b := range vals {
+				seed := &m68kFPSeed{}
+				seed.fp[0] = math.Float64bits(a)
+				seed.fp[1] = math.Float64bits(b)
+				m68kWasmDiffFP(t, "FSGLDIV", seed, 1, fpCase(0, 1, 0x24)...)
+			}
+		}
+	})
+	t.Run("FINTRZ", func(t *testing.T) {
+		for _, a := range vals {
+			seed := &m68kFPSeed{}
+			seed.fp[0] = math.Float64bits(a)
+			m68kWasmDiffFP(t, "FINTRZ", seed, 1, fpCase(0, 1, 0x03)...)
+		}
+	})
+	for mode := uint32(0); mode < 4; mode++ {
+		mode := mode
+		t.Run("FINT", func(t *testing.T) {
+			for _, a := range vals {
+				seed := &m68kFPSeed{fpcr: mode << 4}
+				seed.fp[0] = math.Float64bits(a)
+				m68kWasmDiffFP(t, "FINT", seed, 1, fpCase(0, 1, 0x01)...)
+			}
+		})
+	}
+}
+
+// TestM68KWasm_LoopGrid covers multi-instruction structured in-block loops:
+// DBcc and backward Bcc whose target is the block start, with register and
+// memory bodies, across counter values that exercise the not-taken path, the
+// full loop and the budget exit with dispatcher-style re-entry.
+func TestM68KWasm_LoopGrid(t *testing.T) {
+	prep := seedMemPattern(0x5F00, 0x6200)
+	counters := []uint32{0x00000000, 0x00000001, 0x00000005, 0x000000FF, 0x00000801, 0x0000FFFF, 0x00010003}
+	cases := []struct {
+		name  string
+		words []uint16
+	}{
+		// addq.l #1,D1 ; dbf D0,<-4>  (target = block start)
+		{"ADDQ/DBF", []uint16{0x5281, 0x51C8, 0xFFFC}},
+		// add.l D1,D2 ; addq.l #1,D1 ; dbf D0,<-6>
+		{"ADD/ADDQ/DBF", []uint16{0xD481, 0x5281, 0x51C8, 0xFFFA}},
+		// move.b D1,(A1)+ ; addq.b #1,D1 ; dbf D0,<-6>  (memory store body)
+		{"MOVE(A1)+/DBF", []uint16{0x1281, 0x5201, 0x51C8, 0xFFFA}},
+		// add.l #-1 via subq to D0 ; bne <-4>  (Bcc backward loop)
+		{"SUBQ/BNE", []uint16{0x5380, 0x66FC}},
+		// clr.w (A1) ; addq.l #2,A1 ; subq.l #1,D0 ; bne <-8>
+		{"CLR/ADDQ.A/SUBQ/BNE", []uint16{0x4251, 0x5489, 0x5380, 0x66F8}},
+		// RMW body: addq.w #1,(A1) ; dbf D0,<-4>
+		{"ADDQ.W(A1)/DBF", []uint16{0x5251, 0x51C8, 0xFFFC}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			for _, cv := range counters {
+				subqFirst := tc.name == "SUBQ/BNE" || tc.name == "CLR/ADDQ.A/SUBQ/BNE"
+				if subqFirst && cv == 0 {
+					continue // subq-first loop with 0 wraps 4G iterations
+				}
+				if tc.name == "CLR/ADDQ.A/SUBQ/BNE" && cv > 0x801 {
+					continue // A1 += 2 per iteration would run past guest RAM
+				}
+				var initD, initA [8]uint32
+				initD[0] = cv
+				initD[1] = 0x00000041
+				initA[1] = 0x6000
+				for _, ccr := range []uint16{0x00, 0x1F} {
+					m68kWasmDiffLoop(t, tc.name, initD, initA, 0x2000|ccr, prep, 0x5F00, 0x6200, tc.words...)
+				}
+			}
+		})
+	}
+}
+
+// TestM68KWasm_LoopSMC proves a loop body store that hits a compiled-code page
+// (per the code-page bitmap) exits the loop with NeedInval-style early return:
+// the store lands, the instruction is retired, and the resume PC is the next
+// instruction, so the dispatcher can invalidate and recompile.
+func TestM68KWasm_LoopSMC(t *testing.T) {
+	savedPages := m68kWasmTestCodePages
+	m68kWasmTestCodePages = true
+	defer func() { m68kWasmTestCodePages = savedPages }()
+
+	// move.w D1,(A1) ; dbf D0,<-4>. A1 points into the block's own page
+	// (0x1000-0x1FFF), beyond the code bytes so the stamp itself stays valid.
+	program := m68kWasmWords(0x3281, 0x51C8, 0xFFFC)
+	var initD, initA [8]uint32
+	initD[0] = 5      // would loop 6 times without the SMC exit
+	initD[1] = 0x4E71 // value stored
+	initA[1] = 0x1800
+	w := runM68KWasmBlock(t, program, initD, initA, 0x2000, nil, nil)
+	if w.needIOFallback != 0 {
+		t.Fatalf("SMC exit must not be an I/O bail")
+	}
+	if w.count != 1 {
+		t.Errorf("RetCount = %d, want 1 (store retired, loop exited)", w.count)
+	}
+	if w.pc != m68kWasmTestPC+2 {
+		t.Errorf("resume PC = %08X, want %08X (the dbf)", w.pc, m68kWasmTestPC+2)
+	}
+	if w.guest[0x1800] != 0x4E || w.guest[0x1801] != 0x71 {
+		t.Errorf("store did not land: %02X %02X", w.guest[0x1800], w.guest[0x1801])
+	}
+	if w.dregs[0] != 5 {
+		t.Errorf("D0 = %08X, want 5 (dbf not executed)", w.dregs[0])
+	}
+}
+
+// TestM68KWasm_CCRLivenessShape proves the milestone 6 within-block CCR
+// liveness elision changes the emitted module: a producer whose condition
+// codes are fully overwritten before any observation point compiles smaller
+// with elision on than off, while a block whose every producer is live emits
+// identical bytes under both settings.
+func TestM68KWasm_CCRLivenessShape(t *testing.T) {
+	compile := func(t *testing.T, elide bool, words ...uint16) []byte {
+		t.Helper()
+		if elide {
+			t.Setenv("M68K_WASM_CCR_LIVENESS", "1")
+		} else {
+			t.Setenv("M68K_WASM_CCR_LIVENESS", "0")
+		}
+		program := m68kWasmWords(words...)
+		mem := make([]byte, m68kWasmTestGuestLen)
+		copy(mem[m68kWasmTestPC:], program)
+		all := m68kScanBlock(mem, m68kWasmTestPC)
+		var instrs []M68KJITInstr
+		for i := range all {
+			if all[i].pcOffset >= uint32(len(program)) {
+				break
+			}
+			instrs = append(instrs, all[i])
+		}
+		bytes, err := m68kWasmCompileBlock(instrs, mem, m68kWasmTestPC)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		return bytes
+	}
+
+	// add.l D0,D1 ; add.l D2,D1 ; bra — the first ADD's full CCR output is
+	// overwritten by the second before the branch reads it: dead producer.
+	deadOn := compile(t, true, 0xD280, 0xD282, 0x6002)
+	deadOff := compile(t, false, 0xD280, 0xD282, 0x6002)
+	if len(deadOn) >= len(deadOff) {
+		t.Errorf("dead-producer block: elided %d bytes >= unelided %d bytes", len(deadOn), len(deadOff))
+	}
+
+	// add.l D0,D1 ; beq — the ADD feeds the branch: live producer, no change.
+	liveOn := compile(t, true, 0xD280, 0x6702)
+	liveOff := compile(t, false, 0xD280, 0x6702)
+	if len(liveOn) != len(liveOff) {
+		t.Errorf("live-producer block: elided %d bytes != unelided %d bytes", len(liveOn), len(liveOff))
+	}
+}
+
+// TestM68KWasm_CCRLivenessParity re-runs representative dead-producer chains
+// with elision explicitly off and on, asserting identical architectural state
+// against the interpreter both ways. (The whole differential suite already
+// runs with the default-on setting.)
+func TestM68KWasm_CCRLivenessParity(t *testing.T) {
+	cases := []struct {
+		name  string
+		words []uint16
+		count int
+	}{
+		{"ADD;ADD dead first", []uint16{0xD280, 0xD282}, 2},
+		{"ADD;AND keeps X", []uint16{0xD280, 0xC282}, 2},
+		{"MOVEQ;ADDQ;CMP chain", []uint16{0x7A05, 0x5285, 0xBA80}, 3},
+		{"CLR;TST;MOVE chain", []uint16{0x4283, 0x4A80, 0x2400}, 3},
+	}
+	for _, setting := range []string{"0", "1"} {
+		setting := setting
+		t.Run("elide="+setting, func(t *testing.T) {
+			t.Setenv("M68K_WASM_CCR_LIVENESS", setting)
+			for _, tc := range cases {
+				for _, dv := range m68kWasmGrid {
+					for _, sv := range m68kWasmGrid {
+						var initD, initA [8]uint32
+						initD[0] = sv
+						initD[1] = dv
+						initD[2] = dv ^ 0x5A5A5A5A
+						initD[5] = sv
+						for _, ccr := range []uint16{0x00, 0x1F} {
+							m68kWasmDiff(t, tc.name, initD, initA, 0x2000|ccr, tc.count, tc.words...)
+						}
+					}
 				}
 			}
 		})

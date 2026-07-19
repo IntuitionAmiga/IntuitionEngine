@@ -524,4 +524,80 @@ Deferred to milestone 6 (documented, not silently capped): read-modify-write
 ALU to a memory destination, structured in-block loops for proven-in-block
 backward branches (the correct exit-to-driver path is implemented), native
 stack floor/ceiling enforcement, observed-region promotion, and FSGLMUL/FSGLDIV/
-FINT/FINTRZ plus every transcendental (interpreter fallback).
+FINT/FINTRZ plus every transcendental (interpreter fallback). Milestone 6 below
+delivers all of these except observed regions and the transcendentals.
+
+## Milestone 6 delivered: wasm capability completion
+
+Every slice was implemented behind the backend-capability gate: a failing
+behavioural or differential test first, the smallest slice second, wazero
+differential parity third. The wasm differential suite is 149 subtests green.
+
+- Read-modify-write ALU to memory: ADD/SUB/AND/OR/EOR Dn,<ea> and ADDQ/SUBQ
+  #q,<ea> for every non-indexed memory EA, byte/word/long. One EA computation,
+  one guard, then a big-endian read-modify-write against the captured address,
+  so a bail still precedes every side effect and CCR change. AND/OR/EOR keep
+  the interpreter's SetFlagsNZ split (V/C/X preserved); ADD/SUB/ADDQ/SUBQ set
+  the full NZVC+X set via the same top-of-word alignment as the register forms.
+  PC-relative and An destinations reject (not data alterable).
+- Native stack floor/ceiling enforcement: BSR/JSR pushes bail when A7 would
+  wrap below zero or the decremented A7 falls under cpu.stackLowerBound; RTS
+  pops bail when A7 is at or above cpu.stackUpperBound. The guards run before
+  any state mutation, mirroring Push32/Pop32, so the interpreter re-executes
+  the instruction and raises the architectural bus error. The context gained
+  live StackLowerBoundPtr/StackUpperBoundPtr entries in the browser dispatcher
+  and the test harness alike (the milestone 5 harness relaxation is gone: both
+  engines now run under the same bounds).
+- Structured in-block loops: a supported prefix ending in a Bcc or DBcc whose
+  static target is the block start compiles as a wasm loop. The taken edge
+  stays inside the function; a retired-count local accumulates completed
+  iterations, so RetCount (and every bail's count) is now dynamic and the
+  dispatcher consumes RetCount instead of the static instruction count. A
+  1024-iteration budget bounds interrupt and yield latency: on exhaustion the
+  block exits at the loop head and the dispatcher re-enters after its boundary
+  work. M68K_WASM_LOOPS=0 is the kill switch.
+- Loop self-modification: the dispatcher now maintains the per-4KiB code-page
+  bitmap (CodePageBitmapPtr). In loop mode every store checks NeedInval after
+  the SMC probe and exits the loop with the completed instruction retired and
+  the resume PC at its successor, so a loop can never re-run bytes it just
+  overwrote; the dispatcher then drops the block cache and page marks. The
+  pre-entry stamp check remains the straight-line backstop.
+- 68881 additions: FSGLMUL/FSGLDIV (both operands demoted to f32, the multiply
+  or divide performed in f32, then widened, bit-exact with the interpreter's
+  float32 arithmetic) and FINT/FINTRZ. FINTRZ is f64.trunc; FINT selects
+  nearest-even/trunc/floor/ceil from the FPCR rounding-mode bits at runtime,
+  wasm having all four rounding instructions. The shared decode's SSE4.1 gate
+  on FINT/FINTRZ is an amd64 host concern, so the wasm backend decodes those
+  two forms itself with identical field checks. Verified over a value grid
+  including NaN, infinities and negative zero, and all four FPCR modes.
+- Within-block CCR liveness elision (default on; M68K_WASM_CCR_LIVENESS=0
+  disables): consumes the shared architecture-neutral m68kCCRLiveness
+  analysis, exactly as arm64 does. A producer whose written CCR bits are all
+  overwritten before any consumer, bail-capable instruction or block exit
+  skips its flag materialisation; the modelled-CCR local simply retains the
+  prior value for bits that are proven overwritten. In loop mode,
+  memory-storing instructions are pinned live because the mid-loop SMC exit
+  publishes the CCR after them (an observation point the straight-line
+  analysis does not model). A shape test proves the dead-producer block
+  shrinks and the live-producer block is byte-identical; a parity grid runs
+  representative chains with the flag off and on.
+
+Explicit deferrals and decisions (milestone 6):
+
+- JSR leaf-call fusion: no backend lowering was added because the M68020
+  frontend is dormant here — no production call site sets fusedFlag
+  (m68kAnalyzeJSRLeafFusion has only test callers), so no fused instruction
+  stream can reach any backend today. The wasm prefix admission rejects
+  fusedFlag defensively so a future frontend change cannot silently
+  miscompile. Lowering belongs with reviving the frontend, not before it.
+- Observed-region promotion and multi-block regions: deferred per the plan
+  ("unless a browser workload measures a need"). No browser workload has been
+  measured against the wasm M68020 backend yet; the structured in-block loop
+  covers the dominant hot shape (the self-loop) without region machinery.
+- Block chaining: not applicable in the native form. wasm blocks are separate
+  module instances invoked by the Go dispatcher; there is no native tail-branch
+  to patch. The dispatcher loop plus the in-block loop already remove the two
+  dominant dispatch overheads.
+- Transcendentals, extended/packed operand formats, FPU EA operand forms and
+  control/FMOVEM: interpreter fallback, the same split every native backend
+  draws.

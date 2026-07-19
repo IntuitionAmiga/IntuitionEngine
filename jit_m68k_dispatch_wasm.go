@@ -21,9 +21,11 @@
 // Self-modifying code. Correctness rests on a stamp check before every entry:
 // the guest bytes a block covers are copied at compile time and compared against
 // live memory before the block runs, so a modified block recompiles rather than
-// executing stale code. Blocks are straight-line (no intra-block re-execution of
-// modified bytes), so the pre-entry check is sufficient and the native-exit SMC
-// path (CodePageBitmapPtr) is left disabled here.
+// executing stale code. Milestone 6 adds structured in-block loops, which can
+// re-execute their own body without returning to the dispatcher, so the
+// dispatcher also maintains a per-4KiB code-page bitmap (CodePageBitmapPtr): a
+// store into a compiled-code page sets NeedInval, a loop exits at that point,
+// and the dispatcher drops the block cache.
 //
 // Interpreter fallback. A block that hits a guarded I/O access or a RAM bound
 // exits before the faulting instruction's side effects with NeedIOFallback set,
@@ -75,6 +77,12 @@ type m68kWasmRuntime struct {
 	ceiling   uint32 // profile-visible RAM ceiling (ProfileTopOfRAM); the guard bound
 	cache     map[uint32]*m68kWasmBlock
 	blacklist map[uint32]bool
+	// codePageBitmap marks each 4 KiB guest page holding compiled code. Stores
+	// into a marked page set NeedInval, which lets a structured in-block loop
+	// (milestone 6) exit before re-running self-modified code; the dispatcher
+	// then drops the cache. Straight-line blocks stay safe via the pre-entry
+	// stamp check either way.
+	codePageBitmap []byte
 }
 
 // m68kWasmJITEnabled reports whether the wasm M68020 JIT should run: default on,
@@ -131,6 +139,7 @@ func newM68KWasmRuntime(cpu *M68KCPU) *m68kWasmRuntime {
 		cache:     map[uint32]*m68kWasmBlock{},
 		blacklist: map[uint32]bool{},
 	}
+	rt.codePageBitmap = make([]byte, (rt.ceiling>>12)+1)
 	rt.ctxAddr = int(uintptr(unsafe.Pointer(&rt.ctxImage[0])))
 	rt.fillStaticCtx()
 	return rt
@@ -166,8 +175,12 @@ func (rt *m68kWasmRuntime) fillStaticCtx() {
 		putPtr(m68kCtxOffFPCRPtr, unsafe.Pointer(&cpu.FPU.FPCR))
 		putPtr(m68kCtxOffFPIARPtr, unsafe.Pointer(&cpu.FPU.FPIAR))
 	}
-	// CodePageBitmapPtr stays zero: native-exit SMC detection is disabled; the
-	// pre-entry stamp check provides correctness.
+	// Stack floor/ceiling for the milestone 6 push/pop guards (BSR/JSR/RTS).
+	putPtr(m68kCtxOffStackLowerBoundPtr, unsafe.Pointer(&cpu.stackLowerBound))
+	putPtr(m68kCtxOffStackUpperBoundPtr, unsafe.Pointer(&cpu.stackUpperBound))
+	// Code-page bitmap: stores into compiled-code pages set NeedInval so
+	// structured in-block loops exit before re-running self-modified code.
+	putPtr(m68kCtxOffCodePageBitmapPtr, unsafe.Pointer(&rt.codePageBitmap[0]))
 }
 
 func (rt *m68kWasmRuntime) ctxU32(off int) uint32 {
@@ -226,6 +239,9 @@ func (rt *m68kWasmRuntime) compile(pc uint32) (blk *m68kWasmBlock) {
 	}
 	guest := make([]byte, endPC-pc)
 	copy(guest, cpu.memory[pc:endPC])
+	for page := pc >> 12; page <= (endPC-1)>>12 && int(page) < len(rt.codePageBitmap); page++ {
+		rt.codePageBitmap[page] = 1
+	}
 	return &m68kWasmBlock{fn: fn, startPC: pc, endPC: endPC, instrCount: prefix, guest: guest}
 }
 
@@ -347,6 +363,18 @@ func (rt *m68kWasmRuntime) dispatch() {
 		}
 		cpu.PC = rt.ctxU32(m68kCtxOffRetPC)
 
+		if rt.ctxU32(m68kCtxOffNeedInval) != 0 {
+			// A store hit a compiled-code page (a loop's early exit, or any
+			// block writing over code). Drop every cached block and the page
+			// marks; live blocks re-mark on recompile. The stamp check would
+			// catch a stale straight-line block anyway; this keeps loops safe.
+			rt.cache = map[uint32]*m68kWasmBlock{}
+			rt.blacklist = map[uint32]bool{}
+			for i := range rt.codePageBitmap {
+				rt.codePageBitmap[i] = 0
+			}
+		}
+
 		if rt.ctxU32(m68kCtxOffNeedIOFallback) != 0 {
 			// The block exited before a guarded access's side effects; RetCount
 			// holds the retired predecessors and PC the faulting instruction.
@@ -358,7 +386,9 @@ func (rt *m68kWasmRuntime) dispatch() {
 			continue
 		}
 
-		instructionCount += uint64(blk.instrCount)
+		// RetCount is authoritative: a structured in-block loop (milestone 6)
+		// retires a dynamic multiple of the block's instruction count.
+		instructionCount += uint64(rt.ctxU32(m68kCtxOffRetCount))
 		if cpu.PerfEnabled {
 			cpu.InstructionCount = instructionCount
 		}

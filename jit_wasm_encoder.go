@@ -145,6 +145,9 @@ const (
 	wasmOpF64Mul  byte = 0xa2
 	wasmOpF64Div  byte = 0xa3
 
+	wasmOpF32Mul byte = 0x94
+	wasmOpF32Div byte = 0x95
+
 	wasmOpF32DemoteF64  byte = 0xb6
 	wasmOpF64PromoteF32 byte = 0xbb
 

@@ -47,6 +47,8 @@ License: GPLv3 or later
 
 package main
 
+import "os"
+
 // CCR bit positions inside the modelled CCR local (M68K SR low-byte order).
 const (
 	wm68kBitC = 0
@@ -80,17 +82,28 @@ const (
 	wm68kLF1    = 17 // scratch (f64)
 	wm68kLF2    = 18 // scratch (f64)
 	wm68kLF3    = 19 // scratch (f64)
+	// Milestone 6 loop support (declared after the f64 group; wasm local
+	// indices are stable because groups are declared in order).
+	wm68kLRet    = 20 // retired instructions from completed loop iterations (i32)
+	wm68kLBudget = 21 // remaining loop-iteration budget (i32)
 )
 
+// wm68kLoopBudget bounds the iterations a structured in-block loop may run
+// before the block exits to the dispatcher, so interrupt sampling and the
+// cooperative yield keep their latency bound. Mirrors the role of the native
+// ChainBudget.
+const wm68kLoopBudget = 1024
+
 // wm68kLocalDecl is the extra-local declaration list for addFunc (params are
-// declared by the signature). 11 i32, 2 i64, 4 f64.
+// declared by the signature). 13 i32, 2 i64, 4 f64, then 2 i32 (loop state).
 func wm68kLocalDecl() []byte {
-	locals := make([]byte, 0, 19)
+	locals := make([]byte, 0, 21)
 	for i := 0; i < 13; i++ {
 		locals = append(locals, wasmTypeI32)
 	}
 	locals = append(locals, wasmTypeI64, wasmTypeI64)
 	locals = append(locals, wasmTypeF64, wasmTypeF64, wasmTypeF64, wasmTypeF64)
+	locals = append(locals, wasmTypeI32, wasmTypeI32)
 	return locals
 }
 
@@ -102,15 +115,17 @@ func wm68kLocalDecl() []byte {
 const (
 	wm68kClassNOP = iota
 	wm68kClassMOVEQ
-	wm68kClassMOVE    // MOVE.size <ea>,<ea> (reg/imm operands only in this slice)
-	wm68kClassMOVEA   // MOVEA.size <ea>,An
-	wm68kClassALUToD  // ADD/SUB/AND/OR/CMP <ea>,Dn
-	wm68kClassALUToD2 // ADD/SUB/AND/OR/EOR Dn,<ea=Dn>
-	wm68kClassQuickD  // ADDQ/SUBQ #q,Dn
-	wm68kClassQuickA  // ADDQ/SUBQ #q,An (no flags)
-	wm68kClassImmALU  // ADDI/SUBI/ANDI/ORI/EORI/CMPI #imm,Dn
-	wm68kClassTST     // TST Dn
-	wm68kClassCLR     // CLR Dn
+	wm68kClassMOVE     // MOVE.size <ea>,<ea> (reg/imm operands only in this slice)
+	wm68kClassMOVEA    // MOVEA.size <ea>,An
+	wm68kClassALUToD   // ADD/SUB/AND/OR/CMP <ea>,Dn
+	wm68kClassALUToD2  // ADD/SUB/AND/OR/EOR Dn,<ea=Dn>
+	wm68kClassQuickD   // ADDQ/SUBQ #q,Dn
+	wm68kClassQuickA   // ADDQ/SUBQ #q,An (no flags)
+	wm68kClassImmALU   // ADDI/SUBI/ANDI/ORI/EORI/CMPI #imm,Dn
+	wm68kClassTST      // TST Dn
+	wm68kClassCLR      // CLR Dn
+	wm68kClassALUToMem // ADD/SUB/AND/OR/EOR Dn,<ea=mem> (read-modify-write)
+	wm68kClassQuickM   // ADDQ/SUBQ #q,<ea=mem> (read-modify-write)
 	// Block terminators (control flow). Each ends the block and publishes a
 	// resume PC to the dispatcher; the wasm block returns after emitting one.
 	wm68kClassBRA  // unconditional branch (q = target)
@@ -168,6 +183,7 @@ type wm68kOperand struct {
 	memKind int    // wm68kMem* when kind == wm68kOpMem
 	disp    int32  // (d16,An) displacement
 	abs     uint32 // constant address for wm68kMemAbs
+	pcRel   bool   // wm68kMemAbs came from (d16,PC): never a legal destination
 }
 
 func (o wm68kOperand) isMem() bool { return o.kind == wm68kOpMem }
@@ -302,6 +318,12 @@ func m68kWasmDecode(ji *M68KJITInstr, memory []byte, instrPC uint32) (wm68kOp, b
 		}
 		cmdWord := uint16(memory[instrPC+2])<<8 | uint16(memory[instrPC+3])
 		fpOp, src, dst, prec, ok := m68kDecodeNativeFPURegToReg(op, cmdWord)
+		if !ok {
+			// The shared decode gates FINT/FINTRZ on host SSE4.1 (an amd64
+			// concern); wasm always has the full f64 rounding set, so decode
+			// those two forms directly with the same field checks.
+			fpOp, src, dst, prec, ok = wm68kDecodeFPURoundToInt(op, cmdWord)
+		}
 		if !ok || !wm68kFPUEmittable(fpOp) {
 			return bad, false
 		}
@@ -386,9 +408,6 @@ func m68kWasmDecode(ji *M68KJITInstr, memory []byte, instrPC uint32) (wm68kOp, b
 		if (op>>6)&3 == 3 {
 			return bad, false
 		}
-		if ji.length != 2 {
-			return bad, false
-		}
 		size := wm68kSizeFromBits((op >> 6) & 3)
 		q := uint32((op >> 9) & 7)
 		if q == 0 {
@@ -399,14 +418,28 @@ func m68kWasmDecode(ji *M68KJITInstr, memory []byte, instrPC uint32) (wm68kOp, b
 		reg := op & 7
 		switch mode {
 		case 0:
+			if ji.length != 2 {
+				return bad, false
+			}
 			return wm68kOp{class: wm68kClassQuickD, size: size, q: q, sub: sub, dst: wm68kOperand{kind: wm68kOpDn, reg: reg}}, true
 		case 1:
+			if ji.length != 2 {
+				return bad, false
+			}
 			if size == 1 {
 				return bad, false // byte ADDQ/SUBQ to An is illegal
 			}
 			return wm68kOp{class: wm68kClassQuickA, size: 4, q: q, sub: sub, dst: wm68kOperand{kind: wm68kOpAn, reg: reg}}, true
+		default: // memory destination (milestone 6 RMW)
+			dst, ext, ok := wm68kDecodeEA(mode, reg, size, memory, instrPC+2)
+			if !ok || !dst.isMem() || dst.pcRel {
+				return bad, false
+			}
+			if 2+uint16(ext) != ji.length {
+				return bad, false
+			}
+			return wm68kOp{class: wm68kClassQuickM, size: size, q: q, sub: sub, dst: dst}, true
 		}
-		return bad, false
 
 	case op&0xF000 == 0x0000: // immediate ALU group (ORI/ANDI/SUBI/ADDI/EORI/CMPI)
 		alu, ok := wm68kImmALUSelector(op)
@@ -476,15 +509,45 @@ func m68kWasmDecode(ji *M68KJITInstr, memory []byte, instrPC uint32) (wm68kOp, b
 				return wm68kOp{class: wm68kClassALUToD, size: size, alu: alu,
 					src: ea, dst: wm68kOperand{kind: wm68kOpDn, reg: dn}}, true
 			}
-			// Dn,<ea>: RMW to memory is deferred to milestone 6; only Dn dest here.
-			if ea.kind != wm68kOpDn {
+			// Dn,<ea>.
+			if ea.kind == wm68kOpDn {
+				return wm68kOp{class: wm68kClassALUToD2, size: size, alu: alu,
+					src: wm68kOperand{kind: wm68kOpDn, reg: dn}, dst: ea}, true
+			}
+			// Read-modify-write to a memory destination (milestone 6). CMP has
+			// no dir=true form (that encoding is EOR); An and PC-relative
+			// destinations are not data alterable.
+			if !ea.isMem() || ea.pcRel {
 				return bad, false
 			}
-			return wm68kOp{class: wm68kClassALUToD2, size: size, alu: alu,
+			return wm68kOp{class: wm68kClassALUToMem, size: size, alu: alu,
 				src: wm68kOperand{kind: wm68kOpDn, reg: dn}, dst: ea}, true
 		}
 		return bad, false
 	}
+}
+
+// wm68kDecodeFPURoundToInt decodes the FINT/FINTRZ register-to-register forms
+// with the same field checks as m68kDecodeNativeFPURegToReg, bypassing that
+// function's amd64 SSE4.1 gate. Everything else stays rejected.
+func wm68kDecodeFPURoundToInt(opcode, cmdWord uint16) (op m68kFPUNativeOp, src, dst, precision int, ok bool) {
+	if (opcode>>6)&0x7 != 0 {
+		return // not a general FPU instruction
+	}
+	if cmdWord&0x8000 != 0 || (cmdWord>>14)&1 != 0 {
+		return // control register / FMOVEM / EA source
+	}
+	src = int((cmdWord >> 10) & 0x7)
+	dst = int((cmdWord >> 7) & 0x7)
+	baseOp, prec := m68kFPUDecodePrecisionOpmode(cmdWord & 0x7F)
+	precision = prec
+	switch baseOp {
+	case FPU_OP_FINT:
+		return m68kFPUNativeFINT, src, dst, precision, true
+	case FPU_OP_FINTRZ:
+		return m68kFPUNativeFINTRZ, src, dst, precision, true
+	}
+	return 0, 0, 0, 0, false
 }
 
 // wm68kDecodeEA decodes an effective address into an operand and returns the
@@ -530,7 +593,7 @@ func wm68kDecodeEA(mode, reg uint16, size uint32, memory []byte, extPC uint32) (
 			if !ok {
 				return wm68kOperand{}, 0, false
 			}
-			return wm68kOperand{kind: wm68kOpMem, memKind: wm68kMemAbs, abs: uint32(int32(extPC) + d)}, 2, true
+			return wm68kOperand{kind: wm68kOpMem, memKind: wm68kMemAbs, abs: uint32(int32(extPC) + d), pcRel: true}, 2, true
 		case 4: // #imm
 			imm, ok := wm68kReadImm2(memory, extPC, size)
 			if !ok {
@@ -645,6 +708,10 @@ type m68kWasmEmitter struct {
 	// Per-instruction context for mid-block memory bails.
 	curPC      uint32 // guest PC of the instruction being emitted
 	curRetired int    // instructions fully retired before this one
+	curLen     uint32 // byte length of the instruction being emitted
+	// Milestone 6 state.
+	loopMode  bool // block is a structured in-block self-loop
+	flagsDead bool // current instruction's CCR production is provably dead
 }
 
 // flushCCR materialises the modelled CCR into cpu.SR's low byte. Shared by the
@@ -688,6 +755,18 @@ func (e *m68kWasmEmitter) storeCtxLocal(off, local uint32) {
 	e.b.i32Store(2, off)
 }
 
+// storeRetCountPlus publishes RetCount = LRet + c. LRet is zero except in loop
+// blocks, where it accumulates the instructions retired by completed
+// iterations, so every straight-line block keeps its old constant count.
+func (e *m68kWasmEmitter) storeRetCountPlus(c int) {
+	b := e.b
+	b.localGet(wm68kLCtx)
+	b.localGet(wm68kLRet)
+	b.i32Const(int32(c))
+	b.op(wasmOpI32Add)
+	b.i32Store(2, m68kCtxOffRetCount)
+}
+
 // prologue loads the register-file bases, memory base/size and the live CCR.
 func (e *m68kWasmEmitter) prologue() {
 	b := e.b
@@ -713,7 +792,7 @@ func (e *m68kWasmEmitter) prologue() {
 func (e *m68kWasmEmitter) epilogue(retPC uint32, retCount int) {
 	e.flushCCR()
 	e.storeCtxConst(m68kCtxOffRetPC, int32(retPC))
-	e.storeCtxConst(m68kCtxOffRetCount, int32(retCount))
+	e.storeRetCountPlus(retCount)
 }
 
 // ---------------------------------------------------------------------------
@@ -728,7 +807,7 @@ func (e *m68kWasmEmitter) epilogue(retPC uint32, retCount int) {
 func (e *m68kWasmEmitter) emitBail() {
 	e.flushCCR()
 	e.storeCtxConst(m68kCtxOffRetPC, int32(e.curPC))
-	e.storeCtxConst(m68kCtxOffRetCount, int32(e.curRetired))
+	e.storeRetCountPlus(e.curRetired)
 	e.storeCtxConst(m68kCtxOffNeedIOFallback, 1)
 	e.b.op(wasmOpReturn)
 }
@@ -933,6 +1012,22 @@ func (e *m68kWasmEmitter) storeMemValueBE(size, valLocal uint32) {
 		b.memOp(wasmOpI32Store8, 0, 3)
 	}
 	e.emitSMCStoreCheck(size)
+	if e.loopMode {
+		// A structured loop re-executes its own body without returning to the
+		// dispatcher, so a store that hits a compiled-code page (NeedInval set
+		// by the check above) must exit the loop: the modified code could be
+		// this very block. The instruction is complete at this point (flags are
+		// emitted before the store in every loop-eligible path), so resume at
+		// the next instruction with this one counted as retired.
+		b.localGet(wm68kLCtx)
+		b.i32Load(2, m68kCtxOffNeedInval)
+		b.ifVoid()
+		e.flushCCR()
+		e.storeCtxConst(m68kCtxOffRetPC, int32(e.curPC+e.curLen))
+		e.storeRetCountPlus(e.curRetired + 1)
+		b.op(wasmOpReturn)
+		b.end()
+	}
 }
 
 // emitSMCStoreCheck sets NeedInval/InvalAddr/InvalSize when the just-written
@@ -1075,6 +1170,9 @@ func (e *m68kWasmEmitter) storeMemDest(o wm68kOperand, size, valLocal uint32) {
 // dest is in T1, top-aligned source in T2 and top-aligned result in T3. When
 // setX is false (CMP), X is preserved from the current CCR.
 func (e *m68kWasmEmitter) flagsArith(isSub, setX bool) {
+	if e.flagsDead {
+		return // CCR production proven dead by m68kCCRLiveness
+	}
 	b := e.b
 	// C -> T0.
 	if isSub {
@@ -1137,6 +1235,9 @@ func (e *m68kWasmEmitter) flagsArith(isSub, setX bool) {
 // flagsLogicNZ sets N and Z from the top-aligned result in T3, preserving X,
 // V and C (interpreter SetFlagsNZ parity for AND/OR/EOR/NOT).
 func (e *m68kWasmEmitter) flagsLogicNZ() {
+	if e.flagsDead {
+		return // CCR production proven dead by m68kCCRLiveness
+	}
 	b := e.b
 	// CCR = (CCR & (X|V|C)) | Z<<2 | N<<3.
 	b.localGet(wm68kLCCR)
@@ -1159,6 +1260,9 @@ func (e *m68kWasmEmitter) flagsLogicNZ() {
 // flagsMoveNZ sets N and Z from the top-aligned value in T3, clears V and C,
 // preserves X (MOVE/TST).
 func (e *m68kWasmEmitter) flagsMoveNZ() {
+	if e.flagsDead {
+		return // CCR production proven dead by m68kCCRLiveness
+	}
 	b := e.b
 	// CCR = (CCR & X) | Z<<2 | N<<3.
 	b.localGet(wm68kLCCR)
@@ -1180,6 +1284,9 @@ func (e *m68kWasmEmitter) flagsMoveNZ() {
 
 // flagsStatic sets a compile-time N/Z pair (V=C=0, X preserved): MOVEQ, CLR.
 func (e *m68kWasmEmitter) flagsStatic(negative, zero bool) {
+	if e.flagsDead {
+		return // CCR production proven dead by m68kCCRLiveness
+	}
 	b := e.b
 	bits := int32(0)
 	if negative {
@@ -1244,6 +1351,10 @@ func (e *m68kWasmEmitter) emit(op wm68kOp) {
 		e.emitTST(op)
 	case wm68kClassCLR:
 		e.emitCLR(op)
+	case wm68kClassALUToMem:
+		e.emitALUToMem(op)
+	case wm68kClassQuickM:
+		e.emitQuickM(op)
 	case wm68kClassFPU:
 		e.emitFPU(op)
 	}
@@ -1360,6 +1471,86 @@ func (e *m68kWasmEmitter) emitALU(op wm68kOp, dstReg uint16, src wm68kOperand, d
 	}
 }
 
+// emitALUToMem lowers ADD/SUB/AND/OR/EOR Dn,<ea=mem>: one EA computation, one
+// guard, read-modify-write against the fixed address in LEA. The guard (and
+// any (An)+/-(An) commit) runs before every CCR mutation, and the flags are
+// emitted before the store so a loop-mode SMC exit at the store observes the
+// completed instruction's CCR.
+func (e *m68kWasmEmitter) emitALUToMem(op wm68kOp) {
+	b := e.b
+	e.emitEAAddr(op.dst, op.size)
+	e.pushMemValueBE(op.size)
+	b.localSet(wm68kLMV)                  // old destination value
+	mem := wm68kOperand{kind: wm68kOpMem} // pushOperand reads LMV
+	switch op.alu {
+	case wm68kALUAdd, wm68kALUSub:
+		e.stageTopAligned(mem, op.size, wm68kLT1)    // A = dest (memory)
+		e.stageTopAligned(op.src, op.size, wm68kLT2) // B = source Dn
+		b.localGet(wm68kLT1)
+		b.localGet(wm68kLT2)
+		if op.alu == wm68kALUAdd {
+			b.op(wasmOpI32Add)
+		} else {
+			b.op(wasmOpI32Sub)
+		}
+		b.localSet(wm68kLT3)
+		b.localGet(wm68kLT3)
+		if sh := wm68kTopShift(op.size); sh != 0 {
+			b.i32Const(int32(sh))
+			b.op(wasmOpI32ShrU)
+		}
+		b.localSet(wm68kLMB) // sized result for the store
+		e.flagsArith(op.alu == wm68kALUSub, true)
+	default: // AND/OR/EOR: NZ from result, V/C/X preserved
+		e.pushOperand(mem, op.size)
+		e.pushOperand(op.src, op.size)
+		switch op.alu {
+		case wm68kALUAnd:
+			b.op(wasmOpI32And)
+		case wm68kALUOr:
+			b.op(wasmOpI32Or)
+		case wm68kALUEor:
+			b.op(wasmOpI32Xor)
+		}
+		b.localSet(wm68kLMB)
+		b.localGet(wm68kLMB)
+		if sh := wm68kTopShift(op.size); sh != 0 {
+			b.i32Const(int32(sh))
+			b.op(wasmOpI32Shl)
+		}
+		b.localSet(wm68kLT3)
+		e.flagsLogicNZ()
+	}
+	e.storeMemValueBE(op.size, wm68kLMB)
+}
+
+// emitQuickM lowers ADDQ/SUBQ #q,<ea=mem> with full arithmetic flags.
+func (e *m68kWasmEmitter) emitQuickM(op wm68kOp) {
+	b := e.b
+	e.emitEAAddr(op.dst, op.size)
+	e.pushMemValueBE(op.size)
+	b.localSet(wm68kLMV)
+	mem := wm68kOperand{kind: wm68kOpMem}
+	e.stageTopAligned(mem, op.size, wm68kLT1)
+	e.stageTopAlignedImm(op.q, op.size, wm68kLT2)
+	b.localGet(wm68kLT1)
+	b.localGet(wm68kLT2)
+	if op.sub {
+		b.op(wasmOpI32Sub)
+	} else {
+		b.op(wasmOpI32Add)
+	}
+	b.localSet(wm68kLT3)
+	b.localGet(wm68kLT3)
+	if sh := wm68kTopShift(op.size); sh != 0 {
+		b.i32Const(int32(sh))
+		b.op(wasmOpI32ShrU)
+	}
+	b.localSet(wm68kLMB)
+	e.flagsArith(op.sub, true)
+	e.storeMemValueBE(op.size, wm68kLMB)
+}
+
 func (e *m68kWasmEmitter) emitImmALU(op wm68kOp) {
 	src := wm68kOperand{kind: wm68kOpImm, imm: op.imm}
 	e.emitALU(op, op.dst.reg, src, true)
@@ -1447,6 +1638,13 @@ func (e *m68kWasmEmitter) emitCLR(op wm68kOp) {
 func m68kWasmSupportedPrefix(instrs []M68KJITInstr, memory []byte, startPC uint32) int {
 	n := 0
 	for i := range instrs {
+		if instrs[i].fusedFlag != 0 {
+			// JSR leaf fusion markers are not lowered here. The frontend does
+			// not currently produce them (no production call site sets
+			// fusedFlag on M68K), but reject defensively so a future frontend
+			// change cannot silently miscompile.
+			break
+		}
 		instrPC := startPC + instrs[i].pcOffset
 		op, ok := m68kWasmDecode(&instrs[i], memory, instrPC)
 		if !ok {
@@ -1460,13 +1658,65 @@ func m68kWasmSupportedPrefix(instrs []M68KJITInstr, memory []byte, startPC uint3
 	return n
 }
 
+// wm68kInstrStores reports whether a decoded op writes guest memory (used to
+// pin its CCR production live in loop mode, where the store is a potential
+// mid-loop SMC observation point).
+func wm68kInstrStores(op wm68kOp) bool {
+	switch op.class {
+	case wm68kClassALUToMem, wm68kClassQuickM:
+		return true
+	case wm68kClassMOVE, wm68kClassCLR:
+		return op.dst.isMem()
+	}
+	return false
+}
+
+// wm68kDetectLoop reports whether the supported prefix forms a structured
+// in-block self-loop: the terminator is a Bcc or DBcc whose static target is
+// the block start. JSR/JMP/BSR/RTS/BRA never loop in-block (BRA to self would
+// be an empty infinite loop the budget would spin on; leave it to the
+// dispatcher).
+func wm68kDetectLoop(instrs []M68KJITInstr, memory []byte, startPC uint32) bool {
+	if len(instrs) == 0 {
+		return false
+	}
+	last := len(instrs) - 1
+	op, ok := m68kWasmDecode(&instrs[last], memory, startPC+instrs[last].pcOffset)
+	if !ok {
+		return false
+	}
+	if op.class != wm68kClassBcc && op.class != wm68kClassDBcc {
+		return false
+	}
+	return op.target == startPC
+}
+
 // m68kWasmCompileBlock translates the given supported prefix into a wasm module
 // exporting block(ctx i32) -> (). blockBytes is the total guest byte length of
 // the prefix (for the RetPC).
 func m68kWasmCompileBlock(instrs []M68KJITInstr, memory []byte, startPC uint32) ([]byte, error) {
 	body := &wasmBody{}
 	e := &m68kWasmEmitter{b: body, startPC: startPC}
+	e.loopMode = os.Getenv("M68K_WASM_LOOPS") != "0" &&
+		wm68kDetectLoop(instrs, memory, startPC)
+
+	// Within-block CCR liveness elision (milestone 6; M68K_WASM_CCR_LIVENESS=0
+	// disables). The shared frontend analysis marks a producer dead only when
+	// every CCR bit it writes is overwritten before any consumer, bail-capable
+	// instruction or block exit. In loop mode, memory-store instructions gain
+	// an extra observation point (the mid-loop SMC exit publishes the CCR), so
+	// their own production is pinned live there.
+	var ccrLive JITFlagLiveness
+	if os.Getenv("M68K_WASM_CCR_LIVENESS") != "0" {
+		ccrLive = m68kCCRLiveness(instrs)
+	}
+
 	e.prologue()
+	if e.loopMode {
+		body.i32Const(wm68kLoopBudget)
+		body.localSet(wm68kLBudget)
+		body.loop()
+	}
 
 	var blockBytes uint32
 	terminated := false
@@ -1478,16 +1728,26 @@ func m68kWasmCompileBlock(instrs []M68KJITInstr, memory []byte, startPC uint32) 
 		}
 		e.curPC = instrPC
 		e.curRetired = i
+		e.curLen = uint32(instrs[i].length)
+		e.flagsDead = ccrLive != nil && !ccrLive[i] &&
+			!(e.loopMode && wm68kInstrStores(op))
 		blockBytes += uint32(instrs[i].length)
 		if wm68kIsTerminator(op.class) {
 			if i != len(instrs)-1 {
 				return nil, errM68KWasmUnsupported // terminator must be last
 			}
-			e.emitTerminator(op, i+1)
+			if e.loopMode {
+				e.emitLoopTerminator(op, i+1)
+			} else {
+				e.emitTerminator(op, i+1)
+			}
 			terminated = true
 			break
 		}
 		e.emit(op)
+	}
+	if e.loopMode {
+		body.end() // loop; every path inside returned or branched to the head
 	}
 	if !terminated {
 		e.epilogue(startPC+blockBytes, len(instrs))
@@ -1511,6 +1771,60 @@ const errM68KWasmUnsupported = m68kWasmError("m68k wasm: unsupported instruction
 // ---------------------------------------------------------------------------
 // Branch condition evaluation and block terminators
 // ---------------------------------------------------------------------------
+
+// emitPushStackGuard bails when a long push would wrap A7 below zero
+// (Push32's oldSP < 4 underflow wrap) or drop the decremented A7 below
+// cpu.stackLowerBound (the interpreter's stack floor, a bus error). A zero
+// StackLowerBoundPtr (test contexts that predate the field) skips the floor
+// check only. Runs before any state mutation, so the interpreter re-executes
+// the whole instruction and raises the architectural exception.
+func (e *m68kWasmEmitter) emitPushStackGuard() {
+	b := e.b
+	// Wrap: A7 < 4.
+	e.pushAReg(7)
+	b.i32Const(4)
+	b.op(wasmOpI32LtU)
+	b.ifVoid()
+	e.emitBail()
+	b.end()
+	// Floor: A7-4 < *stackLowerBound.
+	e.ctxLoadI32(m68kCtxOffStackLowerBoundPtr)
+	b.localSet(wm68kLT0)
+	b.localGet(wm68kLT0)
+	b.op(wasmOpI32Eqz)
+	b.ifVoid()
+	b.elseBranch()
+	e.pushAReg(7)
+	b.i32Const(4)
+	b.op(wasmOpI32Sub)
+	b.localGet(wm68kLT0)
+	b.i32Load(2, 0)
+	b.op(wasmOpI32LtU)
+	b.ifVoid()
+	e.emitBail()
+	b.end()
+	b.end()
+}
+
+// emitPopStackGuard bails when A7 >= *stackUpperBound before a long pop
+// (Pop32's stack-ceiling bus error). A zero pointer skips the check.
+func (e *m68kWasmEmitter) emitPopStackGuard() {
+	b := e.b
+	e.ctxLoadI32(m68kCtxOffStackUpperBoundPtr)
+	b.localSet(wm68kLT0)
+	b.localGet(wm68kLT0)
+	b.op(wasmOpI32Eqz)
+	b.ifVoid()
+	b.elseBranch()
+	e.pushAReg(7)
+	b.localGet(wm68kLT0)
+	b.i32Load(2, 0)
+	b.op(wasmOpI32GeU)
+	b.ifVoid()
+	e.emitBail()
+	b.end()
+	b.end()
+}
 
 // pushCCRBit pushes bit `bit` of the modelled CCR (0 or 1).
 func (e *m68kWasmEmitter) pushCCRBit(bit int) {
@@ -1594,7 +1908,7 @@ func (e *m68kWasmEmitter) setRetPCLocal(local uint32) {
 // resume PC must already be stored by the branch emitter.
 func (e *m68kWasmEmitter) emitBranchEnd(retCount int) {
 	e.flushCCR()
-	e.storeCtxConst(m68kCtxOffRetCount, int32(retCount))
+	e.storeRetCountPlus(retCount)
 	e.b.op(wasmOpReturn)
 }
 
@@ -1649,6 +1963,7 @@ func (e *m68kWasmEmitter) emitTerminator(op wm68kOp, retCount int) {
 		b.end() // cond if
 	case wm68kClassBSR:
 		// Push the return address (fallPC) via a guarded -(A7), then jump.
+		e.emitPushStackGuard()
 		e.emitEAAddr(wm68kOperand{kind: wm68kOpMem, memKind: wm68kMemPre, reg: 7}, 4)
 		b.i32Const(int32(op.fallPC))
 		b.localSet(wm68kLMB)
@@ -1664,6 +1979,7 @@ func (e *m68kWasmEmitter) emitTerminator(op wm68kOp, retCount int) {
 		// bounds probe clobbers the T-scratch registers.
 		e.pushJMPTarget(op.src)
 		b.localSet(wm68kLMV) // target
+		e.emitPushStackGuard()
 		e.emitEAAddr(wm68kOperand{kind: wm68kOpMem, memKind: wm68kMemPre, reg: 7}, 4)
 		b.i32Const(int32(op.fallPC))
 		b.localSet(wm68kLMB)
@@ -1671,12 +1987,86 @@ func (e *m68kWasmEmitter) emitTerminator(op wm68kOp, retCount int) {
 		e.setRetPCLocal(wm68kLMV)
 	case wm68kClassRTS:
 		// Pop the return address via a guarded (A7)+.
+		e.emitPopStackGuard()
 		e.emitEAAddr(wm68kOperand{kind: wm68kOpMem, memKind: wm68kMemPost, reg: 7}, 4)
 		e.pushMemValueBE(4)
 		b.localSet(wm68kLT2)
 		e.setRetPCLocal(wm68kLT2)
 	}
 	e.emitBranchEnd(retCount)
+}
+
+// emitLoopTerminator lowers the Bcc/DBcc terminator of a structured in-block
+// self-loop. The taken path accumulates this iteration's retired count into
+// LRet, decrements the iteration budget and branches back to the loop head;
+// when the budget is exhausted it exits with RetPC = the loop head so the
+// dispatcher re-enters after its interrupt/yield boundary work. The not-taken
+// path exits exactly like the straight-line terminator.
+func (e *m68kWasmEmitter) emitLoopTerminator(op wm68kOp, retCount int) {
+	b := e.b
+	// takenBackEdge emits: LRet += retCount; if --LBudget != 0 branch to the
+	// loop head at label depth `loopDepth`; otherwise publish the head PC and
+	// return.
+	takenBackEdge := func(loopDepth uint32) {
+		b.localGet(wm68kLRet)
+		b.i32Const(int32(retCount))
+		b.op(wasmOpI32Add)
+		b.localSet(wm68kLRet)
+		b.localGet(wm68kLBudget)
+		b.i32Const(1)
+		b.op(wasmOpI32Sub)
+		b.localSet(wm68kLBudget)
+		b.localGet(wm68kLBudget)
+		b.brIf(loopDepth)
+		e.setRetPCConst(op.target)
+		e.emitBranchEnd(0) // LRet already includes this iteration
+	}
+	switch op.class {
+	case wm68kClassBcc:
+		e.emitCond(op.cond)
+		b.ifVoid()
+		takenBackEdge(1) // labels: if=0, loop=1
+		b.elseBranch()
+		e.setRetPCConst(op.fallPC)
+		e.emitBranchEnd(retCount)
+		b.end()
+	case wm68kClassDBcc:
+		e.emitCond(op.cond)
+		b.ifVoid()
+		// Condition true: no decrement, fall through out of the loop.
+		e.setRetPCConst(op.fallPC)
+		e.emitBranchEnd(retCount)
+		b.elseBranch()
+		// Decrement Dn low word, preserving the high word.
+		e.pushDReg(op.dst.reg)
+		b.localSet(wm68kLT0)
+		b.localGet(wm68kLDBase)
+		b.localGet(wm68kLT0)
+		b.i32Const(-0x10000)
+		b.op(wasmOpI32And)
+		b.localGet(wm68kLT0)
+		b.i32Const(1)
+		b.op(wasmOpI32Sub)
+		b.i32Const(0xFFFF)
+		b.op(wasmOpI32And)
+		b.op(wasmOpI32Or)
+		b.i32Store(2, uint32(op.dst.reg)*4)
+		// Branch back while counter != -1.
+		b.localGet(wm68kLT0)
+		b.i32Const(1)
+		b.op(wasmOpI32Sub)
+		b.i32Const(0xFFFF)
+		b.op(wasmOpI32And)
+		b.i32Const(0xFFFF)
+		b.op(wasmOpI32Ne)
+		b.ifVoid()
+		takenBackEdge(2) // labels: inner if=0, outer if=1, loop=2
+		b.elseBranch()
+		e.setRetPCConst(op.fallPC)
+		e.emitBranchEnd(retCount)
+		b.end()
+		b.end()
+	}
 }
 
 // pushJMPTarget pushes the control-address of a JMP/JSR EA (the address itself,
@@ -1709,7 +2099,12 @@ func wm68kFPUEmittable(op m68kFPUNativeOp) bool {
 	case m68kFPUNativeFMOVE, m68kFPUNativeFADD, m68kFPUNativeFSUB,
 		m68kFPUNativeFMUL, m68kFPUNativeFDIV, m68kFPUNativeFABS,
 		m68kFPUNativeFNEG, m68kFPUNativeFSQRT, m68kFPUNativeFCMP,
-		m68kFPUNativeFTST:
+		m68kFPUNativeFTST,
+		// Milestone 6: single-precision arithmetic maps to wasm f32 ops, and
+		// wasm has the full f64 rounding set (nearest/trunc/floor/ceil) for
+		// FINT's FPCR-selected mode and FINTRZ's truncation.
+		m68kFPUNativeFSGLMUL, m68kFPUNativeFSGLDIV,
+		m68kFPUNativeFINT, m68kFPUNativeFINTRZ:
 		return true
 	}
 	return false
@@ -1785,6 +2180,67 @@ func (e *m68kWasmEmitter) emitFPU(op wm68kOp) {
 		e.pushFPReg(op.fpDst)
 		e.pushFPReg(op.fpSrc)
 		b.op(wasmOpF64Div)
+	case m68kFPUNativeFSGLMUL, m68kFPUNativeFSGLDIV:
+		// Interpreter parity: both operands demoted to float32, the operation
+		// performed in float32, then widened (FSGLMUL/FSGLDIV in fpu_m68881.go).
+		e.pushFPReg(op.fpDst)
+		b.op(wasmOpF32DemoteF64)
+		e.pushFPReg(op.fpSrc)
+		b.op(wasmOpF32DemoteF64)
+		if op.fpOp == m68kFPUNativeFSGLMUL {
+			b.op(wasmOpF32Mul)
+		} else {
+			b.op(wasmOpF32Div)
+		}
+		b.op(wasmOpF64PromoteF32)
+	case m68kFPUNativeFINTRZ:
+		e.pushFPReg(op.fpSrc)
+		b.op(wasmOpF64Trnc)
+	case m68kFPUNativeFINT:
+		// Round per the FPCR rounding mode (bits 5:4): 0 nearest-even,
+		// 1 toward zero, 2 toward minus infinity, 3 toward plus infinity.
+		e.pushFPReg(op.fpSrc)
+		b.localSet(wm68kLF1)
+		e.ctxLoadI32(m68kCtxOffFPCRPtr)
+		b.localSet(wm68kLT0)
+		b.localGet(wm68kLT0)
+		b.i32Load(2, 0)
+		b.i32Const(4)
+		b.op(wasmOpI32ShrU)
+		b.i32Const(3)
+		b.op(wasmOpI32And)
+		b.localSet(wm68kLT2) // rounding mode
+		b.localGet(wm68kLT2)
+		b.i32Const(1)
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		b.localGet(wm68kLF1)
+		b.op(wasmOpF64Trnc)
+		b.localSet(wm68kLF1)
+		b.elseBranch()
+		b.localGet(wm68kLT2)
+		b.i32Const(2)
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		b.localGet(wm68kLF1)
+		b.op(wasmOpF64Flr)
+		b.localSet(wm68kLF1)
+		b.elseBranch()
+		b.localGet(wm68kLT2)
+		b.i32Const(3)
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		b.localGet(wm68kLF1)
+		b.op(wasmOpF64Ceil)
+		b.localSet(wm68kLF1)
+		b.elseBranch()
+		b.localGet(wm68kLF1)
+		b.op(wasmOpF64Nrst)
+		b.localSet(wm68kLF1)
+		b.end()
+		b.end()
+		b.end()
+		b.localGet(wm68kLF1)
 	}
 	if op.fpOp != m68kFPUNativeFTST {
 		e.applyFPPrecision(op.fpPrec)
