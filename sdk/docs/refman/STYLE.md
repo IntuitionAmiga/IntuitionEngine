@@ -28,6 +28,21 @@ documentation is wrong unless the code itself is being changed in the
 same pass and verified. Record the exact files checked in
 `verify/CLAIM_LEDGER.txt`.
 
+## Current M68K DBcc Correctness Pass
+
+Chapter 29 must describe `DBcc` using the implemented MC68020
+condition-first rule. If the selected condition is true, execution
+continues without changing the counter. If the condition is false, the
+processor decrements only the low word of `Dn`, preserves the upper
+word, and branches while the decremented low word is not `$FFFF`.
+
+Do not shorten this to "decrement and branch if condition". That
+wording reverses the condition test and hides the word-sized counter.
+Adversarially check the reader-facing wording against both M68K
+interpreter paths and focused DBcc tests. Then update Chapter 29 and the
+claim ledger, run the focused PRG check, publish strictly, and print the
+PDFs only after the canonical source is correct.
+
 ## Book Identity
 
 The published title is **Intuition Engine Programmer's Reference

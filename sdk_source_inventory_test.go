@@ -512,11 +512,12 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		evidence string
 	}{
 		{"Linux amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` build tags"},
-		{"Linux arm64 | IE64", "`jit_dispatch.go`, `jit_z80_dispatch.go` runtime amd64 guard, non-IE64 stubs"},
+		{"Linux arm64 | IE64, M68K", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false"},
 		{"Windows amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` build tags"},
-		{"Windows arm64 | IE64", "`jit_dispatch.go` arm64 windows tag plus non-IE64 stubs"},
+		{"Windows arm64 | IE64, M68K", "`jit_dispatch.go` and `jit_m68k_dispatch_arm64.go` arm64 Windows tags plus other-core stubs"},
 		{"macOS amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, amd64 per-core dispatch files"},
-		{"macOS arm64 | IE64", "`jit_dispatch.go` arm64 darwin tag plus non-IE64 stubs"},
+		{"macOS arm64 | IE64, M68K", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and Darwin arm64 JIT write-protect helpers"},
+		{"Browser (js/wasm) | IE64, M68K (wasm bytecode backends)", "`jit_exec_wasm.go`, `jit_wasm_runtime.go`, and `jit_m68k_dispatch_wasm.go`"},
 	} {
 		facts = append(facts, sdkSourceFact{
 			Surface:  "Architecture",
@@ -555,6 +556,10 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"Voodoo swap jobs run asynchronously; oversized triangle batches render mid-frame without presentation or swap callbacks, and STATUS exposes busy and SWAPBUF while a presented swap is pending.", "`video_voodoo.go` `executeSwapBufferCmd`/`flushBatchLocked`/`swapWorker`/`getStatus`, `video_voodoo_batch_overflow_test.go` overflow coverage"},
 		{"Voodoo texture slots retain immutable uploaded textures by slot identifier; VOODOO_TEX_BIND selects a resident texture for subsequently submitted triangles without another guest-memory transfer, and SYSINFO advertises the slot contract.", "`video_voodoo.go` `VOODOO_TEX_SLOT`/`VOODOO_TEX_UPLOAD`/`VOODOO_TEX_BIND`, `voodoo_constants.go` slot registers, and `sysinfo_mmio.go` `SYSINFO_FEATURE_VOODOO_TEX_SLOTS`"},
 		{"Browser builds use an IE64 WebAssembly bytecode JIT for supported MMU-off integer and FP64 blocks, with interpreter fallback and IE64_WASM_JIT=0 as the runtime disable switch.", "`jit_exec_wasm.go` dispatcher gate, `jit_wasm_runtime.go` `wasmJITEnabled`, and `jit_wasm_ie64_emit.go` opcode translation"},
+		{"M68020 JIT backends are available on amd64 and arm64 Linux, Windows and macOS, plus js/wasm; the wasm backend requires __goMem and M68K_WASM_JIT=0 disables it.", "`jit_m68k_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and `jit_m68k_dispatch_wasm.go` build and activation gates"},
+		{"The M68020 JIT shares an untagged scanner, admission rules, CCR liveness, region formation and tier policy while keeping native and wasm lowering target-specific.", "`jit_m68k_common.go`, `jit_m68k_admission.go`, `jit_m68k_ccr_liveness.go`, `jit_m68k_region_form.go`, `jit_m68k_policy.go`, and per-target dispatch/emitter files"},
+		{"M68020 JIT memory guards use the profile-visible RAM ceiling, and native and wasm stores invalidate compiled code before stale execution.", "`jit_m68k_exec.go` profile-bound context setup and invalidation, `jit_m68k_dispatch_wasm.go` ceiling/stamp checks, and `jit_m68k_wasm_emit.go` code-page probes"},
+		{"Hot M68020 native blocks can form bounded regions using constant-address propagation, constant-only folding, loop-invariant hoisting, observed-path cold exits and safe JSR leaf fusion.", "`jit_m68k_const_addr.go`, `jit_m68k_const_fold.go`, `jit_m68k_loop_analysis.go`, `jit_m68k_observed_region.go`, `jit_m68k_region_form.go`, and `m68kAnalyzeJSRLeafFusion`"},
 		{"Browser FileIO and Bootstrap HostFS use in-memory volumes seeded from web assets, with file contents fetched lazily on first read.", "`file_io_select_wasm.go` asset manifest registration, `file_io_mem.go` lazy fetch path, and `hostfs_select_wasm.go`/`bootstrap_hostfs_mem.go` in-memory HostFS"},
 		{"The browser exposes an in-tab bridge over the same FileIO memory volume.", "`file_io_select_wasm.go` `registerWasmFileBridge`, `wasm_file_bridge.go` global bridge registration"},
 		{"ieImportFile adds a session-local file with a 64 MiB per-file limit, ieExportFile returns a saved file's bytes, and ieDeleteFile removes a file; none of these operations uploads data to a server.", "`wasm_file_bridge.go` `maxImportFileBytes`/`registerWasmFileBridge`, `file_io_mem.go` memory-volume operations"},

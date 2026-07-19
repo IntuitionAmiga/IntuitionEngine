@@ -3358,6 +3358,52 @@ ledger after the previous render, the final PDF render gate in
 `SDK-DOC-0031` must be repeated after this entry.
 Disposition: KEEP.
 
+ID: SDK-DOC-0093
+Status: FIXED
+Document: `sdk/docs/architecture.md`,
+`sdk/docs/verify/SDK_ARCH_SOURCE_AUDIT.md`, and the architecture inventory
+generator.
+Section: M68020 JIT platform availability and backend architecture.
+Claim: The five-book audit must reflect the M68020 JIT work in every commit
+after `d1c1803b` through `29a24e21`, including native arm64 availability,
+the browser wasm backend, profile-visible memory guards, invalidation, shared
+frontend policy, bounded regions, optimisation analyses and safe JSR leaf
+fusion. The IE64 and IE32 ISA manuals, IEMon manual and IE Script manual must
+remain unchanged because those commits do not alter their public surfaces.
+Purpose judgement: These changes affect the stable whole-machine execution
+architecture and platform matrix, so they belong in the architecture companion
+manual. Detailed opcode-lowering tables and parity milestones remain private or
+specialist implementation material and do not belong in the five shipped
+companions.
+Canonical sources checked: commits `7d391929`, `16c09419`, `7d2061ad`,
+`13d71490`, `44bb6923`, `5639f0c1`, `5fbefb65`, `d8016d2c`, `0b1f3d54`,
+`0bb042a8`, `35b8004a`, `3dc14917`, `c8da10db`, `2845dd57`, and `29a24e21`;
+`jit_m68k_dispatch.go`, `jit_m68k_dispatch_arm64.go`,
+`jit_m68k_dispatch_wasm.go`, `jit_m68k_common.go`, `jit_m68k_admission.go`,
+`jit_m68k_ccr_liveness.go`, `jit_m68k_policy.go`,
+`jit_m68k_region_form.go`, `jit_m68k_const_addr.go`,
+`jit_m68k_const_fold.go`, `jit_m68k_loop_analysis.go`,
+`jit_m68k_observed_region.go`, the native emitters, and
+`jit_m68k_wasm_emit.go`.
+Runnable verification: `go test -tags headless -run
+'TestSDKDocAuditLedger|TestSDKArchitectureSourceInventoryGoldenMatchesSource|TestSDKArchitectureManualCoverageMatchesSourceInventory|TestSDKCompanionDocs'
+.` plus the relevant native and wasm M68K JIT tests recorded by this run.
+Observed result: The source-derived JIT matrix now includes M68K on arm64 and
+js/wasm, the generated architecture inventory includes the new backend
+contracts and files, and the architecture manual covers the supported host
+matrix, activation gate, memory/invalidation rules, shared frontend boundary,
+optimisation layer and dispatcher safety rules. The four unaffected companion
+Markdown sources require no changes.
+Action: Updated the architecture manual, its last-modified gate, the executable
+source inventory generator and the generated architecture inventory. Corrected
+the stale statements that arm64 was still production-gated and that every
+non-IE64 browser core interpreted.
+Notes: The current tracked worktree contained no pre-existing tracked edits;
+untracked plans and generated/local artefacts were excluded from audit evidence
+and left untouched. The refman source and publish trees remain render inputs
+only for this pass.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -3393,20 +3439,20 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0079`, `SDK-DOC-0080`, `SDK-DOC-0081`, `SDK-DOC-0082`,
 `SDK-DOC-0083`, `SDK-DOC-0084`, `SDK-DOC-0085`,
 `SDK-DOC-0086`, `SDK-DOC-0087`, `SDK-DOC-0088`,
-`SDK-DOC-0089`, `SDK-DOC-0090`, `SDK-DOC-0091`, and
-`SDK-DOC-0092` corrections and
+`SDK-DOC-0089`, `SDK-DOC-0090`, `SDK-DOC-0091`,
+`SDK-DOC-0092`, and `SDK-DOC-0093` corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
 `go test -tags headless -run
 'TestSDKISAInventory|TestSDKIEMonSourceInventory|TestSDKIEScriptSourceInventory|TestSDKArchitectureSourceInventory|TestSDKCompanionDocs'
 .`
-`IE64_ISA.pdf` (2222822 bytes), `IE32_ISA.pdf` (1011068 bytes),
-`iemon.pdf` (758696 bytes), `iescript.pdf` (1134410 bytes), and
-`architecture.pdf` (1016514 bytes).
-The render command was:
-`scripts/refman-pdf.sh --src "$tmp_src" --out "$tmp_out"` after copying
-`00-Preface.md` and the five shipped Markdown files into `$tmp_src`,
-then copying the five generated PDFs from `$tmp_out` to `sdk/docs/`.
+`IE64_ISA.pdf` (2225888 bytes), `IE32_ISA.pdf` (1011125 bytes),
+`iemon.pdf` (770182 bytes), `iescript.pdf` (1167922 bytes), and
+`architecture.pdf` (1146925 bytes).
+The render command was `scripts/sdk-companion-pdf.sh`, which copies the
+published preface and five shipped Markdown files into an isolated temporary
+source tree, invokes `scripts/refman-pdf.sh`, and copies only the five companion
+PDFs back to `sdk/docs/`.
 The render pipeline used Google Chrome headless through
 `scripts/refman-pdf.sh`. `SDK_DOC_PDF_RENDER_MANIFEST.sha256` records
 950 SHA-256 rows covering root source files, audit tests, empirical

@@ -188,6 +188,15 @@ Entry format:
   Author verification workflow: checked implementation and primary ISA references.
   Result: chapter presents supported scope and bounded differences.
 
+- Area: Ch 29, M68K DBcc condition and counter semantics.
+  Claim: `DBcc` continues without changing `Dn` when its condition is true; when the condition is false, it decrements only the low word of `Dn`, preserves the upper word, and branches while the decremented low word is not `$FFFF`.
+  Canonical sources checked: cpu_m68k.go `decodeGroup5` and `ExecDBcc`, debug_disasm_m68k.go DBcc decode, jit_m68k_arm64_backend_test.go DBcc condition/counter cases, cmd/m68kto64/ccr_shadow.go DBcc lowering.
+  Reader workflow: use the Chapter 29 branch table to hand-code and reason about bounded M68K loops.
+  Runnable example: existing Chapter 29 monitor-entered programmes remain unchanged; this correction repairs the instruction reference used to interpret DBcc loops.
+  Expected result: a true condition skips the decrement and branch; a false condition decrements the low word and branches unless that result is `$FFFF`.
+  Author verification workflow: compared both interpreter paths with the disassembler, converter semantics, and focused backend tests before changing the prose.
+  Result: Chapter 29 no longer reverses the DBcc condition test or implies a full-register decrement.
+
 - Area: Ch 29, 68881-style FPU path.
   Claim: Line-F coprocessor ID 1 is the 68881-style FPU path; absent FPU, other coprocessor IDs, unsupported FPU sub-ops, and packed-decimal FPU memory operands are outside the accepted boundary.
   Canonical sources checked: cpu_m68k.go Line-F decode, M68881FPU operations, NXP M68000PRM floating-point sections.

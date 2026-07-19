@@ -1100,7 +1100,7 @@ SOUND STOP</code></pre>
           <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
         </div>
-        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos, and a JIT that hands your hot IE64 code to the browser's own engine, so <code>RUN AOT</code> is fast in the tab too; the other five CPUs run at interpreter speed there. The live image bundles worked examples in BASIC, assembly and C. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
+        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos, and a JIT that hands your hot IE64 and 68020 code to the browser's own engine, so <code>RUN AOT</code> is fast in the tab too; the other four CPUs run at interpreter speed there. The live image bundles worked examples in BASIC, assembly and C. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
       </div>
     </section>
 
@@ -1293,7 +1293,7 @@ SOUND STOP</code></pre>
         <article class="card" style="margin-top: 1rem">
           <span class="kicker">JIT</span>
           <h3>Five CPUs compiled to native code</h3>
-          <p>On x86-64 hosts, five of the six CPUs, IE64, M68K, x86, Z80 and 6502, compile guest code to native machine code as it runs; only IE32 stays interpreted. IE64 also runs JIT-compiled on ARM64, and in the browser build it tiers to WebAssembly through the browser's own engine. The compilers carry per-CPU floating-point paths, including the M68K 68881 and the x86 x87, detect self-modifying code and recompile the affected blocks, and drop back to interpreter-equivalent helpers when a block cannot stay native, resuming only when the architectural state still matches.</p>
+          <p>On x86-64 hosts, five of the six CPUs, IE64, M68K, x86, Z80 and 6502, compile guest code to native machine code as it runs; only IE32 stays interpreted. IE64 also runs JIT-compiled on ARM64, and in the browser build IE64 and M68K tier to WebAssembly through the browser's own engine. The compilers carry per-CPU floating-point paths, including the M68K 68881 and the x86 x87, detect self-modifying code and recompile the affected blocks, and drop back to interpreter-equivalent helpers when a block cannot stay native, resuming only when the architectural state still matches.</p>
           <p>Even with the paged MMU enabled, IE64 code stays JIT-compiled: the dispatcher keys native blocks by translation state, and data, stack, floating-point and control-flow accesses that need address translation take a helper exit and resume in native code instead of bailing the whole block.</p>
         </article>
       </div>
@@ -1364,7 +1364,7 @@ SOUND STOP</code></pre>
                 <td>AROS</td>
                 <td>M68K</td>
                 <td>Hardware-accelerated <code>iegfx.hidd</code>; defaults to 1920 x 1080 scanout, direct VRAM, and blitter drawing.</td>
-                <td>AmigaDOS packet bridge, Paula-style audio DMA, <code>kernel-ie-m68k-ahidrv</code>, <code>Devs/ahi.device</code>, host socket bridge, clipboard bridge, IRQ diagnostics.</td>
+                <td>AmigaDOS packet bridge, Paula-style audio DMA, <code>kernel-ie-m68k-ahidrv</code>, <code>Devs/AHI/ie-audio.audio</code>, host socket bridge, clipboard bridge, IRQ diagnostics.</td>
               </tr>
               <tr>
                 <td>IntuitionOS</td>
@@ -1404,7 +1404,7 @@ AROS_DOS:         0xF2220-0xF225F</code></pre>
           <article class="card">
             <span class="kicker">AROS audio, AHI, socket, clipboard</span>
             <h3><code>audio.device</code> to SoundChip</h3>
-            <p>Four guest DMA channels run through the AROS Paula-style DMA shim at 44.1 kHz, become SoundChip FLEX DAC writes, and complete with M68K level-3 IRQs. The AROS build also runs <code>kernel-ie-m68k-ahidrv</code>, validates <code>Devs/ahi.device</code>, and maps host sockets and clipboard access through MMIO.</p>
+            <p>Four guest DMA channels run through the AROS Paula-style DMA shim at 44.1 kHz, become SoundChip FLEX DAC writes, and complete with M68K level-3 IRQs. The AROS build also runs <code>kernel-ie-m68k-ahidrv</code>, validates <code>Devs/AHI/ie-audio.audio</code>, and maps host sockets and clipboard access through MMIO.</p>
             <pre class="code-panel"><code>CHn: PTR LEN PER VOL
 DMACON  0xF22A0
 STATUS  0xF22A4
@@ -1537,7 +1537,7 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
             <span class="tag">AHX/THX</span>
             <span class="tag">SID PSID/RSID/MultiSID</span>
             <span class="tag">TED/TMF</span>
-            <span class="tag">SAP B/C/D/S/R</span>
+            <span class="tag">SAP B/C</span>
             <span class="tag">YM2 to YM6</span>
             <span class="tag">AY</span>
             <span class="tag">VGM/VGZ</span>

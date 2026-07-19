@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-18*
+*Last modified: 2026-07-19*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -455,7 +455,7 @@ flowchart LR
 | Subsystem | Runtime surface | Primary files | Wired registration / dispatch |
 |-----------|-----------------|---------------|-------------------------------|
 | CPU cores | IE32, IE64, M68K, Z80, 6502, x86 | `cpu_*.go`, `cpu_*_runner.go` | `main.go` selects runners by file extension, OS mode, or EXEC MMIO |
-| JIT | IE64 and M68K on amd64, arm64 and wasm; 6502, Z80 and x86 on amd64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch*.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` | Build tags plus `runtime.GOARCH`; unsupported hosts use dispatch stubs. M68K arm64 remains production-gated pending its real-hardware AROS boot check |
+| JIT | IE64 and M68K on amd64, arm64 and wasm; 6502, Z80 and x86 on amd64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch*.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` | Build tags plus `runtime.GOARCH`; unsupported hosts use dispatch stubs. The M68K arm64 backend is available through the normal JIT activation path after passing its real-hardware execution gate |
 | Bus and RAM | Host-sized guest RAM, profile clamps, MMIO, byte/64-bit handlers | `machine_bus.go`, `memory_sizing.go`, `profile_bounds.go`, `sysinfo_mmio.go` | `main.go` registers devices before execution; `MachineBus.SealMappings` prevents late maps |
 | Machine lifecycle | Load resolution, reset quiesce, CPU/profile recreation, monitor/runtime rewiring | `machine_lifecycle.go`, `main.go` | `main.go` owns concrete devices; `Machine` applies reset/load orchestration through injected dependencies and profile targets |
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
@@ -549,9 +549,33 @@ never emitted unless the host supports them.
 
 On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles. IE64 and M68K have arm64 backends; the other guest cores remain interpreter-only.
 
-On js/wasm the native backends are absent (the browser gives Go no executable
-memory), and IE64 has a wasm bytecode backend instead; see "IE64 wasm JIT
-backend" below. The other guest cores interpret in the browser.
+On js/wasm the native backends are absent because the browser gives Go no
+executable memory. IE64 and M68K use separate wasm bytecode backends instead;
+see the backend sections below. IE32, 6502, Z80 and x86 interpret in the
+browser.
+
+### M68020 JIT Backends
+
+M68020 JIT backends are available on amd64 and arm64 Linux, Windows and macOS,
+plus js/wasm; the wasm backend requires `__goMem` and `M68K_WASM_JIT=0`
+disables it. Native runners enable the backend through the normal M68K JIT
+setting. Unsupported, cold or guarded instructions return to the interpreter
+without changing the M68020 architectural contract.
+
+The M68020 JIT shares an untagged scanner, admission rules, CCR liveness,
+region formation and tier policy while keeping native and wasm lowering
+target-specific. M68020 JIT memory guards use the profile-visible RAM ceiling,
+and native and wasm stores invalidate compiled code before stale execution.
+The wasm backend additionally checks the captured guest bytes before entry and
+uses a code-page bitmap to stop self-modifying structured loops.
+
+Hot M68020 native blocks can form bounded regions using constant-address
+propagation, constant-only folding, loop-invariant hoisting, observed-path cold
+exits and safe JSR leaf fusion. Indirect branch and return caches accelerate
+repeated targets, while chain and loop budgets force periodic dispatcher
+returns for interrupt and exception checks. The wasm backend uses structured
+in-function control flow rather than native executable memory and preserves the
+same retired-count, fallback and profile-boundary rules.
 
 ### IE64 wasm JIT backend (js/wasm)
 
