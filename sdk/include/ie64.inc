@@ -1183,6 +1183,35 @@ CPU_WAIT_UNTIL_LO     equ 0xF2584
 CPU_WAIT_UNTIL_HI     equ 0xF2588
 CPU_WAIT_UNTIL_GO     equ 0xF258C
 
+; USB gamepad discovery block (read-only, host-filled once per frame).
+; Every guest reads the same canonical layout; axes are Ebiten-native
+; (down and right positive), signed 16-bit.
+GAMEPAD_REGION_BASE   equ 0xF25C0
+GAMEPAD_REGION_END    equ 0xF25FF
+GAMEPAD_STATUS        equ 0xF25C0            ; bits0..3 connected, bits8..11 count
+GAMEPAD_PAD0_BASE     equ 0xF25D0
+GAMEPAD_PAD_STRIDE    equ 0x0000000C
+GAMEPAD_BUTTONS_OFF   equ 0x00000000
+GAMEPAD_AXIS_LXY_OFF  equ 0x00000004
+GAMEPAD_AXIS_RXY_OFF  equ 0x00000008
+JOY_UP                equ 0x00000001
+JOY_DOWN              equ 0x00000002
+JOY_LEFT              equ 0x00000004
+JOY_RIGHT             equ 0x00000008
+JOY_A                 equ 0x00000010
+JOY_B                 equ 0x00000020
+JOY_X                 equ 0x00000040
+JOY_Y                 equ 0x00000080
+JOY_LB                equ 0x00000100
+JOY_RB                equ 0x00000200
+JOY_LT                equ 0x00000400
+JOY_RT                equ 0x00000800
+JOY_SELECT            equ 0x00001000
+JOY_START             equ 0x00002000
+JOY_L3                equ 0x00004000
+JOY_R3                equ 0x00008000
+JOY_HOME              equ 0x00010000
+
 ; Base address
 VOODOO_BASE           equ 0xF8000
 VOODOO_END            equ 0xF87FF

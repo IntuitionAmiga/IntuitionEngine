@@ -78,6 +78,7 @@ type EbitenOutput struct {
 	luaOverlay       *LuaOverlay
 	hostOverlay      *HostOverlay
 	termMMIO         *TerminalMMIO
+	gamepadPoll      func() // host gamepad poll, called once per frame; nil disables
 	hideSystemCursor bool
 	relativeMouse    relativeMouseCaptureState
 
@@ -568,6 +569,13 @@ func (eo *EbitenOutput) Update() error {
 
 	eo.updateRelativeMouseBeforeOverlay()
 
+	// Poll the gamepad every frame, before overlay routing can early-return.
+	// The guest keeps reading gamepad MMIO while an overlay is open, so
+	// releases, disconnects, and axis changes must not go stale.
+	if eo.gamepadPoll != nil {
+		eo.gamepadPoll()
+	}
+
 	// When monitor is active, route all input to the overlay
 	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
 		eo.monitorOverlay.HandleInput()
@@ -616,6 +624,13 @@ func (eo *EbitenOutput) Update() error {
 	eo.handleKeyboardInput()
 	eo.updateTerminalMMIOInput()
 	return nil
+}
+
+// SetGamepadPoll installs the host gamepad poll invoked once per Update frame.
+func (eo *EbitenOutput) SetGamepadPoll(poll func()) {
+	eo.bufferMutex.Lock()
+	eo.gamepadPoll = poll
+	eo.bufferMutex.Unlock()
 }
 
 func (eo *EbitenOutput) SetMonitorOverlay(overlay *MonitorOverlay) {

@@ -2646,7 +2646,7 @@ stmt_jump_table:
     dc.l    exec_do_save         ; 22 = TK_SAVE     (0x96)
     dc.l    exec_do_def          ; 23 = TK_DEF      (0x97)
     dc.l    exec_do_poke         ; 24 = TK_POKE     (0x98)
-    dc.l    exec_do_unknown      ; 25 = removed DOKE (0x99)
+    dc.l    exec_do_merge        ; 25 = TK_MERGE    (0x99)
     dc.l    exec_do_unknown      ; 26 = removed LOKE (0x9A)
     dc.l    exec_do_call         ; 27 = TK_CALL     (0x9B)
     dc.l    exec_do_do           ; 28 = TK_DO       (0x9C)

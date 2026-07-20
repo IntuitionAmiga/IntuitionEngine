@@ -36,7 +36,7 @@ TK_LOAD       equ 0x95
 TK_SAVE       equ 0x96
 TK_DEF        equ 0x97
 TK_POKE       equ 0x98
-TK_RESERVED_99 equ 0x99
+TK_MERGE      equ 0x99
 TK_RESERVED_9A equ 0x9A
 TK_CALL       equ 0x9B
 TK_DO         equ 0x9C
@@ -130,6 +130,9 @@ EXT_PEEK16    equ 0x08
 EXT_PEEK32    equ 0x09
 EXT_PEEK64    equ 0x0A
 EXT_MIDI      equ 0x0B
+EXT_PAD       equ 0x0C
+EXT_PADX      equ 0x0D
+EXT_PADY      equ 0x0E
 
 ; ============================================================================
 ; Hardware Extension Tokens ($E2-$FF)

@@ -368,6 +368,7 @@ tok_kw_table:
     dc.b    "BITSET", 0, TK_BITSET
     dc.b    "BITCLR", 0, TK_BITCLR
     dc.b    "CLEAR", 0, TK_CLEAR
+    dc.b    "MERGE", 0, TK_MERGE
     dc.b    "TROFF", 0, TK_EXT, EXT_TROFF
     dc.b    "POKE64", 0, TK_EXT, EXT_POKE64
     dc.b    "POKE32", 0, TK_EXT, EXT_POKE32
@@ -410,6 +411,8 @@ tok_kw_table:
     dc.b    "THEN", 0, TK_THEN
     dc.b    "WAIT", 0, TK_WAIT
     dc.b    "MIDI", 0, TK_EXT, EXT_MIDI
+    dc.b    "PADX", 0, TK_EXT, EXT_PADX
+    dc.b    "PADY", 0, TK_EXT, EXT_PADY
     dc.b    "MID$", 0, TK_MIDS
     dc.b    "ABS", 0, TK_ABS
     dc.b    "AND", 0, TK_AND
@@ -434,6 +437,7 @@ tok_kw_table:
     dc.b    "MIN", 0, TK_MIN
     dc.b    "NEW", 0, TK_NEW
     dc.b    "NOT", 0, TK_NOT
+    dc.b    "PAD", 0, TK_EXT, EXT_PAD
     dc.b    "POS", 0, TK_POS
     dc.b    "REM", 0, TK_REM
     dc.b    "RND", 0, TK_RND

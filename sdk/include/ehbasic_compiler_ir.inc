@@ -77,8 +77,11 @@ IR_OP_ON_TARGET       equ 73
 IR_OP_STORE_STRING_LITERAL equ 74
 IR_OP_PRINT_STRING_VAR equ 75
 IR_OP_STORED_LOAD     equ 76
+IR_OP_PAD             equ 77
+IR_OP_PADX            equ 78
+IR_OP_PADY            equ 79
 
-IR_OP_MAX             equ IR_OP_STORED_LOAD
+IR_OP_MAX             equ IR_OP_PADY
 
 IR_TYPE_UNKNOWN       equ 0
 IR_TYPE_I64           equ 1

@@ -2880,7 +2880,22 @@ compiler_semantic_factor:
     move.q  r2, #EXT_PEEK32
     beq     r1, r2, .csf_ext_peek32
     move.q  r2, #EXT_PEEK64
+    beq     r1, r2, .csf_ext_peek64
+    move.q  r2, #EXT_PAD
+    beq     r1, r2, .csf_ext_pad
+    move.q  r2, #EXT_PADX
+    beq     r1, r2, .csf_ext_padx
+    move.q  r2, #EXT_PADY
     bne     r1, r2, .csf_syntax
+    move.q  r28, #IR_OP_PADY
+    bra     .csf_ext_peek_ready
+.csf_ext_pad:
+    move.q  r28, #IR_OP_PAD
+    bra     .csf_ext_peek_ready
+.csf_ext_padx:
+    move.q  r28, #IR_OP_PADX
+    bra     .csf_ext_peek_ready
+.csf_ext_peek64:
     move.q  r28, #IR_OP_PEEK64
     bra     .csf_ext_peek_ready
 .csf_ext_peek8:

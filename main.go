@@ -1130,6 +1130,10 @@ func main() {
 		hostHelper.SetObserver(hostOverlay)
 	}
 	RegisterCPUWaitMMIO(sysBus, NewCPUWaitMMIO(termMMIO, videoChip))
+	gamepadMMIO := RegisterGamepadMMIO(sysBus)
+	if setter, ok := videoChip.GetOutput().(interface{ SetGamepadPoll(func()) }); ok {
+		setter.SetGamepadPoll(gamepadMMIO.Poll)
+	}
 	var termHost *TerminalHost
 	var videoTerm *VideoTerminal
 	var outputTicker *time.Ticker

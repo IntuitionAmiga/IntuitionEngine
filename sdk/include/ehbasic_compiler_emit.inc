@@ -9,6 +9,7 @@ COMPILER_EMIT_COPPER equ 0x2000
 COMPILER_EMIT_FILES equ 0x4000
 COMPILER_EMIT_STRINGS equ 0x8000
 COMPILER_EMIT_POKE equ 0x10000
+COMPILER_EMIT_GAMEPAD equ 0x20000
 
 ; Emit a lowered stream as deterministic standalone source. R8=lowered base,
 ; R9=record count, R10=output start, R11=output end, R12=target, R13=arena
@@ -159,6 +160,12 @@ compiler_emit_assembly_inner:
     beq     r25, r1, .cea_poke32
     move.q  r1, #LOWER_OP_PEEK64
     beq     r25, r1, .cea_peek64
+    move.q  r1, #LOWER_OP_PAD
+    beq     r25, r1, .cea_pad
+    move.q  r1, #LOWER_OP_PADX
+    beq     r25, r1, .cea_padx
+    move.q  r1, #LOWER_OP_PADY
+    beq     r25, r1, .cea_pady
     move.q  r1, #LOWER_OP_POKE64
     beq     r25, r1, .cea_poke64
     move.q  r1, #LOWER_OP_WAIT
@@ -1075,6 +1082,21 @@ compiler_emit_assembly_inner:
     la      r9, compiler_emit_peek64
     jsr     compiler_emit_text
     bra     .cea_next
+.cea_pad:
+    or.q    r24, r24, #(COMPILER_EMIT_GAMEPAD | COMPILER_EMIT_NUMERIC)
+    la      r9, compiler_emit_pad
+    jsr     compiler_emit_text
+    bra     .cea_next
+.cea_padx:
+    or.q    r24, r24, #(COMPILER_EMIT_GAMEPAD | COMPILER_EMIT_NUMERIC)
+    la      r9, compiler_emit_padx
+    jsr     compiler_emit_text
+    bra     .cea_next
+.cea_pady:
+    or.q    r24, r24, #(COMPILER_EMIT_GAMEPAD | COMPILER_EMIT_NUMERIC)
+    la      r9, compiler_emit_pady
+    jsr     compiler_emit_text
+    bra     .cea_next
 .cea_poke64:
     or.q    r24, r24, #(COMPILER_EMIT_NUMERIC | COMPILER_EMIT_POKE)
     la      r9, compiler_emit_poke64
@@ -1544,8 +1566,13 @@ compiler_emit_assembly_inner:
     jsr     compiler_emit_text
 .cea_poke_helper:
     and.q   r1, r24, #COMPILER_EMIT_POKE
-    beqz    r1, .cea_truthy_helper
+    beqz    r1, .cea_gamepad_helper
     la      r9, compiler_emit_poke_helper
+    jsr     compiler_emit_text
+.cea_gamepad_helper:
+    and.q   r1, r24, #COMPILER_EMIT_GAMEPAD
+    beqz    r1, .cea_truthy_helper
+    la      r9, compiler_emit_gamepad_helper
     jsr     compiler_emit_text
 .cea_truthy_helper:
     and.q   r1, r24, #COMPILER_EMIT_TRUTHY
@@ -2292,9 +2319,12 @@ compiler_emit_peek32:            dc.b "    pop r2",10,"    pop r1",10,"    load.
 compiler_emit_poke32:            dc.b "    pop r4",10,"    pop r3",10,"    pop r2",10,"    pop r1",10,"    move.q r5, #4",10,"    jsr compiler_runtime_poke",10,0
 compiler_emit_peek64:            dc.b "    pop r2",10,"    pop r1",10,"    load.q r8, (r1)",10,"    push r8",10,"    move.q r9, #VAL_I64",10,"    push r9",10,0
 compiler_emit_poke64:            dc.b "    pop r4",10,"    pop r3",10,"    pop r2",10,"    pop r1",10,"    move.q r5, #8",10,"    jsr compiler_runtime_poke",10,0
+compiler_emit_pad:               dc.b "    pop r2",10,"    pop r1",10,"    move.q r5, #0",10,"    jsr compiler_runtime_pad",10,"    push r8",10,"    move.q r9, #VAL_I64",10,"    push r9",10,0
+compiler_emit_padx:              dc.b "    pop r2",10,"    pop r1",10,"    move.q r5, #1",10,"    jsr compiler_runtime_pad",10,"    push r8",10,"    move.q r9, #VAL_I64",10,"    push r9",10,0
+compiler_emit_pady:              dc.b "    pop r2",10,"    pop r1",10,"    move.q r5, #2",10,"    jsr compiler_runtime_pad",10,"    push r8",10,"    move.q r9, #VAL_I64",10,"    push r9",10,0
 compiler_emit_stored_load_head:  dc.b "    la r1, compiler_stored_load_name_",0
 compiler_emit_stored_load_call:  dc.b 10,"    move.l r2, #",0
-compiler_emit_stored_load_tail:  dc.b 10,"    jsr (r2)",10,"    beqz r8, compiler_program_end",10,0
+compiler_emit_stored_load_tail:  dc.b 10,"    move.q r9, #0",10,"    jsr (r2)",10,"    beqz r8, compiler_program_end",10,0
 compiler_emit_stored_load_name_head: dc.b "compiler_stored_load_name_",0
 compiler_emit_poke_helper:       dc.b "compiler_runtime_poke:",10,"    push r3",10,"    push r4",10,"    push r5",10,"    move.q r6, #VAL_I64",10,"    beq r2, r6, compiler_poke_address_ready",10,"    move.q r3, #0",10,"    move.q r4, #VAL_I64",10,"    move.q r5, #191",10,"    jsr compiler_runtime_numeric",10,"    move.q r1, r8",10,"compiler_poke_address_ready:",10,"    pop r5",10,"    pop r4",10,"    pop r3",10,"    push r1",10,"    push r5",10,"    move.q r6, #VAL_I64",10,"    beq r4, r6, compiler_poke_value_ready",10,"    move.q r1, r3",10,"    move.q r2, r4",10,"    move.q r3, #0",10,"    move.q r4, #VAL_I64",10,"    move.q r5, #191",10,"    jsr compiler_runtime_numeric",10,"    move.q r3, r8",10,"compiler_poke_value_ready:",10,"    pop r5",10,"    pop r1",10,"    move.q r6, #1",10,"    beq r5, r6, compiler_poke_byte",10,"    move.q r6, #2",10,"    beq r5, r6, compiler_poke_word",10,"    move.q r6, #4",10,"    beq r5, r6, compiler_poke_long",10,"    store.q r3, (r1)",10,"    rts",10,"compiler_poke_byte:",10,"    store.b r3, (r1)",10,"    rts",10,"compiler_poke_word:",10,"    store.w r3, (r1)",10,"    rts",10,"compiler_poke_long:",10,"    store.l r3, (r1)",10,"    rts",10,0
 compiler_emit_wait_head:         dc.b "    pop r6",10,"    pop r3",10,"    pop r5",10,"    pop r2",10,"    pop r5",10,"    pop r1",10,"    move.q r4, #0x100000",10,"WAIT",0
@@ -2326,6 +2356,44 @@ compiler_emit_array_decl:        dc.b "compiler_array_",0
 compiler_emit_array_tag_decl:    dc.b "compiler_array_tag_",0
 compiler_emit_array_decl_tail:   dc.b ": ds.q 4097",10,0
 compiler_emit_rnd_state:         dc.b "compiler_rnd_state: dc.l 305419896",10,0
+; USB gamepad runtime helper. Input r1/r2 = index payload/type, r5 = variant
+; (0 PAD buttons, 1 PADX = left-stick X, 2 PADY = left-stick Y). Returns r8 =
+; value (0 for out-of-range index; PADX/PADY sign-extended from the s16 half).
+; Mirrors the interpreter PAD/PADX/PADY semantics in ehbasic_expr.inc.
+compiler_emit_gamepad_helper:    dc.b "compiler_runtime_pad:",10
+    dc.b "    push r5",10
+    dc.b "    move.q r6, #VAL_I64",10
+    dc.b "    beq r2, r6, compiler_pad_index_ready",10
+    dc.b "    move.q r3, #0",10
+    dc.b "    move.q r4, #VAL_I64",10
+    dc.b "    move.q r5, #191",10
+    dc.b "    jsr compiler_runtime_numeric",10
+    dc.b "    move.q r1, r8",10
+    dc.b "compiler_pad_index_ready:",10
+    dc.b "    pop r5",10
+    dc.b "    move.q r8, #0",10
+    dc.b "    blt r1, r0, compiler_pad_done",10
+    dc.b "    move.q r6, #4",10
+    dc.b "    bge r1, r6, compiler_pad_done",10
+    dc.b "    mulu.q r6, r1, #12",10
+    dc.b "    move.l r7, #0xF25D0",10
+    dc.b "    add.q r6, r6, r7",10
+    dc.b "    move.q r7, #0",10
+    dc.b "    beq r5, r7, compiler_pad_buttons",10
+    dc.b "    add.q r6, r6, #4",10
+    dc.b "    load.l r8, (r6)",10
+    dc.b "    move.q r7, #2",10
+    dc.b "    beq r5, r7, compiler_pad_pady",10
+    dc.b "    sext.w r8, r8",10
+    dc.b "    bra compiler_pad_done",10
+    dc.b "compiler_pad_pady:",10
+    dc.b "    lsr.q r8, r8, #16",10
+    dc.b "    sext.w r8, r8",10
+    dc.b "    bra compiler_pad_done",10
+    dc.b "compiler_pad_buttons:",10
+    dc.b "    load.l r8, (r6)",10
+    dc.b "compiler_pad_done:",10
+    dc.b "    rts",10,0
 compiler_emit_data_header:       dc.b "compiler_data_cursor: dc.q compiler_data_table",10,"compiler_data_table:",10,0
 compiler_emit_data_item:         dc.b "    dc.q 0x",0
 compiler_emit_data_i64:          dc.b ", VAL_I64",10,0

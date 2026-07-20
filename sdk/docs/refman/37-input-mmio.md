@@ -5,6 +5,7 @@ sources:
   - terminal_io.go
   - mouse_mapping.go
   - relative_mouse_capture.go
+  - input_gamepad.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -168,7 +169,37 @@ elapsed microsecond count. For long-running programs, keep the value
 as two words. Even though BASIC uses double-precision numbers, not
 every `64`-bit integer can be represented as one exact decimal value.
 
-## 37.8 Small-CPU Access
+## 37.8 USB Gamepad
+
+The gamepad block at `$F25C0`-`$F25FF` is read-only and the host fills
+it once per frame. Controller differences are resolved on the host, so
+every guest reads the same canonical layout.
+
+| Address | Name | R/W | Meaning |
+|---------|------|-----|---------|
+| `$F25C0` | `GAMEPAD_STATUS` | R | Bits `0`..`3` pad connected mask, bits `8`..`11` connected count. |
+
+Each pad `p` (0..3) has a `12`-byte record at `$F25D0 + p*$0C`:
+
+| Offset | Name | R/W | Meaning |
+|--------|------|-----|---------|
+| `+$00` | `BUTTONS` | R | Canonical button bitfield, latched at frame start. |
+| `+$04` | `AXIS_LXY` | R | Left stick, X in low `16` bits, Y in high `16` bits (signed). |
+| `+$08` | `AXIS_RXY` | R | Right stick, X in low `16` bits, Y in high `16` bits (signed). |
+
+The button bits are fixed and vendor neutral: `0` Up, `1` Down, `2`
+Left, `3` Right, `4` A, `5` B, `6` X, `7` Y, `8` LB, `9` RB, `10` LT,
+`11` RT, `12` Select, `13` Start, `14` L3, `15` R3, `16` Home.
+Triggers are digital only. Each stick axis is clamped to `-1`..`1` and
+scaled to signed `16`-bit; the published direction is down and right
+positive. Writes are ignored. BASIC reads the block with `PAD(n)`,
+`PADX(n)`, and `PADY(n)`; an out-of-range pad index returns `0`. The
+`joydefs.bas` library supplies symbolic button names in the `JOYxxx`
+form (BASIC variable names cannot contain `_`), for example `JOYA` and
+`JOYHOME`: `MERGE` it, then `GOSUB 60000` once before use. The full map
+and worked examples are in `ie_gamepad_mmio.md`.
+
+## 37.9 Small-CPU Access
 
 The 6502 and Z80 reach these registers through their terminal and
 MMIO apertures described in Chapters 27 and 28. A `32`-bit register

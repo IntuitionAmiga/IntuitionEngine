@@ -64,6 +64,8 @@ Address Range       Size    Device              Constants File
 	0xF2400-0xF24FF     256B    SysInfo             sysinfo_mmio.go
 	0xF2500-0xF257F     128B    AROS Host Sockets   aros_host_socket_constants.go
 	0xF2580-0xF259F     32B     CPU Wait            cpu_wait_mmio.go
+	0xF25A0-0xF25BF     32B     Coprocessor EXT2    coprocessor_constants.go
+	0xF25C0-0xF25FF     64B     Gamepad             input_gamepad.go
 	0xF2600-0xF29FF     1KB     SFX Trigger extended aliases sfx_constants.go
 0xD0000-0xDFFFF     64KB    Voodoo Texture Memory voodoo_constants.go
 0xF8000-0xF87FF     2KB     Voodoo 3D Graphics  voodoo_constants.go
@@ -309,6 +311,20 @@ const (
 	WAIT_UNTIL_HI        = 0xF2588
 	WAIT_UNTIL_GO        = 0xF258C
 
+	// USB gamepad discovery block. Read-only, host-filled once per frame; every
+	// guest reads the same canonical layout. Occupies the free 64-byte gap
+	// between COPROC_EXT2_END (0xF25BF) and the SFX extended aliases (0xF2600).
+	GAMEPAD_REGION_BASE = 0xF25C0
+	GAMEPAD_REGION_END  = 0xF25FF
+	GAMEPAD_STATUS      = 0xF25C0 // bits0..3 pad connected, bits8..11 pad count
+	GAMEPAD_PAD0_BASE   = 0xF25D0 // first per-pad record
+	GAMEPAD_PAD_STRIDE  = 0x0C    // 12 bytes per pad record
+	GAMEPAD_MAX_PADS    = 4
+	// Per-pad record offsets (relative to GAMEPAD_PAD0_BASE + p*GAMEPAD_PAD_STRIDE):
+	GAMEPAD_BUTTONS_OFF  = 0x00 // canonical button bitfield (u32)
+	GAMEPAD_AXIS_LXY_OFF = 0x04 // LX (s16 low) | LY (s16 high)
+	GAMEPAD_AXIS_RXY_OFF = 0x08 // RX (s16 low) | RY (s16 high)
+
 	// Voodoo 3D graphics region
 	VOODOO_REGION_BASE = 0xF8000
 	VOODOO_REGION_END  = 0xF87FF
@@ -452,6 +468,8 @@ func GetIORegion(addr uint32) string {
 		return "AROSHostSocket"
 	case addr >= CPU_WAIT_REGION_BASE && addr <= CPU_WAIT_REGION_END:
 		return "CPUWait"
+	case addr >= GAMEPAD_REGION_BASE && addr <= GAMEPAD_REGION_END:
+		return "Gamepad"
 	case addr >= VOODOO_REGION_BASE && addr <= VOODOO_REGION_END:
 		return "Voodoo"
 	default:

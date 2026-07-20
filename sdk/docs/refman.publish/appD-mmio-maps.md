@@ -478,7 +478,29 @@ Reachable from IE64, IE32, M68K, and x86; not reachable from the
 Waits have a short safety timeout so a programme continues if video
 presentation is unavailable.
 
-## D.23 Voodoo 3D (`$F8000`-`$F87FF`)
+## D.23 USB Gamepad (`$F25C0`-`$F25FF`)
+
+Read-only, host-filled once per frame. Writes are ignored.
+
+| Offset | Register |
+|--------|----------|
+| `+$00` | `GAMEPAD_STATUS`: bits `0`..`3` pad connected mask, bits `8`..`11` connected count. |
+
+Each pad `p` (0..3) has a `12`-byte record at `$F25D0 + p*$0C`:
+
+| Offset | Register |
+|--------|----------|
+| `+$00` | `BUTTONS`: canonical button bitfield, latched at frame start. |
+| `+$04` | `AXIS_LXY`: left stick, X in low `16` bits, Y in high `16` bits (signed). |
+| `+$08` | `AXIS_RXY`: right stick, X in low `16` bits, Y in high `16` bits (signed). |
+
+Button bits: `0` Up, `1` Down, `2` Left, `3` Right, `4` A, `5` B, `6`
+X, `7` Y, `8` LB, `9` RB, `10` LT, `11` RT, `12` Select, `13` Start,
+`14` L3, `15` R3, `16` Home. Triggers are digital. Axes are clamped to
+`-1`..`1` and scaled to signed `16`-bit, down and right positive.
+Documented in Chapter 37 and `ie_gamepad_mmio.md`.
+
+## D.24 Voodoo 3D (`$F8000`-`$F87FF`)
 
 Status, framebuffer base, clip rect, triangle setup, texture
 descriptors, fog, alpha, chroma-key, Z-buffer. Documented in

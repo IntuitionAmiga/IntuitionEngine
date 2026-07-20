@@ -72,6 +72,9 @@ LOWER_OP_STORE_STRING_LITERAL equ 68
 LOWER_OP_PRINT_STRING_VAR equ 69
 LOWER_OP_ADDRESS     equ 70
 LOWER_OP_STORED_LOAD equ 71
+LOWER_OP_PAD         equ 72
+LOWER_OP_PADX        equ 73
+LOWER_OP_PADY        equ 74
 LOWER_FLAG_RESIDENT equ 0x100
 LOWER_FLAG_RESIDENT_HOT equ 0x200
 LOWER_FLAG_I64_OPERANDS equ 0x400
@@ -203,6 +206,12 @@ compiler_lower_ir_inner:
     beq     r1, r2, .cli_poke32
     move.q  r2, #IR_OP_PEEK64
     beq     r1, r2, .cli_peek64
+    move.q  r2, #IR_OP_PAD
+    beq     r1, r2, .cli_pad
+    move.q  r2, #IR_OP_PADX
+    beq     r1, r2, .cli_padx
+    move.q  r2, #IR_OP_PADY
+    beq     r1, r2, .cli_pady
     move.q  r2, #IR_OP_POKE64
     beq     r1, r2, .cli_poke64
     move.q  r2, #IR_OP_WAIT
@@ -381,6 +390,15 @@ compiler_lower_ir_inner:
     bra     .cli_emit
 .cli_peek64:
     move.q  r3, #LOWER_OP_PEEK64
+    bra     .cli_emit
+.cli_pad:
+    move.q  r3, #LOWER_OP_PAD
+    bra     .cli_emit
+.cli_padx:
+    move.q  r3, #LOWER_OP_PADX
+    bra     .cli_emit
+.cli_pady:
+    move.q  r3, #LOWER_OP_PADY
     bra     .cli_emit
 .cli_poke64:
     move.q  r3, #LOWER_OP_POKE64

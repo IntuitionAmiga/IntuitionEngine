@@ -528,6 +528,106 @@ func bytesEqual(a, b []byte) bool {
 
 // TestREPL_RunAOT_Poke8 compiles and runs POKE8 natively, then verifies the
 // byte was written to guest memory.
+// seedGamepadForTest registers the gamepad MMIO device on the harness bus and
+// publishes a fixed pad-0 snapshot: buttons A+START, left stick full right and
+// full up (Ebiten-native, so LY negative), pads 1..3 absent.
+func seedGamepadForTest(h *ehbasicTestHarness) {
+	dev := RegisterGamepadMMIO(h.bus)
+	var snap GamepadSnapshot
+	snap.Pads[0].Connected = true
+	snap.Pads[0].Buttons[JOY_BIT_A] = true
+	snap.Pads[0].Buttons[JOY_BIT_START] = true
+	snap.Pads[0].LX = 1.0  // full right -> 32767
+	snap.Pads[0].LY = -1.0 // full up (Ebiten down-positive) -> -32767
+	dev.applySnapshot(snap)
+}
+
+// TestEhBASIC_Gamepad_Interpreter checks PAD/PADX/PADY under the interpreter.
+func TestEhBASIC_Gamepad_Interpreter(t *testing.T) {
+	h, _ := startREPL(t)
+	seedGamepadForTest(h)
+	const (
+		pAddr = 0x50000 // 327680 buttons
+		xAddr = 0x50004 // 327684 PADX
+		yAddr = 0x50008 // 327688 PADY
+		oAddr = 0x5000C // 327692 out-of-range PAD(5)
+	)
+	storeLine(t, h, "10 POKE32 327680, PAD(0)")
+	storeLine(t, h, "20 POKE32 327684, PADX(0)")
+	storeLine(t, h, "30 POKE32 327688, PADY(0)")
+	storeLine(t, h, "40 POKE32 327692, PAD(5)")
+	storeLine(t, h, "50 END")
+	out := h.runCommand("RUN")
+	if strings.Contains(out, "ERROR") {
+		t.Fatalf("interpreter RUN failed: %q", out)
+	}
+	wantBtn := uint32(1<<JOY_BIT_A | 1<<JOY_BIT_START)
+	if got := h.bus.Read32(pAddr); got != wantBtn {
+		t.Errorf("PAD(0) = %#x, want %#x", got, wantBtn)
+	}
+	if got := int32(h.bus.Read32(xAddr)); got != 32767 {
+		t.Errorf("PADX(0) = %d, want 32767", got)
+	}
+	if got := int32(h.bus.Read32(yAddr)); got != -32767 {
+		t.Errorf("PADY(0) = %d, want -32767", got)
+	}
+	if got := h.bus.Read32(oAddr); got != 0 {
+		t.Errorf("PAD(5) out-of-range = %#x, want 0", got)
+	}
+}
+
+// TestEhBASIC_Gamepad_RunAOTParity checks the compiler lowering matches the
+// interpreter for PAD/PADX/PADY, including the out-of-range index rule.
+func TestEhBASIC_Gamepad_RunAOTParity(t *testing.T) {
+	h, _ := startREPL(t)
+	seedGamepadForTest(h)
+	const (
+		pAddr = 0x50000
+		xAddr = 0x50004
+		yAddr = 0x50008
+		oAddr = 0x5000C
+	)
+	storeLine(t, h, "10 POKE32 327680, PAD(0)")
+	storeLine(t, h, "20 POKE32 327684, PADX(0)")
+	storeLine(t, h, "30 POKE32 327688, PADY(0)")
+	storeLine(t, h, "40 POKE32 327692, PAD(5)")
+	storeLine(t, h, "50 END")
+
+	// Interpreter reference.
+	if out := h.runCommand("RUN"); strings.Contains(out, "ERROR") {
+		t.Fatalf("interpreter RUN failed: %q", out)
+	}
+	refP := h.bus.Read32(pAddr)
+	refX := int32(h.bus.Read32(xAddr))
+	refY := int32(h.bus.Read32(yAddr))
+	refO := h.bus.Read32(oAddr)
+
+	// Zero the outputs, then RUN AOT and compare.
+	for _, a := range []uint32{pAddr, xAddr, yAddr, oAddr} {
+		h.bus.Write32(a, 0)
+	}
+	out := h.runCommand("RUN AOT")
+	if strings.Contains(out, "ERROR") || strings.Contains(out, aotStubMarker) {
+		t.Fatalf("RUN AOT failed: %q\n%s", out, readAOTAsmDebug(h))
+	}
+	if got := h.bus.Read32(pAddr); got != refP {
+		t.Errorf("AOT PAD(0) = %#x, want %#x (interpreter)", got, refP)
+	}
+	if got := int32(h.bus.Read32(xAddr)); got != refX {
+		t.Errorf("AOT PADX(0) = %d, want %d (interpreter)", got, refX)
+	}
+	if got := int32(h.bus.Read32(yAddr)); got != refY {
+		t.Errorf("AOT PADY(0) = %d, want %d (interpreter)", got, refY)
+	}
+	if got := h.bus.Read32(oAddr); got != refO {
+		t.Errorf("AOT PAD(5) = %#x, want %#x (interpreter)", got, refO)
+	}
+	// Absolute expectations too, so a shared bug cannot hide behind parity.
+	if refP != uint32(1<<JOY_BIT_A|1<<JOY_BIT_START) || refX != 32767 || refY != -32767 || refO != 0 {
+		t.Errorf("interpreter reference wrong: P=%#x X=%d Y=%d O=%#x", refP, refX, refY, refO)
+	}
+}
+
 func TestREPL_RunAOT_Poke8(t *testing.T) {
 	h, _ := startREPL(t)
 	const addr = 0x50000 // 327680, plain guest RAM (variable area, unused here)
@@ -5854,6 +5954,95 @@ func TestREPL_RunAOT_StoredLoadReplacesProgramme(t *testing.T) {
 	}
 	if got := h.bus.Read32(500000); got != 0 {
 		t.Fatalf("stale compiled statement after successful LOAD executed: memory=%d, want 0", got)
+	}
+}
+
+// TestREPL_MergeKeepsExistingLines proves MERGE inserts or replaces programme
+// lines by number without a NEW, unlike LOAD which clears the programme first.
+func TestREPL_MergeKeepsExistingLines(t *testing.T) {
+	asmBin := buildAssembler(t)
+	dir := t.TempDir()
+	// The merged file replaces line 20 and adds line 30; line 10 must survive.
+	if err := os.WriteFile(filepath.Join(dir, "m.bas"), []byte("20 A=3\n30 A=4\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	storeLine(t, h, "10 A=1")
+	storeLine(t, h, "20 A=2")
+
+	out := h.runCommand(`MERGE "m.bas"`)
+	if strings.Contains(out, "ERROR") || strings.Contains(out, "not found") {
+		t.Fatalf("MERGE failed: %q", out)
+	}
+	list := h.runCommand("LIST")
+	if !strings.Contains(list, "A=1") {
+		t.Errorf("MERGE dropped existing line 10 (A=1): %q", list)
+	}
+	if !strings.Contains(list, "A=3") || strings.Contains(list, "A=2") {
+		t.Errorf("MERGE did not replace line 20 (A=2 -> A=3): %q", list)
+	}
+	if !strings.Contains(list, "A=4") {
+		t.Errorf("MERGE did not add line 30 (A=4): %q", list)
+	}
+}
+
+// TestREPL_MergeJoydefsResolvesButtonNames merges the shipped joydefs.bas,
+// initialises it with GOSUB, and proves the symbolic JOY_A name resolves to the
+// canonical button bit and drives PAD masking.
+func TestREPL_MergeJoydefsResolvesButtonNames(t *testing.T) {
+	asmBin := buildAssembler(t)
+	dir := t.TempDir()
+	src, err := os.ReadFile(filepath.Join(repoRootDir(t), "sdk", "basic", "joydefs.bas"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "joydefs.bas"), src, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+
+	if out := h.runCommand(`MERGE "joydefs.bas"`); strings.Contains(out, "not found") || strings.Contains(out, "ERROR") {
+		t.Fatalf("MERGE joydefs failed: %q", out)
+	}
+	storeLine(t, h, "10 GOSUB 60000")
+	storeLine(t, h, "20 POKE32 500000, JOYA")
+	storeLine(t, h, "30 POKE32 500004, JOYHOME")
+	storeLine(t, h, "40 END")
+	if out := h.runCommand("RUN"); strings.Contains(out, "ERROR") {
+		t.Fatalf("RUN failed: %q", out)
+	}
+	if got := h.bus.Read32(500000); got != 16 {
+		t.Errorf("JOYA resolved to %d, want 16", got)
+	}
+	if got := h.bus.Read32(500004); got != 65536 {
+		t.Errorf("JOYHOME resolved to %d, want 65536", got)
+	}
+}
+
+// TestREPL_LoadStillClearsProgramme guards that adding MERGE did not turn LOAD
+// into a merge: LOAD must still drop the prior programme.
+func TestREPL_LoadStillClearsProgramme(t *testing.T) {
+	asmBin := buildAssembler(t)
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "l.bas"), []byte("20 A=3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, dir)
+	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
+	storeLine(t, h, "10 A=1")
+	storeLine(t, h, "20 A=2")
+
+	if out := h.runCommand(`LOAD "l.bas"`); strings.Contains(out, "not found") {
+		t.Fatalf("LOAD failed: %q", out)
+	}
+	list := h.runCommand("LIST")
+	if strings.Contains(list, "A=1") {
+		t.Errorf("LOAD kept line 10 (A=1); should have cleared: %q", list)
+	}
+	if !strings.Contains(list, "A=3") {
+		t.Errorf("LOAD did not install new line 20 (A=3): %q", list)
 	}
 }
 

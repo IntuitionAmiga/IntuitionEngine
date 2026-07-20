@@ -1241,6 +1241,33 @@
 .equ CPU_WAIT_UNTIL_HI     0xF2588
 .equ CPU_WAIT_UNTIL_GO     0xF258C
 
+; USB gamepad discovery block (read-only, host-filled once per frame).
+.equ GAMEPAD_REGION_BASE   0xF25C0
+.equ GAMEPAD_REGION_END    0xF25FF
+.equ GAMEPAD_STATUS        0xF25C0
+.equ GAMEPAD_PAD0_BASE     0xF25D0
+.equ GAMEPAD_PAD_STRIDE    0x0000000C
+.equ GAMEPAD_BUTTONS_OFF   0x00000000
+.equ GAMEPAD_AXIS_LXY_OFF  0x00000004
+.equ GAMEPAD_AXIS_RXY_OFF  0x00000008
+.equ JOY_UP                0x00000001
+.equ JOY_DOWN              0x00000002
+.equ JOY_LEFT              0x00000004
+.equ JOY_RIGHT             0x00000008
+.equ JOY_A                 0x00000010
+.equ JOY_B                 0x00000020
+.equ JOY_X                 0x00000040
+.equ JOY_Y                 0x00000080
+.equ JOY_LB                0x00000100
+.equ JOY_RB                0x00000200
+.equ JOY_LT                0x00000400
+.equ JOY_RT                0x00000800
+.equ JOY_SELECT            0x00001000
+.equ JOY_START             0x00002000
+.equ JOY_L3                0x00004000
+.equ JOY_R3                0x00008000
+.equ JOY_HOME              0x00010000
+
 ; Base address
 .equ VOODOO_BASE           0xF8000
 .equ VOODOO_END            0xF87FF

@@ -398,6 +398,37 @@
 .set IE_SFX_EXT_CH_BASE,0x2600
 .set IE_SFX_EXT_CH0_BASE,0x2600
 .set IE_SFX_EXT_CH31_BASE,0x29E0
+
+; USB gamepad discovery block (read-only, host-filled once per frame).
+; Z80 cannot address bus 0xF25C0 directly; select BANK1 = GAMEPAD_IO_BANK
+; (0x79, bus 0xF2000-0xF3FFF) and use the 0x2000-0x3FFF window addresses:
+; bus 0xF25C0 = 0x79*0x2000 + 0x5C0, seen as window 0x25C0.
+.set GAMEPAD_IO_BANK,0x0079
+.set GAMEPAD_REGION_BASE,0xF25C0
+.set GAMEPAD_REGION_END,0xF25FF
+.set GAMEPAD_STATUS,0x25C0
+.set GAMEPAD_PAD0_BASE,0x25D0
+.set GAMEPAD_PAD_STRIDE,0x0C
+.set GAMEPAD_BUTTONS_OFF,0x00
+.set GAMEPAD_AXIS_LXY_OFF,0x04
+.set GAMEPAD_AXIS_RXY_OFF,0x08
+.set JOY_UP,0x00000001
+.set JOY_DOWN,0x00000002
+.set JOY_LEFT,0x00000004
+.set JOY_RIGHT,0x00000008
+.set JOY_A,0x00000010
+.set JOY_B,0x00000020
+.set JOY_X,0x00000040
+.set JOY_Y,0x00000080
+.set JOY_LB,0x00000100
+.set JOY_RB,0x00000200
+.set JOY_LT,0x00000400
+.set JOY_RT,0x00000800
+.set JOY_SELECT,0x00001000
+.set JOY_START,0x00002000
+.set JOY_L3,0x00004000
+.set JOY_R3,0x00008000
+.set JOY_HOME,0x00010000
 .set SFX_PTR,0x00
 .set SFX_LEN,0x04
 .set SFX_LOOP_PTR,0x08
@@ -1548,6 +1579,11 @@
 ; Select bank1 for terminal/input/RTC aliases at 0x2700-0x27FF.
 .macro SET_TERMINAL_BANK
     SET_BANK1 TERM_IO_BANK
+.endm
+
+; Select bank1 for the gamepad block at 0x25C0-0x25FF (bus 0xF25C0).
+.macro SET_GAMEPAD_BANK
+    SET_BANK1 GAMEPAD_IO_BANK
 .endm
 
 ; Set VRAM bank

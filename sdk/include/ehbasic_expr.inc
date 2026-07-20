@@ -1393,6 +1393,81 @@ expr_primary:
     jsr     fp_float
     rts
 
+; ---------------------------------------------------------------------------
+; USB gamepad expression builtins: PAD(n), PADX(n), PADY(n).
+; n selects pad 0..3. Out-of-range indices return 0 (defined once here, and
+; mirrored by the compiler lowering). PAD returns the raw canonical button
+; bitfield; PADX/PADY return the signed left-stick axes (Ebiten-native
+; direction, down and right positive) unpacked from the s16 register halves.
+; Gamepad block: STATUS 0xF25C0, pad p record at 0xF25D0 + p*0x0C
+; (+0 buttons, +4 AXIS_LXY = LX low16 | LY high16).
+; ---------------------------------------------------------------------------
+.ext_pad:
+    jsr     .pad_eval_index          ; R19 = index, R20 = valid
+    beqz    r20, .pad_return_zero
+    jsr     .pad_record_addr         ; R1 = 0xF25D0 + index*12
+    load.l  r8, (r1)                 ; BUTTONS
+    move.q  r9, #VAL_I64
+    rts
+.ext_padx:
+    jsr     .pad_eval_index
+    beqz    r20, .pad_return_zero
+    jsr     .pad_record_addr
+    add.q   r1, r1, #4               ; AXIS_LXY
+    load.l  r8, (r1)
+    sext.w  r8, r8                   ; low 16 = LX, sign-extended
+    move.q  r9, #VAL_I64
+    rts
+.ext_pady:
+    jsr     .pad_eval_index
+    beqz    r20, .pad_return_zero
+    jsr     .pad_record_addr
+    add.q   r1, r1, #4               ; AXIS_LXY
+    load.l  r8, (r1)
+    lsr.q   r8, r8, #16              ; high 16 = LY
+    sext.w  r8, r8
+    move.q  r9, #VAL_I64
+    rts
+.pad_return_zero:
+    move.q  r8, r0
+    move.q  r9, #VAL_I64
+    rts
+; R1 = pad record base for the validated index in R19.
+.pad_record_addr:
+    mulu.q  r1, r19, #12
+    li      r2, #0xF25D0
+    add.q   r1, r1, r2
+    rts
+; Parse (n): R19 = integer index, R20 = 1 when 0<=n<=3 else 0.
+.pad_eval_index:
+    load.b  r2, (r17)
+    move.q  r3, #0x28                ; '('
+    bne     r2, r3, .pad_idx_invalid
+    add.q   r17, r17, #1
+    jsr     expr_eval
+    load.b  r2, (r17)
+    move.q  r3, #0x29                ; ')'
+    bne     r2, r3, .pad_idx_conv
+    add.q   r17, r17, #1
+.pad_idx_conv:
+    move.q  r2, #VAL_I64
+    beq     r9, r2, .pad_idx_i64
+    jsr     fp_int
+    jsr     fp_fix
+.pad_idx_i64:
+    move.q  r19, r8
+    move.q  r20, r0                  ; assume invalid
+    blt     r19, r0, .pad_idx_done   ; negative
+    move.q  r2, #4
+    bge     r19, r2, .pad_idx_done   ; >= 4
+    move.q  r20, #1
+.pad_idx_done:
+    rts
+.pad_idx_invalid:
+    move.q  r19, r0
+    move.q  r20, r0
+    rts
+
 .do_ext_function:
     add.q   r17, r17, #1         ; consume TK_EXT
     load.b  r1, (r17)            ; subtoken
@@ -1407,6 +1482,12 @@ expr_primary:
     beq     r1, r2, .ext_peek32
     move.q  r2, #EXT_PEEK64
     beq     r1, r2, .ext_peek64
+    move.q  r2, #EXT_PAD
+    beq     r1, r2, .ext_pad
+    move.q  r2, #EXT_PADX
+    beq     r1, r2, .ext_padx
+    move.q  r2, #EXT_PADY
+    beq     r1, r2, .ext_pady
     move.q  r8, r0
     rts
 .ext_peek8:

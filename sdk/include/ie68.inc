@@ -1747,6 +1747,34 @@ CPU_WAIT_UNTIL_LO     equ $F2584            ; Low 32 bits of RTC_MONO_USEC deadl
 CPU_WAIT_UNTIL_HI     equ $F2588            ; High 32 bits of RTC_MONO_USEC deadline
 CPU_WAIT_UNTIL_GO     equ $F258C            ; Park until deadline
 
+; USB gamepad discovery block (read-only, host-filled once per frame).
+; Canonical $F0000..$FFFFF window; axes Ebiten-native, signed 16-bit.
+GAMEPAD_REGION_BASE   equ $F25C0
+GAMEPAD_REGION_END    equ $F25FF
+GAMEPAD_STATUS        equ $F25C0            ; bits0..3 connected, bits8..11 count
+GAMEPAD_PAD0_BASE     equ $F25D0
+GAMEPAD_PAD_STRIDE    equ $0000000C
+GAMEPAD_BUTTONS_OFF   equ $00000000
+GAMEPAD_AXIS_LXY_OFF  equ $00000004
+GAMEPAD_AXIS_RXY_OFF  equ $00000008
+JOY_UP                equ $00000001
+JOY_DOWN              equ $00000002
+JOY_LEFT              equ $00000004
+JOY_RIGHT             equ $00000008
+JOY_A                 equ $00000010
+JOY_B                 equ $00000020
+JOY_X                 equ $00000040
+JOY_Y                 equ $00000080
+JOY_LB                equ $00000100
+JOY_RB                equ $00000200
+JOY_LT                equ $00000400
+JOY_RT                equ $00000800
+JOY_SELECT            equ $00001000
+JOY_START             equ $00002000
+JOY_L3                equ $00004000
+JOY_R3                equ $00008000
+JOY_HOME              equ $00010000
+
 ; Base address
 VOODOO_BASE           equ $F8000
 VOODOO_END            equ $F87FF

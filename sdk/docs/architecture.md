@@ -1554,6 +1554,7 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0xF2500-0xF257F` | 128B | MMIO | AROS host socket bridge | AROS M68K profile | AROS profile | Host-backed `bsdsocket.library` command bridge. |
 | `0xF2580-0xF259F` | 32B | MMIO | CPU wait service | All CPU cores | Timing/wait ABI | CPU wait writes park until the next VBlank edge or a latched `RTC_MONO_USEC` deadline, capped by a 50 ms safety timeout; reads return 0. |
 | `0xF25A0-0xF25BF` | 32B | MMIO | Coprocessor instance discovery | 32-bit-addressing CPU cores and main-CPU BASIC | Coprocessor subsystem | Selected type's instance limit, selected-instance state, mailbox layout version, worker window and ring addresses, plus an atomic all-instance liveness mask. |
+| `0xF25C0-0xF25FF` | 64B | MMIO | USB gamepad discovery | All CPU cores | Gamepad ABI | Read-only, host-filled once per frame. A status word plus four 12-byte pad records (canonical button bitfield and two packed signed-16 stick axes). Writes ignored. See `ie_gamepad_mmio.md`. |
 | `0xF8000-0xF87FF` | 2KB | MMIO | Voodoo 3D registers and palette | All CPU cores | Voodoo subsystem | 3D control, state, and palette register block. |
 | `0xF8140-0xF823F` | 256B | MMIO | Voodoo fog table | All CPU cores | Voodoo subsystem | 64 entries x 4 bytes. |
 | `0x100000-0x5FFFFF` | 5MB | Shared RAM / VRAM-backed region | Main video framebuffer and graphics-visible memory | All CPU cores | Video subsystem plus guest convention | Subranges may be reserved for coprocessor worker buffers. |

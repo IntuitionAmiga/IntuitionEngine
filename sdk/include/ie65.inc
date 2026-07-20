@@ -419,6 +419,40 @@ SFX_STATUS_PLAYING = $01
 SFX_STATUS_ERROR   = $02
 
 ; ============================================================================
+; USB GAMEPAD DISCOVERY BLOCK (read-only, host-filled once per frame)
+; The 6502 cannot address bus $F25C0 directly (its $Fxxx window only reaches
+; bus $F0xxx). Select BANK1 = GAMEPAD_IO_BANK ($79, covering bus $F2000-$F3FFF)
+; and access the CPU window addresses below in the $2000-$3FFF Bank 1 window:
+; bus $F25C0 = $79 * $2000 + $5C0, seen as window $25C0.
+; ============================================================================
+GAMEPAD_IO_BANK       = $0079        ; BANK1 value for bus $F2000-$F3FFF
+GAMEPAD_REGION_BASE   = $F25C0        ; canonical bus address (documentation)
+GAMEPAD_REGION_END    = $F25FF
+GAMEPAD_STATUS        = $25C0         ; Bank 1 window: bits0..3 connected, 8..11 count
+GAMEPAD_PAD0_BASE     = $25D0         ; Bank 1 window: first pad record
+GAMEPAD_PAD_STRIDE    = $0C
+GAMEPAD_BUTTONS_OFF   = $00
+GAMEPAD_AXIS_LXY_OFF  = $04
+GAMEPAD_AXIS_RXY_OFF  = $08
+JOY_UP                = $00000001
+JOY_DOWN              = $00000002
+JOY_LEFT              = $00000004
+JOY_RIGHT             = $00000008
+JOY_A                 = $00000010
+JOY_B                 = $00000020
+JOY_X                 = $00000040
+JOY_Y                 = $00000080
+JOY_LB                = $00000100
+JOY_RB                = $00000200
+JOY_LT                = $00000400
+JOY_RT                = $00000800
+JOY_SELECT            = $00001000
+JOY_START             = $00002000
+JOY_L3                = $00004000
+JOY_R3                = $00008000
+JOY_HOME              = $00010000
+
+; ============================================================================
 ; TED AUDIO REGISTERS (Commodore Plus/4 style)
 ;
 ; The TED chip provides 2 voices with simple square wave synthesis:
@@ -1702,6 +1736,11 @@ COP_MOVE_VGA_DATA     = $40010000           ; Offset 1: DAC data (R,G,B seq)
 ; Select bank1 for terminal/input/RTC aliases at $2700-$27FF.
 .macro SET_TERMINAL_BANK
     SET_BANK1 TERM_IO_BANK
+.endmacro
+
+; Select bank1 for the gamepad block at $25C0-$25FF (bus $F25C0).
+.macro SET_GAMEPAD_BANK
+    SET_BANK1 GAMEPAD_IO_BANK
 .endmacro
 
 ; Set VRAM bank

@@ -490,10 +490,26 @@ exec_do_load:
     jsr     exec_skip_spaces
     jsr     str_eval                ; R8 = filename
     move.q  r1, r8
+    move.q  r9, r0                  ; merge flag 0 = LOAD (clears current program)
     jsr     basic_load_file
     bnez    r8, .exec_load_done
     move.q  r28, #2                 ; end the current interpreted programme
 .exec_load_done:
+    rts
+
+; ============================================================================
+; exec_do_merge - MERGE "filename"
+; Loads programme lines from a file into the current programme without a NEW:
+; existing lines are kept, loaded lines insert or replace by line number, and
+; variables are preserved. This is how joydefs.bas ships symbolic JOY_* names.
+; ============================================================================
+exec_do_merge:
+    jsr     exec_skip_spaces
+    jsr     str_eval                ; R8 = filename
+    move.q  r1, r8
+    move.q  r9, #1                  ; merge flag 1 = MERGE (keep current program)
+    jsr     basic_load_file
+    ; MERGE returns to the REPL/programme in place; do not end the programme.
     rts
 
 ; Typed arena-compiler entry point. R1 is a NUL-terminated filename and R8 is
@@ -589,7 +605,11 @@ basic_load_file_inner:
     load.l  r3, (r1)                ; R3 = bytes read
     lsl.q   r3, r3, #32
     lsr.q   r3, r3, #32
-    ; NEW (clear current program first; line_init also clears EHBASIC_PRIV_LOAD_DIR_BUF)
+    ; NEW (clear current program first; line_init also clears EHBASIC_PRIV_LOAD_DIR_BUF).
+    ; MERGE (R9 != 0) keeps the current programme and variables, so loaded lines
+    ; insert or replace by line number. R9 is still the merge flag here: nothing
+    ; between entry and this point touches it.
+    bnez    r9, .load_skip_new
     push    r23
     push    r3
     ; Reset the arena cursor to the programme base before line_init
@@ -602,6 +622,7 @@ basic_load_file_inner:
     jsr     var_init
     pop     r3
     pop     r23
+.load_skip_new:
 
     move.q  r24, r3                 ; preserve byte count across directory scan
 
