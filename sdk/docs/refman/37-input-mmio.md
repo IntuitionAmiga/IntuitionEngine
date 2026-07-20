@@ -197,7 +197,10 @@ positive. Writes are ignored. BASIC reads the block with `PAD(n)`,
 `joydefs.bas` library supplies symbolic button names in the `JOYxxx`
 form (BASIC variable names cannot contain `_`), for example `JOYA` and
 `JOYHOME`: `MERGE` it, then `GOSUB 60000` once before use. The full map
-and worked examples are in `ie_gamepad_mmio.md`.
+and worked examples are in `ie_gamepad_mmio.md`. The EmuTOS and AROS guests are
+IE-native M68K builds and reach this block directly at `$F25C0`, the same way
+they read the keyboard and mouse registers; wiring it into the upstream Atari
+and Amiga joystick APIs is deferred guest-side driver work.
 
 ## 37.9 Small-CPU Access
 

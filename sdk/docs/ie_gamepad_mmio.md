@@ -67,6 +67,26 @@ offset`: bank `0x79` gives `0xF2000`, plus offset `0x5C0`, seen as window
 `$25C0` inside the `$2000-$3FFF` Bank 1 window. Each include also ships a
 `SET_GAMEPAD_BANK` macro and the `JOY_*` button-bit constants.
 
+## Guest operating systems (EmuTOS, AROS)
+
+The EmuTOS and AROS images shipped here are IE-native M68K builds. They already
+consume IE memory-mapped input directly: EmuTOS reads scancodes from
+`SCAN_CODE` (`$F0740`) and AROS reads the terminal block in Amiga rawkey mode.
+Neither build emulates Atari IKBD joystick packets or Amiga CIA and custom-chip
+registers, so there is no native joystick hardware for a host-side adapter to
+mirror. Because M68K is flat-addressing, both guests reach the gamepad block
+directly at `$F25C0` through the `ie68.inc` equates, the same way they reach the
+keyboard and mouse registers. No per-guest Go adapter is needed for native
+access, and a native M68K read of the block is covered by
+`TestGamepad_M68KGuestReadsCanonicalBlock`.
+
+Wiring the block into the upstream joystick APIs (EmuTOS `Ikbd` joystick
+packets, AROS `lowlevel.library/ReadJoyPort`) so unmodified controller code
+sees a gamepad is deferred. That is guest-side driver work in the external
+EmuTOS `MACHINE_IE` and `AROS-deadw00d` source trees, not a Go shim, and would
+require standing up native IKBD or CIA hardware this build does not otherwise
+provide. It is a separate change from the MMIO block and its native reader.
+
 ## Assembly example (IE64)
 
 ```
