@@ -176,7 +176,45 @@ the current programme, and clears variables. If the entry is not
 found, BASIC prints `?FILE NOT FOUND` and keeps the previous
 programme.
 
-### 35.6.2 SAVE
+### 35.6.2 MERGE
+
+```basic
+MERGE "name"
+```
+
+`MERGE` is normally used as a direct-mode editing command. It reads
+numbered BASIC lines from disk without erasing the programme already in memory.
+Loaded line numbers replace matching lines; new line numbers are
+inserted. Existing variables and all unmatched lines remain in place.
+
+This prompt session creates a small fragment, then merges it into a
+different programme:
+
+```text
+NEW
+100 PRINT "MERGED LINE"
+SAVE "PART.BAS"
+NEW
+10 PRINT "ORIGINAL LINE"
+MERGE "PART.BAS"
+LIST
+10  PRINT "ORIGINAL LINE"
+100  PRINT "MERGED LINE"
+```
+
+The first `NEW` starts the fragment and `SAVE` writes it. The second
+`NEW` starts the destination programme. `MERGE` keeps line `10` and
+inserts line `100`. If the file also contained line `10`, that loaded
+line would replace the existing one. `LOAD "PART.BAS"`, by contrast,
+would erase line `10` before installing the file.
+
+The interpreter can execute `MERGE` from a numbered line. `RUN AOT`,
+`COMPILE`, and `TRANSPILE` reject that stored statement because their
+programme image cannot change its own BASIC line table. A missing entry
+reports the same file-not-found error as `LOAD` and leaves the existing
+programme in memory.
+
+### 35.6.3 SAVE
 
 ```basic
 SAVE "name"
@@ -185,7 +223,7 @@ SAVE "name"
 `SAVE` writes the current BASIC programme as detokenised numbered
 text. The saved text round-trips through `LOAD`.
 
-### 35.6.3 BLOAD
+### 35.6.4 BLOAD
 
 ```text
 BLOAD "name", addr
@@ -196,7 +234,7 @@ tokenise and it does not clear variables. Because the File I/O block
 uses the read-side `32`-bit `FILE_DATA_PTR`, `addr` must be below `2^32`;
 otherwise BASIC reports `?FC ERROR`.
 
-### 35.6.4 COMPILE
+### 35.6.5 COMPILE
 
 ```text
 COMPILE "name"
@@ -230,7 +268,7 @@ native operations for both targets.
 If the stored programme is empty, `COMPILE` prints `?NO CODE TO COMPILE`
 and writes no image.
 
-### 35.6.5 TRANSPILE
+### 35.6.6 TRANSPILE
 
 ```text
 TRANSPILE "name"
@@ -253,7 +291,7 @@ BASIC would compile, or when you want to assemble it later with
 If the stored programme is empty, `TRANSPILE` prints
 `?NO CODE TO COMPILE` and writes no source file.
 
-### 35.6.6 ASSEMBLE
+### 35.6.7 ASSEMBLE
 
 ```text
 ASSEMBLE "name"
@@ -293,7 +331,7 @@ RUN "MADE.IE64"
 source and writes `MADE.ie64` again. The final `RUN` starts the flat
 IE64 image.
 
-### 35.6.7 DIR
+### 35.6.8 DIR
 
 ```text
 DIR
@@ -305,7 +343,7 @@ directory and prints entries separated by `CR` `LF`. Its output
 depends on the current disk volume, so it is shown here as a syntax
 template rather than a transcript with fixed expected output.
 
-### 35.6.8 TYPE
+### 35.6.9 TYPE
 
 ```text
 TYPE "name"

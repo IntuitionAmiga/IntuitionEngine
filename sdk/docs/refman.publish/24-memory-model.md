@@ -188,6 +188,7 @@ The full map:
 | `$F23E0`-`$F23FF` | `32B`  | Bootstrap file bridge        |
 | `$F2400`-`$F24FF` | `256B` | SysInfo (RAM-size discovery) |
 | `$F25A0`-`$F25BF` | `32B`  | Coprocessor capability and instance discovery |
+| `$F25C0`-`$F25FF` | `64B`  | Gamepad status, buttons, and stick axes |
 | `$F2600`-`$F29FF` | `1K`   | SFX trigger extended window, channels `0`-`31` |
 | `$F8000`-`$F87FF` | `2K`   | Voodoo 3D registers          |
 | `$FA000`-`$FBAFF` | `6912B`| ULA VRAM (bitmap + attrs)    |

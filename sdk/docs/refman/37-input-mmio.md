@@ -1,5 +1,5 @@
 ---
-title: "Keyboard, Mouse, and Time of Day"
+title: "Keyboard, Mouse, Controllers, and Time of Day"
 sources:
   - registers.go
   - terminal_io.go
@@ -10,12 +10,13 @@ sources:
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
 
-# Chapter 37 - Keyboard, Mouse, and Time of Day
+# Chapter 37 - Keyboard, Mouse, Controllers, and Time of Day
 
 Input arrives through the terminal register block at
 `$F0700`-`$F07FF`. BASIC usually reads characters with `GET` and
 `INPUT`; games, editors, and music tools can also poll the raw
-registers directly.
+registers directly. Controller state has its own shared block at
+`$F25C0`-`$F25FF`.
 
 All registers in this chapter are `32`-bit on the bus. Most values
 use only the low byte. Mouse X and Y use the low `16` bits. Relative
@@ -169,46 +170,109 @@ elapsed microsecond count. For long-running programs, keep the value
 as two words. Even though BASIC uses double-precision numbers, not
 every `64`-bit integer can be represented as one exact decimal value.
 
-## 37.8 USB Gamepad
+## 37.8 Gamepad Input
 
-The gamepad block at `$F25C0`-`$F25FF` is read-only and the host fills
-it once per frame. Controller differences are resolved on the host, so
-every guest reads the same canonical layout.
+The input system samples up to four gamepads once per displayed frame
+and publishes one vendor-neutral layout for every CPU. The block at
+`$F25C0`-`$F25FF` is read-only from the programme's point of view.
 
 | Address | Name | R/W | Meaning |
 |---------|------|-----|---------|
 | `$F25C0` | `GAMEPAD_STATUS` | R | Bits `0`..`3` pad connected mask, bits `8`..`11` connected count. |
 
+Addresses `$F25C4` through `$F25CF` are reserved and read as zero.
+
 Each pad `p` (0..3) has a `12`-byte record at `$F25D0 + p*$0C`:
 
 | Offset | Name | R/W | Meaning |
 |--------|------|-----|---------|
-| `+$00` | `BUTTONS` | R | Canonical button bitfield, latched at frame start. |
+| `+$00` | `BUTTONS` | R | Canonical button bitfield for this frame. |
 | `+$04` | `AXIS_LXY` | R | Left stick, X in low `16` bits, Y in high `16` bits (signed). |
 | `+$08` | `AXIS_RXY` | R | Right stick, X in low `16` bits, Y in high `16` bits (signed). |
 
-The button bits are fixed and vendor neutral: `0` Up, `1` Down, `2`
-Left, `3` Right, `4` A, `5` B, `6` X, `7` Y, `8` LB, `9` RB, `10` LT,
-`11` RT, `12` Select, `13` Start, `14` L3, `15` R3, `16` Home.
-Triggers are digital only. Each stick axis is clamped to `-1`..`1` and
-scaled to signed `16`-bit; the published direction is down and right
-positive. Writes are ignored. BASIC reads the block with `PAD(n)`,
-`PADX(n)`, and `PADY(n)`; an out-of-range pad index returns `0`. The
-`joydefs.bas` library supplies symbolic button names in the `JOYxxx`
-form (BASIC variable names cannot contain `_`), for example `JOYA` and
-`JOYHOME`: `MERGE` it, then `GOSUB 60000` once before use. The full map
-and worked examples are in `ie_gamepad_mmio.md`. The EmuTOS and AROS guests are
-IE-native M68K builds and reach this block directly at `$F25C0`, the same way
-they read the keyboard and mouse registers; wiring it into the upstream Atari
-and Amiga joystick APIs is deferred guest-side driver work.
+| Bit | Mask | Button | Bit | Mask | Button |
+|-----|------|--------|-----|------|--------|
+| `0` | `$00000001` | Up | `1` | `$00000002` | Down |
+| `2` | `$00000004` | Left | `3` | `$00000008` | Right |
+| `4` | `$00000010` | A | `5` | `$00000020` | B |
+| `6` | `$00000040` | X | `7` | `$00000080` | Y |
+| `8` | `$00000100` | LB | `9` | `$00000200` | RB |
+| `10` | `$00000400` | LT | `11` | `$00000800` | RT |
+| `12` | `$00001000` | Select | `13` | `$00002000` | Start |
+| `14` | `$00004000` | L3 | `15` | `$00008000` | R3 |
+| `16` | `$00010000` | Home | | | |
+
+LT and RT are digital buttons. Each stick axis ranges from `-32767` to
+`32767`. Left and up are negative; right and down are positive. A
+disconnected slot reads as zero, including all previous button and axis
+state. Writes are accepted but ignored, and reads have no side effects.
+
+BASIC provides `PAD(n)` for the button bitfield and `PADX(n)` and
+`PADY(n)` for the signed left-stick axes. The index is a slot from `0`
+through `3`; a disconnected or out-of-range slot returns `0`.
+
+### 37.8.1 A moving and sounding controller test
+
+This programme uses the left stick to move a VGA pixel and the A button
+to open a SoundChip gate:
+
+```basic
+10 REM GAMEPAD CURSOR AND BUTTON TONE
+20 SCREEN 13
+30 POKE32 &H000F0800,1
+40 ENVELOPE 0,5,40,160,30
+50 AM=16:OLD=0
+55 FOR F=1 TO 600
+60 X=160+INT(PADX(0)/512)
+70 Y=100+INT(PADY(0)/512)
+80 CLS
+90 PLOT X,Y,15
+100 B=PAD(0):A=B AND AM
+110 IF A=0 THEN GATE 0,OFF
+120 IF A<>0 AND OLD=0 THEN SOUND 0,660,180,0,128:GATE 0,ON
+130 OLD=A
+140 NEXT F
+150 GATE 0,OFF
+```
+
+Lines `20` and `80` prepare a Mode 13h VGA frame. Lines `60` and `70`
+scale the signed left-stick axes into a safe area around the centre of
+the screen, and line `90` plots the current position. Line `50` defines
+the A-button mask locally, so the listing needs no library file. Lines
+`100` through `130` detect the button edge: pressing A starts the tone,
+and releasing A closes the gate. Line `55` keeps the demonstration
+running for `600` samples. Increase that value for a longer test. Line
+`150` leaves the SoundChip gate closed when the programme ends.
+
+Expected result: while the programme runs, the bright pixel follows the
+left stick and a tone sounds while A is held. With no gamepad in slot
+`0`, the pixel remains at the centre and the sound stays off.
+
+The raw block can also be inspected directly:
+
+```basic
+PRINT HEX$(PEEK32(&H000F25C0))
+PRINT HEX$(PEEK32(&H000F25D0))
+```
+
+The first value contains the connection mask and count. The second is
+pad `0`'s button word. The exact values depend on the connected pads and
+buttons held during that frame.
 
 ## 37.9 Small-CPU Access
 
-The 6502 and Z80 reach these registers through their terminal and
-MMIO apertures described in Chapters 27 and 28. A `32`-bit register
-appears as four byte lanes. For most registers the useful bits are in
-the low byte. For `MOUSE_X` and `MOUSE_Y`, read the low two bytes for
-the `16`-bit coordinate.
+The 6502 and Z80 reach the terminal registers through the terminal bank
+described in Chapters 27 and 28. A `32`-bit register appears as four
+little-endian byte lanes. For most terminal registers the useful bits
+are in the low byte. For `MOUSE_X` and `MOUSE_Y`, read the low two bytes
+for the `16`-bit coordinate.
+
+The gamepad block uses Bank 1 value `$79`, not the terminal bank. Use
+`SET_GAMEPAD_BANK`, then read `GAMEPAD_STATUS` at `$25C0` and pad `0`
+at `$25D0`. Button bits `0` through `7` are in `$25D0`, bits `8`
+through `15` in `$25D1`, and Home at bit `0` of `$25D2`. Signed axis
+halves use the same little-endian byte order. Selecting another bank
+later replaces this view of `$2000`-`$3FFF`.
 
 The cooked-key register at `$F0728` shares its queue with terminal
 character input. A program should choose one consumer for that queue:

@@ -136,6 +136,8 @@ symbols, and Appendix J gives the full memory map.
 | General MIDI-style programmes | Chapter 21, Appendix E |
 | General MIDI-style drum notes | Chapter 21, Appendix E |
 | Game port case study | Chapters 56-65 |
+| Gamepad input | Chapter 2, Chapter 37, Appendix D, Appendix H, Appendix J |
+| GAMEPAD_STATUS | Chapter 37, Appendix D, Appendix H |
 | Replay save data | Chapter 64 |
 | GTIA | Chapter 7, Chapter 28, Appendix D, Appendix H |
 | Graphics overview | Chapter 3 |
@@ -165,6 +167,12 @@ symbols, and Appendix J gives the full memory map.
 | Input MMIO | Chapter 37, Chapter 44, Chapter 64, Appendix D |
 | io command | Chapter 33 |
 
+## J
+
+| Term | See |
+|------|-----|
+| JOY button masks | Chapter 37, Appendix D, Appendix H |
+
 ## L
 
 | Term | See |
@@ -184,6 +192,7 @@ symbols, and Appendix J gives the full memory map.
 | Media loader | Chapter 11, Appendix D |
 | MEDIA_TYPE_MIDI | Chapter 21, Chapter 23, Appendix D |
 | MEMALLOC | Chapter 2, Chapter 24, Chapter 32, Appendix A, Appendix F, Appendix J |
+| MERGE | Chapter 2, Chapter 35, Appendix A |
 | Memory map | Chapter 24, Appendix J |
 | MIDI BASIC keyword | Chapter 2, Chapter 21 |
 | MIDI CTRL | Chapter 2, Chapter 21 |
@@ -214,6 +223,8 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | Palette | Chapter 3, Chapter 4 |
+| PAD | Chapter 2, Chapter 37, Appendix A |
+| PADX and PADY | Chapter 2, Chapter 37, Appendix A |
 | Paula DMA | Chapter 22, Appendix D |
 | Paula DMA monitor view | Chapter 33 |
 | PEEK and POKE | Chapter 1, Chapter 24, Appendix F |

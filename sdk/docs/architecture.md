@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-19*
+*Last modified: 2026-07-20*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -1554,7 +1554,7 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0xF2500-0xF257F` | 128B | MMIO | AROS host socket bridge | AROS M68K profile | AROS profile | Host-backed `bsdsocket.library` command bridge. |
 | `0xF2580-0xF259F` | 32B | MMIO | CPU wait service | All CPU cores | Timing/wait ABI | CPU wait writes park until the next VBlank edge or a latched `RTC_MONO_USEC` deadline, capped by a 50 ms safety timeout; reads return 0. |
 | `0xF25A0-0xF25BF` | 32B | MMIO | Coprocessor instance discovery | 32-bit-addressing CPU cores and main-CPU BASIC | Coprocessor subsystem | Selected type's instance limit, selected-instance state, mailbox layout version, worker window and ring addresses, plus an atomic all-instance liveness mask. |
-| `0xF25C0-0xF25FF` | 64B | MMIO | USB gamepad discovery | All CPU cores | Gamepad ABI | Read-only, host-filled once per frame. A status word plus four 12-byte pad records (canonical button bitfield and two packed signed-16 stick axes). Writes ignored. See `ie_gamepad_mmio.md`. |
+| `0xF25C0-0xF25FF` | 64B | MMIO | Gamepad discovery | All CPU cores | Gamepad ABI | Read-only canonical status, buttons, and stick axes for four pads. Non-headless Ebiten builds, including js/wasm browser builds, publish once per frame; headless builds report no pads. Writes are ignored. |
 | `0xF8000-0xF87FF` | 2KB | MMIO | Voodoo 3D registers and palette | All CPU cores | Voodoo subsystem | 3D control, state, and palette register block. |
 | `0xF8140-0xF823F` | 256B | MMIO | Voodoo fog table | All CPU cores | Voodoo subsystem | 64 entries x 4 bytes. |
 | `0x100000-0x5FFFFF` | 5MB | Shared RAM / VRAM-backed region | Main video framebuffer and graphics-visible memory | All CPU cores | Video subsystem plus guest convention | Subranges may be reserved for coprocessor worker buffers. |
@@ -1588,6 +1588,7 @@ graph LR
         CLIP["Clipboard Bridge<br/>0xF2390-0xF23AF<br/>Data ptr/len, get/put"]
         DOS["DOS Handler<br/>0xF2220-0xF225F<br/>AmigaDOS packet protocol,<br/>lock/file handles,<br/>ACTION_EXAMINE_ALL,<br/>read-ahead cache"]
         MEDIA["Media Loader<br/>0xF2300-0xF231F<br/>Format detection,<br/>player dispatch"]
+        PAD["Gamepads<br/>0xF25C0-0xF25FF<br/>4 canonical pad records"]
         LUA["Lua Scripting<br/>F8 REPL, bus access,<br/>video recording"]
     end
 
@@ -1598,12 +1599,14 @@ graph LR
     BUS --> CLIP
     BUS --> DOS
     BUS --> MEDIA
+    BUS --> PAD
     LUA -.->|"host-side"| BUS
 
     subgraph EXT["External World"]
         HOST_KB["Host Keyboard/Mouse"]
         HOST_FS["Host File System"]
         HOST_CB["Host Clipboard"]
+        HOST_PAD["Host Gamepads"]
         CPUSUB["Worker CPUs"]
         AUDIO_E["Audio Engines"]
     end
@@ -1612,6 +1615,7 @@ graph LR
     FIO --> HOST_FS
     DOS --> HOST_FS
     CLIP --> HOST_CB
+    PAD --> HOST_PAD
     PEXEC --> CPU
     COPRO --> CPUSUB
     MEDIA --> AUDIO_E
@@ -1619,10 +1623,57 @@ graph LR
     classDef periph fill:#8B008B,stroke:#333,color:#fff
     classDef ext fill:#483D8B,stroke:#333,color:#fff
     classDef bus fill:#DC143C,stroke:#333,color:#fff
-    class TERM,FIO,PEXEC,COPRO,CLIP,DOS,MEDIA,LUA periph
-    class HOST_KB,HOST_FS,HOST_CB,CPUSUB,AUDIO_E ext
+    class TERM,FIO,PEXEC,COPRO,CLIP,DOS,MEDIA,PAD,LUA periph
+    class HOST_KB,HOST_FS,HOST_CB,HOST_PAD,CPUSUB,AUDIO_E ext
     class CPU,BUS bus
 ```
+
+### Gamepad MMIO
+
+The read-only gamepad block occupies `0xF25C0-0xF25FF`. Non-headless Ebiten
+builds poll standard-layout controllers before overlay early returns and publish
+one coherent snapshot per frame. This includes native desktop and js/wasm
+browser builds; the browser path obtains controller state through the browser
+Gamepad API. Controller-specific layouts are normalised by the host mapping
+database. Headless builds publish an empty snapshot. Disconnecting a pad clears
+its previous buttons and axes. Stores are accepted but ignored.
+
+`GAMEPAD_STATUS` reports the connected mask in bits 3:0 and connected-pad count
+in bits 11:8; four 12-byte pad records contain canonical buttons and packed
+signed-16 left/right stick axes.
+
+| Address | Width | Meaning |
+|---------|-------|---------|
+| `0xF25C0` (`GAMEPAD_STATUS`) | 32-bit | Connected mask in bits 3:0 and connected-pad count in bits 11:8. |
+| `0xF25D0 + p*0x0C` | 32-bit | Pad `p` buttons, for `p=0..3`. |
+| `0xF25D4 + p*0x0C` | 32-bit | Left X in bits 15:0 and left Y in bits 31:16. |
+| `0xF25D8 + p*0x0C` | 32-bit | Right X in bits 15:0 and right Y in bits 31:16. |
+
+Stick halves are signed 16-bit values. Host axes are clamped to `-1..1`, NaN
+becomes zero, and finite values are multiplied by 32767; right and down are
+positive. Byte and halfword gamepad reads use the addressed little-endian lane
+of the containing 32-bit word. This includes `JOY_HOME` in the third button
+byte and Y in the high axis half.
+
+| Bit | Name | Bit | Name |
+|-----|------|-----|------|
+| 0 | `JOY_UP` | 1 | `JOY_DOWN` |
+| 2 | `JOY_LEFT` | 3 | `JOY_RIGHT` |
+| 4 | `JOY_A` | 5 | `JOY_B` |
+| 6 | `JOY_X` | 7 | `JOY_Y` |
+| 8 | `JOY_LB` | 9 | `JOY_RB` |
+| 10 | `JOY_LT` | 11 | `JOY_RT` |
+| 12 | `JOY_SELECT` | 13 | `JOY_START` |
+| 14 | `JOY_L3` | 15 | `JOY_R3` |
+| 16 | `JOY_HOME` | | |
+
+`JOY_LT` and `JOY_RT` are digital button states; the ABI has no analogue
+trigger fields. IE64, IE32, M68K, and x86 access the canonical addresses
+directly. 6502 and Z80 select extended bank `0x79` and use the Bank 1 window at
+`0x25C0-0x25FF`; their SDK includes provide `SET_GAMEPAD_BANK` and resolve the
+same register and button constants. EmuTOS and AROS can read the canonical M68K
+block directly, but adapting it to their conventional joystick APIs requires
+guest-side drivers and is not part of this MMIO contract.
 
 The File I/O ABI keeps the original `32`-bit register block at
 `0xF2200-0xF221F` for every CPU. IE64 adds `FILE_DATA_PTR64` at

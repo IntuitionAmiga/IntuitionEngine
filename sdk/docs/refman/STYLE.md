@@ -28,6 +28,53 @@ documentation is wrong unless the code itself is being changed in the
 same pass and verified. Record the exact files checked in
 `verify/CLAIM_LEDGER.txt`.
 
+## Current Gamepad And MERGE Editorial Pass
+
+This pass documents the canonical gamepad block and the BASIC surface
+that accompanies it. Execute it in ascending reader order over Chapters
+2, 24, 27, 28, 35, and 37, then Appendices A, D, H, J, and L in letter
+order. Finish with the claim ledger, focused implementation and PRG
+checks, strict publication, and PDF generation.
+
+The reader-facing gamepad contract is:
+
+- one read-only block at `$F25C0`-`$F25FF`, updated once per displayed
+  frame;
+- `GAMEPAD_STATUS` at `$F25C0`, with connected slots in bits `0`-`3`
+  and the connected count in bits `8`-`11`;
+- four `12`-byte records beginning at `$F25D0`, containing buttons,
+  packed signed left-stick axes, and packed signed right-stick axes;
+- the fixed `JOY_*` button masks, digital trigger buttons, down-positive
+  Y axes, and an axis range of `-32767` through `32767`;
+- disconnected slots read as zero, undefined gaps read as zero, and
+  writes are accepted but ignored;
+- direct access from IE64, IE32, M68K, and x86; and bank `$79` plus the
+  `$25C0` Bank 1 window for 6502 and Z80.
+
+Chapter 37 must teach this as Intuition Engine controller input, not as
+a particular connector technology. It must contain a typed BASIC
+example with an observable graphics response and an audible button
+response, followed by explanation and expected behaviour. Do not send
+the reader to an SDK document for the complete map. Do not include
+guest-operating-system driver status, deferred adapters, host API names,
+or backend implementation details.
+
+Chapter 2 must document `PAD(n)`, `PADX(n)`, `PADY(n)`, and
+`MERGE "name"`. Chapter 35 owns the full `MERGE` contract: existing
+lines and variables survive, matching line numbers are replaced, new
+line numbers are inserted, and `LOAD` remains a replacing operation.
+Use direct mode as the normal editing workflow. The interpreter has a
+stored-statement dispatch path, but `RUN AOT`, `COMPILE`, and
+`TRANSPILE` reject stored `MERGE`; do not imply compiler support.
+
+The guide must not depend on `joydefs.bas` unless that file is actually
+present at the reader-visible path used by the example. Prefer a
+self-contained listing that defines the required button mask itself.
+Appendix A must map `$99` to `TK_MERGE` and add `EXT_PAD`, `EXT_PADX`,
+and `EXT_PADY`. The consolidated memory map, MMIO appendix, symbol
+appendix, and index must expose the same names, addresses, bank rule,
+and cross-references.
+
 ## Current M68K DBcc Correctness Pass
 
 Chapter 29 must describe `DBcc` using the implemented MC68020

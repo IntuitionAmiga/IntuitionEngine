@@ -89,7 +89,7 @@ the same Intuition Engine.
 
 35. Disk and File I/O
 36. The HOST Command
-37. Keyboard, Mouse, Controller MMIO
+37. Keyboard, Mouse, Controllers, and Time of Day
 38. Serial Devices
 
 ### Part VI - Whole-Machine Project

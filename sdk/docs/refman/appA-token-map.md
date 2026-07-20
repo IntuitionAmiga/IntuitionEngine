@@ -140,7 +140,7 @@ expression. Where it is marked **Statement**, it begins a command.
 | `$96` | TK_SAVE     | SAVE      | Statement |
 | `$97` | TK_DEF      | TROFF     | Statement (also accepts `DEF`; `LIST` always prints `TROFF`) |
 | `$98` | TK_POKE     | POKE      | Statement |
-| `$99` | TK_RESERVED_99 | -      | Reserved  |
+| `$99` | TK_MERGE      | MERGE     | Editing statement; compiler rejects stored use |
 | `$9A` | TK_RESERVED_9A | -      | Reserved  |
 | `$9B` | TK_CALL     | CALL      | Statement |
 | `$9C` | TK_DO       | DO        | Statement |
@@ -211,7 +211,7 @@ as an UNKNOWN STATEMENT error.
 
 ## A.6 Extended tokens (`$92`, subtoken)
 
-`TK_EXT` is followed by one subtoken byte. Subtokens `$0C`-`$7F`
+`TK_EXT` is followed by one subtoken byte. Subtokens `$0F`-`$7F`
 are reserved for future IE64 BASIC extensions; `$80`-`$FF` are
 invalid in this token stream.
 
@@ -229,6 +229,9 @@ invalid in this token stream.
 | `$09`    | EXT_PEEK32   | PEEK32   | Function  |
 | `$0A`    | EXT_PEEK64   | PEEK64   | Function  |
 | `$0B`    | EXT_MIDI     | MIDI     | Statement |
+| `$0C`    | EXT_PAD      | PAD      | Function  |
+| `$0D`    | EXT_PADX     | PADX     | Function  |
+| `$0E`    | EXT_PADY     | PADY     | Function  |
 
 `POKE` and `PEEK` remain one-byte aliases for byte-width `POKE8`
 and `PEEK8`.

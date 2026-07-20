@@ -663,6 +663,20 @@ The address returned by `MEMALLOC` is an exact integer value. It may be
 stored in a numeric variable and used later with `PEEK`, `POKE`,
 `PEEK32`, `POKE32`, or `POKE64`.
 
+### MERGE
+
+`MERGE "`*name*`"`
+
+Load numbered BASIC lines from *name* into the programme already in
+memory. Lines whose numbers are not present are inserted. A loaded line
+whose number already exists replaces that line. Existing variables and
+all other programme lines are kept.
+
+The usual editing workflow is to type `MERGE` in direct mode. The
+interpreter can also execute a stored `MERGE`, but `RUN AOT`, `COMPILE`,
+and `TRANSPILE` reject that stored statement. See Chapter 35 for a typed
+merge session and the difference between `MERGE` and `LOAD`.
+
 ### MIDI
 
 `MIDI NOTE `*ch*`, `*note*`, `*velocity*`
@@ -755,6 +769,30 @@ Bitwise OR of two integers.
 `PALETTE `*args*
 
 Set entries in the colour palette. See Chapter 3.
+
+### PAD
+
+`PAD(`*n*`)`
+
+Return the canonical button bitfield for gamepad slot *n*, from `0`
+through `3`. A disconnected slot or an out-of-range slot returns `0`.
+Button masks and the gamepad register layout are in Chapter 37.
+
+### PADX
+
+`PADX(`*n*`)`
+
+Return the signed left-stick X axis for gamepad slot *n*. Left is
+negative, right is positive, and the range is `-32767` through `32767`.
+A disconnected slot or an out-of-range slot returns `0`.
+
+### PADY
+
+`PADY(`*n*`)`
+
+Return the signed left-stick Y axis for gamepad slot *n*. Up is
+negative, down is positive, and the range is `-32767` through `32767`.
+A disconnected slot or an out-of-range slot returns `0`.
 
 ### PEEK
 

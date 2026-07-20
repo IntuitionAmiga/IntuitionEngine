@@ -93,6 +93,7 @@ this low window when RAM is present. IE32, M68K, and x86 see the low
 | `$F23E0`-`$F23FF`       | 32 B   | Bootstrap loader. |
 | `$F2400`-`$F24FF`       | 256 B  | SysInfo (RAM-size ABI). |
 | `$F25A0`-`$F25BF`       | 32 B   | Coprocessor capability/version discovery (`COPROC_EXT2`). |
+| `$F25C0`-`$F25FF`       | 64 B   | Gamepad status, buttons, and stick axes. |
 | `$F2600`-`$F29FF`       | 1 KB   | SFX trigger extended window, channels `0`-`31`. |
 | `$F8000`-`$F87FF`       | 2 KB   | Voodoo 3D registers. |
 | `$FA000`-`$FBAFF`       | 6912 B | ULA VRAM aperture. |

@@ -1221,7 +1221,7 @@ SOUND STOP</code></pre>
           <article class="card">
             <span class="kicker">Bus services</span>
             <h3>Runtime services as address ranges</h3>
-            <p>Bus address ranges cover file I/O, media load, Program Executor, terminal and input devices, CPU wait, Voodoo apertures, Bootstrap HostFS, and SYSINFO.</p>
+            <p>Bus address ranges cover file I/O, media load, Program Executor, terminal, keyboard, mouse and USB gamepad input, CPU wait, Voodoo apertures, Bootstrap HostFS, and SYSINFO.</p>
             <p><a href="#services">Service map</a></p>
           </article>
         </div>
@@ -1293,7 +1293,7 @@ SOUND STOP</code></pre>
         <article class="card" style="margin-top: 1rem">
           <span class="kicker">JIT</span>
           <h3>Five CPUs compiled to native code</h3>
-          <p>On x86-64 hosts, five of the six CPUs, IE64, M68K, x86, Z80 and 6502, compile guest code to native machine code as it runs; only IE32 stays interpreted. IE64 also runs JIT-compiled on ARM64, and in the browser build IE64 and M68K tier to WebAssembly through the browser's own engine. The compilers carry per-CPU floating-point paths, including the M68K 68881 and the x86 x87, detect self-modifying code and recompile the affected blocks, and drop back to interpreter-equivalent helpers when a block cannot stay native, resuming only when the architectural state still matches.</p>
+          <p>On x86-64 hosts, five of the six CPUs, IE64, M68K, x86, Z80 and 6502, compile guest code to native machine code as it runs; only IE32 stays interpreted. On ARM64 hosts IE64 and M68K run JIT-compiled too, with Z80 also native on ARM64 Linux, and in the browser build IE64 and M68K tier to WebAssembly through the browser's own engine. The compilers carry per-CPU floating-point paths, including the M68K 68881 and the x86 x87, detect self-modifying code and recompile the affected blocks, and drop back to interpreter-equivalent helpers when a block cannot stay native, resuming only when the architectural state still matches.</p>
           <p>Even with the paged MMU enabled, IE64 code stays JIT-compiled: the dispatcher keys native blocks by translation state, and data, stack, floating-point and control-flow accesses that need address translation take a helper exit and resume in native code instead of bailing the whole block.</p>
         </article>
       </div>
@@ -1308,7 +1308,7 @@ SOUND STOP</code></pre>
         <div class="grid two">
           <article class="card">
             <h3>Common ranges</h3>
-            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal/input devices, CPU wait, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. Through that helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates the live image's host OS packages, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
+            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal, keyboard, mouse and USB gamepad input, CPU wait, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. Through that helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates the live image's host OS packages, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
             <div class="tag-row">
               <span class="tag">SYSINFO</span>
               <span class="tag">FILE_DATA_PTR64</span>
@@ -1317,6 +1317,17 @@ SOUND STOP</code></pre>
               <span class="tag">WAIT</span>
               <span class="tag">VOODOO</span>
               <span class="tag">BOOT_HOSTFS</span>
+              <span class="tag">GAMEPAD</span>
+            </div>
+          </article>
+          <article class="card">
+            <h3>USB gamepads</h3>
+            <p>A read-only gamepad block sits at <code>0xF25C0-0xF25FF</code>. <code>0xF25C0</code> reports a connected-pad mask and a pad count, then up to four twelve-byte pad records follow from <code>0xF25D0</code>. Each record holds a seventeen-button bitfield and two signed sixteen-bit analogue sticks. Any CPU reads it as plain MMIO, native M68K access included, and it is filled on the desktop and in the browser build alike, the latter through the browser's own Gamepad API. From BASIC, <code>PAD(n)</code> returns pad n's button bits and <code>PADX(n)</code> and <code>PADY(n)</code> its left stick, with the shipped <code>joydefs.bas</code> naming each button.</p>
+            <div class="tag-row">
+              <span class="tag">0xF25C0</span>
+              <span class="tag">4 pads</span>
+              <span class="tag">17 buttons</span>
+              <span class="tag">2 sticks</span>
             </div>
           </article>
           <article class="card">

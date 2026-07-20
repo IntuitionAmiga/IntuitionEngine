@@ -1087,3 +1087,21 @@ Entry format:
   Expected result: the instruction at `$1000` carries the current-PC marker and the self-branch at `$10C0` carries the target marker.
   Author verification workflow: ran the Chapter 25 IE Mon example through the headless PRG harness and compared every disassembly line with the captured monitor output.
   Result: the transcript matches the current monitor markers as well as the instruction bytes.
+
+- Area: Chapters 2, 24, 27, 28, and 37; Appendices A, D, H, J, and L; gamepad input.
+  Claim: the read-only gamepad block occupies `$F25C0`-`$F25FF`; status reports four connected-slot bits and a count; four `$0C`-byte records contain canonical buttons and packed signed stick axes; disconnected slots and reserved gaps read as zero; writes are ignored; IE64, IE32, M68K, and x86 use direct addresses while 6502 and Z80 use Bank 1 value `$79` and window address `$25C0`.
+  Canonical sources checked: registers.go gamepad constants and MMIO inventory, input_gamepad.go packing/read/write paths, input_gamepad_ebiten.go frame polling and canonical button map, input_gamepad_test.go range/lane/disconnect/write tests, gamepad_m68k_guest_test.go direct M68K reads, gamepad_include_golden_test.go, sdk/include/ie64.inc, sdk/include/ie32.inc, sdk/include/ie65.inc, sdk/include/ie80.inc, sdk/include/ie68.inc, sdk/include/ie86.inc.
+  Reader workflow: use `PAD`, `PADX`, and `PADY` from BASIC, direct `PEEK32` inspection, flat MMIO addresses on wide CPUs, or `SET_GAMEPAD_BANK` on 6502 and Z80.
+  Runnable example: Chapter 37 moves a VGA pixel with the left stick and gates a SoundChip tone with the A button.
+  Expected result: the pixel follows the left stick; A sounds the tone while held; an absent slot leaves the pixel centred and silent.
+  Author verification workflow: checked constants, packing, signs, edge cases, all six include surfaces, BASIC interpreter/compiler parity, the focused gamepad tests, and the PRG example harness before publication.
+  Result: the guide contains a self-contained controller workflow and matching consolidated maps without external SDK or guest-driver material.
+
+- Area: Chapters 2 and 35; Appendix A; BASIC MERGE.
+  Claim: token `$99` is `TK_MERGE`; `MERGE "name"` keeps existing variables and unmatched programme lines, replaces matching line numbers, inserts new line numbers, and leaves `LOAD` as a replacing operation. Direct mode is the normal editing workflow; the interpreter has a stored-statement dispatch path, while `RUN AOT`, `COMPILE`, and `TRANSPILE` reject stored `MERGE`.
+  Canonical sources checked: sdk/include/ehbasic_tokens.inc, sdk/include/ehbasic_tokenizer.inc, sdk/include/ehbasic_exec.inc, sdk/include/ehbasic_file_io.inc, sdk/tests/ie64_basic_compiler_phase0.csv, ehbasic_aot_test.go MERGE and LOAD regressions.
+  Reader workflow: type `MERGE "name"` at the BASIC prompt, inspect the combined programme with `LIST`, then edit or run it normally.
+  Runnable example: Chapter 35 creates `PART.BAS`, starts a second programme, merges the saved fragment, and lists both retained and inserted lines.
+  Expected result: line `10` remains and line `100` is inserted; using `LOAD` instead would replace the programme.
+  Author verification workflow: checked tokenisation, dispatch, loader merge flag, compiler rejection inventory, missing-file behaviour, and focused REPL tests before publication.
+  Result: the vocabulary, file chapter, and token appendix now agree on the direct-mode editing contract.

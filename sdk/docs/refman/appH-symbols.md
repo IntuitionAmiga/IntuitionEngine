@@ -155,6 +155,11 @@ mechanism described in Chapters 27 and 28.
 | `$F238C`  | `COPROC_INSTANCE`, worker instance selector. |
 | `$F23B0`  | Coprocessor selected-worker statistics. |
 | `$F25A0`  | Coprocessor capability, version, window, ring, and instance-state discovery. |
+| `$F25C0`  | `GAMEPAD_STATUS`: connected-slot mask and count. |
+| `$F25D0`  | `GAMEPAD_PAD0_BASE`: first `12`-byte gamepad record. |
+| `GAMEPAD_PAD_STRIDE` | Distance between gamepad records (`$0C`). |
+| `JOY_UP` through `JOY_HOME` | Canonical gamepad button masks. |
+| `GAMEPAD_IO_BANK` / `SET_GAMEPAD_BANK` | 6502/Z80 Bank 1 value `$79` and helper for the `$25C0` gamepad window. |
 | `$F2400`  | SysInfo. |
 | `$F2410` | `SYSINFO_FEATURES`; bit `3`, `SYSINFO_FEATURE_VOODOO_TEX_SLOTS`, reports retained Voodoo texture slots. |
 | `$F2414`/`$F2418` | `SYSINFO_LOW_WINDOW_LO` / `SYSINFO_LOW_WINDOW_HI`, dense low-RAM window size. |
