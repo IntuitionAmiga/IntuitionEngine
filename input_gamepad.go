@@ -7,9 +7,6 @@
 //
 // This file holds no windowing-backend import. The Ebiten polling lives in
 // input_gamepad_ebiten.go; headless/js builds use input_gamepad_stub.go.
-//
-// See how-do-you-propose-tender-pearl.md (USB Gamepad Input plan), step 1.
-
 package main
 
 import (

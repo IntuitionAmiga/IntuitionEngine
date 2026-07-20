@@ -9,6 +9,12 @@ dependency.
 Base range: `0xF25C0-0xF25FF` (64 bytes). Writes are accepted but ignored, so
 guest stores never fault under strict MMIO policy.
 
+The block is filled on both the native desktop build and the js/wasm browser
+build. Ebiten's standard-gamepad layout is backed by the browser Gamepad API
+(`navigator.getGamepads`) on js, so the same poll serves both hosts and the
+browser demo has controller support. Only the headless build, which has no
+windowing backend, publishes an empty snapshot (no pads).
+
 ## Register map
 
 | Address | Name | Width | Description |

@@ -1,4 +1,4 @@
-//go:build !headless && !js
+//go:build !headless
 
 // input_gamepad_ebiten.go - Ebiten host polling for the gamepad MMIO block.
 //
@@ -6,6 +6,12 @@
 // database. We read the standard button/axis layout and publish a canonical
 // snapshot into GamepadMMIO. Non-standard controllers (no standard layout) are
 // reported as disconnected rather than guessed.
+//
+// This covers both the native desktop build and the js/wasm browser build:
+// Ebiten's standard-gamepad API is backed by the browser Gamepad API
+// (navigator.getGamepads) on js, so the same poll drives both hosts and the
+// browser demo gets controller input for free. Only the headless build (which
+// has no windowing backend) falls back to the empty stub.
 
 package main
 

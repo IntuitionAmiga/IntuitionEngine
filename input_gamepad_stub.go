@@ -1,10 +1,11 @@
-//go:build headless || js
+//go:build headless
 
 // input_gamepad_stub.go - Non-Ebiten gamepad poll.
 //
-// Headless and js/wasm builds have no Ebiten gamepad source. Poll reports no
-// pads. wasm can later feed the browser Gamepad API into the same GamepadMMIO
-// struct via applySnapshot; the seam is deliberately clean.
+// Only the headless build has no windowing backend and therefore no gamepad
+// source, so Poll reports no pads. The native desktop and js/wasm browser
+// builds both use the Ebiten poll (input_gamepad_ebiten.go); on js Ebiten is
+// backed by the browser Gamepad API.
 
 package main
 
