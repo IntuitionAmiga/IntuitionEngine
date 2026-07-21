@@ -47,3 +47,33 @@ func TestAROSRebootLifecycleTeardownUnmapsSingletonRegions(t *testing.T) {
 		t.Fatalf("DOS mappings after remap=%d, want 1", got)
 	}
 }
+
+func TestDirectM68KResetLifecycleClosesAndUnmapsDOS(t *testing.T) {
+	bus := NewMachineBus()
+	dos, err := setupDirectM68KDOS(bus, t.TempDir(), NewSymbolTable())
+	if err != nil {
+		t.Fatalf("setupDirectM68KDOS: %v", err)
+	}
+	status := &runtimeStatusStore{}
+	status.setCPUs(runtimeCPUM68K, nil, nil, NewM68KRunner(NewM68KCPU(bus)), nil, nil, nil)
+	status.setAROSDOS(dos)
+
+	machine := NewMachine(MachineDeps{})
+	machine.CaptureCPUResetState("m68k", status, bus, nil)
+	if got := mappingCount(bus, AROS_DOS_REGION_BASE, AROS_DOS_REGION_END); got != 0 {
+		t.Fatalf("DOS mappings after direct M68K reset=%d, want 0", got)
+	}
+	if status.snapshot().arosDOS != nil {
+		t.Fatal("runtime retained direct M68K DOS device after reset")
+	}
+
+	dos2, err := setupDirectM68KDOS(bus, t.TempDir(), NewSymbolTable())
+	if err != nil {
+		t.Fatalf("reinitialise direct M68K DOS: %v", err)
+	}
+	t.Cleanup(dos2.Close)
+	status.setAROSDOS(dos2)
+	if got := mappingCount(bus, AROS_DOS_REGION_BASE, AROS_DOS_REGION_END); got != 1 {
+		t.Fatalf("DOS mappings after direct M68K reload=%d, want 1", got)
+	}
+}

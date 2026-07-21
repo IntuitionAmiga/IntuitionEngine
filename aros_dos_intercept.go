@@ -203,6 +203,19 @@ func NewArosDOSDevice(bus *MachineBus, hostRoot string) (*ArosDOSDevice, error) 
 	return d, nil
 }
 
+// setupDirectM68KDOS exposes the host-backed DOS bridge to flat M68K programs.
+// AROS ROM boots use the same device, but initialise it as part of their wider
+// platform setup in main.
+func setupDirectM68KDOS(bus *MachineBus, hostRoot string, symbols *SymbolTable) (*ArosDOSDevice, error) {
+	dos, err := NewArosDOSDevice(bus, hostRoot)
+	if err != nil {
+		return nil, err
+	}
+	dos.SetSymbolTable(symbols)
+	bus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, dos.HandleRead, dos.HandleWrite)
+	return dos, nil
+}
+
 func (d *ArosDOSDevice) SetSymbolTable(symbols *SymbolTable) {
 	if d == nil {
 		return

@@ -63,6 +63,31 @@ func dispatchArosDOS(d *ArosDOSDevice, cmd uint32, args ...uint32) (uint32, uint
 	return d.res1, d.res2
 }
 
+func TestSetupDirectM68KDOSBindsAndMapsDevice(t *testing.T) {
+	bus := NewMachineBus()
+	root := t.TempDir()
+	symbols := NewSymbolTable()
+
+	dos, err := setupDirectM68KDOS(bus, root, symbols)
+	if err != nil {
+		t.Fatalf("setupDirectM68KDOS: %v", err)
+	}
+	t.Cleanup(dos.Close)
+	if dos.symbols != symbols {
+		t.Fatal("direct M68K DOS device did not retain the monitor symbol table")
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	if dos.hostRoot != resolvedRoot {
+		t.Fatalf("direct M68K DOS root = %q, want runtime file root %q", dos.hostRoot, resolvedRoot)
+	}
+	if got := mappingCount(bus, AROS_DOS_REGION_BASE, AROS_DOS_REGION_END); got != 1 {
+		t.Fatalf("DOS mapping count = %d, want 1", got)
+	}
+}
+
 func TestArosDOS_CommandsUseContainmentHelpers(t *testing.T) {
 	bus, d, root := newTestArosDOSDevice(t)
 	if err := os.WriteFile(filepath.Join(root, "file"), []byte("abc"), 0o644); err != nil {

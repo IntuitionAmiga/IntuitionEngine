@@ -512,8 +512,9 @@ func isNilLifecycleInterface(v any) bool {
 
 func (m *Machine) CaptureCPUResetState(currentMode string, status MachineRuntimeStatus, bus *MachineBus, sound *SoundChip) MachineCPUResetState {
 	snap := status.snapshot()
-	if currentMode == "aros" {
+	if currentMode == "aros" || (currentMode == "m68k" && snap.arosDOS != nil) {
 		arosTeardownAll(snap, bus, sound)
+		status.setAROSDOS(nil)
 	}
 	var state MachineCPUResetState
 	switch snap.selectedCPU {

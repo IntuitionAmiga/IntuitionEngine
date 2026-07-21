@@ -1942,6 +1942,13 @@ func main() {
 			m68kCPU.m68kJitEnabled = false
 		}
 		runtimeStatus.setCPUs(runtimeCPUM68K, nil, nil, m68kRunner, nil, nil, nil)
+		m68kDOS, dosErr := setupDirectM68KDOS(sysBus, runtimeBaseDir, monitor.symbols)
+		if dosErr != nil {
+			fmt.Printf("Warning: direct M68K DOS device init failed: %v\n", dosErr)
+		} else {
+			runtimeStatus.setAROSDOS(m68kDOS)
+			fmt.Printf("Direct M68K DOS: IE: → %s\r\n", runtimeBaseDir)
+		}
 
 		cpuRunner = m68kRunner
 		currentMode = "m68k"
@@ -2547,6 +2554,14 @@ func main() {
 			arosLoader = newAROSLoader
 		} else {
 			reloadProgram()
+			if mode == "m68k" {
+				m68kDOS, dosErr := setupDirectM68KDOS(sysBus, runtimeBaseDir, monitor.symbols)
+				if dosErr != nil {
+					return fmt.Errorf("direct M68K DOS device init failed: %w", dosErr)
+				}
+				runtimeStatus.setAROSDOS(m68kDOS)
+				fmt.Printf("Direct M68K DOS: IE: → %s\r\n", runtimeBaseDir)
+			}
 		}
 		if forceBasicBoot {
 			// Optional cleanup point: BASIC image is now loaded into reset state.
