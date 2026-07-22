@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-20*
+*Last modified: 2026-07-22*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -460,7 +460,7 @@ flowchart LR
 | Machine lifecycle | Load resolution, reset quiesce, CPU/profile recreation, monitor/runtime rewiring | `machine_lifecycle.go`, `main.go` | `main.go` owns concrete devices; `Machine` applies reset/load orchestration through injected dependencies and profile targets |
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
 | Audio | SoundChip/SFX, PSG/AY, SN76489, SID x3, TED, POKEY/SAP, AHX, MOD, WAV, MIDI/MUS | `audio_chip.go`, `sfx_trigger.go`, `psg_engine.go`, `sn76489_chip.go`, `sid_engine.go`, `ted_engine.go`, `pokey_engine.go`, `ahx_player.go`, `mod_player.go`, `wav_player.go`, `midi_player.go` | `main.go` maps chip/player MMIO and registers sample tickers/mixers into SoundChip; register-mapped players share `PlayerControlState` for staged playback requests |
-| OS integration | EmuTOS, AROS, GEMDOS/XBIOS, AROS DOS, Paula-style DMA | `emutos_loader.go`, `aros_loader.go`, `gemdos_intercept.go`, `aros_dos_intercept.go`, `aros_audio_dma.go` | OS modes install intercept MMIO and loader state during boot/reset |
+| OS integration | EmuTOS, AROS, GEMDOS/XBIOS, M68K DOS bridge, Paula-style DMA | `emutos_loader.go`, `aros_loader.go`, `gemdos_intercept.go`, `aros_dos_intercept.go`, `aros_audio_dma.go` | OS profiles install their intercept MMIO and loader state during boot/reset; flat M68K mode installs the host-backed DOS bridge directly |
 | Tooling | Assemblers, disassembler, transpiler, generators | `assembler/`, `internal/ie64meta/`, `cmd/gen_ie64_opmeta/`, `cmd/ie32to64/`, `cmd/gen_m68k_cputest/`, `cmd/gen_interp6502/` | Makefile builds SDK tools into `sdk/bin/`; IE64 opcode constants and name tables are generated from metadata |
 
 ### Internal Ownership Notes
@@ -477,7 +477,10 @@ flowchart LR
   rollback, CPU recreation, profile loading, and monitor/runtime rewiring out
   of the host event loop. A hard reset restages the configured coprocessor
   service after coprocessor reset and before CPU restart, so the service name
-  pointer and worker-start path remain available across reset.
+  pointer and worker-start path remain available across reset. Resetting or
+  reloading flat M68K mode closes the current DOS bridge handles and locks,
+  removes its MMIO mapping, clears runtime ownership, and installs one fresh
+  bridge for the reloaded program.
 - **Audio playback control** - register-mapped music players use
   `PlayerControlState` for staged pointer/length registers, optional high
   pointer, bus reads, busy/error/loop state, subsong selection, and async
@@ -1458,9 +1461,11 @@ The AROS audio block at `0xF2260-0xF22AF` is an Intuition Engine shim for AROS `
 - Out-of-range pointers beyond the active AROS profile RAM deactivate the channel, mute the DAC output, set the status bit, and raise a level-3 interrupt when the corresponding `INTENA` bit is set.
 - Pointer writes ignore bit 0, length is a word count and preserves odd values, period writes with zero are ignored, and volume writes are clamped to `0..64`.
 
-### AROS HostFS DOS Handler ABI
+### M68K HostFS DOS Bridge ABI
 
-The AROS DOS block at `0xF2220-0xF225F` is the MMIO command bridge used by the AROS m68k-ie packet handler. The guest writes up to four argument registers and then writes `AROS_DOS_CMD`; the Go-side `ArosDOSDevice` executes the request synchronously and returns AmigaDOS-style `RESULT1` and `RESULT2` values. `ADOS_CMD_EXAMINE_ALL` accelerates `ACTION_EXAMINE_ALL` through a 20-byte big-endian request descriptor, guest span validation, direct ExAllData packing, eac_LastKey continuation, and ERROR_ACTION_NOT_KNOWN fallback for match strings or hooks.
+The DOS block at `0xF2220-0xF225F` is the MMIO command bridge used by the AROS m68k-ie packet handler and by flat M68K programs. In flat M68K mode the DOS bridge is mapped directly, rooted at the runtime file directory, and connected to the monitor symbol table. Resetting or reloading flat M68K mode closes the current DOS bridge handles and locks, removes its MMIO mapping, clears runtime ownership, and installs one fresh bridge for the reloaded program. Stale host handles and duplicate mappings therefore do not survive program reload.
+
+The guest writes up to four argument registers and then writes `AROS_DOS_CMD`; the host-backed device executes the request synchronously and returns AmigaDOS-style `RESULT1` and `RESULT2` values. `ADOS_CMD_EXAMINE_ALL` accelerates `ACTION_EXAMINE_ALL` through a 20-byte big-endian request descriptor, guest span validation, direct ExAllData packing, eac_LastKey continuation, and ERROR_ACTION_NOT_KNOWN fallback for match strings or hooks.
 
 AROS HostFS fast paths use strict bulk guest-memory helpers, a 64 KiB sequential read-ahead cache, and cache invalidation on non-sequential reads, seeks outside cache, writes, truncates, close, create, delete, rename, and dirty close paths. Spans outside active guest RAM, high-pointer requests unsupported by the active bus, and low/high backing seam crossings fail closed. External host changes are best-effort and are not continuously watched.
 
@@ -1541,7 +1546,7 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0xF2140-0xF21FB` | 188B | MMIO | GTIA registers | All CPU cores | GTIA subsystem | GTIA colour, player/missile, priority, and collision state. |
 | `0xF2200-0xF221F` | 32B | MMIO | File I/O | All CPU cores | File-I/O bridge | Legacy host-file bridge register block with `32`-bit name, data, length, status, error, and read-cap registers. |
 | `0xF22B0-0xF22B7` | 8B | MMIO64 | File I/O IE64 extension | IE64 | File-I/O bridge | `FILE_DATA_PTR64`, a `64`-bit data-buffer pointer for IE64 code that reads or writes host files from high guest RAM. The legacy File I/O block remains unchanged. |
-| `0xF2220-0xF225F` | 64B | MMIO | AROS DOS handler | All CPU cores | AROS profile | AROS DOS integration register block. |
+| `0xF2220-0xF225F` | 64B | MMIO | M68K HostFS DOS bridge | All CPU cores while mapped | AROS or flat M68K mode | Host-backed AmigaDOS-style command block. Flat M68K reset/reload removes the old mapping and installs one fresh bridge. |
 | `0xF2260-0xF22AF` | 80B | MMIO | AROS Paula-style DMA shim | All CPU cores | AROS profile | Audio/DMA compatibility shim. |
 | `0xF2300-0xF231F` | 32B | MMIO | Media loader | All CPU cores | Media-loader subsystem | Format-agnostic media loading control block. |
 | `0xF2320-0xF233F` | 32B | MMIO | Program executor | All CPU cores | Program executor | CPU/program switching control block. |
