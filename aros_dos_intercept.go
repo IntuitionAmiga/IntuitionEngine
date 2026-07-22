@@ -1195,34 +1195,50 @@ func (d *ArosDOSDevice) readFromHandle(h *arosFileHandle, dst []byte) (int, erro
 	if len(dst) == 0 {
 		return 0, nil
 	}
-	if len(h.cache.data) == 0 || h.pos < h.cache.start || h.pos >= h.cache.start+int64(len(h.cache.data)) {
-		fillLen := arosDOSReadAheadSize
-		if len(dst) > fillLen {
-			fillLen = len(dst)
-		}
-		buf := make([]byte, fillLen)
-		n, err := h.file.ReadAt(buf, h.pos)
-		if n > 0 {
+	total := 0
+	for total < len(dst) {
+		if len(h.cache.data) == 0 || h.pos < h.cache.start || h.pos >= h.cache.start+int64(len(h.cache.data)) {
+			fillLen := arosDOSReadAheadSize
+			if remaining := len(dst) - total; remaining > fillLen {
+				fillLen = remaining
+			}
+			buf := make([]byte, fillLen)
+			n := 0
+			var err error
+			for n < len(buf) {
+				var read int
+				read, err = h.file.ReadAt(buf[n:], h.pos+int64(n))
+				n += read
+				if err != nil || read == 0 {
+					break
+				}
+			}
+			if n == 0 {
+				h.clearCache()
+				if err != nil && err != io.EOF {
+					return total, err
+				}
+				return total, io.EOF
+			}
 			h.cache.start = h.pos
 			h.cache.data = buf[:n]
-		} else {
-			h.clearCache()
+			if err != nil && err != io.EOF {
+				return total, err
+			}
 		}
-		if err != nil && err != io.EOF {
-			return 0, err
-		}
-	}
 
-	offset := int(h.pos - h.cache.start)
-	if offset < 0 || offset >= len(h.cache.data) {
-		return 0, io.EOF
+		offset := int(h.pos - h.cache.start)
+		if offset < 0 || offset >= len(h.cache.data) {
+			return total, io.EOF
+		}
+		n := copy(dst[total:], h.cache.data[offset:])
+		h.pos += int64(n)
+		total += n
+		if n == 0 {
+			return total, io.EOF
+		}
 	}
-	n := copy(dst, h.cache.data[offset:])
-	h.pos += int64(n)
-	if n < len(dst) {
-		return n, io.EOF
-	}
-	return n, nil
+	return total, nil
 }
 
 func (d *ArosDOSDevice) cmdRead() {

@@ -13,10 +13,14 @@ import (
 type countingArosFile struct {
 	*os.File
 	readAtCalls int
+	maxRead     int
 }
 
 func (f *countingArosFile) ReadAt(p []byte, off int64) (int, error) {
 	f.readAtCalls++
+	if f.maxRead > 0 && len(p) > f.maxRead {
+		p = p[:f.maxRead]
+	}
 	return f.File.ReadAt(p, off)
 }
 
@@ -261,6 +265,44 @@ func TestArosDOS_ReadAheadCoalescesSequentialSmallReads(t *testing.T) {
 	}
 	if opened.readAtCalls != 1 {
 		t.Fatalf("ReadAt calls=%d, want 1", opened.readAtCalls)
+	}
+}
+
+func TestArosDOS_ReadCompletesAcrossShortHostReads(t *testing.T) {
+	bus, d, root := newTestArosDOSDevice(t)
+	data := make([]byte, 3*arosDOSReadAheadSize+17)
+	for i := range data {
+		data[i] = byte(i)
+	}
+	if err := os.WriteFile(filepath.Join(root, "large"), data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	oldOpen := arosOpenFile
+	arosOpenFile = func(name string, flag int, perm os.FileMode) (arosFileOps, error) {
+		f, err := os.OpenFile(name, flag, perm)
+		if err != nil {
+			return nil, err
+		}
+		return &countingArosFile{File: f, maxRead: arosDOSReadAheadSize}, nil
+	}
+	t.Cleanup(func() { arosOpenFile = oldOpen })
+
+	writeArosDOSString(t, bus, 0x1000, "large")
+	handle, res2 := dispatchArosDOS(d, ADOS_CMD_FINDINPUT, 0x1000, 0)
+	if res2 != ADOS_ERR_NONE {
+		t.Fatalf("FINDINPUT res2=%d", res2)
+	}
+	res1, res2 := dispatchArosDOS(d, ADOS_CMD_READ, handle, 0x2000, uint32(len(data)))
+	if res1 != uint32(len(data)) || res2 != ADOS_ERR_NONE {
+		t.Fatalf("READ = (%d,%d), want %d/OK", res1, res2, len(data))
+	}
+	got := make([]byte, len(data))
+	if err := ReadGuestBytes(bus, 0x2000, 0, got); err != nil {
+		t.Fatalf("ReadGuestBytes: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Fatal("guest data differs after short host reads")
 	}
 }
 
