@@ -435,7 +435,7 @@ setup:
 # Build the Intuition Engine VM
 intuition-engine: setup
 	@echo "Building Intuition Engine VM..."
-	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) .
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -trimpath .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/

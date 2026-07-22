@@ -140,13 +140,13 @@ func boilerPlate() {
 //	soundChip, err := NewSoundChip(AUDIO_BACKEND_OTO)
 //	if err != nil {
 //		fmt.Printf("Failed to initialize sound: %v\n", err)
-//		os.Exit(1)
+//		exitProfiled(1)
 //	}
 //
 //	videoChip, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 //	if err != nil {
 //		fmt.Printf("Failed to initialize video: %v\n", err)
-//		os.Exit(1)
+//		exitProfiled(1)
 //	}
 //
 //	// Map sound registers
@@ -166,7 +166,7 @@ func boilerPlate() {
 //	if len(os.Args) > 1 {
 //		if err := cpu.LoadProgram(os.Args[1]); err != nil {
 //			fmt.Printf("Error loading program: %v\n", err)
-//			os.Exit(1)
+//			exitProfiled(1)
 //		}
 //		startExecution = true
 //	}
@@ -175,7 +175,7 @@ func boilerPlate() {
 //	gui, err := NewGUIFrontend(cpu, videoChip, soundChip)
 //	if err != nil {
 //		fmt.Printf("Failed to initialize GUI: %v\n", err)
-//		os.Exit(1)
+//		exitProfiled(1)
 //	}
 //
 //	config := GUIConfig{
@@ -187,7 +187,7 @@ func boilerPlate() {
 //
 //	if err := gui.Initialize(config); err != nil {
 //		fmt.Printf("Failed to configure GUI: %v\n", err)
-//		os.Exit(1)
+//		exitProfiled(1)
 //	}
 //
 //	// Start execution if we loaded a program
@@ -252,15 +252,24 @@ func main() {
 			fmt.Printf("  Built:      %s\n", BuildDate)
 			fmt.Printf("  Go version: %s\n", runtime.Version())
 			fmt.Printf("  OS/Arch:    %s/%s\n", runtime.GOOS, runtime.GOARCH)
-			os.Exit(0)
+			exitProfiled(0)
 		}
 		if arg == "-features" || arg == "--features" {
 			printFeatures()
-			os.Exit(0)
+			exitProfiled(0)
 		}
 	}
 
 	boilerPlate()
+
+	// Optional CPU profile capture (IE_CPUPROFILE=<path>). Started before any
+	// machine construction so the profile covers boot as well as run time, and
+	// stopped from every shutdown path below: the normal return at the end of
+	// main, the interrupt handler, and every exitProfiled call (main.go uses
+	// exitProfiled rather than os.Exit precisely because os.Exit would skip
+	// the flush).
+	startCPUProfileFromEnv()
+	installCPUProfileSignalStop()
 
 	var (
 		modeIE32        bool
@@ -381,14 +390,14 @@ func main() {
 	args, positionalScriptFile, err := extractScriptFlag(os.Args[1:])
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	if err := flagSet.Parse(args); err != nil {
 		if err == flag.ErrHelp {
-			os.Exit(0)
+			exitProfiled(0)
 		}
 		fmt.Printf("Error: %v\n", err)
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	if positionalScriptFile != "" {
 		scriptFile = positionalScriptFile
@@ -404,7 +413,7 @@ func main() {
 			if _, extErr := modeFromExtension(absPath); extErr == nil {
 				if err := SendIPCOpen(absPath); err == nil {
 					fmt.Printf("Sent %s to running instance\n", filepath.Base(filename))
-					os.Exit(0)
+					exitProfiled(0)
 				}
 				// SendIPCOpen failed - no running instance, continue as primary
 			}
@@ -452,7 +461,7 @@ func main() {
 		mode, err := cliModeFromExtension(filename)
 		if err != nil {
 			fmt.Printf("Error: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		switch mode {
 		case "ie32":
@@ -470,7 +479,7 @@ func main() {
 		case "script":
 			if scriptFile != "" {
 				fmt.Println("Error: provide only one script file")
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			scriptFile = filename
 			filename = ""
@@ -490,7 +499,7 @@ func main() {
 	})
 	if err != nil {
 		fmt.Printf("Error resolving IntuitionOS paths: %v\n", err)
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	var arosHostRoot string
 	if modeAROS {
@@ -498,7 +507,7 @@ func main() {
 		arosHostRoot, err = resolveAROSDrivePath(arosDrive, exePath)
 		if err != nil {
 			fmt.Println(err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 	}
 	ensureAROSHostRoot := func() (string, error) {
@@ -531,7 +540,7 @@ func main() {
 		absScript, err := filepath.Abs(scriptFile)
 		if err != nil {
 			fmt.Printf("Error resolving script path %s: %v\n", scriptFile, err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		scriptFile = absScript
 	}
@@ -601,68 +610,68 @@ func main() {
 	useGraphicalTerm = modeBasic && !modeTerm
 	if modeCount != 1 {
 		fmt.Println("Error: select exactly one mode flag: -ie32, -ie64, -intuitionos, -m68k, -emutos, -m6502, -z80, -x86, -basic, -psg, -psg+, -sid, -sid+, -pokey, -pokey+, -ted, -ted+, -ahx, -ahx+, -mod, -wav, or -midi")
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	if modeBasic && filename != "" {
 		fmt.Println("Error: -basic and -basic-image do not accept a positional filename")
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	if modeTerm && !modeBasic {
 		fmt.Println("Error: -term is only valid with -basic")
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	if filename == "" && modePSG {
 		fmt.Println("Error: PSG mode requires a filename")
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	if sidPAL && sidNTSC {
 		fmt.Println("Error: choose only one of -sid-pal or -sid-ntsc")
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	if modeSID && sidFile == "" {
 		sidFile = filename
 	}
 	if modeSID && sidFile == "" {
 		fmt.Println("Error: SID mode requires a filename")
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	if modeMIDI && midiFile == "" {
 		midiFile = filename
 	}
 	if modeMIDI && midiFile == "" {
 		fmt.Println("Error: MIDI mode requires a filename")
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	if filename == "" && !modeBasic {
 		switch {
 		case modeIE32:
 			fmt.Println("Error: IE32 mode requires a filename")
-			os.Exit(1)
+			exitProfiled(1)
 		case modeIE64:
 			fmt.Println("Error: IE64 mode requires a filename (or use -basic)")
-			os.Exit(1)
+			exitProfiled(1)
 		case modeIOS:
 			// IntuitionOS resolves its kernel image from -intuitionos-image,
 			// the live share, or the developer build tree.
 		case modeM68K:
 			if !shouldAutostartAB3D2() {
 				fmt.Println("Error: M68K mode requires a filename")
-				os.Exit(1)
+				exitProfiled(1)
 			}
 		case modeEmuTOS:
 			if emutosImage == "" && filename == "" && len(embeddedEmuTOSImage) == 0 && resolveDefaultEmuTOSImagePath() == "" {
 				fmt.Println("Error: EmuTOS mode requires -emutos-image <path> or an embedded EmuTOS ROM")
-				os.Exit(1)
+				exitProfiled(1)
 			}
 		case modeM6502:
 			fmt.Println("Error: 6502 mode requires a filename")
-			os.Exit(1)
+			exitProfiled(1)
 		case modeZ80:
 			fmt.Println("Error: Z80 mode requires a filename")
-			os.Exit(1)
+			exitProfiled(1)
 		case modeX86:
 			fmt.Println("Error: x86 mode requires a filename")
-			os.Exit(1)
+			exitProfiled(1)
 		}
 	}
 
@@ -670,7 +679,7 @@ func main() {
 	soundChip, err := newRuntimeSoundChip(NewSoundChip)
 	if err != nil {
 		fmt.Printf("Failed to initialize sound: %v\n", err)
-		os.Exit(1)
+		exitProfiled(1)
 	}
 
 	psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
@@ -694,11 +703,11 @@ func main() {
 	if modePSG {
 		if filename == "" {
 			fmt.Println("Error: PSG mode requires a filename")
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		if err := psgPlayer.Load(filename); err != nil {
 			fmt.Printf("Error loading PSG file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		meta := psgPlayer.Metadata()
 		if meta.Title != "" || meta.Author != "" {
@@ -733,13 +742,13 @@ func main() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
-		os.Exit(0)
+		exitProfiled(0)
 	}
 
 	if modeSID {
 		if err := sidPlayer.LoadWithOptions(sidFile, 0, sidPAL, sidNTSC); err != nil {
 			fmt.Printf("Error loading SID file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		if sidDebug > 0 {
 			sidEngine.EnableDebugLogging(sidDebug)
@@ -777,14 +786,14 @@ func main() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
-		os.Exit(0)
+		exitProfiled(0)
 	}
 
 	// POKEY/SAP playback mode
 	if modePOKEY {
 		if filename == "" {
 			fmt.Println("Error: POKEY mode requires a SAP filename")
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		pokeyEngine := NewPOKEYEngine(soundChip, SAMPLE_RATE)
 		soundChip.SetSampleTicker(pokeyEngine) // Register for sample-accurate event processing
@@ -794,7 +803,7 @@ func main() {
 		}
 		if err := pokeyPlayer.Load(filename); err != nil {
 			fmt.Printf("Error loading SAP file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		meta := pokeyPlayer.Metadata()
 		if meta.Title != "" || meta.Author != "" {
@@ -827,14 +836,14 @@ func main() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
-		os.Exit(0)
+		exitProfiled(0)
 	}
 
 	// TED playback mode
 	if modeTED {
 		if filename == "" {
 			fmt.Println("Error: TED mode requires a .ted filename")
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		tedEngine := NewTEDEngine(soundChip, SAMPLE_RATE)
 		soundChip.SetSampleTicker(tedEngine) // Register for sample-accurate event processing
@@ -844,7 +853,7 @@ func main() {
 		}
 		if err := tedPlayer.Load(filename); err != nil {
 			fmt.Printf("Error loading TED file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		meta := tedPlayer.Metadata()
 		if meta.Title != "" || meta.Author != "" {
@@ -880,14 +889,14 @@ func main() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
-		os.Exit(0)
+		exitProfiled(0)
 	}
 
 	// AHX playback mode
 	if modeAHX {
 		if filename == "" {
 			fmt.Println("Error: AHX mode requires an AHX filename")
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		ahxPlayer := NewAHXPlayer(soundChip, SAMPLE_RATE)
 		// Register the player's internal engine with SoundChip for sample-accurate ticking
@@ -898,11 +907,11 @@ func main() {
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			fmt.Printf("Error reading AHX file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		if err := ahxPlayer.Load(data); err != nil {
 			fmt.Printf("Error loading AHX file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		meta := ahxPlayer.Metadata()
 		if meta.Name != "" {
@@ -937,25 +946,25 @@ func main() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
-		os.Exit(0)
+		exitProfiled(0)
 	}
 
 	// MOD playback mode
 	if modeMOD {
 		if filename == "" {
 			fmt.Println("Error: MOD mode requires a MOD filename")
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		modPlayerStandalone := NewMODPlayer(soundChip, SAMPLE_RATE)
 		soundChip.SetSampleTicker(modPlayerStandalone.engine)
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			fmt.Printf("Error reading MOD file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		if err := modPlayerStandalone.Load(data); err != nil {
 			fmt.Printf("Error loading MOD file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		fmt.Printf("Playing: %s\n", filename)
 		soundChip.Start()
@@ -964,24 +973,24 @@ func main() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
-		os.Exit(0)
+		exitProfiled(0)
 	}
 
 	// WAV playback mode
 	if modeWAV {
 		if filename == "" {
 			fmt.Println("Error: WAV mode requires a WAV filename")
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		wavPlayerStandalone := NewWAVPlayer(soundChip, SAMPLE_RATE)
 		data, err := os.ReadFile(filename)
 		if err != nil {
 			fmt.Printf("Error reading WAV file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		if err := wavPlayerStandalone.Load(data); err != nil {
 			fmt.Printf("Error loading WAV file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		fmt.Printf("Playing: %s\n", filename)
 		soundChip.Start()
@@ -990,14 +999,14 @@ func main() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
-		os.Exit(0)
+		exitProfiled(0)
 	}
 
 	if modeMIDI {
 		midiPlayerStandalone := NewMIDIPlayer(soundChip, SAMPLE_RATE)
 		if err := midiPlayerStandalone.Load(midiFile); err != nil {
 			fmt.Printf("Error loading MIDI file: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		mf := midiPlayerStandalone.MIDIFile()
 		meta := midiPlayerStandalone.Metadata()
@@ -1024,7 +1033,7 @@ func main() {
 			time.Sleep(100 * time.Millisecond)
 		}
 		soundChip.Stop()
-		os.Exit(0)
+		exitProfiled(0)
 	}
 
 	// PLAN_MAX_RAM.md slice 10f: mode-aware boot. Resolve the runtime
@@ -1063,7 +1072,7 @@ func main() {
 		})
 		if err != nil {
 			fmt.Printf("ComputeMemorySizing fatal: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 	}
 
@@ -1087,12 +1096,12 @@ func main() {
 	sysBus, err := NewMachineBusSized(memSize)
 	if err != nil {
 		fmt.Printf("NewMachineBusSized invalid input: %v\n", err)
-		os.Exit(1)
+		exitProfiled(1)
 	}
 
 	if _, err := bootGuestRAMFromComputed(sysBus, ms, backingMaxSize, NewMmapBacking); err != nil {
 		fmt.Printf("bootGuestRAMFromComputed fatal: %v\n", err)
-		os.Exit(1)
+		exitProfiled(1)
 	}
 
 	// activeVisibleCeiling is resolved AFTER bootGuestRAMFromComputed
@@ -1114,7 +1123,7 @@ func main() {
 	videoChip, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
 	if err != nil {
 		fmt.Printf("Failed to initialize video: %v\n", err)
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	videoChip.AttachBus(sysBus)
 
@@ -1447,7 +1456,7 @@ func main() {
 	}
 	if err := output.SetDisplayConfig(outputConfig); err != nil {
 		fmt.Printf("Failed to configure video output: %v\n", err)
-		os.Exit(1)
+		exitProfiled(1)
 	}
 
 	// Without an explicit -file-root, a program loaded by path gets its
@@ -1461,13 +1470,13 @@ func main() {
 	runtimeBaseDir, err := resolveRuntimeFileRoot(fileRoot, ".")
 	if err != nil {
 		fmt.Printf("Error resolving guest file root: %v\n", err)
-		os.Exit(1)
+		exitProfiled(1)
 	}
 	if fileRoot == "" && shouldAutostartAB3D2() {
 		ab3d2RuntimeDir, err := ensureEmbeddedAB3D2Assets()
 		if err != nil {
 			fmt.Printf("Error preparing AB3D2 assets: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		if ab3d2RuntimeDir != "" {
 			runtimeBaseDir = ab3d2RuntimeDir
@@ -1513,7 +1522,7 @@ func main() {
 		}
 		if err := stageCoprocService(sysBus, coprocMgr, coprocSvc); err != nil {
 			fmt.Printf("Error staging coprocessor service: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 	}
 
@@ -1805,7 +1814,7 @@ func main() {
 		if filename != "" {
 			if err := ie32CPU.LoadProgram(filename); err != nil {
 				fmt.Printf("Error loading IE32 program: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			startExecution = true
 		}
@@ -1840,11 +1849,11 @@ func main() {
 			imageBytes, imagePath, err := loadIntuitionOSImage()
 			if err != nil {
 				fmt.Printf("Error loading IntuitionOS image: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			if err := loadIntuitionOSKernelImage(ie64CPU, imageBytes); err != nil {
 				fmt.Printf("Error loading IntuitionOS image: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			programBytes = append([]byte(nil), imageBytes...)
 			currentPath = imagePath
@@ -1853,12 +1862,12 @@ func main() {
 		} else if modeBasic {
 			if err := EnforceEhBASICProfile(sysBus); err != nil {
 				fmt.Printf("Error: IE64 BASIC profile bounds: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			if basicImage != "" {
 				if err := ie64CPU.LoadProgram(basicImage); err != nil {
 					fmt.Printf("Error loading BASIC image %s: %v\n", basicImage, err)
-					os.Exit(1)
+					exitProfiled(1)
 				}
 				programBytes, _ = os.ReadFile(basicImage)
 				currentPath = basicImage
@@ -1873,11 +1882,11 @@ func main() {
 				if autoPath == "" {
 					fmt.Println("Error: BASIC not embedded and no local BASIC image found.")
 					fmt.Println("Use -basic-image <path>, run 'make basic', or place ehbasic_ie64.ie64 in sdk/examples/asm/ or bin/.")
-					os.Exit(1)
+					exitProfiled(1)
 				}
 				if err := ie64CPU.LoadProgram(autoPath); err != nil {
 					fmt.Printf("Error loading fallback BASIC image %s: %v\n", autoPath, err)
-					os.Exit(1)
+					exitProfiled(1)
 				}
 				programBytes, _ = os.ReadFile(autoPath)
 				currentPath = autoPath
@@ -1888,7 +1897,7 @@ func main() {
 			applyIE64FlatProgramVideoConfig(sysBus, videoChip)
 			if err := ie64CPU.LoadFlatProgram(filename); err != nil {
 				fmt.Printf("Error loading IE64 program: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			startExecution = true
 		}
@@ -1923,7 +1932,7 @@ func main() {
 		if filename != "" {
 			if err := m68kCPU.LoadProgram(filename); err != nil {
 				fmt.Printf("Error loading M68K program: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			programBytes, _ = os.ReadFile(filename)
 			currentPath = filename
@@ -1978,7 +1987,7 @@ func main() {
 		romBytes, romPath, err := loadEmuTOSImage()
 		if err != nil {
 			fmt.Printf("Error loading EmuTOS image: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 
 		applyEmuTOSVideoConfig(sysBus, videoChip)
@@ -1993,7 +2002,7 @@ func main() {
 		m68kCPU.xbiosHandler = NewXBIOSInterceptor(m68kCPU, sysBus, videoChip, psgEngine)
 		if err := loader.LoadROM(romBytes); err != nil {
 			fmt.Printf("Error loading EmuTOS ROM: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		if sidecar, err := loadELFSymbolSidecar(monitor.symbols, "M68K", romPath); err != nil {
 			fmt.Printf("Warning: EmuTOS ELF symbols disabled: %v\n", err)
@@ -2044,12 +2053,12 @@ func main() {
 		romBytes, romPath, err := loadAROSImage()
 		if err != nil {
 			fmt.Printf("Error loading AROS image: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 
 		if err := applyArosVideoConfig(sysBus, videoChip); err != nil {
 			fmt.Printf("Error configuring AROS video: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		m68kCPU := NewM68KCPU(sysBus)
 		// Run native M68K JIT for the full guest address space. A zero ceiling
@@ -2068,7 +2077,7 @@ func main() {
 		loader := NewAROSLoader(sysBus, m68kCPU, videoChip)
 		if err := loader.LoadROM(romBytes); err != nil {
 			fmt.Printf("Error loading AROS ROM: %v\n", err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		if sidecar, err := loadELFSymbolSidecar(monitor.symbols, "M68K", romPath); err != nil {
 			fmt.Printf("Warning: AROS ELF symbols disabled: %v\n", err)
@@ -2094,7 +2103,7 @@ func main() {
 		arosDMA, dmaErr := NewArosAudioDMA(sysBus, soundChip, m68kCPU)
 		if dmaErr != nil {
 			fmt.Printf("Error initializing AROS audio DMA: %v\n", dmaErr)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 		sysBus.UnmapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END)
 		sysBus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, arosDMA.HandleRead, arosDMA.HandleWrite)
@@ -2152,7 +2161,7 @@ func main() {
 			parsed, err := parseUint16Flag(loadAddr.value)
 			if err != nil {
 				fmt.Printf("Invalid --load-addr: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			parsedLoadAddr = parsed
 		}
@@ -2162,7 +2171,7 @@ func main() {
 			parsed, err := parseUint16Flag(entryAddr.value)
 			if err != nil {
 				fmt.Printf("Invalid --entry: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			parsedEntry = parsed
 		}
@@ -2185,7 +2194,7 @@ func main() {
 		if filename != "" {
 			if err := z80CPU.LoadProgram(filename); err != nil {
 				fmt.Printf("Error loading Z80 program: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			startExecution = true
 		}
@@ -2229,7 +2238,7 @@ func main() {
 		if filename != "" {
 			if err := x86CPU.LoadProgramFromFile(filename); err != nil {
 				fmt.Printf("Error loading x86 program: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			startExecution = true
 		}
@@ -2256,7 +2265,7 @@ func main() {
 			parsed, err := parseUint16Flag(loadAddr.value)
 			if err != nil {
 				fmt.Printf("Invalid --load-addr: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			parsedLoadAddr = parsed
 		} else if strings.HasSuffix(strings.ToLower(filename), ".ie65") {
@@ -2268,7 +2277,7 @@ func main() {
 			parsed, err := parseUint16Flag(entryAddr.value)
 			if err != nil {
 				fmt.Printf("Invalid --entry: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			parsedEntry = parsed
 		}
@@ -2289,7 +2298,7 @@ func main() {
 		if filename != "" {
 			if err := cpu6502.LoadProgram(filename); err != nil {
 				fmt.Printf("Error loading 6502 program: %v\n", err)
-				os.Exit(1)
+				exitProfiled(1)
 			}
 			startExecution = true
 		}
@@ -2592,12 +2601,8 @@ func main() {
 	scriptEngine.SetArosSentinel(arosSentinel)
 	scriptEngine.SetHardReset(machine.HardReset)
 	scriptEngine.SetMonitor(monitor)
-	scriptEngine.SetQuitFunc(func() {
-		os.Exit(0)
-	})
-	scriptEngine.SetExitFunc(func(code int) {
-		os.Exit(code)
-	})
+	scriptEngine.SetQuitFunc(func() { exitProfiled(0) })
+	scriptEngine.SetExitFunc(exitProfiled)
 	if videoTerm != nil {
 		scriptEngine.SetVideoTerminal(videoTerm)
 	}
@@ -2660,7 +2665,7 @@ func main() {
 	if scriptFile != "" {
 		if err := scriptEngine.RunFile(scriptFile); err != nil {
 			fmt.Printf("Error starting script %s: %v\n", scriptFile, err)
-			os.Exit(1)
+			exitProfiled(1)
 		}
 	}
 
@@ -2755,6 +2760,7 @@ func main() {
 	if anticEngine != nil {
 		anticEngine.StopRenderLoop()
 	}
+	stopCPUProfile()
 }
 
 func parseUint16Flag(value string) (uint16, error) {

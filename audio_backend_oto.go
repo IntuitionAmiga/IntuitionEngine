@@ -41,13 +41,20 @@ type OtoPlayer struct {
 	mutex     sync.Mutex // Only for setup/control operations
 }
 
-func NewOtoPlayer(sampleRate int) (*OtoPlayer, error) {
-	op := &oto.NewContextOptions{
+// otoContextOptions builds the oto context options for a mono float32 output
+// at the given sample rate. The device buffer duration comes from
+// otoBufferDuration so that it is pinned by a single test.
+func otoContextOptions(sampleRate int) *oto.NewContextOptions {
+	return &oto.NewContextOptions{
 		SampleRate:   sampleRate,
 		ChannelCount: 1,
 		Format:       oto.FormatFloat32LE,
-		BufferSize:   4,
+		BufferSize:   otoBufferDuration(),
 	}
+}
+
+func NewOtoPlayer(sampleRate int) (*OtoPlayer, error) {
+	op := otoContextOptions(sampleRate)
 
 	ctx, ready, err := oto.NewContext(op)
 	if err != nil {

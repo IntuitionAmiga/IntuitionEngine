@@ -1,0 +1,36 @@
+# default.pgo capture manifest
+
+Regenerate with the procedure in sdk/docs/architecture.md, "Build Profiles and
+Observable Runtime". Update this file in the same change set as default.pgo.
+
+    revision:   569c5ec1
+    toolchain:  go1.26.4 linux/amd64
+    host CPU:   Intel(R) Xeon(R) W-11955M CPU @ 2.60GHz
+    captured:   2026-07-22
+    capture:    IE_CPUPROFILE=<path> on a `go build -pgo=off` binary
+    merge:      go tool pprof -proto <profiles...> > default.pgo
+
+## Workloads
+
+| Profile              | Duration | Command                                                                          |
+|----------------------|----------|----------------------------------------------------------------------------------|
+| compositor_rotozoomer| 30 s     | -ie64 sdk/examples/prebuilt/rotozoomer_ie64.ie64                                   |
+| voodoo_megademo      | 30 s     | -ie32 sdk/examples/prebuilt/voodoo_mega_demo.iex                                   |
+| audio_wav            | 30 s     | -wav DoctorWhoSID.wav                                                              |
+| emutos_desktop       | 35 s     | -emutos -emutos-image sdk/examples/prebuilt/etos256us.img                          |
+| iescript_emutos      | 15 s     | -emutos -emutos-image sdk/examples/prebuilt/etos256us.img -script emutos_jit_probe.ies |
+| robocop_m68k         | 30 s     | -m68k sdk/examples/prebuilt/robocop_intro_68k.ie68                                 |
+
+The IEScript workload ends when the script calls sys.exit, so its duration is
+shorter than the timeout used to bound it.
+
+## Acceptance
+
+`go build -pgo=default.pgo .` completes with no warning and no fallback.
+
+benchstat over BenchmarkComposite_*, BenchmarkVoodoo_FullFrame,
+BenchmarkSoundChip_ReadSamples and BenchmarkRead32_* (headless,
+GOEXPERIMENT=simd, benchtime 1s, count 6):
+
+    versus -pgo=off:            geomean -1.25 %, no benchmark regressed
+    versus the previous default.pgo: geomean -0.25 %, no benchmark regressed

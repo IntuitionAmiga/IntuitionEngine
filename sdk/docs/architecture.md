@@ -868,6 +868,42 @@ representable text bytes and `ieKey` injects the supported editing and
 navigation key sequences through the normal terminal input path. Imported
 files disappear when the page reloads.
 
+### Build Flags Outside Make
+
+The Makefile targets export `GOEXPERIMENT=simd` and select `GOAMD64=v3` for the
+release profile, and they pass `-trimpath` and `-pgo=default.pgo`. A bare
+`go build .` run outside Make inherits none of that: it loses the v3 codegen
+level, compiles the scalar kernels instead of the amd64 SIMD ones unless
+`go env -w GOEXPERIMENT=simd` has been set on the machine, and produces a
+binary with untrimmed source paths. Profile-guided optimisation is the
+exception, because the toolchain picks up `default.pgo` from the main package
+directory automatically. Use the Make targets for anything whose performance is
+being measured.
+
+### CPU Profile Capture
+
+`IE_CPUPROFILE=<path>` starts a CPU profile at boot and writes it when the
+machine shuts down cleanly, when a script calls the quit or exit binding, or
+when the process is interrupted from the terminal. The variable is unset by
+default and profiling is entirely disabled when it is empty, so ordinary runs
+carry no profiling cost and the default signal disposition is unchanged.
+
+Because `os.Exit` skips deferred cleanup, every exit path in `main.go` calls
+`exitProfiled` instead, which flushes an in-progress profile first and is
+equivalent to `os.Exit` when no profile is running. The interrupt handler
+re-raises the signal so termination behaves as it normally would, and exits
+explicitly if the re-raise is unavailable, which is the case on Windows.
+
+The profiles produced this way are the input to `default.pgo`. To regenerate
+it, build a capture binary with `go build -pgo=off`, run each workload in the
+manifest for the stated duration with `IE_CPUPROFILE` pointed at a separate
+file, merge the results with
+`go tool pprof -proto p1 p2 ... > default.pgo`, and confirm that
+`go build -pgo=default.pgo .` completes without a warning or a fallback. Record
+the revision, toolchain, workloads and durations in `default.pgo.manifest`
+beside the profile, and accept the new profile only when benchstat shows no
+regression against `-pgo=off` across the video, audio and bus benchmarks.
+
 ### IE64 BASIC Native Compilation
 
 The resident IE64 BASIC environment implements `RUN AOT`, `COMPILE`,
