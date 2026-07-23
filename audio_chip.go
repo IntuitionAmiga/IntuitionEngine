@@ -3291,10 +3291,14 @@ func (chip *SoundChip) applyReverbWithSnapshot(input float32, reverbMix float32,
 }
 
 func (chip *SoundChip) ReadSample() float32 {
+	// Drain first, then test the freeze bit. AUDIO_CTRL is an ordinary guest
+	// register, so the write that CLEARS the freeze arrives through the ring
+	// like any other; testing the bit first would return early without ever
+	// applying it and freeze the chip permanently.
+	chip.drainAudioEventsBeforeRender()
 	if chip.audioFrozen.Load() {
 		return 0
 	}
-	chip.drainAudioEventsBeforeRender()
 	chip.tickSample()
 	sample := chip.generateSampleWithMixer(chip.captureMixerSample())
 	chip.tapSample(sample)
@@ -3310,13 +3314,16 @@ func (chip *SoundChip) ReadSamples(dst []float32) int {
 		perfT0 = time.Now()
 		defer perfSubsysAcct.AudioPull.AddSince(perfT0, uint64(len(dst)))
 	}
+	// Apply anything the guest queued before this pull started, so a write
+	// issued between pulls lands exactly where the synchronous path put it.
+	// This has to precede the freeze test: the unfreeze write is itself a
+	// queued guest write, and returning early on a stale freeze bit would mean
+	// no render pull could ever apply it.
+	chip.drainAudioEventsBeforeRender()
 	if chip.audioFrozen.Load() {
 		clear(dst)
 		return len(dst)
 	}
-	// Apply anything the guest queued before this pull started, so a write
-	// issued between pulls lands exactly where the synchronous path put it.
-	chip.drainAudioEventsBeforeRender()
 	if cap(chip.mixerCapture) < len(dst) {
 		chip.mixerCapture = make([]float32, len(dst))
 	}
@@ -3494,12 +3501,16 @@ func (chip *SoundChip) captureMixerSample() float32 {
 	return sample
 }
 
+// flushPendingAudioBlock retires the pending render segment and applies any
+// queued guest writes. Every path that mutates or reads chip state calls this
+// before taking chip.mu, so draining here gives all of them the ordering the
+// synchronous path always had: writes the guest already issued are applied
+// before the caller observes or replaces the state they affect.
 func (chip *SoundChip) flushPendingAudioBlock() {
-	state := chip.audioBlock.Load()
-	if state == nil {
-		return
+	if state := chip.audioBlock.Load(); state != nil {
+		chip.flushAudioBlockState(state)
 	}
-	chip.flushAudioBlockState(state)
+	chip.drainAudioEventsBeforeRender()
 }
 
 func (chip *SoundChip) flushAudioBlockState(state *audioBlockState) {
@@ -3537,14 +3548,27 @@ func (chip *SoundChip) flushAudioBlockState(state *audioBlockState) {
 	// because applying a register write may need it.
 	chip.drainAudioEventsLocked()
 	chip.mu.Unlock()
-	// Capture the flushed span before releasing state.mu. The tap runs outside
-	// the lock, and a concurrent ReadSamples completing in the meantime clears
-	// state.dst, which faulted this loop when it read the field directly.
-	tapped := state.dst[start:end]
+	// The tap has to run outside state.mu, because a tap callback that writes a
+	// register would deadlock against it. The destination buffer is reused by
+	// the next pull, so the span is copied into a goroutine-local buffer first:
+	// anything shared, including a scratch slice on the block state, would race
+	// that pull just the same. Nothing is copied at all when no tap is set,
+	// which is the ordinary case.
+	holder, _ := chip.sampleTap.Load().(*sampleTapHolder)
+	var tapped []float32
+	if holder != nil && holder.tap != nil {
+		var local [256]float32
+		if n := end - start; n <= len(local) {
+			tapped = local[:n]
+		} else {
+			tapped = make([]float32, n)
+		}
+		copy(tapped, state.dst[start:end])
+	}
 	state.mu.Unlock()
 
 	for _, sample := range tapped {
-		chip.tapSample(sample)
+		holder.tap(sample)
 	}
 }
 

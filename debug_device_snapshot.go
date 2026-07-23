@@ -385,7 +385,13 @@ func (chip *SoundChip) DebugSnapshot() (uint32, []byte, error) {
 	if chip == nil {
 		return soundChipSnapshotVersion, nil, fmt.Errorf("nil sound chip")
 	}
-	chip.flushPendingAudioBlock()
+	// A full event-ring barrier, not just a flush: a guest write that has been
+	// published but not yet drained would otherwise be absent from the snapshot
+	// and then applied afterwards, so a reverse-debug restore would replace the
+	// chip state and lose it. The barrier ends after chip.mu is released,
+	// because the lock order is barrierMu then chip.mu.
+	chip.beginAudioEventBarrier()
+	defer chip.endAudioEventBarrier()
 	chip.mu.Lock()
 	chip.postFXMu.Lock()
 	defer chip.postFXMu.Unlock()
@@ -445,7 +451,10 @@ func (chip *SoundChip) DebugRestoreSnapshot(version uint32, data []byte) error {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return err
 	}
-	chip.flushPendingAudioBlock()
+	// Same barrier as the capture side: a queued write must be applied before
+	// the state it targets is replaced, never after.
+	chip.beginAudioEventBarrier()
+	defer chip.endAudioEventBarrier()
 	chip.mu.Lock()
 	chip.postFXMu.Lock()
 	defer chip.postFXMu.Unlock()

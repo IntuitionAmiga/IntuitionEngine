@@ -217,26 +217,44 @@ const (
 // mixed with the pre-write state, drains the ring, and only then applies the
 // mutation with chip.mu held.
 func (chip *SoundChip) audioEventBarrier(apply func()) {
+	chip.beginAudioEventBarrier()
+	chip.mu.Lock()
+	apply()
+	chip.mu.Unlock()
+	chip.endAudioEventBarrier()
+}
+
+// beginAudioEventBarrier opens the barrier: admission is shut, every producer
+// that had already entered has finished, the pending render segment is flushed
+// and the ring is drained. On return the caller may take chip.mu and read or
+// replace chip state with no queued write able to appear behind it.
+//
+// Callers must release chip.mu before calling endAudioEventBarrier. The lock
+// order is barrierMu then chip.mu, and taking barrierMu while holding chip.mu
+// would invert it against every other barrier writer.
+func (chip *SoundChip) beginAudioEventBarrier() {
 	r := chip.eventRing
 	if r == nil {
 		chip.flushPendingAudioBlock()
-		chip.mu.Lock()
-		apply()
-		chip.mu.Unlock()
 		return
 	}
-
 	r.barrierMu.Lock()
-	defer r.barrierMu.Unlock()
-
 	r.closeAdmission()
+	// flushPendingAudioBlock drains the ring as well, under chip.mu, which this
+	// goroutine does not hold yet.
 	chip.flushPendingAudioBlock()
-	chip.mu.Lock()
-	chip.drainAudioEventsLocked()
-	apply()
-	chip.mu.Unlock()
 	r.barriers.Add(1)
+}
+
+// endAudioEventBarrier closes the barrier and lets producers back in, unless
+// the ring has been sealed.
+func (chip *SoundChip) endAudioEventBarrier() {
+	r := chip.eventRing
+	if r == nil {
+		return
+	}
 	r.reopenAdmission()
+	r.barrierMu.Unlock()
 }
 
 // sealAudioEventRing drains everything committed and leaves admission shut, for
@@ -259,12 +277,19 @@ func (chip *SoundChip) sealAudioEventRing() {
 }
 
 // unsealAudioEventRing reopens a sealed ring, used when a reset is followed by
-// continued playback.
+// continued playback. It takes the barrier mutex: a producer that backed out
+// while the ring was sealed is running the barrier protocol itself, and
+// reopening the gate from outside that mutex would let a later producer publish
+// into the window between that barrier's admission close and its drain. The
+// barrier would then apply the newer event before its own older write, which
+// inverts the order the two writes were issued in.
 func (chip *SoundChip) unsealAudioEventRing() {
 	r := chip.eventRing
 	if r == nil {
 		return
 	}
+	r.barrierMu.Lock()
+	defer r.barrierMu.Unlock()
 	r.gateSealed.Store(false)
 	r.gateClosed.Store(false)
 }

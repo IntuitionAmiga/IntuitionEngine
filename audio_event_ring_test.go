@@ -479,3 +479,116 @@ func TestAudioEventRing_ConcurrentWritesDuringRender(t *testing.T) {
 		})
 	}
 }
+
+// TestAudioEventRing_QueuedUnfreezeIsApplied pins the ordering that made the
+// freeze bit a trap: AUDIO_CTRL is an ordinary guest register, so the write
+// that clears the freeze arrives through the ring. If a render pull tested the
+// freeze bit before draining, it would return early without ever applying the
+// unfreeze and the chip would stay frozen for good.
+func TestAudioEventRing_QueuedUnfreezeIsApplied(t *testing.T) {
+	for _, name := range []string{"ReadSamples", "ReadSample"} {
+		t.Run(name, func(t *testing.T) {
+			chip := newRingTestChip()
+			configureBlockReadChip(chip)
+
+			// Freeze, then queue the unfreeze, with no synchronous read or
+			// setter in between to drain it for us.
+			chip.HandleRegisterWrite(AUDIO_CTRL, 0x03)
+			if !chip.audioFrozen.Load() {
+				t.Fatal("the chip did not freeze")
+			}
+			chip.HandleRegisterWriteFromBus(AUDIO_CTRL, 0x01)
+			if chip.eventRing.published.Load() == 0 {
+				t.Fatal("the unfreeze write did not reach the ring")
+			}
+
+			// Only render pulls from here on.
+			if name == "ReadSamples" {
+				out := make([]float32, 64)
+				chip.ReadSamples(out)
+			} else {
+				chip.ReadSample()
+			}
+
+			if chip.audioFrozen.Load() {
+				t.Fatal("the chip is still frozen: a render pull never applied the queued unfreeze write")
+			}
+		})
+	}
+}
+
+// TestAudioEventRing_UnsealSerialisedWithBarriers pins that reopening a sealed
+// ring participates in the barrier protocol. Reopening the gate from outside
+// barrierMu would let a producer publish into the window between an in-flight
+// barrier's admission close and its drain, so that barrier would apply the
+// newer event before its own older write.
+func TestAudioEventRing_UnsealSerialisedWithBarriers(t *testing.T) {
+	chip := newRingTestChip()
+	configureBlockReadChip(chip)
+	chip.sealAudioEventRing()
+
+	// Open a barrier and hold it.
+	chip.beginAudioEventBarrier()
+
+	unsealed := make(chan struct{})
+	go func() {
+		chip.unsealAudioEventRing()
+		close(unsealed)
+	}()
+
+	select {
+	case <-unsealed:
+		t.Fatal("unsealing completed while a barrier was open; it must be serialised against barrier writers")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	chip.endAudioEventBarrier()
+	select {
+	case <-unsealed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("unsealing never completed after the barrier closed")
+	}
+
+	// The ring is usable again.
+	chip.HandleRegisterWriteFromBus(FLEX_CH0_BASE+FLEX_OFF_VOL, 44)
+	if chip.eventRing.published.Load() == 0 {
+		t.Fatal("publications did not resume after unsealing")
+	}
+}
+
+// TestAudioEventRing_SnapshotSeesQueuedWrites pins that a debug snapshot
+// captures state the guest has already written but the renderer has not yet
+// drained. Without the barrier the snapshot records the pre-write state, the
+// event is drained afterwards, and a reverse-debug restore replaces the chip
+// state and loses the write entirely.
+func TestAudioEventRing_SnapshotSeesQueuedWrites(t *testing.T) {
+	chip := newRingTestChip()
+	configureBlockReadChip(chip)
+	chip.HandleRegisterWrite(FILTER_TYPE, 0)
+
+	// Queue a change with no render in between, so it is still in the ring.
+	chip.HandleRegisterWriteFromBus(FILTER_TYPE, 3)
+	if chip.eventRing.applied.Load() != 0 {
+		t.Fatal("the write was drained before the snapshot, so the test proves nothing")
+	}
+
+	version, data, err := chip.DebugSnapshot()
+	if err != nil {
+		t.Fatalf("DebugSnapshot: %v", err)
+	}
+	if chip.eventRing.applied.Load() == 0 {
+		t.Fatal("the snapshot did not drain the ring, so it captured stale state")
+	}
+
+	// Move the chip away from the snapshotted value, then restore.
+	chip.HandleRegisterWrite(FILTER_TYPE, 1)
+	if err := chip.DebugRestoreSnapshot(version, data); err != nil {
+		t.Fatalf("DebugRestoreSnapshot: %v", err)
+	}
+	chip.mu.Lock()
+	got := chip.filterType
+	chip.mu.Unlock()
+	if got != 3 {
+		t.Fatalf("filter type after restore = %d, want 3: the snapshot must include the queued guest write", got)
+	}
+}
