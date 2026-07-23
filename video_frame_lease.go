@@ -78,6 +78,16 @@ func (l *VideoFrameLease) Pixels() []byte {
 	return l.pixels
 }
 
+// Slot returns the ring slot backing this lease, or -1 for a nil lease. Slot
+// pixels persist until the slot is handed out again, which is what lets the
+// compositor retain composed tiles across frames.
+func (l *VideoFrameLease) Slot() int {
+	if l == nil {
+		return -1
+	}
+	return l.slot
+}
+
 func (l *VideoFrameLease) Snapshot() []byte {
 	if l == nil {
 		return nil

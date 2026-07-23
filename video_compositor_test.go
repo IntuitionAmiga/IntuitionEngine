@@ -1597,7 +1597,7 @@ func TestCompositor_RenderLayersSnapshotKeepsSoftwareFrameLease(t *testing.T) {
 		DestHeight:   1,
 		Buffer:       []byte{1, 2, 3, 0xFF},
 	}
-	comp.renderLayersSoftwareLocked([]CompositorFrameLayer{liveLayer})
+	comp.renderLayersSoftwareLocked([]CompositorFrameLayer{liveLayer}, comp.frameCounter+1)
 	liveLease := comp.finalFrameLease
 	if liveLease == nil {
 		t.Fatal("software render did not acquire a frame lease")

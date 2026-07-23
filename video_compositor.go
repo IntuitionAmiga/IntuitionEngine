@@ -237,6 +237,31 @@ type VideoCompositor struct {
 	softwareDirtyRects []FrameDirtyRect
 	forceFullFrame     bool
 
+	// Tile-based retained composition state. tileSlotFrame records, per
+	// software lease slot, the frame whose complete composite that slot's
+	// pixels still hold; tileHistory records which tiles each recent frame
+	// repainted. See video_compositor_tiles.go.
+	tileSlotFrame   []uint64
+	tileHistory     []tileDirtyEntry
+	tileLayerSig    uint64
+	tileGridW       int
+	tileGridH       int
+	tileStats       tileCompositeStats
+	tileSerialWS    tileWorkspace
+	tileCurBits     []uint64
+	tileNeedBits    []uint64
+	tilePlans       []tileLayerPlan
+	tileRectScratch []FrameDirtyRect
+
+	// uploadPlan owns the regional upload plan and its packing scratch.
+	// Guarded by outputMu, which is the lock held across updateOutput.
+	uploadPlan uploadPlanner
+
+	// resamplePlans caches horizontal resample plans by source and
+	// destination width, so a steady scale allocates nothing per frame.
+	resamplePlans map[uint64]*resamplePlan
+	scaledRowBuf  []byte
+
 	compositorRunning atomic.Bool
 	state             compositorState
 	stopRequested     bool
@@ -362,6 +387,7 @@ func (c *VideoCompositor) prepareResolutionLocked(width, height int) (DisplayCon
 	c.outputBuf = make([]byte, width*height*BYTES_PER_PIXEL)
 	c.hardwareDisabled = false
 	c.forceFullFrame = true
+	c.invalidateTileStateLocked()
 	c.clearHardwareSnapshotLocked()
 
 	if c.output != nil {
@@ -532,7 +558,7 @@ func (c *VideoCompositor) composite() {
 		}
 		c.storeHardwareSnapshotLayersLocked(frameID, layers)
 	} else {
-		c.renderLayersSoftwareLocked(layers)
+		c.renderLayersSoftwareLocked(layers, frameID)
 		c.clearHardwareSnapshotLocked()
 		if hasContent {
 			c.prevHasContent = true
@@ -567,7 +593,7 @@ func (c *VideoCompositor) composite() {
 		} else {
 			c.mu.Lock()
 			c.hardwareDisabled = true
-			c.renderLayersSoftwareLocked(layers)
+			c.renderLayersSoftwareLocked(layers, frameID)
 			c.clearHardwareSnapshotLocked()
 			if hasContent {
 				c.prevHasContent = true
@@ -909,6 +935,8 @@ func (c *VideoCompositor) acquireSoftwareFrameLeaseLocked(frameBytes int) (*Vide
 		c.clearSoftwareFrameLeaseLocked()
 		c.softwareFrameRing = NewVideoFrameLeaseRing(3, frameBytes)
 		c.softwareFrameBytes = frameBytes
+		// New slot buffers hold nothing, so no tile may be retained.
+		c.invalidateTileStateLocked()
 	}
 	return c.softwareFrameRing.Acquire()
 }
@@ -920,7 +948,7 @@ func (c *VideoCompositor) compositeScanlineAware() (bool, bool) {
 	if !usedScanline {
 		return false, false
 	}
-	c.renderLayersSoftwareLocked(layers)
+	c.renderLayersSoftwareLocked(layers, c.frameCounter+1)
 	return hasContent, true
 }
 
@@ -1040,7 +1068,7 @@ func (c *VideoCompositor) collectScanlineAwareLayers(copyBuffers bool) ([]Compos
 // compositeFullFrame performs full-frame compositing with sequential frame collection
 func (c *VideoCompositor) compositeFullFrame() bool {
 	layers, hasContent := c.collectFullFrameLayers(false)
-	c.renderLayersSoftwareLocked(layers)
+	c.renderLayersSoftwareLocked(layers, c.frameCounter+1)
 	return hasContent
 }
 
@@ -1074,7 +1102,11 @@ func (c *VideoCompositor) collectFullFrameLayers(copyBuffers bool) ([]Compositor
 	return layers, hasContent
 }
 
-func (c *VideoCompositor) renderLayersSoftwareLocked(layers []CompositorFrameLayer) {
+// renderLayersSoftwareLocked composes layers into the software frame buffer.
+// frameID identifies the frame being composed and must be the same value the
+// caller publishes as the frame counter, because retained tile bookkeeping is
+// keyed on it.
+func (c *VideoCompositor) renderLayersSoftwareLocked(layers []CompositorFrameLayer, frameID uint64) {
 	frameBytes := c.frameWidth * c.frameHeight * BYTES_PER_PIXEL
 	if frameBytes <= 0 {
 		c.clearSoftwareFrameLeaseLocked()
@@ -1089,6 +1121,9 @@ func (c *VideoCompositor) renderLayersSoftwareLocked(layers []CompositorFrameLay
 			c.finalFrameLease = lease
 			if oldLease != nil {
 				oldLease.Release()
+			}
+			if c.tryRenderLayersTiledLocked(layers, lease.Slot(), frameID) {
+				return
 			}
 			c.renderLayersIntoCurrentFrameLocked(layers)
 			return
@@ -1174,17 +1209,20 @@ func (c *VideoCompositor) updateOutput(out VideoOutput, frame []byte, regions []
 	if out.IsStarted() {
 		if len(regions) > 0 {
 			if regional, ok := out.(RegionUpdatingOutput); ok {
-				for _, rect := range regions {
-					pixels := copyFrameRegion(frame, c.frameWidth, c.frameHeight, rect)
-					if len(pixels) == 0 {
-						continue
+				planned := c.uploadPlan.plan(c.frameWidth, c.frameHeight, regions)
+				if len(planned) > 0 {
+					for _, rect := range planned {
+						pixels := c.uploadPlan.regionPixels(frame, rect)
+						if len(pixels) == 0 {
+							continue
+						}
+						if err := regional.UpdateRegion(rect.X, rect.Y, rect.Width, rect.Height, pixels); err != nil {
+							fmt.Printf("Compositor: Error updating region: %v\n", err)
+							return
+						}
 					}
-					if err := regional.UpdateRegion(rect.X, rect.Y, rect.Width, rect.Height, pixels); err != nil {
-						fmt.Printf("Compositor: Error updating region: %v\n", err)
-						return
-					}
+					return
 				}
-				return
 			}
 		}
 		if err := out.UpdateFrame(frame); err != nil {
@@ -1240,30 +1278,6 @@ func ceilDivInt(n, d int) int {
 		return n / d
 	}
 	return (n + d - 1) / d
-}
-
-func copyFrameRegion(frame []byte, frameW, frameH int, rect FrameDirtyRect) []byte {
-	if frameW <= 0 || frameH <= 0 || rect.Width <= 0 || rect.Height <= 0 {
-		return nil
-	}
-	if rect.X < 0 || rect.Y < 0 || rect.X >= frameW || rect.Y >= frameH {
-		return nil
-	}
-	if rect.X+rect.Width > frameW {
-		rect.Width = frameW - rect.X
-	}
-	if rect.Y+rect.Height > frameH {
-		rect.Height = frameH - rect.Y
-	}
-	rowBytes := rect.Width * BYTES_PER_PIXEL
-	out := make([]byte, rowBytes*rect.Height)
-	dst := 0
-	for y := 0; y < rect.Height; y++ {
-		src := ((rect.Y+y)*frameW + rect.X) * BYTES_PER_PIXEL
-		copy(out[dst:dst+rowBytes], frame[src:src+rowBytes])
-		dst += rowBytes
-	}
-	return out
 }
 
 func cloneFrameDirtyRects(rects []FrameDirtyRect) []FrameDirtyRect {
@@ -1330,6 +1344,30 @@ func (c *VideoCompositor) blendLayer(layer CompositorFrameLayer) {
 		return
 	}
 	c.blendFrameScaled(layer.Buffer, layer.SourceWidth, layer.SourceHeight, rect)
+}
+
+// cachedResamplePlanLocked returns the resample plan for a scale, building it
+// on first use. Plans are pure functions of the two widths, so caching them
+// keeps the scaled paths free of per-frame allocation.
+func (c *VideoCompositor) cachedResamplePlanLocked(srcW, rectW int) *resamplePlan {
+	key := uint64(uint32(srcW))<<32 | uint64(uint32(rectW))
+	if plan, ok := c.resamplePlans[key]; ok {
+		return plan
+	}
+	if c.resamplePlans == nil {
+		c.resamplePlans = make(map[uint64]*resamplePlan)
+	}
+	plan := newResamplePlan(srcW, rectW)
+	c.resamplePlans[key] = plan
+	return plan
+}
+
+// scaledRowScratchLocked returns a reusable row buffer of at least n bytes.
+func (c *VideoCompositor) scaledRowScratchLocked(n int) []byte {
+	if cap(c.scaledRowBuf) < n {
+		c.scaledRowBuf = make([]byte, n)
+	}
+	return c.scaledRowBuf[:n]
 }
 
 type scaleRect struct {
@@ -1453,23 +1491,13 @@ func compositorOpaqueCopySpanScalar(dst, src []byte) {
 	}
 }
 
-// scaledSrcXByteTable returns the per-column source byte offset, which depends
-// only on dx, so the caller hoists it out of the row loop instead of dividing
-// per pixel.
-func scaledSrcXByteTable(srcW, rectW int) []int {
-	tbl := make([]int, rectW)
-	for dx := range tbl {
-		tbl[dx] = (dx * srcW / rectW) * BYTES_PER_PIXEL
-	}
-	return tbl
-}
-
 func (c *VideoCompositor) copyOpaqueFrameScaled(srcFrame []byte, srcW, srcH int, rect scaleRect) {
 	dstW := c.frameWidth
 	srcRowBytes := srcW * BYTES_PER_PIXEL
 	dstRowBytes := dstW * BYTES_PER_PIXEL
 	rectRowBytes := rect.w * BYTES_PER_PIXEL
-	srcXByte := scaledSrcXByteTable(srcW, rect.w)
+	plan := c.cachedResamplePlanLocked(srcW, rect.w)
+	rowBuf := c.scaledRowScratchLocked(rectRowBytes)
 	// Opaque copy writes every pixel, so consecutive dst rows that map to the
 	// same source row are byte-identical: copy the just-written row instead of
 	// re-sampling.
@@ -1482,12 +1510,8 @@ func (c *VideoCompositor) copyOpaqueFrameScaled(srcFrame []byte, srcW, srcH int,
 			copy(c.finalFrame[dstOffset:dstOffset+rectRowBytes], c.finalFrame[prevDstOffset:prevDstOffset+rectRowBytes])
 		} else {
 			srcRowOffset := srcY * srcRowBytes
-			for dx := range rect.w {
-				srcIdx := srcRowOffset + srcXByte[dx]
-				dstIdx := dstOffset + dx*BYTES_PER_PIXEL
-				srcPixel := *(*uint32)(unsafe.Pointer(&srcFrame[srcIdx]))
-				*(*uint32)(unsafe.Pointer(&c.finalFrame[dstIdx])) = srcPixel | 0xFF000000
-			}
+			compositorResampleRowImpl(rowBuf, srcFrame[srcRowOffset:], plan, 0, rect.w)
+			compositorOpaqueCopySpanImpl(c.finalFrame[dstOffset:dstOffset+rectRowBytes], rowBuf)
 		}
 		prevSrcY = srcY
 		prevDstOffset = dstOffset
@@ -1523,19 +1547,16 @@ func (c *VideoCompositor) blendFrameScaled(srcFrame []byte, srcW, srcH int, rect
 	// Blend is skip-write (transparent source pixels leave the destination), so
 	// unlike the opaque copy the destination is not identical for a repeated
 	// source row and must be re-blended each row (only the gather is skipped).
-	srcXByte := scaledSrcXByteTable(srcW, rect.w)
 	rectRowBytes := rect.w * BYTES_PER_PIXEL
-	rowBuf := make([]byte, rectRowBytes)
+	plan := c.cachedResamplePlanLocked(srcW, rect.w)
+	rowBuf := c.scaledRowScratchLocked(rectRowBytes)
 	prevSrcY := -1
 
 	for dy := range rect.h {
 		srcY := dy * srcH / rect.h
 		if srcY != prevSrcY {
 			srcRowOffset := srcY * srcRowBytes
-			for dx := range rect.w {
-				*(*uint32)(unsafe.Pointer(&rowBuf[dx*BYTES_PER_PIXEL])) =
-					*(*uint32)(unsafe.Pointer(&srcFrame[srcRowOffset+srcXByte[dx]]))
-			}
+			compositorResampleRowImpl(rowBuf, srcFrame[srcRowOffset:], plan, 0, rect.w)
 			prevSrcY = srcY
 		}
 		dstOffset := (rect.y+dy)*dstRowBytes + rect.x*BYTES_PER_PIXEL

@@ -43,6 +43,10 @@ Sources can implement `DirtyFrameSource` to atomically take source-space rectang
 
 IEVideoChip reports dirty rectangles by atomically taking and clearing its tile bitmap in one operation. CLUT8 VideoChip frames are marked opaque because palette conversion writes alpha 255 for every pixel. RAM-backed CLUT8 framebuffers are not cached because guest CPU stores can bypass VideoChip dirty tracking.
 
+The compositor composes in 64 by 64 tiles and retains the tiles that cannot have changed. This depends on dirty rectangles being a complete description of the change: a source that returns no rectangle set at all is treated as having changed everything, while a source that returns an empty set is treated as unchanged. Sources that publish dirty rectangles must therefore return an empty set, not a nil one, on a frame they did not touch. Scanline-composited frames always repaint every tile because their per-scanline state is not described by any rectangle.
+
+Region uploads are planned rather than passed straight through. Rectangles are clipped to the frame, empty and already-covered ones are dropped, and the whole plan is abandoned in favour of a single full upload once the regions cover most of the frame or there are too many of them. This changes only how the pixels reach the backend, never which pixels they are.
+
 ## Timing
 
 The compositor tick is fixed at 60 Hz because AROS and EmuTOS depend on 60 Hz VBlank behavior. `GetTickRate()` reports this fixed tick. `GetRefreshRate()` reports the output backend refresh rate and falls back to 60 when the backend is unavailable or reports an invalid rate.

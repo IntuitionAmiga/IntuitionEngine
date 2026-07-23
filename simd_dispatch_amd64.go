@@ -13,6 +13,9 @@ func assignSIMDKernels() {
 	compositorBlendSpanImpl = compositorBlendSpanSIMD
 	compositorOpaqueCopySpanImpl = compositorOpaqueCopySpanSIMD
 	normaliseFrameLeaseSpanImpl = normaliseFrameLeaseSpanSIMD
+	// Scaled composition: the horizontal resample gather becomes one
+	// cross-lane permute per eight destination pixels where the plan allows it.
+	compositorResampleRowImpl = compositorResampleRowSIMD
 
 	// Phase 3: blitter. Fill vectorises cleanly. Colour-expand stays scalar
 	// (colorExpandRowImpl unset here) per the stop rule; the scalar fast path is
