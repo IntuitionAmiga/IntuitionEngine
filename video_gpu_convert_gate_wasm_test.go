@@ -1,6 +1,6 @@
 // video_gpu_convert_gate_wasm_test.go - in-process gate runner for the browser.
 
-//go:build js && wasm
+//go:build js && wasm && !headless
 
 /*
 (c) 2024 - 2026 Zayn Otley

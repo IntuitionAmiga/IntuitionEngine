@@ -89,7 +89,10 @@ for GATE in "${GATES[@]}"; do
 		--virtual-time-budget=60000 --dump-dom "http://localhost:$PORT/?run=$GATE" 2>/dev/null || true)"
 	# Match only a digit-bearing marker: the page's own script text contains
 	# the literal string EXIT: and would otherwise be picked up as a result.
-	RESULT="$(printf '%s' "$OUT" | grep -o 'EXIT:[0-9][0-9]*' | tail -1)"
+	# The trailing || true matters: under pipefail a grep that matches nothing
+	# fails the whole pipeline, and set -e would abort the run on the first
+	# gate that produced no marker instead of recording it and carrying on.
+	RESULT="$(printf '%s' "$OUT" | grep -o 'EXIT:[0-9][0-9]*' | tail -1 || true)"
 	printf '%s\n' "$OUT" | grep -E '^(=== RUN|--- |PASS$|FAIL|ok |gpu gate)' || true
 	if [ -z "$RESULT" ]; then
 		echo "wasm-gpu-gate: $GATE never reported a result" >&2

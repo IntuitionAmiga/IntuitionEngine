@@ -55,15 +55,68 @@ var wasmHasRAF = js.Global().Get("requestAnimationFrame").Truthy()
 
 var lastWasmYield time.Time
 
+// The throttle used to read the clock on every call, which browser profiles
+// showed costing about as much as the work it was protecting: time.Now on wasm
+// crosses into JS, and the CPU loops call this every few thousand
+// instructions. Instead the throttle predicts how many calls remain before the
+// interval expires, from the call rate it has already observed, and skips the
+// clock for that many. A skipped call costs a decrement and a branch.
+//
+// The prediction is deliberately short (three quarters of the estimate) and
+// capped, so a guest that suddenly speeds up overshoots the interval by a
+// fraction of it rather than stalling the event loop.
+var (
+	yieldSkipLeft   int
+	yieldCallsSince int
+)
+
+// yieldMaxSkip bounds how long the throttle will go without consulting the
+// clock, so a bad prediction cannot delay a frame indefinitely.
+const yieldMaxSkip = 4096
+
+// yieldSkipFor returns how many calls may skip the clock, given the calls and
+// time already spent inside this interval. It returns zero whenever it cannot
+// predict safely, which puts the next call back on the clock.
+func yieldSkipFor(callsSince int, elapsed, interval time.Duration) int {
+	if callsSince <= 0 || elapsed <= 0 || elapsed >= interval {
+		return 0
+	}
+	// Calls observed per unit of elapsed time, applied to the time left.
+	remaining := interval - elapsed
+	predicted := int64(callsSince) * int64(remaining) / int64(elapsed)
+	skip := predicted * 3 / 4
+	if skip <= 0 {
+		return 0
+	}
+	if skip > yieldMaxSkip {
+		return yieldMaxSkip
+	}
+	return int(skip)
+}
+
 func hostCooperativeYield() {
-	now := time.Now()
-	if now.Sub(lastWasmYield) < wasmYieldInterval {
+	yieldCallsSince++
+	if yieldSkipLeft > 0 {
+		yieldSkipLeft--
+		return
+	}
+	elapsed := time.Since(lastWasmYield)
+	if elapsed < wasmYieldInterval {
+		yieldSkipLeft = yieldSkipFor(yieldCallsSince, elapsed, wasmYieldInterval)
 		return
 	}
 	wasmParkUntilFrame()
 	// Restart the throttle clock after the park so the interval measures
 	// guest time, not guest plus park time.
+	wasmResetYieldThrottle()
+}
+
+// wasmResetYieldThrottle restarts the interval and discards the rate estimate,
+// which belongs to the interval that just ended.
+func wasmResetYieldThrottle() {
 	lastWasmYield = time.Now()
+	yieldSkipLeft = 0
+	yieldCallsSince = 0
 }
 
 // wasmPollFramePark parks between MMIO poll re-reads. A short timer park
@@ -76,7 +129,7 @@ func hostCooperativeYield() {
 // second park from the ordinary yield cadence.
 func wasmPollFramePark() {
 	time.Sleep(2 * time.Millisecond)
-	lastWasmYield = time.Now()
+	wasmResetYieldThrottle()
 }
 
 // wasmParkUntilFrame parks the CPU goroutine until the browser has rendered
