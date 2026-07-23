@@ -152,7 +152,7 @@ func boilerPlate() {
 //	// Map sound registers
 //	sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
 //		nil, // No read handler needed
-//		soundChip.HandleRegisterWrite)
+//		soundChip.HandleRegisterWriteFromBus)
 //
 //	// Map video registers and VRAM
 //	sysBus.MapIO(VIDEO_CTRL, VIDEO_STATUS,
@@ -1176,15 +1176,15 @@ func main() {
 	// so that every CPU mode (including EmuTOS) can access the full hardware.
 	sysBus.MapIO(AUDIO_CTRL, AUDIO_REG_END,
 		soundChip.HandleRegisterRead,
-		soundChip.HandleRegisterWrite)
+		soundChip.HandleRegisterWriteFromBus)
 	sysBus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, soundChip.HandleRegisterWrite8)
 	sysBus.MapIO(SID2_FLEX_BASE, SID2_FLEX_END,
 		soundChip.HandleRegisterRead,
-		soundChip.HandleRegisterWrite)
+		soundChip.HandleRegisterWriteFromBus)
 	sysBus.MapIOByte(SID2_FLEX_BASE, SID2_FLEX_END, soundChip.HandleRegisterWrite8)
 	sysBus.MapIO(SID3_FLEX_BASE, SID3_FLEX_END,
 		soundChip.HandleRegisterRead,
-		soundChip.HandleRegisterWrite)
+		soundChip.HandleRegisterWriteFromBus)
 	sysBus.MapIOByte(SID3_FLEX_BASE, SID3_FLEX_END, soundChip.HandleRegisterWrite8)
 	sysBus.MapIO(IE_SFX_REGION_BASE, IE_SFX_REGION_END,
 		soundChip.sfx.HandleRead,

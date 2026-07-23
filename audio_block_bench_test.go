@@ -57,3 +57,47 @@ func BenchmarkReadSamplesBlock_AllChips(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkAudioRegisterWrite_UnderRender measures what the event ring exists
+// for: the cost of a guest register write while the renderer is holding chip.mu
+// to mix a segment. The "ring" case publishes and returns; the "mutex" case
+// waits for the renderer.
+func BenchmarkAudioRegisterWrite_UnderRender(b *testing.B) {
+	for _, useRing := range []bool{false, true} {
+		name := "mutex"
+		if useRing {
+			name = "ring"
+		}
+		b.Run(name, func(b *testing.B) {
+			chip := newTestSoundChip()
+			configureBlockReadChip(chip)
+			if useRing {
+				chip.eventRing = newAudioEventRing()
+			}
+
+			stop := make(chan struct{})
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				buf := make([]float32, 1024)
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
+					chip.ReadSamples(buf)
+				}
+			}()
+
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := range b.N {
+				chip.HandleRegisterWriteFromBus(FLEX_CH0_BASE+FLEX_OFF_VOL, uint32(i%256))
+			}
+			b.StopTimer()
+			close(stop)
+			<-done
+		})
+	}
+}

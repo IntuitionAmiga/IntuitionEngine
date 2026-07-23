@@ -13,6 +13,11 @@ func newTestSoundChip() *SoundChip {
 		masterCompEnvelope: 1.0,
 	}
 	chip.enabled.Store(true)
+	// Honour the event-ring switch so IE_AUDIO_EVENT_RING=1 runs the whole
+	// audio suite through the barrier path rather than only the ring's own tests.
+	if audioEventRingRequested() {
+		chip.eventRing = newAudioEventRing()
+	}
 	chip.sampleTicker.Store(&sampleTickerListHolder{})
 
 	// Initialize reverb buffers (required by GenerateSample → applyReverb)

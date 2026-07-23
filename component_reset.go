@@ -25,6 +25,10 @@ import (
 
 // SoundChip.Reset restores audio to constructor defaults. Preserves OTO output.
 func (chip *SoundChip) Reset() {
+	// Drain and seal the event ring first, so queued guest writes are applied
+	// to the pre-reset state rather than surfacing after the defaults are back.
+	chip.sealAudioEventRing()
+	defer chip.unsealAudioEventRing()
 	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	chip.postFXMu.Lock()

@@ -1051,7 +1051,11 @@ type SoundChip struct {
 	// postFXConfigCaptures counts block-invariant post-FX captures, so tests
 	// can pin that a flush captures once rather than once per sample.
 	postFXConfigCaptures atomic.Uint64
-	sfx                  *SFXTrigger // Independent trigger-and-forget sample mixer
+	// eventRing queues guest register writes when IE_AUDIO_EVENT_RING=1, so a
+	// CPU write does not contend with the renderer for chip.mu. Nil when the
+	// ring is off, which is the default.
+	eventRing *audioEventRing
+	sfx       *SFXTrigger // Independent trigger-and-forget sample mixer
 
 	snVoices [4]Channel // Native SN76489 voices, independent from flex channels.
 
@@ -1212,6 +1216,9 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 		sampleMixers:       make(map[string]SampleMixer),
 		sfx:                NewSFXTrigger(),
 	}
+	if audioEventRingRequested() {
+		chip.eventRing = newAudioEventRing()
+	}
 	chip.sampleTicker.Store(&sampleTickerListHolder{})
 	chip.sampleTap.Store(&sampleTapHolder{})
 	chip.RegisterSampleTicker("sfx", chip.sfx)
@@ -1363,6 +1370,11 @@ func flexAddrForChannel(ch int, offset uint32) (uint32, bool) {
 // HandleRegisterRead handles reads from audio registers
 // Primarily used for reading channel volumes for VU meters
 func (chip *SoundChip) HandleRegisterRead(addr uint32) uint32 {
+	// A read has to observe every write the guest has already issued, so it
+	// drains the ring before taking the register lock.
+	if chip.audioEventRingActive() {
+		chip.audioEventBarrier(func() {})
+	}
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
@@ -1463,6 +1475,14 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	//
 	// ------------------------------------------------------------------------------
 
+	// With the event ring active this is a barrier writer: it must be ordered
+	// after every guest write already queued, so it drains the ring before
+	// applying its own mutation. Without the ring it is the original path.
+	if chip.audioEventRingActive() {
+		chip.audioEventBarrier(func() { chip.handleRegisterWriteLocked(addr, value) })
+		return
+	}
+
 	chip.flushPendingAudioBlock()
 
 	// Thread safety: This method holds the chip mutex during execution.
@@ -1471,10 +1491,30 @@ func (chip *SoundChip) HandleRegisterWrite(addr uint32, value uint32) {
 	chip.handleRegisterWriteLocked(addr, value)
 }
 
+// HandleRegisterWriteFromBus is the guest MMIO entry point for 32-bit audio
+// register writes. It is the only publisher into the event ring: it queues the
+// write and returns instead of contending for chip.mu with the renderer, and
+// falls back to the synchronous path when admission is shut or the ring is
+// full. Every other caller uses HandleRegisterWrite and is a barrier writer.
+func (chip *SoundChip) HandleRegisterWriteFromBus(addr uint32, value uint32) {
+	if r := chip.eventRing; r != nil && r.publish(audioEvent{addr: addr, value: value}) {
+		return
+	}
+	chip.HandleRegisterWrite(addr, value)
+}
+
 // HandleRegisterWrites applies a batch of 32-bit SoundChip register writes while
 // taking chip.mu once. The writes are applied in slice order.
 func (chip *SoundChip) HandleRegisterWrites(writes []AudioRegisterWrite) {
 	if len(writes) == 0 {
+		return
+	}
+	if chip.audioEventRingActive() {
+		chip.audioEventBarrier(func() {
+			for _, write := range writes {
+				chip.handleRegisterWriteLocked(write.Addr, write.Value)
+			}
+		})
 		return
 	}
 	chip.flushPendingAudioBlock()
@@ -1914,17 +1954,28 @@ func (chip *SoundChip) applyFlexRegister(chIndex uint32, offset uint32, value ui
 // 32-bit value is assembled from the shadow and applied via applyFlexRegister.
 // For non-flex addresses, delegates directly to HandleRegisterWrite.
 func (chip *SoundChip) HandleRegisterWrite8(addr uint32, value uint8) {
-	chip.flushPendingAudioBlock()
 	// Non-flex addresses: delegate to existing handler (works fine for byte values)
 	chIndex, offset, ok := flexChannelFromAddr(addr)
 	if !ok {
 		chip.HandleRegisterWrite(addr, uint32(value))
 		return
 	}
-
+	// Byte writes stay on the barrier path even with the ring active: they
+	// accumulate into the flex shadow, so the assembled 32-bit value depends on
+	// chip state rather than on the write alone.
+	if chip.audioEventRingActive() {
+		chip.audioEventBarrier(func() { chip.handleFlexByteWriteLocked(addr, chIndex, offset, value) })
+		return
+	}
+	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
+	chip.handleFlexByteWriteLocked(addr, chIndex, offset, value)
+}
 
+// handleFlexByteWriteLocked accumulates one byte of a flex channel register and
+// applies the register once its final byte arrives. chip.mu must be held.
+func (chip *SoundChip) handleFlexByteWriteLocked(addr uint32, chIndex, offset uint32, value uint8) {
 	if chIndex >= NUM_CHANNELS {
 		return
 	}
@@ -3243,6 +3294,7 @@ func (chip *SoundChip) ReadSample() float32 {
 	if chip.audioFrozen.Load() {
 		return 0
 	}
+	chip.drainAudioEventsBeforeRender()
 	chip.tickSample()
 	sample := chip.generateSampleWithMixer(chip.captureMixerSample())
 	chip.tapSample(sample)
@@ -3262,22 +3314,33 @@ func (chip *SoundChip) ReadSamples(dst []float32) int {
 		clear(dst)
 		return len(dst)
 	}
+	// Apply anything the guest queued before this pull started, so a write
+	// issued between pulls lands exactly where the synchronous path put it.
+	chip.drainAudioEventsBeforeRender()
 	if cap(chip.mixerCapture) < len(dst) {
 		chip.mixerCapture = make([]float32, len(dst))
 	}
+	// The pending-block fields are published and retired under state.mu, not
+	// just mutated in place: a concurrent register write can be inside
+	// flushAudioBlockState holding state.mu at either moment, and clearing dst
+	// from underneath it panicked on the stale pending range.
 	state := &chip.audioBlockBuf
+	state.mu.Lock()
 	state.dst = dst
 	state.mixerCapture = chip.mixerCapture[:len(dst)]
 	state.pendingStart = 0
 	state.pendingEnd = 0
+	state.mu.Unlock()
 	chip.audioBlock.Store(state)
 	defer func() {
 		chip.flushAudioBlockState(state)
 		chip.audioBlock.CompareAndSwap(state, nil)
+		state.mu.Lock()
 		state.dst = nil
 		state.mixerCapture = nil
 		state.pendingStart = 0
 		state.pendingEnd = 0
+		state.mu.Unlock()
 	}()
 
 	for i := 0; i < len(dst); {
@@ -3467,11 +3530,21 @@ func (chip *SoundChip) flushAudioBlockState(state *audioBlockState) {
 	// and order-independent, so the result is bit-identical.
 	clampF32SpanImpl(state.dst[start:end], MIN_SAMPLE, MAX_SAMPLE)
 	chip.postFXMu.Unlock()
+	// The renderer is the ordinary consumer of the event ring. Queued guest
+	// writes are applied here, once the samples that preceded them have been
+	// mixed with the pre-write state, which is the boundary the synchronous
+	// path got from flushing before taking chip.mu. postFXMu is released first
+	// because applying a register write may need it.
+	chip.drainAudioEventsLocked()
 	chip.mu.Unlock()
+	// Capture the flushed span before releasing state.mu. The tap runs outside
+	// the lock, and a concurrent ReadSamples completing in the meantime clears
+	// state.dst, which faulted this loop when it read the field directly.
+	tapped := state.dst[start:end]
 	state.mu.Unlock()
 
-	for i := start; i < end; i++ {
-		chip.tapSample(state.dst[i])
+	for _, sample := range tapped {
+		chip.tapSample(sample)
 	}
 }
 
@@ -4355,6 +4428,9 @@ func (chip *SoundChip) Start() {
 }
 
 func (chip *SoundChip) Stop() {
+	// Shutdown seals the ring: admission stays shut and everything committed is
+	// applied, so no queued write is lost or reordered on the way out.
+	chip.sealAudioEventRing()
 	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
 	if !chip.enabled.Load() {
