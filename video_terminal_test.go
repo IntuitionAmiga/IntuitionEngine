@@ -365,9 +365,19 @@ func TestCursorRender_Hidden(t *testing.T) {
 	}
 }
 
+// markStatusPollStale leaves the terminal looking as though the guest last
+// polled longer ago than the cursor window, which is what the counter-based
+// cursor logic reads: the count is already seen, and the stamp is old.
+func markStatusPollStale(vt *VideoTerminal, term *TerminalMMIO) {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+	vt.lastStatusPolls = term.StatusReadCount()
+	vt.lastStatusPollAt = time.Now().Add(-time.Second)
+}
+
 func TestCursorAutoHide_NoStatusReads(t *testing.T) {
 	vt, chip, term := newVideoTerminalForTest(t)
-	term.lastStatusRead.Store(time.Now().Add(-time.Second).UnixNano())
+	markStatusPollStale(vt, term)
 	vt.mu.Lock()
 	vt.cursorOn = true
 	vt.renderCursorCellLocked(true)
@@ -387,7 +397,7 @@ func TestCursorAutoHide_NoStatusReads(t *testing.T) {
 
 func TestCursorAutoHide_WithStatusReads(t *testing.T) {
 	vt, chip, term := newVideoTerminalForTest(t)
-	term.lastStatusRead.Store(time.Now().UnixNano())
+	_ = term.HandleRead(TERM_STATUS)
 	vt.cursorOn = false
 
 	vt.cursorTick()
@@ -675,7 +685,7 @@ func TestHandleKeyInput_LineMode_CursorRender(t *testing.T) {
 	vt, chip, term := newVideoTerminalForTest(t)
 	term.HandleWrite(TERM_CTRL, 1)
 	// Make cursor visible by setting recent status read
-	term.lastStatusRead.Store(time.Now().UnixNano())
+	_ = term.HandleRead(TERM_STATUS)
 	vt.HandleKeyInput('A')
 	// Cursor should be at (1,0) and rendered as a solid block
 	fb := chip.GetFrontBuffer()

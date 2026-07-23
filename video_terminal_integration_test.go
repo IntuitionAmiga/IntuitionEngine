@@ -2,7 +2,6 @@ package main
 
 import (
 	"testing"
-	"time"
 )
 
 func TestVideoTerminal_CursorHidesDuringGraphics(t *testing.T) {
@@ -25,7 +24,7 @@ func TestVideoTerminal_CursorHidesDuringGraphics(t *testing.T) {
 	vt.cursorOn = true
 	vt.renderCursorCellLocked(true)
 	vt.mu.Unlock()
-	term.lastStatusRead.Store(time.Now().Add(-time.Second).UnixNano())
+	markStatusPollStale(vt, term)
 	vt.cursorTick()
 
 	stride := VideoModes[chip.currentMode].bytesPerRow

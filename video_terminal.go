@@ -31,14 +31,20 @@ func loadTopazFont() [256][16]byte {
 }
 
 type VideoTerminal struct {
-	video       *VideoChip
-	term        *TerminalMMIO
-	mu          sync.Mutex
-	screen      *ScreenBuffer
-	cols        int
-	rows        int
-	pixelWidth  int
-	pixelHeight int
+	video *VideoChip
+	term  *TerminalMMIO
+	// lastStatusPolls and lastStatusPollAt track guest polling of the terminal
+	// status register without a clock read on the guest's side of it: the
+	// counter says whether it polled, and the time is stamped here when the
+	// counter moves. Guarded by mu, like the rest of the render state.
+	lastStatusPolls  uint64
+	lastStatusPollAt time.Time
+	mu               sync.Mutex
+	screen           *ScreenBuffer
+	cols             int
+	rows             int
+	pixelWidth       int
+	pixelHeight      int
 	// initialMode is the chip mode that was active when this terminal
 	// was constructed (typically DEFAULT_VIDEO_MODE = MODE_800x600).
 	// All renderer geometry (pixelWidth/pixelHeight, cols, rows) was
@@ -361,12 +367,22 @@ func (vt *VideoTerminal) cursorTick() {
 	vt.renderCursorCellLocked(vt.cursorOn)
 }
 
+// shouldShowCursorLocked reports whether the guest has polled the terminal
+// status recently enough to be waiting for input, which is when the cursor
+// blinks. It watches the poll counter for movement and stamps the time itself,
+// so the clock is read here, once per cursor tick, instead of on every one of
+// the guest's polls. The resolution becomes the cursor tick rather than the
+// individual poll, which is far finer than the 200 ms window it feeds.
 func (vt *VideoTerminal) shouldShowCursorLocked() bool {
-	last := vt.term.LastStatusReadTime()
-	if last.IsZero() {
+	polls := vt.term.StatusReadCount()
+	if polls != vt.lastStatusPolls {
+		vt.lastStatusPolls = polls
+		vt.lastStatusPollAt = time.Now()
+	}
+	if vt.lastStatusPollAt.IsZero() {
 		return false
 	}
-	return time.Since(last) <= cursorPollWindow
+	return time.Since(vt.lastStatusPollAt) <= cursorPollWindow
 }
 
 func (vt *VideoTerminal) renderViewportLocked() {

@@ -62,17 +62,26 @@ var lastWasmYield time.Time
 // interval expires, from the call rate it has already observed, and skips the
 // clock for that many. A skipped call costs a decrement and a branch.
 //
-// The prediction is deliberately short (three quarters of the estimate) and
-// capped, so a guest that suddenly speeds up overshoots the interval by a
-// fraction of it rather than stalling the event loop.
+// The hazard is a slowdown, not a speed-up: faster calls arrive sooner and
+// reach the interval early, whereas calls that become more expensive after the
+// estimate was taken (a JIT dispatch that starts chaining long runs of blocks,
+// say) each consume far more time than the rate the prediction was built from.
+// A prediction learned in a cheap phase would then skip the clock across a
+// stretch of expensive calls and starve rendering and input.
+//
+// So the prediction never governs alone. It is halved, and then capped at a
+// small fixed batch that is safe on its own terms: whatever the rate does, the
+// throttle rechecks the wall clock within yieldMaxSkip calls, and the worst
+// case is that many calls of guest work rather than a whole interval's worth.
 var (
 	yieldSkipLeft   int
 	yieldCallsSince int
 )
 
-// yieldMaxSkip bounds how long the throttle will go without consulting the
-// clock, so a bad prediction cannot delay a frame indefinitely.
-const yieldMaxSkip = 4096
+// yieldMaxSkip is the independently safe batch: small enough that even a large
+// change in cost per call cannot push the recheck far past the interval, and
+// still enough to remove most of the clock reads.
+const yieldMaxSkip = 8
 
 // yieldSkipFor returns how many calls may skip the clock, given the calls and
 // time already spent inside this interval. It returns zero whenever it cannot
@@ -81,10 +90,11 @@ func yieldSkipFor(callsSince int, elapsed, interval time.Duration) int {
 	if callsSince <= 0 || elapsed <= 0 || elapsed >= interval {
 		return 0
 	}
-	// Calls observed per unit of elapsed time, applied to the time left.
+	// Calls observed per unit of elapsed time, applied to the time left, then
+	// halved for margin and clamped to the safe batch.
 	remaining := interval - elapsed
 	predicted := int64(callsSince) * int64(remaining) / int64(elapsed)
-	skip := predicted * 3 / 4
+	skip := predicted / 2
 	if skip <= 0 {
 		return 0
 	}

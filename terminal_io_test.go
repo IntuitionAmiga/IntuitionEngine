@@ -303,16 +303,26 @@ func TestTerminalMMIO_CallbackNoDeadlock(t *testing.T) {
 	}
 }
 
-func TestTerminalMMIO_StatusReadTimestamp(t *testing.T) {
+// TestTerminalMMIO_StatusReadCounter pins the cheap poll signal. A guest
+// waiting for input reads TERM_STATUS in a tight loop, so the read path must
+// not consult a clock: it counts instead, and the cursor logic watches the
+// count for movement.
+func TestTerminalMMIO_StatusReadCounter(t *testing.T) {
 	tm := NewTerminalMMIO()
-	before := time.Now()
-	_ = tm.HandleRead(TERM_STATUS)
-	got := tm.LastStatusReadTime()
-	if got.IsZero() {
-		t.Fatal("expected non-zero status read timestamp")
+	if got := tm.StatusReadCount(); got != 0 {
+		t.Fatalf("fresh terminal reports %d status reads, want 0", got)
 	}
-	if got.Before(before.Add(-50*time.Millisecond)) || got.After(time.Now().Add(50*time.Millisecond)) {
-		t.Fatalf("expected recent status read timestamp, got %v", got)
+	for i := 1; i <= 3; i++ {
+		_ = tm.HandleRead(TERM_STATUS)
+		if got := tm.StatusReadCount(); got != uint64(i) {
+			t.Fatalf("after %d reads the count is %d", i, got)
+		}
+	}
+	// Reads of other registers must not look like polling.
+	_ = tm.HandleRead(TERM_IN)
+	_ = tm.HandleRead(TERM_OUT)
+	if got := tm.StatusReadCount(); got != 3 {
+		t.Fatalf("unrelated reads moved the poll count to %d, want 3", got)
 	}
 }
 

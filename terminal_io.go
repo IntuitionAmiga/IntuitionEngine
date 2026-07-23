@@ -75,7 +75,17 @@ type TerminalMMIO struct {
 	// they enter the guest terminal queues.
 	hostKeyInterceptor func(byte) bool
 
-	// lastStatusRead stores unix nanos of the latest TERM_STATUS read.
+	// statusReads counts TERM_STATUS reads. A guest waiting for input polls
+	// this register in a tight loop, so the read path must stay cheap: it used
+	// to stamp time.Now on every read, which on wasm crosses into JS and cost
+	// roughly a quarter of all CPU time in a browser profile. The only
+	// consumer asks whether the guest polled recently, at frame granularity
+	// against a 200 ms window, so a counter it can watch for movement answers
+	// the question without a clock in the hot path.
+	statusReads atomic.Uint64
+
+	// lastStatusRead stores unix nanos of the latest TERM_STATUS read. It is
+	// no longer written by the read path; snapshots keep it for compatibility.
 	lastStatusRead atomic.Int64
 
 	// monoStart is the monotonic epoch for RTC_MONO_USEC_*.
@@ -119,13 +129,21 @@ func (tm *TerminalMMIO) SetHostKeyInterceptor(fn func(byte) bool) {
 	tm.mu.Unlock()
 }
 
-// LastStatusReadTime returns the most recent TERM_STATUS read time.
+// LastStatusReadTime returns the most recent TERM_STATUS read time. Retained
+// for snapshot restore and tests; the cursor path uses StatusReadCount.
 func (tm *TerminalMMIO) LastStatusReadTime() time.Time {
 	nanos := tm.lastStatusRead.Load()
 	if nanos <= 0 {
 		return time.Time{}
 	}
 	return time.Unix(0, nanos)
+}
+
+// StatusReadCount returns how many times the guest has read TERM_STATUS. It
+// only ever increases, so a caller that remembers the previous value learns
+// whether the guest polled since it last looked, without reading a clock.
+func (tm *TerminalMMIO) StatusReadCount() uint64 {
+	return tm.statusReads.Load()
 }
 
 // HandleRead processes reads from terminal registers.
@@ -139,7 +157,7 @@ func (tm *TerminalMMIO) HandleRead(addr uint32) uint32 {
 		return 0
 
 	case TERM_STATUS:
-		tm.lastStatusRead.Store(time.Now().UnixNano())
+		tm.statusReads.Add(1)
 		var status uint32
 		if tm.inputLen > 0 {
 			status |= 1 // bit 0: input available

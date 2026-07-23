@@ -47,6 +47,34 @@ func TestWasmYield_SkipNeverOverrunsTheInterval(t *testing.T) {
 	}
 }
 
+// TestWasmYield_SlowdownAfterEstimateStaysBounded is the case a constant-rate
+// test cannot see: the estimate is taken during a cheap phase, and the calls
+// that follow become far more expensive, as they do when the JIT dispatcher
+// starts chaining long runs of blocks. The skip must then be small enough that
+// the clock is rechecked without starving rendering, whatever the slowdown.
+func TestWasmYield_SlowdownAfterEstimateStaysBounded(t *testing.T) {
+	const interval = 16 * time.Millisecond
+	// A cheap phase: many calls in very little time, the most optimistic rate
+	// the throttle can observe.
+	fastCalls, fastElapsed := 100000, 100*time.Microsecond
+	skip := yieldSkipFor(fastCalls, fastElapsed, interval)
+	if skip > yieldMaxSkip {
+		t.Fatalf("skip %d exceeds the safe batch %d", skip, yieldMaxSkip)
+	}
+
+	// Now each call costs far more than the rate the estimate came from. The
+	// skipped calls must still be bounded work, not a whole interval of it.
+	fastPerCall := fastElapsed / time.Duration(fastCalls)
+	for _, slowdown := range []int{10, 100, 1000} {
+		perCall := fastPerCall * time.Duration(slowdown)
+		spent := time.Duration(skip) * perCall
+		if spent > interval {
+			t.Fatalf("after a %dx slowdown, %d skipped calls consume %v, past the %v interval",
+				slowdown, skip, spent, interval)
+		}
+	}
+}
+
 // TestWasmYield_SkipZeroWhenUnpredictable pins the cases where the throttle
 // must fall back to consulting the clock on the next call.
 func TestWasmYield_SkipZeroWhenUnpredictable(t *testing.T) {
@@ -76,11 +104,11 @@ func TestWasmYield_SkipScalesWithHeadroom(t *testing.T) {
 	const interval = 16 * time.Millisecond
 	early := yieldSkipFor(100, time.Millisecond, interval)
 	late := yieldSkipFor(100, 15*time.Millisecond, interval)
-	if early <= late {
+	if early < late {
 		t.Fatalf("skip early in the interval (%d) should exceed skip late in it (%d)", early, late)
 	}
-	if early < 100 {
-		t.Fatalf("after 100 calls in 1 of 16 ms the throttle allowed only %d skips, so it still reads the clock most calls", early)
+	if early < yieldMaxSkip {
+		t.Fatalf("with plenty of headroom the throttle allowed only %d skips, short of the safe batch %d", early, yieldMaxSkip)
 	}
 }
 
