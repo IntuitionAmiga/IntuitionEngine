@@ -624,7 +624,8 @@ headless: setup
 	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags headless .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
-	@mv IntuitionEngine $(BIN_DIR)/
+	@mv IntuitionEngine $(BIN_DIR)/IntuitionEngine
+	@cp $(BIN_DIR)/IntuitionEngine $(BIN_DIR)/ie_headless
 	@echo "Intuition Engine VM (headless) build complete"
 
 # Build headless+novulkan with CGO disabled (fully portable, cross-compile safe)
