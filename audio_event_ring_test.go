@@ -410,13 +410,21 @@ func TestAudioEventRing_DrainOnResetAndDisable(t *testing.T) {
 
 // TestAudioEventRing_DisabledByDefault pins that the ring is opt-in, so an
 // ordinary build takes the synchronous path it always did.
-func TestAudioEventRing_DisabledByDefault(t *testing.T) {
-	if audioEventRingRequested() {
-		t.Skip("IE_AUDIO_EVENT_RING is set in the environment")
+func TestAudioEventRing_EnabledByDefault(t *testing.T) {
+	if !audioEventRingRequested() {
+		t.Skip("IE_AUDIO_EVENT_RING=0 in the environment")
 	}
 	chip := newTestSoundChip()
+	if !chip.audioEventRingActive() {
+		t.Fatal("a chip built with the default must have the event ring active")
+	}
+}
+
+func TestAudioEventRing_DisabledBySwitch(t *testing.T) {
+	t.Setenv("IE_AUDIO_EVENT_RING", "0")
+	chip := newTestSoundChip()
 	if chip.audioEventRingActive() {
-		t.Fatal("a chip built without the switch must have no event ring")
+		t.Fatal("IE_AUDIO_EVENT_RING=0 must build a chip with no event ring")
 	}
 }
 

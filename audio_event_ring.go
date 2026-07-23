@@ -55,9 +55,10 @@ const cacheLineBytes = 128
 const audioEventRingCapacity = 4096
 
 // audioEventRingRequested reports whether the ring is switched on. It is
-// opt-in: IE_AUDIO_EVENT_RING=1 enables it.
+// enabled by default after the bit-identical parity gate; IE_AUDIO_EVENT_RING=0
+// disables it and restores the synchronous barrier path.
 func audioEventRingRequested() bool {
-	return os.Getenv("IE_AUDIO_EVENT_RING") == "1"
+	return os.Getenv("IE_AUDIO_EVENT_RING") != "0"
 }
 
 // audioEvent is one queued register write.
