@@ -306,6 +306,58 @@ func (e *PSGEngine) TickBlock(samples int) {
 	}
 }
 
+func (e *PSGEngine) CanTickBlockForReadSamples() bool {
+	return true
+}
+
+// QuietSamples reports how far playback can advance before the engine next
+// touches the SoundChip. The PSG writes on three occasions: an envelope step,
+// a register event, and the end of the song. Everything between those is pure
+// counter arithmetic, so a block covering the gap is exactly the sequence of
+// single ticks it replaces.
+func (e *PSGEngine) QuietSamples() int {
+	if !e.enabled.Load() {
+		return quietSpanUnbounded
+	}
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	span := psgEnvelopeQuietSamples(e.envSampleCounter, e.envPeriodSamples)
+	if !e.playing || span == 0 {
+		return span
+	}
+	if e.eventIndex < len(e.events) {
+		span = min(span, quietSpanFromDelta(e.currentSample, e.events[e.eventIndex].Sample))
+	}
+	if e.snEventIndex < len(e.snEvents) {
+		span = min(span, quietSpanFromDelta(e.currentSample, e.snEvents[e.snEventIndex].Sample))
+	}
+	if e.totalSamples > 0 {
+		// The end-of-song write happens on the tick that carries
+		// currentSample up to totalSamples, so the last quiet sample is
+		// the one before it.
+		span = min(span, quietSpanFromDelta(e.currentSample+1, e.totalSamples))
+	}
+	return span
+}
+
+// psgEnvelopeQuietSamples returns how many samples may pass before the envelope
+// counter next reaches its period. advanceEnvelope increments the counter and
+// then compares, so the step fires on the smallest k where counter+k >= period.
+func psgEnvelopeQuietSamples(counter, period float64) int {
+	if period <= 0 {
+		return 0
+	}
+	remaining := math.Ceil(period-counter) - 1
+	if !(remaining > 0) {
+		return 0
+	}
+	if remaining >= quietSpanUnbounded {
+		return quietSpanUnbounded
+	}
+	return int(remaining)
+}
+
 func (e *PSGEngine) tickSampleLocked() {
 	e.advanceEnvelope()
 

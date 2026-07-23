@@ -384,3 +384,23 @@ func (dma *ArosAudioDMA) setFlexDACLocked(ch int, sample float32, vol uint32) {
 	}
 	flexCh.volume = float32(ieVol) / 255.0
 }
+
+// TickBlock advances every active DMA channel by several samples.
+func (dma *ArosAudioDMA) TickBlock(samples int) {
+	for range samples {
+		dma.TickSample()
+	}
+}
+
+func (dma *ArosAudioDMA) CanTickBlockForReadSamples() bool {
+	return true
+}
+
+// QuietSamples is zero while DMA is enabled: each tick feeds the next byte of
+// every active channel into its flex channel DAC, so there is no quiet span.
+func (dma *ArosAudioDMA) QuietSamples() int {
+	if !dma.enabled.Load() {
+		return quietSpanUnbounded
+	}
+	return 0
+}

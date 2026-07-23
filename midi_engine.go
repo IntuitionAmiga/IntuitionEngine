@@ -638,3 +638,24 @@ func clampInt(v, lo, hi int) int {
 	}
 	return v
 }
+
+// TickBlock advances MIDI playback by several samples.
+func (e *MIDIEngine) TickBlock(samples int) {
+	for range samples {
+		e.TickSample()
+	}
+}
+
+func (e *MIDIEngine) CanTickBlockForReadSamples() bool {
+	return true
+}
+
+// QuietSamples is zero while playing. The MIDI engine also registers as a
+// SampleMixer, which disables the block graph outright, so this only matters
+// for a live-input engine registered without its mixer.
+func (e *MIDIEngine) QuietSamples() int {
+	if !e.playingActive.Load() {
+		return quietSpanUnbounded
+	}
+	return 0
+}

@@ -519,3 +519,40 @@ func (e *TEDEngine) writeRegisterLocked(reg uint8, value uint8) {
 
 	e.syncToChip()
 }
+
+// TickBlock advances TED playback by several samples. It is bit-identical to
+// the same number of TickSample calls: the block is only ever as long as the
+// engine's quiet span, so no register event falls inside it.
+func (e *TEDEngine) TickBlock(samples int) {
+	for range samples {
+		e.TickSample()
+	}
+}
+
+func (e *TEDEngine) CanTickBlockForReadSamples() bool {
+	return true
+}
+
+// QuietSamples reports how far TED playback can advance before the engine next
+// writes to the SoundChip: the next register event, or the end of the song.
+func (e *TEDEngine) QuietSamples() int {
+	if !e.enabled.Load() || !e.playingActive.Load() {
+		return quietSpanUnbounded
+	}
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	if !e.playing {
+		return quietSpanUnbounded
+	}
+	span := quietSpanUnbounded
+	if e.eventIndex < len(e.events) {
+		span = min(span, quietSpanFromDelta(e.currentSample, e.events[e.eventIndex].Sample))
+	}
+	if e.totalSamples > 0 {
+		// The end-of-song write happens on the tick that carries
+		// currentSample up to totalSamples, so the last quiet sample is
+		// the one before it.
+		span = min(span, quietSpanFromDelta(e.currentSample+1, e.totalSamples))
+	}
+	return span
+}

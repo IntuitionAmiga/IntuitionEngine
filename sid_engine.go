@@ -1206,3 +1206,32 @@ func (e *SIDEngine) debugTime() float64 {
 	}
 	return float64(e.currentSample) / float64(e.sampleRate)
 }
+
+func (e *SIDEngine) CanTickBlockForReadSamples() bool {
+	return true
+}
+
+// QuietSamples reports how far SID playback can advance before the engine next
+// writes to the SoundChip. Writes happen at register events and at the end of
+// the song; between those a tick only advances counters.
+func (e *SIDEngine) QuietSamples() int {
+	if !e.enabled.Load() || !e.playingActive.Load() {
+		return quietSpanUnbounded
+	}
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	if !e.playing {
+		return quietSpanUnbounded
+	}
+	span := quietSpanUnbounded
+	if e.eventIndex < len(e.events) {
+		span = min(span, quietSpanFromDelta(e.currentSample, e.events[e.eventIndex].Sample))
+	}
+	if e.totalSamples > 0 {
+		// The end-of-song write happens on the tick that carries
+		// currentSample up to totalSamples, so the last quiet sample is
+		// the one before it.
+		span = min(span, quietSpanFromDelta(e.currentSample+1, e.totalSamples))
+	}
+	return span
+}

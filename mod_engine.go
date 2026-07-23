@@ -379,3 +379,25 @@ func (e *MODEngine) writeChannel(ch int, offset uint32, value uint32) {
 		e.sound.HandleRegisterWrite(addr, value)
 	}
 }
+
+// TickBlock advances MOD playback by several samples.
+func (e *MODEngine) TickBlock(samples int) {
+	for range samples {
+		e.TickSample()
+	}
+}
+
+func (e *MODEngine) CanTickBlockForReadSamples() bool {
+	return true
+}
+
+// QuietSamples is always zero: the MOD engine pushes every channel's DAC value
+// to the SoundChip on every sample, so it has no quiet span. It stays on the
+// block graph with blocks of one sample rather than dropping the whole chip
+// back to the per-sample path.
+func (e *MODEngine) QuietSamples() int {
+	if !e.enabled.Load() || !e.playing.Load() {
+		return quietSpanUnbounded
+	}
+	return 0
+}

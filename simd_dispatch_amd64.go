@@ -25,4 +25,9 @@ func assignSIMDKernels() {
 	// Phase 4: Voodoo untextured spans. Bit-exact for the eligible setup class;
 	// the scalar rasteriser stays the conformance reference for everything else.
 	voodooRasterizeRowsSIMDFn = rasterizeRowsSIMD
+
+	// Phase 5: block audio. The output clamp is the only stateless pass in the
+	// sample pipeline, and it is now applied over whole segments. Compare and
+	// blend keeps clampF32's NaN behaviour exactly.
+	clampF32SpanImpl = clampF32SpanSIMD
 }

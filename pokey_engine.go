@@ -942,3 +942,43 @@ func (e *POKEYEngine) TickSample() {
 		e.WriteRegister(ev.Reg, ev.Value)
 	}
 }
+
+// TickBlock advances POKEY playback by several samples. Blocks are bounded by
+// QuietSamples, so no event write falls inside one and the result matches the
+// same number of TickSample calls exactly.
+func (e *POKEYEngine) TickBlock(samples int) {
+	for range samples {
+		e.TickSample()
+	}
+}
+
+func (e *POKEYEngine) CanTickBlockForReadSamples() bool {
+	return true
+}
+
+// QuietSamples reports how far POKEY playback can advance before the engine
+// next writes registers. With no events loaded the engine never writes from
+// TickSample at all.
+func (e *POKEYEngine) QuietSamples() int {
+	if !e.playing.Load() {
+		return quietSpanUnbounded
+	}
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	if len(e.events) == 0 {
+		return quietSpanUnbounded
+	}
+	span := quietSpanUnbounded
+	if e.eventIndex < len(e.events) {
+		// POKEY drains every event at or before the current sample, so an
+		// event exactly at the current position is due now.
+		span = min(span, quietSpanFromDelta(e.currentSample, e.events[e.eventIndex].Sample))
+	}
+	if e.totalSamples > 0 {
+		// The end-of-song write happens on the tick that carries
+		// currentSample up to totalSamples, so the last quiet sample is
+		// the one before it.
+		span = min(span, quietSpanFromDelta(e.currentSample+1, e.totalSamples))
+	}
+	return span
+}

@@ -371,3 +371,16 @@ func isAHXExtension(path string) bool {
 		return false
 	}
 }
+
+// TickBlock forwards block ticking to the engine.
+func (p *AHXPlayer) TickBlock(samples int) {
+	p.engine.TickBlock(samples)
+}
+
+func (p *AHXPlayer) CanTickBlockForReadSamples() bool {
+	return p.engine.CanTickBlockForReadSamples()
+}
+
+func (p *AHXPlayer) QuietSamples() int {
+	return p.engine.QuietSamples()
+}

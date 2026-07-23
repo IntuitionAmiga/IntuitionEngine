@@ -54,6 +54,7 @@ import (
 	"log"
 	"math"
 	"math/bits"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -915,6 +916,47 @@ type ReadSamplesBlockTicker interface {
 	CanTickBlockForReadSamples() bool
 }
 
+// quietSpanUnbounded is the span reported by a ticker that will not touch
+// SoundChip state for as far ahead as the caller cares to look. It is large
+// enough to be clamped away by the block segment limit in every caller.
+const quietSpanUnbounded = 1 << 30
+
+// QuietSpanTicker refines ReadSamplesBlockTicker for engines that mutate
+// SoundChip state at sample positions they know in advance, which is the usual
+// shape: event-driven engines write registers at event samples, replayer
+// engines write at replay-tick boundaries, and neither writes in between.
+//
+// QuietSamples reports how many samples the ticker may advance before its next
+// such mutation. ReadSamples sizes each block to the smallest span reported by
+// any registered ticker, so block ticking is bit-identical to per-sample
+// ticking by construction: within the span no engine writes a register, so no
+// pending-range flush would have happened per-sample either.
+//
+// A ticker that writes on every sample reports zero, which yields blocks of one
+// sample. That is still the block path, not the per-sample fallback, and stays
+// bit-identical because a one-sample block is a one-sample tick.
+//
+// Reports must be conservative: returning more than the true quiet span changes
+// output. A ReadSamplesBlockTicker that does not implement this interface is
+// treated as quiet for any span, which is the contract it already had.
+type QuietSpanTicker interface {
+	ReadSamplesBlockTicker
+	QuietSamples() int
+}
+
+// quietSpanFromDelta converts "the next event is at sample position next, and
+// the ticker is at position now" into a quiet span. The event sample itself is
+// not quiet, so the span is the gap before it.
+func quietSpanFromDelta(now, next uint64) int {
+	if next <= now {
+		return 0
+	}
+	if delta := next - now; delta < quietSpanUnbounded {
+		return int(delta)
+	}
+	return quietSpanUnbounded
+}
+
 func tickBlock(ticker SampleTicker, samples int) {
 	if ticker == nil || samples <= 0 {
 		return
@@ -1002,7 +1044,14 @@ type SoundChip struct {
 	audioBlockBuf audioBlockState
 	mixerCapture  []float32
 	audioFrozen   atomic.Bool // When true, ReadSample returns 0 (hard pause)
-	sfx           *SFXTrigger // Independent trigger-and-forget sample mixer
+	// perSampleFallbacks counts ReadSamples iterations that could not use the
+	// block graph. In production it must stay at zero for every registered
+	// ticker set that has no sample mixer.
+	perSampleFallbacks atomic.Uint64
+	// postFXConfigCaptures counts block-invariant post-FX captures, so tests
+	// can pin that a flush captures once rather than once per sample.
+	postFXConfigCaptures atomic.Uint64
+	sfx                  *SFXTrigger // Independent trigger-and-forget sample mixer
 
 	snVoices [4]Channel // Native SN76489 voices, independent from flex channels.
 
@@ -1100,6 +1149,45 @@ type soundPostFXSnapshot struct {
 	sidMixerDCOffset float32
 	sidMixerSaturate bool
 	master           masterNormalizerConfig
+}
+
+// soundPostFXConfig is the block-invariant half of soundPostFXSnapshot: the
+// settings that only ever change through a register write, and so cannot move
+// while chip.mu is held. The rest of the snapshot is per-sample state, either
+// smoothed towards a target (cutoff, resonance) or recurrent filter state
+// (filterLP, filterBP), and must still be recomputed on every sample.
+type soundPostFXConfig struct {
+	filterType       int
+	filterModAmount  float32
+	overdriveLevel   float32
+	overdriveGain    float32
+	reverbMix        float32
+	reverbDecays     [NUM_COMB_FILTERS]float32
+	sidMixerEnabled  bool
+	sidMixerDCOffset float32
+	sidMixerSaturate bool
+	master           masterNormalizerConfig
+}
+
+// postFXConfigLocked captures the block-invariant post-FX settings. chip.mu
+// must be held, which is what makes the capture valid for a whole flush.
+func (chip *SoundChip) postFXConfigLocked() soundPostFXConfig {
+	chip.postFXConfigCaptures.Add(1)
+	cfg := soundPostFXConfig{
+		filterType:       chip.filterType,
+		filterModAmount:  chip.filterModAmount,
+		overdriveLevel:   chip.overdriveLevel,
+		overdriveGain:    chip.overdriveGain,
+		reverbMix:        chip.reverbMix,
+		sidMixerEnabled:  chip.sidMixerEnabled,
+		sidMixerDCOffset: chip.sidMixerDCOffset,
+		sidMixerSaturate: chip.sidMixerSaturate,
+		master:           chip.snapshotMasterNormalizerConfigLocked(),
+	}
+	for i := range chip.combFilters {
+		cfg.reverbDecays[i] = chip.combFilters[i].decay
+	}
+	return cfg
 }
 
 func NewSoundChip(backend int) (*SoundChip, error) {
@@ -2928,6 +3016,16 @@ func (chip *SoundChip) generateSampleWithMixer(mixerContribution float32) float3
 }
 
 func (chip *SoundChip) mixChannelsAndSnapshotPostFXLocked(mixerContribution float32) (float32, soundPostFXSnapshot) {
+	cfg := chip.postFXConfigLocked()
+	return chip.mixChannelsWithPostFXConfigLocked(mixerContribution, &cfg)
+}
+
+// mixChannelsWithPostFXConfigLocked mixes one sample and advances the per-sample
+// post-FX state, taking the block-invariant settings from a configuration
+// captured once for the whole flush. Operation order is unchanged from the
+// per-sample form: the smoothing step still runs after the mix and before the
+// snapshot is read.
+func (chip *SoundChip) mixChannelsWithPostFXConfigLocked(mixerContribution float32, cfg *soundPostFXConfig) (float32, soundPostFXSnapshot) {
 	const globalFilterSmooth = 0.02
 
 	var sum float32
@@ -2965,25 +3063,23 @@ func (chip *SoundChip) mixChannelsAndSnapshotPostFXLocked(mixerContribution floa
 	chip.filterResonance += (chip.filterResonanceTarget - chip.filterResonance) * globalFilterSmooth
 
 	snap := soundPostFXSnapshot{
-		filterType:       chip.filterType,
+		filterType:       cfg.filterType,
 		filterCutoff:     chip.filterCutoff,
-		filterModAmount:  chip.filterModAmount,
+		filterModAmount:  cfg.filterModAmount,
 		filterResonance:  chip.filterResonance,
 		filterLP:         chip.filterLP,
 		filterBP:         chip.filterBP,
-		overdriveLevel:   chip.overdriveLevel,
-		overdriveGain:    chip.overdriveGain,
-		reverbMix:        chip.reverbMix,
-		sidMixerEnabled:  chip.sidMixerEnabled,
-		sidMixerDCOffset: chip.sidMixerDCOffset,
-		sidMixerSaturate: chip.sidMixerSaturate,
-		master:           chip.snapshotMasterNormalizerConfigLocked(),
+		overdriveLevel:   cfg.overdriveLevel,
+		overdriveGain:    cfg.overdriveGain,
+		reverbMix:        cfg.reverbMix,
+		reverbDecays:     cfg.reverbDecays,
+		sidMixerEnabled:  cfg.sidMixerEnabled,
+		sidMixerDCOffset: cfg.sidMixerDCOffset,
+		sidMixerSaturate: cfg.sidMixerSaturate,
+		master:           cfg.master,
 	}
 	if chip.filterModSource != nil {
 		snap.filterModSample = chip.filterModSource.prevRawSample
-	}
-	for i := range chip.combFilters {
-		snap.reverbDecays[i] = chip.combFilters[i].decay
 	}
 	return sample, snap
 }
@@ -3196,6 +3292,16 @@ func (chip *SoundChip) ReadSamples(dst []float32) int {
 			if n > audioBlockSegmentMax {
 				n = audioBlockSegmentMax
 			}
+			// Never advance past the point where a registered ticker would
+			// next write to the chip: within the span nothing writes, so the
+			// block is indistinguishable from that many single ticks. A span
+			// of zero still goes through this path, as a block of one.
+			if span := chip.blockGraphQuietSpan(holder); span < n {
+				n = span
+			}
+			if n < 1 {
+				n = 1
+			}
 			chip.tickBlockHolder(holder, n)
 			state.mu.Lock()
 			if state.pendingEnd == state.pendingStart {
@@ -3203,11 +3309,15 @@ func (chip *SoundChip) ReadSamples(dst []float32) int {
 			}
 			clear(state.mixerCapture[i : i+n])
 			state.pendingEnd = i + n
+			shouldFlush := state.pendingEnd-state.pendingStart >= audioBlockSegmentMax
 			state.mu.Unlock()
-			chip.flushAudioBlockState(state)
+			if shouldFlush {
+				chip.flushAudioBlockState(state)
+			}
 			i += n
 			continue
 		}
+		chip.perSampleFallbacks.Add(1)
 		chip.tickSample()
 		state.mu.Lock()
 		if state.pendingEnd == state.pendingStart {
@@ -3225,7 +3335,39 @@ func (chip *SoundChip) ReadSamples(dst []float32) int {
 	return len(dst)
 }
 
+// audioBlockGraphEnabled is the kill switch for universal block audio. With
+// IE_AUDIO_BLOCK=0 every ReadSamples call takes the per-sample path, which is
+// retained as the oracle the block path is tested against.
+var audioBlockGraphEnabled = os.Getenv("IE_AUDIO_BLOCK") != "0"
+
+// blockGraphQuietSpan is the largest block the registered tickers all agree may
+// be advanced without any of them writing to the chip. Tickers that do not
+// report a span are quiet for any span.
+func (chip *SoundChip) blockGraphQuietSpan(holder *sampleTickerListHolder) int {
+	if holder == nil {
+		return quietSpanUnbounded
+	}
+	span := quietSpanUnbounded
+	for _, ticker := range holder.tickers {
+		quiet, ok := ticker.(QuietSpanTicker)
+		if !ok {
+			continue
+		}
+		n := quiet.QuietSamples()
+		if n <= 0 {
+			return 0
+		}
+		if n < span {
+			span = n
+		}
+	}
+	return span
+}
+
 func (chip *SoundChip) canUseReadSamplesBlockGraph(holder *sampleTickerListHolder) bool {
+	if !audioBlockGraphEnabled {
+		return false
+	}
 	if chip.hasSampleMixers() {
 		return false
 	}
@@ -3308,14 +3450,22 @@ func (chip *SoundChip) flushAudioBlockState(state *audioBlockState) {
 
 	chip.mu.Lock()
 	chip.postFXMu.Lock()
+	// The block-invariant post-FX settings cannot move while chip.mu is held,
+	// so they are captured once for the whole flush rather than rebuilt per
+	// sample. Everything that evolves per sample still does.
+	cfg := chip.postFXConfigLocked()
 	for i := start; i < end; i++ {
 		if !chip.enabled.Load() {
 			state.dst[i] = 0
 			continue
 		}
-		sample, snap := chip.mixChannelsAndSnapshotPostFXLocked(state.mixerCapture[i])
-		state.dst[i] = clampF32(chip.applyPostFXLocked(sample, snap), MIN_SAMPLE, MAX_SAMPLE)
+		sample, snap := chip.mixChannelsWithPostFXConfigLocked(state.mixerCapture[i], &cfg)
+		state.dst[i] = chip.applyPostFXLocked(sample, snap)
 	}
+	// The output clamp is the one stateless pass in the pipeline, so it runs
+	// over the whole segment in one span rather than per sample. Elementwise
+	// and order-independent, so the result is bit-identical.
+	clampF32SpanImpl(state.dst[start:end], MIN_SAMPLE, MAX_SAMPLE)
 	chip.postFXMu.Unlock()
 	chip.mu.Unlock()
 	state.mu.Unlock()
@@ -4235,6 +4385,15 @@ func clampF32(value, min, max float32) float32 {
 	}
 	return value
 }
+
+// scaleF32SpanImpl and clampF32SpanImpl default to the scalar leaves and are
+// reassigned to the SIMD variants in assignSIMDKernels on supported hosts. The
+// block audio pipeline calls them for its stateless passes, so the dispatch is
+// resolved once per flush rather than once per sample.
+var (
+	scaleF32SpanImpl = scaleF32SpanScalar
+	clampF32SpanImpl = clampF32SpanScalar
+)
 
 // scaleF32SpanScalar multiplies each sample in s by gain in place. Plain scalar
 // multiply with no FMA, so the SIMD variant (VMULPS) is bit-identical.

@@ -303,3 +303,50 @@ func (e *AHXEngine) GetPosition() (posNr, noteNr int) {
 	defer e.mutex.Unlock()
 	return e.replayer.PosNr, e.replayer.NoteNr
 }
+
+// TickBlock advances AHX playback by several samples. Blocks never span a
+// replay tick, so this matches the same number of TickSample calls exactly.
+func (e *AHXEngine) TickBlock(samples int) {
+	for range samples {
+		e.TickSample()
+	}
+}
+
+func (e *AHXEngine) CanTickBlockForReadSamples() bool {
+	return true
+}
+
+// QuietSamples reports how far AHX playback can advance before the next replay
+// tick, which is where the engine transfers voice state to the SoundChip.
+func (e *AHXEngine) QuietSamples() int {
+	if !e.enabled.Load() || !e.playing.Load() {
+		return quietSpanUnbounded
+	}
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	return ahxTickQuietSamples(e.tickAccumulator, e.tickRateHz, e.sampleRate)
+}
+
+// ahxTickQuietSamples returns the number of samples that may pass before the
+// tick accumulator next reaches the sample rate. The accumulator is advanced
+// and then compared, so the tick fires on the smallest k with acc+k*rate >= sr.
+func ahxTickQuietSamples(acc, rate, sampleRate int) int {
+	if rate <= 0 || sampleRate <= 0 {
+		// The accumulator is frozen: either it is already at or past the
+		// threshold and fires on every sample, or it never fires.
+		if acc >= sampleRate {
+			return 0
+		}
+		return quietSpanUnbounded
+	}
+	if acc >= sampleRate {
+		return 0
+	}
+	// Largest k with acc+k*rate < sampleRate, which is ceil(gap/rate)-1.
+	gap := sampleRate - acc
+	k := (gap+rate-1)/rate - 1
+	if k < 0 {
+		return 0
+	}
+	return k
+}

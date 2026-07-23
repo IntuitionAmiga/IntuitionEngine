@@ -222,3 +222,23 @@ func (e *WAVEngine) releaseChannels() {
 	e.sound.ReleaseDACMode(st.channelBase)
 	e.sound.ReleaseDACMode(st.channelBase + 1)
 }
+
+// TickBlock advances WAV playback by several samples.
+func (e *WAVEngine) TickBlock(samples int) {
+	for range samples {
+		e.TickSample()
+	}
+}
+
+func (e *WAVEngine) CanTickBlockForReadSamples() bool {
+	return true
+}
+
+// QuietSamples is zero while playing: the WAV engine writes both DAC channels
+// on every sample, so there is no span it can skip over.
+func (e *WAVEngine) QuietSamples() int {
+	if !e.enabled.Load() || !e.playing.Load() {
+		return quietSpanUnbounded
+	}
+	return 0
+}
