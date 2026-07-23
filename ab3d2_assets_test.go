@@ -76,14 +76,17 @@ func TestEnsureEmbeddedAB3D2AssetsExtractsBuildZip(t *testing.T) {
 
 	assertTestFile(t, dir, "ab3d2_source/_build/ie_media/redux-high/includes/text_file", "redux")
 	assertTestFile(t, dir, "ab3d2_source/_build/ie_unpacked/media/includes/panelraw", "unpacked")
-	assertTestFile(t, dir, ab3d2AssetStampRel, "IntuitionEngine AB3D2 _build assets\n")
+	assertTestFile(t, dir, ab3d2AssetStampRel, ab3d2AssetStampContent(testAB3D2BuildZip(t)))
 }
 
 func TestEnsureEmbeddedAB3D2AssetsSkipsStampedBuildDir(t *testing.T) {
 	dir := t.TempDir()
+	// A stamp matching the archive bytes, with the expected assets present,
+	// means the build on disk is already current, so nothing is re-extracted.
+	zip := testAB3D2BuildZip(t)
 	writeTestFile(t, dir, "ab3d2_source/_build/ie_media/redux-high/includes/text_file", "existing")
 	writeTestFile(t, dir, "ab3d2_source/_build/ie_unpacked/media/includes/panelraw", "existing")
-	writeTestFile(t, dir, ab3d2AssetStampRel, "stamp")
+	writeTestFile(t, dir, ab3d2AssetStampRel, ab3d2AssetStampContent(zip))
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -94,10 +97,12 @@ func TestEnsureEmbeddedAB3D2AssetsSkipsStampedBuildDir(t *testing.T) {
 		}
 	})
 
-	if err := ensureEmbeddedAB3D2AssetsInDir([]byte("not a zip"), dir); err != nil {
+	if err := ensureEmbeddedAB3D2AssetsInDir(zip, dir); err != nil {
 		t.Fatalf("stamped _build dir should skip extraction: %v", err)
 	}
 
+	// Untouched: the on-disk content survives rather than being overwritten by
+	// the archive's "redux" payload.
 	assertTestFile(t, dir, "ab3d2_source/_build/ie_media/redux-high/includes/text_file", "existing")
 }
 

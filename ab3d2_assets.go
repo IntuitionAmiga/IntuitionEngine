@@ -3,6 +3,8 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -33,9 +35,17 @@ func ensureEmbeddedAB3D2Assets() (string, error) {
 func ensureEmbeddedAB3D2AssetsInDir(assetZip []byte, exeDir string) error {
 	targetDir := filepath.Join(exeDir, ab3d2AssetDirName)
 	stampPath := filepath.Join(exeDir, filepath.FromSlash(ab3d2AssetStampRel))
+	// The stamp is content-addressed: it carries the SHA-256 of the embedded
+	// asset archive, so a build that changes the embed writes a different stamp
+	// and the mismatch forces a re-extraction. A build whose embed is unchanged
+	// keeps the existing assets and only revalidates their presence, so a
+	// runtime-only rerun skips regeneration entirely.
+	expectedStamp := ab3d2AssetStampContent(assetZip)
 	if st, err := os.Stat(stampPath); err == nil && !st.IsDir() {
-		if err := verifyAB3D2BuildAssets(exeDir); err == nil {
-			return os.Chdir(exeDir)
+		if data, rerr := os.ReadFile(stampPath); rerr == nil && string(data) == expectedStamp {
+			if err := verifyAB3D2BuildAssets(exeDir); err == nil {
+				return os.Chdir(exeDir)
+			}
 		}
 	} else if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("check AB3D2 asset stamp: %w", err)
@@ -58,10 +68,20 @@ func ensureEmbeddedAB3D2AssetsInDir(assetZip []byte, exeDir string) error {
 	if err := verifyAB3D2BuildAssets(exeDir); err != nil {
 		return err
 	}
-	if err := os.WriteFile(stampPath, []byte("IntuitionEngine AB3D2 _build assets\n"), 0o644); err != nil {
+	if err := os.WriteFile(stampPath, []byte(expectedStamp), 0o644); err != nil {
 		return fmt.Errorf("write AB3D2 asset stamp: %w", err)
 	}
 	return os.Chdir(exeDir)
+}
+
+// ab3d2AssetStampContent returns the content-addressed stamp for an embedded
+// asset archive: a fixed header plus the hex SHA-256 of the archive bytes. The
+// same bytes always produce the same stamp, and any change to the bytes
+// produces a different one, so the stamp alone decides whether the extracted
+// assets on disk still match the build.
+func ab3d2AssetStampContent(assetZip []byte) string {
+	sum := sha256.Sum256(assetZip)
+	return "IntuitionEngine AB3D2 _build assets\nsha256:" + hex.EncodeToString(sum[:]) + "\n"
 }
 
 func verifyAB3D2BuildAssets(exeDir string) error {

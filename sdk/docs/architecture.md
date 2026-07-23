@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-22*
+*Last modified: 2026-07-23*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -912,6 +912,27 @@ file, merge the results with
 the revision, toolchain, workloads and durations in `default.pgo.manifest`
 beside the profile, and accept the new profile only when benchstat shows no
 regression against `-pgo=off` across the video, audio and bus benchmarks.
+
+### Programme Benchmark Inventory
+
+Each subsystem the performance programme touched has a named benchmark pair,
+run through the Makefile `bench-baseline`, `bench-after` and `bench-compare`
+targets and compared with benchstat. The inventory below is the reference set; a
+drift test asserts every benchmark named here still exists in the sources, so a
+rename cannot quietly drop a gate.
+
+| Subsystem | Benchmarks |
+|-----------|------------|
+| Compositor | `BenchmarkComposite_StaticScene`, `BenchmarkComposite_FullDirty`, `BenchmarkCompositeScaled_Resample`, `BenchmarkCompositeScanline_MultiLayer` |
+| Software Voodoo | `BenchmarkVoodooRasterTextured`, `BenchmarkVoodooRasterScene`, `BenchmarkVoodoo_FullscreenQuad_Software` |
+| Audio | `BenchmarkReadSamplesBlock_AllChips`, `BenchmarkAudioRegisterWrite_UnderRender` |
+| Bus and memory | `BenchmarkRead32_NonIO`, `BenchmarkWrite32_NonIO`, `BenchmarkSparseBackingReadSpan`, `BenchmarkSparseBackingWriteSpan`, `BenchmarkDirtyMark` |
+| Monitor | `BenchmarkMonitorHooks_Disabled` |
+| IEScript | `BenchmarkIEScriptHotLoop` |
+
+The `IE_BENCH_GATE` environment variable arms the mains-power benchmark
+uniformity gate; it is a measurement gate rather than a runtime switch and does
+not change any guest-visible behaviour.
 
 ### IE64 BASIC Native Compilation
 
