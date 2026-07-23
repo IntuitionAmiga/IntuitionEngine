@@ -75,7 +75,9 @@ VBlank, swap-complete, and fifo-empty lifecycle callbacks are raised by the chip
 
 ## Backend Parity
 
-The software backend is the reference. Vulkan must match software output for implemented features within per-channel RGB delta <= 1/255 and depth delta <= 1 ULP in 20.12 fixed-point terms. Vulkan-only features are non-conformant unless promoted into this ABI.
+The software backend is the reference. Its own tiled and per-triangle raster paths are bit-identical: a flush is binned over a 64 by 64 tile grid, each tile owns its colour and depth pixels exclusively, and each tile replays its binned primitives in submission order, so blending, depth-equal writes and overlapping translucent primitives resolve exactly as they do serially. `IE_VOODOO_TILE_RASTER=0` selects the per-triangle path and `IE_VOODOO_WORKERS` sets the worker count; neither changes the pixels.
+
+Vulkan must match software output for implemented features within per-channel RGB delta <= 1/255 and depth delta <= 1 ULP in 20.12 fixed-point terms. Vulkan-only features are non-conformant unless promoted into this ABI.
 
 ## Register Table
 

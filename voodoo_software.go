@@ -56,6 +56,10 @@ type VoodooSoftwareBackend struct {
 	// other framebuffer operations, never state writes.
 	fbMu sync.Mutex
 
+	// tileBinner is the reused binning state for the tiled raster path. Only
+	// ever touched under fbMu. nil until the first tiled flush.
+	tileBinner *voodooTileBinner
+
 	// Framebuffer
 	width, height int
 	colorBuffer   []byte    // RGBA
@@ -475,6 +479,11 @@ func (b *VoodooSoftwareBackend) FlushTriangles(triangles []VoodooTriangle) {
 	b.fbMu.Lock()
 	defer b.fbMu.Unlock()
 
+	if voodooTileRasterEnabled() {
+		b.flushTrianglesTiled(triangles, live)
+		return
+	}
+
 	var applied *VoodooRasterState
 	state := live
 	for i := range triangles {
@@ -698,6 +707,20 @@ type voodooTriangleSetup struct {
 // state comes from the caller's snapshot; the backend contributes only
 // the framebuffers (the caller holds fbMu).
 func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle, st *softwareLiveState) {
+	setup, minY, maxY, ok := b.buildTriangleSetup(tri, st)
+	if !ok {
+		return
+	}
+	b.rasterizeSetupBanded(&setup, minY, maxY)
+}
+
+// buildTriangleSetup derives the read-only per-triangle raster setup and its
+// row range from a triangle and the state bound at its submission. It reports
+// false for triangles that cover nothing: degenerate area, or a bounding box
+// emptied by the screen bounds or the scissor rectangle. The setup it returns
+// is self-contained, so it can be rasterised now, or queued and rasterised
+// later by a tile worker, without consulting backend state again.
+func (b *VoodooSoftwareBackend) buildTriangleSetup(tri *VoodooTriangle, st *softwareLiveState) (voodooTriangleSetup, int, int, bool) {
 	v0 := &tri.Vertices[0]
 	v1 := &tri.Vertices[1]
 	v2 := &tri.Vertices[2]
@@ -744,7 +767,7 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle, st *softw
 	// Compute triangle area (2x for efficiency)
 	area := edgeFunction(v0.X, v0.Y, v1.X, v1.Y, v2.X, v2.Y)
 	if area == 0 {
-		return // Degenerate triangle
+		return voodooTriangleSetup{}, 0, 0, false // Degenerate triangle
 	}
 
 	// Handle backface culling (if area is negative, triangle is back-facing)
@@ -816,13 +839,18 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle, st *softw
 		setup.dtdy = fixed14_18ToFloat(st.slopes.DTDY)
 	}
 
+	return setup, minY, maxY, true
+}
+
+// rasterizeSetupBanded rasterises one prepared setup over [minY, maxY).
+func (b *VoodooSoftwareBackend) rasterizeSetupBanded(setup *voodooTriangleSetup, minY, maxY int) {
 	// Parallelise large triangles across row bands. Bands write disjoint
 	// rows (also under Y-flip), each pixel's result is a deterministic
 	// function of its coordinates, and the setup is read-only, so the
 	// output is bit-identical to the sequential path.
 	rows := maxY - minY
 	const bandMinRows = 64
-	if rows >= bandMinRows && maxX-minX >= 64 {
+	if rows >= bandMinRows && setup.maxX-setup.minX >= 64 {
 		if workers := min(runtime.NumCPU(), rows/(bandMinRows/2)); workers > 1 {
 			step := (rows + workers - 1) / workers
 			var wg sync.WaitGroup
@@ -831,14 +859,14 @@ func (b *VoodooSoftwareBackend) rasterizeTriangle(tri *VoodooTriangle, st *softw
 				wg.Add(1)
 				go func() {
 					defer wg.Done()
-					b.rasterizeRows(&setup, y0, y1)
+					b.rasterizeRows(setup, y0, y1)
 				}()
 			}
 			wg.Wait()
 			return
 		}
 	}
-	b.rasterizeRows(&setup, minY, maxY)
+	b.rasterizeRows(setup, minY, maxY)
 }
 
 // rasterizeRows rasterises the triangle rows [minY, maxY) using the
