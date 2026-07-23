@@ -143,6 +143,46 @@ type CompositorFrameLayer struct {
 	Lease        *VideoFrameLease
 	Opaque       bool
 	DirtyRects   []FrameDirtyRect
+	// Indexed carries the layer as palette indices instead of RGBA. It is set
+	// only when the frame is going to a backend that converts on the GPU, and
+	// Buffer is then nil until something on the CPU side asks for pixels.
+	Indexed *IndexedLayerData
+}
+
+// IndexedLayerData is a CLUT8 layer before palette expansion: one index byte
+// per pixel plus the palette they index. The palette is a value, not a
+// reference, because the source keeps mutating its own copy.
+type IndexedLayerData struct {
+	Indices []byte
+	Palette [256]uint32
+}
+
+// ExpandInto writes the RGBA expansion of the layer into dst, which must hold
+// at least four bytes per index. This is the CPU fallback, and it produces
+// exactly what the CPU converter would have produced for the same frame.
+func (d *IndexedLayerData) ExpandInto(dst []byte) bool {
+	if d == nil || len(dst) < len(d.Indices)*BYTES_PER_PIXEL {
+		return false
+	}
+	clut8ExpandSpanImpl(dst, d.Indices, &d.Palette)
+	return true
+}
+
+// IndexedFrameSource is an optional source extension: a source that holds its
+// frame as palette indices can hand those over instead of an expanded RGBA
+// frame, letting the backend do the expansion on the GPU. Sources must copy,
+// not alias, since the compositor reads the data after the call returns.
+type IndexedFrameSource interface {
+	// IndexedFrameForCompositor fills dst with one index byte per pixel and
+	// returns the palette to expand them through. It reports false whenever
+	// the source is not currently in an indexed mode.
+	IndexedFrameForCompositor(dst []byte) (pal [256]uint32, ok bool)
+}
+
+// IndexedLayerOutput is an optional backend extension for outputs that can
+// expand palette indices themselves, i.e. that have a shader to do it with.
+type IndexedLayerOutput interface {
+	AcceptsIndexedLayers() bool
 }
 
 // CompositorFrameUpdate describes a complete compositor frame for outputs that

@@ -59,13 +59,17 @@ const clut8ConvertShaderSrc = `//kage:unit pixels
 
 package main
 
-var DestOrigin vec2
 var TexelsPerRow float
 var PaletteRows float
 
 func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
-	localX := floor(dstPos.x - DestOrigin.x)
-	localY := floor(dstPos.y - DestOrigin.y)
+	// The destination lives in an atlas, so its origin is not the image's
+	// Bounds().Min, which is always zero. Ask the runtime for the real one:
+	// passing a zero origin works only while nothing else has been allocated,
+	// which is why this shows up in a live session and not in isolation.
+	dstOrigin := imageDstOrigin()
+	localX := floor(dstPos.x - dstOrigin.x)
+	localY := floor(dstPos.y - dstOrigin.y)
 
 	texelX := floor(localX / 4.0)
 	channel := localX - texelX*4.0
@@ -149,9 +153,6 @@ func (c *clut8GPUConverter) Convert(indices []byte, width, height int, pal *[256
 	op := &ebiten.DrawTrianglesShaderOptions{
 		Blend: ebiten.BlendCopy,
 		Uniforms: map[string]any{
-			// The destination lives in an atlas, so its origin is not
-			// necessarily zero and the shader works in local coordinates.
-			"DestOrigin":   []float32{float32(c.out.Bounds().Min.X), float32(c.out.Bounds().Min.Y)},
 			"TexelsPerRow": float32(c.texelsPerRow),
 			"PaletteRows":  float32(c.paletteRows),
 		},

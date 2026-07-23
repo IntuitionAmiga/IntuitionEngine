@@ -253,6 +253,10 @@ type VideoCompositor struct {
 	tilePlans       []tileLayerPlan
 	tileRectScratch []FrameDirtyRect
 
+	// indexedScratch holds reusable index storage per source for layers that
+	// go to the backend as palette indices rather than RGBA.
+	indexedScratch map[uint64]*IndexedLayerData
+
 	// uploadPlan owns the regional upload plan and its packing scratch.
 	// Guarded by outputMu, which is the lock held across updateOutput.
 	uploadPlan uploadPlanner
@@ -736,6 +740,15 @@ func retainCompositorLayers(layers []CompositorFrameLayer) []CompositorFrameLaye
 		if out[i].Lease != nil && !out[i].Lease.Retain() {
 			out[i].Lease = nil
 		}
+		if data := out[i].Indexed; data != nil {
+			// The indices are per-source scratch that the next composite
+			// overwrites, so a retained layer takes its own copy. A lease
+			// protects RGBA buffers the same way; indices have no lease.
+			out[i].Indexed = &IndexedLayerData{
+				Indices: append([]byte(nil), data.Indices...),
+				Palette: data.Palette,
+			}
+		}
 	}
 	return out
 }
@@ -803,6 +816,29 @@ func (c *VideoCompositor) appendCopiedCompositeLayer(layers []CompositorFrameLay
 		return layers, false
 	}
 	bufLen := srcW * srcH * BYTES_PER_PIXEL
+
+	// A source that holds palette indices can hand those to a backend that
+	// expands them on the GPU, which skips the CPU expansion and uploads a
+	// quarter of the bytes. Everything else, including the software fallback
+	// below and any CPU consumer, goes through the RGBA path unchanged.
+	if indexed, ok := c.collectIndexedLayerLocked(registered, srcW, srcH); ok {
+		opaque := false
+		if sourceOpaque, isOpaque := source.(OpaqueFrameSource); isOpaque {
+			opaque = sourceOpaque.IsOpaqueFrame()
+		}
+		return append(layers, CompositorFrameLayer{
+			SourceID:     registered.id,
+			SourceWidth:  srcW,
+			SourceHeight: srcH,
+			DestX:        rect.x,
+			DestY:        rect.y,
+			DestWidth:    rect.w,
+			DestHeight:   rect.h,
+			Opaque:       opaque,
+			Indexed:      indexed,
+		}), true
+	}
+
 	var buf []byte
 	var lease *VideoFrameLease
 	if videoFrameLeasesEnabled() {
@@ -908,6 +944,82 @@ func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, re
 
 func videoFrameLeasesEnabled() bool {
 	return os.Getenv("IE_VIDEO_FRAME_LEASES") != "0"
+}
+
+// collectIndexedLayerLocked returns the source's frame as palette indices when
+// every condition for GPU expansion holds: the conversion is wanted, the output
+// can expand indices itself, and the source is currently in an indexed mode.
+// Any of those failing leaves the caller on the RGBA path.
+func (c *VideoCompositor) collectIndexedLayerLocked(registered registeredSource, srcW, srcH int) (*IndexedLayerData, bool) {
+	if selectGPUConversion(videoGPUConvertRequested(), c.outputAcceptsIndexedLayersLocked()) != gpuConvertShader {
+		return nil, false
+	}
+	indexedSource, ok := registered.source.(IndexedFrameSource)
+	if !ok {
+		return nil, false
+	}
+	pixels := srcW * srcH
+	if pixels <= 0 {
+		return nil, false
+	}
+	data := c.indexedLayerScratch(registered.id, pixels)
+	pal, ok := indexedSource.IndexedFrameForCompositor(data.Indices)
+	if !ok {
+		return nil, false
+	}
+	data.Palette = pal
+	return data, true
+}
+
+// indexedLayerScratch returns per-source indexed storage, reused across frames
+// so a steady state allocates nothing. A layer is consumed before the next
+// composite for that source, so one buffer per source is enough.
+func (c *VideoCompositor) indexedLayerScratch(sourceID uint64, pixels int) *IndexedLayerData {
+	if c.indexedScratch == nil {
+		c.indexedScratch = make(map[uint64]*IndexedLayerData)
+	}
+	data := c.indexedScratch[sourceID]
+	if data == nil {
+		data = &IndexedLayerData{}
+		c.indexedScratch[sourceID] = data
+	}
+	if cap(data.Indices) < pixels {
+		data.Indices = make([]byte, pixels)
+	}
+	data.Indices = data.Indices[:pixels]
+	return data
+}
+
+// outputAcceptsIndexedLayersLocked reports whether the current output can
+// expand palette indices itself. Headless and software outputs cannot, so they
+// keep receiving RGBA.
+func (c *VideoCompositor) outputAcceptsIndexedLayersLocked() bool {
+	if c.output == nil || c.hardwareDisabled {
+		return false
+	}
+	if _, ok := c.output.(HardwareCompositingOutput); !ok {
+		return false
+	}
+	indexedOut, ok := c.output.(IndexedLayerOutput)
+	return ok && indexedOut.AcceptsIndexedLayers()
+}
+
+// materialiseIndexedLayers expands any indexed layer into RGBA in place. It is
+// the single choke point for CPU consumers: software rendering, the hardware
+// fallback and snapshots all go through it, so nothing downstream has to know
+// that a layer ever arrived as indices.
+func (c *VideoCompositor) materialiseIndexedLayers(layers []CompositorFrameLayer) {
+	for i := range layers {
+		data := layers[i].Indexed
+		if data == nil || layers[i].Buffer != nil {
+			continue
+		}
+		buf := make([]byte, len(data.Indices)*BYTES_PER_PIXEL)
+		if !data.ExpandInto(buf) {
+			continue
+		}
+		layers[i].Buffer = buf
+	}
 }
 
 func (c *VideoCompositor) acquireFrameLeaseLocked(sourceID uint64, frameBytes int) (*VideoFrameLease, bool) {
@@ -1107,6 +1219,10 @@ func (c *VideoCompositor) collectFullFrameLayers(copyBuffers bool) ([]Compositor
 // caller publishes as the frame counter, because retained tile bookkeeping is
 // keyed on it.
 func (c *VideoCompositor) renderLayersSoftwareLocked(layers []CompositorFrameLayer, frameID uint64) {
+	// Indexed layers only exist for backends that expand them on the GPU. Any
+	// path that reaches the CPU rasteriser, including the hardware fallback,
+	// needs pixels, so expand them here rather than at each blend site.
+	c.materialiseIndexedLayers(layers)
 	frameBytes := c.frameWidth * c.frameHeight * BYTES_PER_PIXEL
 	if frameBytes <= 0 {
 		c.clearSoftwareFrameLeaseLocked()

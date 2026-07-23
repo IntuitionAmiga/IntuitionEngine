@@ -40,7 +40,12 @@ func init() {
 }
 
 type EbitenOutput struct {
-	running            atomic.Bool
+	running atomic.Bool
+	// indexedUnsupported latches when the conversion shader fails on this
+	// backend. It stops the compositor sending further indexed layers, so a
+	// backend that cannot compile or run the shader degrades to the CPU
+	// expansion permanently instead of failing every frame.
+	indexedUnsupported atomic.Bool
 	firstFrameOnce     sync.Once
 	window             *ebiten.Image
 	width              int
@@ -100,6 +105,20 @@ type EbitenOutput struct {
 type ebitenHardwareLayer struct {
 	CompositorFrameLayer
 	image *ebiten.Image
+	// indices holds the staged palette indices for an indexed layer, and conv
+	// the converter that expands them. Both are retained per slot so a steady
+	// state neither allocates nor rebuilds textures.
+	indices []byte
+	palette [256]uint32
+	conv    *clut8GPUConverter
+}
+
+// AcceptsIndexedLayers reports that this backend can expand palette indices in
+// a shader, so the compositor may hand it CLUT8 layers unexpanded. It follows
+// the same switch as the rest of GPU conversion, so IE_VIDEO_GPU_CONVERT=0
+// puts every layer back on the CPU expansion path.
+func (eo *EbitenOutput) AcceptsIndexedLayers() bool {
+	return videoGPUConvertRequested() && !eo.indexedUnsupported.Load()
 }
 
 const ebitenCompositorCopyShaderSrc = `//kage:unit pixels
@@ -297,6 +316,15 @@ func (eo *EbitenOutput) UpdateHardwareCompositorFrame(update CompositorFrameUpda
 			oldBuf = nil
 		}
 		eo.hwLayers[i].CompositorFrameLayer = layer
+		if layer.Indexed != nil {
+			// The indices are the compositor's scratch and are overwritten on
+			// the next frame, so they are staged like any other layer buffer.
+			eo.hwLayers[i].indices = stageHardwareIndexBuffer(eo.hwLayers[i].indices, layer.Indexed.Indices)
+			eo.hwLayers[i].palette = layer.Indexed.Palette
+			eo.hwLayers[i].Buffer = nil
+			continue
+		}
+		eo.hwLayers[i].indices = eo.hwLayers[i].indices[:0]
 		if layer.Lease != nil {
 			eo.hwLayers[i].Buffer = layer.Buffer[:want]
 		} else {
@@ -307,6 +335,38 @@ func (eo *EbitenOutput) UpdateHardwareCompositorFrame(update CompositorFrameUpda
 		eo.releaseHardwareLayerLocked(i)
 	}
 	return nil
+}
+
+// clut8ConvertLayer runs the layer's shader conversion. It is a variable so a
+// test can make the conversion fail and exercise the CPU fallback below, which
+// is otherwise only reachable on a backend that cannot run the shader.
+var clut8ConvertLayer = func(layer *ebitenHardwareLayer) (*ebiten.Image, error) {
+	return layer.conv.Convert(layer.indices, layer.SourceWidth, layer.SourceHeight, &layer.palette)
+}
+
+// expandIndexedLayerToRGBA expands a staged indexed layer into backend-owned
+// RGBA storage, producing exactly what the CPU converter would have.
+func expandIndexedLayerToRGBA(layer *ebitenHardwareLayer) []byte {
+	pixels := layer.SourceWidth * layer.SourceHeight
+	need := pixels * BYTES_PER_PIXEL
+	dst := layer.Buffer
+	if cap(dst) < need {
+		dst = make([]byte, need)
+	}
+	dst = dst[:need]
+	clut8ExpandSpanImpl(dst, layer.indices[:pixels], &layer.palette)
+	return dst
+}
+
+// stageHardwareIndexBuffer copies the layer's indices into backend-owned
+// storage, reusing it across frames.
+func stageHardwareIndexBuffer(dst, src []byte) []byte {
+	if cap(dst) < len(src) {
+		dst = make([]byte, len(src))
+	}
+	dst = dst[:len(src)]
+	copy(dst, src)
+	return dst
 }
 
 func stageHardwareCompositorBuffer(dst, src []byte, want int) []byte {
@@ -330,6 +390,13 @@ func validateHardwareLayer(dstW, dstH int, layer CompositorFrameLayer) error {
 	}
 	if layer.DestX < 0 || layer.DestY < 0 || layer.DestWidth > dstW-layer.DestX || layer.DestHeight > dstH-layer.DestY {
 		return fmt.Errorf("destination rect out of bounds")
+	}
+	if layer.Indexed != nil {
+		// An indexed layer carries one byte per pixel and no RGBA buffer.
+		if want := layer.SourceWidth * layer.SourceHeight; len(layer.Indexed.Indices) < want {
+			return fmt.Errorf("index buffer too small: got %d, want at least %d", len(layer.Indexed.Indices), want)
+		}
+		return nil
 	}
 	want := layer.SourceWidth * layer.SourceHeight * BYTES_PER_PIXEL
 	if len(layer.Buffer) < want {
@@ -366,6 +433,9 @@ func (eo *EbitenOutput) releaseHardwareLayerLocked(i int) {
 		lease.Release()
 	}
 	eo.hwLayers[i].CompositorFrameLayer = CompositorFrameLayer{}
+	// Keep the backing array but drop the contents, so a released slot is
+	// never mistaken for an indexed layer on a later frame.
+	eo.hwLayers[i].indices = eo.hwLayers[i].indices[:0]
 }
 
 func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
@@ -1496,17 +1566,50 @@ func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image) {
 	}
 	for i := range eo.hwLayers {
 		layer := &eo.hwLayers[i]
-		if layer.SourceWidth <= 0 || layer.SourceHeight <= 0 || layer.DestWidth <= 0 || layer.DestHeight <= 0 || len(layer.Buffer) == 0 {
+		if layer.SourceWidth <= 0 || layer.SourceHeight <= 0 || layer.DestWidth <= 0 || layer.DestHeight <= 0 {
 			continue
 		}
-		if layer.image == nil || layer.image.Bounds().Dx() != layer.SourceWidth || layer.image.Bounds().Dy() != layer.SourceHeight {
-			if layer.image != nil {
-				layer.image.Dispose()
-			}
-			layer.image = ebiten.NewImage(layer.SourceWidth, layer.SourceHeight)
+		indexed := len(layer.indices) >= layer.SourceWidth*layer.SourceHeight
+		if !indexed && len(layer.Buffer) == 0 {
+			continue
 		}
-		pixelBytes := layer.SourceWidth * layer.SourceHeight * BYTES_PER_PIXEL
-		layer.image.WritePixels(layer.Buffer[:pixelBytes])
+
+		// The source image for the draw below is either the layer's own RGBA
+		// texture or, for an indexed layer, the shader-expanded output of its
+		// converter. Everything after this point is identical either way.
+		src := layer.image
+		if indexed {
+			if layer.conv == nil {
+				layer.conv = &clut8GPUConverter{}
+			}
+			converted, err := clut8ConvertLayer(layer)
+			if err != nil {
+				// The shader cannot run on this backend. Expand on the CPU so
+				// this frame is still correct, and latch the failure so the
+				// compositor stops sending indices at all: the compositor
+				// cannot fall back on our behalf, because the frame update it
+				// already accepted reported success.
+				if !eo.indexedUnsupported.Swap(true) {
+					fmt.Printf("Ebiten: CLUT8 GPU conversion failed, falling back to CPU expansion: %v\n", err)
+				}
+				layer.Buffer = expandIndexedLayerToRGBA(layer)
+				layer.indices = layer.indices[:0]
+				indexed = false
+			} else {
+				src = converted
+			}
+		}
+		if !indexed {
+			if layer.image == nil || layer.image.Bounds().Dx() != layer.SourceWidth || layer.image.Bounds().Dy() != layer.SourceHeight {
+				if layer.image != nil {
+					layer.image.Dispose()
+				}
+				layer.image = ebiten.NewImage(layer.SourceWidth, layer.SourceHeight)
+			}
+			pixelBytes := layer.SourceWidth * layer.SourceHeight * BYTES_PER_PIXEL
+			layer.image.WritePixels(layer.Buffer[:pixelBytes])
+			src = layer.image
+		}
 
 		x0 := float32(layer.DestX)
 		y0 := float32(layer.DestY)
@@ -1532,7 +1635,7 @@ func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image) {
 				},
 			},
 		}
-		op.Images[0] = layer.image
+		op.Images[0] = src
 		screen.DrawTrianglesShader(vertices, indices, eo.hwCopyShader, op)
 	}
 }

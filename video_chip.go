@@ -956,6 +956,36 @@ func (chip *VideoChip) markCLUTSourceDirtyForWriteLocked(addr uint32, size uint3
 	}
 }
 
+// IndexedFrameForCompositor copies the raw CLUT8 indices into dst and returns
+// the palette to expand them through, so a backend that can expand on the GPU
+// never pays for the CPU expansion. It reports false unless the chip is in
+// CLUT8 mode with a readable framebuffer, which keeps every other mode on the
+// existing RGBA path.
+func (chip *VideoChip) IndexedFrameForCompositor(dst []byte) ([256]uint32, bool) {
+	chip.setVBlank(false)
+	if !chip.enabled.Load() || !chip.clutMode.Load() {
+		return [256]uint32{}, false
+	}
+	chip.mu.Lock()
+	defer chip.mu.Unlock()
+
+	mode := VideoModes[chip.currentMode]
+	pixels := mode.width * mode.height
+	if pixels <= 0 || len(dst) < pixels {
+		return [256]uint32{}, false
+	}
+	if chip.clutFrameSourceUnsupportedLocked(mode) {
+		// Same failure handling as the CPU converter: flag it and fall back,
+		// rather than publishing a frame from out-of-range memory.
+		chip.framebufferErr.Store(true)
+		return [256]uint32{}, false
+	}
+	chip.framebufferErr.Store(false)
+	start := uint64(chip.fbBase)
+	copy(dst[:pixels], chip.busMemory[start:start+uint64(pixels)])
+	return chip.clutPalette, true
+}
+
 // clutGetFrame returns the appropriate frame for CLUT8 or RGBA32 direct modes.
 // Caller must hold chip.mu.
 func (chip *VideoChip) clutGetFrame() []byte {
