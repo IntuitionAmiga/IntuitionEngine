@@ -13,7 +13,9 @@ package main
 import (
 	"math"
 	"math/rand"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // withBlockGraph runs fn with the block graph forced on or off, restoring the
@@ -614,4 +616,316 @@ func TestAudioPipelineSpecialisation_SilentChannelCannotBeSkipped(t *testing.T) 
 	if !differs {
 		t.Fatal("an enabled but silent channel no longer affects the mix; the silent-channel specialisation is now bit-exact and should be implemented")
 	}
+}
+
+// TestSampleTap_ClearStopsCallbacksAcrossLoadStoreGap pins the tap lifecycle
+// against the window the holder reload alone does not close: an invoker loads
+// the holder, is pre-empted, and ClearSampleTap stores the replacement and
+// returns while that invocation is still pending. The tap is held inside its
+// callback until the clear is already in progress, so the invoker demonstrably
+// holds a stale holder; no further callback may run once the clear returns.
+func TestSampleTap_ClearStopsCallbacksAcrossLoadStoreGap(t *testing.T) {
+	withBlockGraph(true, func() {
+		chip := newTestSoundChip()
+		configureBlockReadChip(chip)
+
+		var calls atomic.Int64
+		var callbackDone atomic.Bool
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		chip.SetSampleTap(func(float32) {
+			if calls.Add(1) == 1 {
+				close(entered)
+				<-release
+				callbackDone.Store(true)
+			}
+		})
+
+		rendered := make(chan struct{})
+		go func() {
+			defer close(rendered)
+			out := make([]float32, 512)
+			chip.ReadSamples(out)
+			chip.flushPendingAudioBlock()
+		}()
+
+		<-entered
+		cleared := make(chan struct{})
+		var doneAtReturn atomic.Bool
+		go func() {
+			defer close(cleared)
+			chip.ClearSampleTap()
+			doneAtReturn.Store(callbackDone.Load())
+		}()
+
+		// Hold the callback well past any plausible retirement timeout, so a
+		// bounded wait would be caught rather than slipping under the bound, then
+		// let it finish.
+		time.Sleep(250 * time.Millisecond)
+		close(release)
+
+		<-cleared
+		if !doneAtReturn.Load() {
+			t.Fatal("ClearSampleTap returned while a tap callback was still running")
+		}
+		atClear := calls.Load()
+		<-rendered
+		if got := calls.Load(); got != atClear {
+			t.Fatalf("tap invoked %d times after ClearSampleTap returned", got-atClear)
+		}
+	})
+}
+
+// TestSampleTap_SelfDetachDoesNotDeadlock pins the reentrant half of the tap
+// lifecycle: a callback that clears the tap from inside itself must not wait on
+// its own invocation, and no further callback may run once it has. Guarded by a
+// timeout, because the failure mode is a permanent block rather than a wrong
+// value.
+func TestSampleTap_SelfDetachDoesNotDeadlock(t *testing.T) {
+	withBlockGraph(true, func() {
+		chip := newTestSoundChip()
+		configureBlockReadChip(chip)
+
+		var calls atomic.Int64
+		chip.SetSampleTap(func(float32) {
+			if calls.Add(1) == 1 {
+				chip.ClearSampleTapFromCallback()
+			}
+		})
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			out := make([]float32, 512)
+			chip.ReadSamples(out)
+			chip.flushPendingAudioBlock()
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("render blocked: a self-detaching tap deadlocked against its own retirement")
+		}
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("tap invoked %d times after detaching itself, want 1", got)
+		}
+	})
+}
+
+// TestSampleTap_SelfDetachOnPerSamplePath covers the same reentrancy on the
+// per-sample path, where the invoker records its identity lazily on the first
+// callback rather than once per delivery batch.
+func TestSampleTap_SelfDetachOnPerSamplePath(t *testing.T) {
+	withBlockGraph(false, func() {
+		chip := newTestSoundChip()
+		configureBlockReadChip(chip)
+
+		var calls atomic.Int64
+		chip.SetSampleTap(func(float32) {
+			if calls.Add(1) == 1 {
+				chip.SetSampleTapFromCallback(func(float32) { calls.Add(1) })
+			}
+		})
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for range 32 {
+				chip.ReadSample()
+			}
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("ReadSample blocked: a self-replacing tap deadlocked against its own retirement")
+		}
+		if got := calls.Load(); got < 2 {
+			t.Fatalf("replacement tap never ran, calls = %d", got)
+		}
+	})
+}
+
+// TestSampleTap_SelfDetachAfterEarlierInvokerGoroutine pins that ownership
+// tracks the callback currently holding the invocation lock, not whichever
+// goroutine happened to deliver first. One goroutine renders a batch normally,
+// a second renders the batch whose callback detaches the tap: with a sticky
+// first-invoker marker the second goroutine is mistaken for an external setter
+// and waits on the mutex its own invocation holds.
+func TestSampleTap_SelfDetachAfterEarlierInvokerGoroutine(t *testing.T) {
+	withBlockGraph(true, func() {
+		chip := newTestSoundChip()
+		configureBlockReadChip(chip)
+
+		var calls atomic.Int64
+		var detach atomic.Bool
+		chip.SetSampleTap(func(float32) {
+			calls.Add(1)
+			if detach.Load() && detach.CompareAndSwap(true, false) {
+				chip.ClearSampleTapFromCallback()
+			}
+		})
+
+		// ReadSamples is single-consumer, so the two renders are sequential; only
+		// the goroutine identity differs between them.
+		render := func() {
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				out := make([]float32, 256)
+				chip.ReadSamples(out)
+				chip.flushPendingAudioBlock()
+			}()
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Error("render blocked: tap ownership did not follow the current invoker")
+			}
+		}
+
+		render()
+		if calls.Load() == 0 {
+			t.Fatal("first render delivered no samples")
+		}
+		first := calls.Load()
+
+		detach.Store(true)
+		render()
+		if t.Failed() {
+			return
+		}
+
+		afterDetach := calls.Load()
+		render()
+		if got := calls.Load(); got != afterDetach {
+			t.Fatalf("tap invoked %d times after detaching itself", got-afterDetach)
+		}
+		if afterDetach <= first {
+			t.Fatalf("second render delivered no samples: first=%d after=%d", first, afterDetach)
+		}
+	})
+}
+
+// TestSampleTap_DeliveryDoesNotInspectRuntimeStack pins the cost model of tap
+// delivery. Resolving a goroutine identity costs microseconds, so any lifecycle
+// scheme that needs one per invocation belongs nowhere near the sample path.
+// This measures delivery against a budget far above a mutex pair and far below a
+// stack capture.
+func TestSampleTap_DeliveryDoesNotInspectRuntimeStack(t *testing.T) {
+	if raceDetectorEnabled {
+		t.Skip("race instrumentation inflates lock and callback costs past any useful budget")
+	}
+	withBlockGraph(false, func() {
+		chip := newTestSoundChip()
+		configureBlockReadChip(chip)
+
+		var calls atomic.Int64
+		chip.SetSampleTap(func(float32) { calls.Add(1) })
+		defer chip.ClearSampleTap()
+
+		const samples = 20000
+		holder, _ := chip.sampleTap.Load().(*sampleTapHolder)
+		start := time.Now()
+		for range samples {
+			chip.invokeTap(holder, 0)
+		}
+		perSample := time.Since(start) / samples
+
+		if calls.Load() != samples {
+			t.Fatalf("delivered %d callbacks, want %d", calls.Load(), samples)
+		}
+		// A goroutine identity lookup measured about 3.5 microseconds on the
+		// development machine. 500 nanoseconds is comfortably clear of an
+		// uncontended mutex pair plus the callback, and an order of magnitude
+		// under the cheapest plausible stack capture.
+		if perSample > 500*time.Nanosecond {
+			t.Fatalf("tap delivery costs %v per sample, budget 500ns", perSample)
+		}
+	})
+}
+
+// TestSampleTap_OverlappingReplacementsWaitForRunningCallback pins the lifecycle
+// guarantee across holder generations. Tap A is held inside its callback, one
+// setter publishes B and blocks retiring A, and a second setter then publishes C
+// and retires an idle B. With retirement scoped to the holder a setter happened
+// to load, that second setter returns while A is still running; the guarantee is
+// that no setter returns until the callback in flight has finished, whichever
+// generation installed it.
+func TestSampleTap_OverlappingReplacementsWaitForRunningCallback(t *testing.T) {
+	withBlockGraph(true, func() {
+		chip := newTestSoundChip()
+		configureBlockReadChip(chip)
+
+		var aRunning atomic.Bool
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		tapA := func(float32) {
+			if aRunning.CompareAndSwap(false, true) {
+				close(entered)
+				<-release
+				aRunning.Store(false)
+			}
+		}
+		chip.SetSampleTap(tapA)
+		holderA, _ := chip.sampleTap.Load().(*sampleTapHolder)
+
+		rendered := make(chan struct{})
+		go func() {
+			defer close(rendered)
+			out := make([]float32, 256)
+			chip.ReadSamples(out)
+			chip.flushPendingAudioBlock()
+		}()
+		<-entered
+
+		// First replacement: publishes B, then blocks retiring A.
+		firstDone := make(chan struct{})
+		var firstSawRunning atomic.Bool
+		go func() {
+			defer close(firstDone)
+			chip.SetSampleTap(func(float32) {})
+			firstSawRunning.Store(aRunning.Load())
+		}()
+
+		// Wait until B is the published holder, so the second setter loads B and
+		// not A: that is the sequence a per-holder wait gets wrong.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			holder, _ := chip.sampleTap.Load().(*sampleTapHolder)
+			if holder != holderA {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("replacement never published")
+			}
+			time.Sleep(time.Millisecond)
+		}
+
+		secondDone := make(chan struct{})
+		var secondSawRunning atomic.Bool
+		go func() {
+			defer close(secondDone)
+			chip.ClearSampleTap()
+			secondSawRunning.Store(aRunning.Load())
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-secondDone:
+			t.Fatal("ClearSampleTap returned while an earlier tap was still running")
+		default:
+		}
+
+		close(release)
+		<-firstDone
+		<-secondDone
+		<-rendered
+
+		if firstSawRunning.Load() {
+			t.Fatal("SetSampleTap returned with the replaced tap still running")
+		}
+		if secondSawRunning.Load() {
+			t.Fatal("ClearSampleTap returned with an earlier tap still running")
+		}
+	})
 }

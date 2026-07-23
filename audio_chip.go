@@ -984,8 +984,60 @@ type sampleMixerListHolder struct {
 	mixers []SampleMixer
 }
 
+// sampleTapHolder owns one tap callback and its retirement state.
+//
+// The mutex that guards invocation lives on the chip, not here, because the
+// guarantee is lifecycle-wide rather than per holder: after a blocking setter
+// returns, no callback of any tap installed before it may still be running. A
+// per-holder mutex only covered the holder that setter happened to load, so
+// overlapping replacements could hand a later setter an idle holder to retire
+// while an earlier tap was still executing. One chip-wide invocation mutex makes
+// every setter wait for whatever callback is running, whichever generation
+// installed it.
+//
+// retired is per holder, because that half is per generation: it shuts the gate
+// on exactly the tap being replaced.
 type sampleTapHolder struct {
-	tap func(float32)
+	tap     func(float32)
+	retired atomic.Bool
+}
+
+// invokeTap runs one callback with the chip-wide invocation mutex held, so a
+// setter that waits for that mutex has waited the callback out.
+func (chip *SoundChip) invokeTap(holder *sampleTapHolder, sample float32) {
+	chip.tapInvokeMu.Lock()
+	defer chip.tapInvokeMu.Unlock()
+	if holder.retired.Load() {
+		return
+	}
+	holder.tap(sample)
+}
+
+// retireTap closes a holder to further callbacks and, unless wait is false,
+// waits for any callback in flight to return, whichever holder owns it.
+//
+// The wait is unbounded on purpose. A timeout would let the setter return while
+// the old callback was still running, which is the guarantee callers such as
+// recorder shutdown depend on, so there is nothing to trade it against.
+//
+// Identifying a reentrant caller and skipping the wait automatically is
+// deliberately not attempted. The only portable way to do it is to record the
+// invoking goroutine, and resolving a goroutine identity costs about 3.5
+// microseconds on this machine, measured, an order of magnitude more than
+// generating the sample it would be charged against. Reentrancy is handled by
+// the caller choosing the right entry point instead: a callback that retires its
+// own tap must use the FromCallback setters, which pass wait as false. Calling a
+// blocking setter from inside a callback is waiting on the caller's own
+// invocation and blocks for good.
+func (chip *SoundChip) retireTap(holder *sampleTapHolder, wait bool) {
+	if holder != nil {
+		holder.retired.Store(true)
+	}
+	if !wait {
+		return
+	}
+	chip.tapInvokeMu.Lock()
+	chip.tapInvokeMu.Unlock() //nolint:staticcheck // waiting out an in-flight callback, not guarding a section
 }
 
 var audioBlockSegmentMax = perfTuningAudioChunk()
@@ -1040,6 +1092,7 @@ type SoundChip struct {
 	sampleMixer   atomic.Value
 	sampleMixers  map[string]SampleMixer
 	sampleTap     atomic.Value // Optional tap callback fed with each generated sample
+	tapInvokeMu   sync.Mutex   // Held across every tap callback, whichever holder owns it
 	audioBlock    atomic.Pointer[audioBlockState]
 	audioBlockBuf audioBlockState
 	mixerCapture  []float32
@@ -3567,16 +3620,32 @@ func (chip *SoundChip) flushAudioBlockState(state *audioBlockState) {
 	}
 	state.mu.Unlock()
 
-	for _, sample := range tapped {
-		holder.tap(sample)
-	}
+	// Deliver through tapSampleBatch so the holder is reloaded per sample, as the
+	// per-sample path did. The holder read above only decides whether the copy is
+	// worth making; a tap cleared or replaced between that read and here must not
+	// keep receiving callbacks, because ClearSampleTap flushes pending samples
+	// first and callers such as recorder shutdown rely on the old tap going quiet
+	// once the setter returns.
+	chip.tapSampleBatch(tapped)
 }
 
 func (chip *SoundChip) tapSample(sample float32) {
-	if holder, ok := chip.sampleTap.Load().(*sampleTapHolder); ok {
-		if holder.tap != nil {
-			holder.tap(sample)
+	holder, ok := chip.sampleTap.Load().(*sampleTapHolder)
+	if !ok || holder.tap == nil {
+		return
+	}
+	chip.invokeTap(holder, sample)
+}
+
+// tapSampleBatch delivers a run of samples, reloading the holder per sample so a
+// tap replaced part way through the run stops receiving callbacks at once.
+func (chip *SoundChip) tapSampleBatch(samples []float32) {
+	for _, sample := range samples {
+		holder, ok := chip.sampleTap.Load().(*sampleTapHolder)
+		if !ok || holder.tap == nil {
+			return
 		}
+		chip.invokeTap(holder, sample)
 	}
 }
 
@@ -3710,14 +3779,43 @@ func (chip *SoundChip) rebuildSampleTickerCacheLocked() {
 	chip.sampleTicker.Store(&sampleTickerListHolder{tickers: tickers})
 }
 
+// SetSampleTap installs a tap and retires the one it replaces. It must not be
+// called from inside a tap callback; use SetSampleTapFromCallback there.
 func (chip *SoundChip) SetSampleTap(tap func(float32)) {
 	chip.flushPendingAudioBlock()
-	chip.sampleTap.Store(&sampleTapHolder{tap: tap})
+	chip.replaceSampleTap(&sampleTapHolder{tap: tap}, true)
 }
 
+// ClearSampleTap removes the tap. On return no callback is running and none can
+// start. It must not be called from inside a tap callback; use
+// ClearSampleTapFromCallback there.
 func (chip *SoundChip) ClearSampleTap() {
 	chip.flushPendingAudioBlock()
-	chip.sampleTap.Store(&sampleTapHolder{})
+	chip.replaceSampleTap(&sampleTapHolder{}, true)
+}
+
+// SetSampleTapFromCallback is SetSampleTap for a tap replacing itself from
+// inside its own callback. It shuts the gate on the old tap immediately, as the
+// blocking form does, but does not wait for the callback in flight, which is the
+// caller.
+func (chip *SoundChip) SetSampleTapFromCallback(tap func(float32)) {
+	chip.replaceSampleTap(&sampleTapHolder{tap: tap}, false)
+}
+
+// ClearSampleTapFromCallback is ClearSampleTap for a tap detaching itself from
+// inside its own callback. See SetSampleTapFromCallback.
+func (chip *SoundChip) ClearSampleTapFromCallback() {
+	chip.replaceSampleTap(&sampleTapHolder{}, false)
+}
+
+// replaceSampleTap publishes a new holder and then retires the old one, in that
+// order: an invoker that loads after the store gets the new tap, and one that
+// loaded before it is waited out by retire. On return no callback on the
+// replaced tap can start, and unless wait is false none is still running.
+func (chip *SoundChip) replaceSampleTap(holder *sampleTapHolder, wait bool) {
+	old, _ := chip.sampleTap.Load().(*sampleTapHolder)
+	chip.sampleTap.Store(holder)
+	chip.retireTap(old, wait)
 }
 
 func (chip *SoundChip) SetPSGPlusEnabled(enabled bool) {
