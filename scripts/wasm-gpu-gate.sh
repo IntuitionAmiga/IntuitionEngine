@@ -13,7 +13,18 @@
 
 set -euo pipefail
 
-RUN="${1:-TestGPUConvert}"
+# Ebitengine permits one RunGame per process and invalidates image creation
+# after it returns, so each gate needs its own wasm instance. The script
+# launches the browser once per test rather than handing it a regexp that would
+# match several and leave all but the first failing.
+DEFAULT_GATES="TestGPUConvertReadback_MatchesCPU_CLUT8 \
+TestGPUConvertLivePath_MatchesCPU_CLUT8 \
+TestGPUConvertFailure_FallsBackToCPUExpansion"
+if [ "$#" -gt 0 ]; then
+	GATES=("$@")
+else
+	read -r -a GATES <<< "$DEFAULT_GATES"
+fi
 PORT="${IE_WASM_GATE_PORT:-8731}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
@@ -52,7 +63,6 @@ go.env = { IE_GPU_BENCH: params.get('bench') || '' };
 go.exit = code => {
   append("EXIT:" + code);
   document.title = "done-" + code;
-  fetch('/result?code=' + code + '&data=' + encodeURIComponent(out.textContent.slice(-4000)));
 };
 WebAssembly.instantiateStreaming(fetch('test.wasm'), go.importObject).then(r => {
   globalThis.__goMem = r.instance.exports.mem;
@@ -61,22 +71,32 @@ WebAssembly.instantiateStreaming(fetch('test.wasm'), go.importObject).then(r => 
 </script>
 HTML
 
-(cd "$WORK" && python3 -m http.server "$PORT" > "$WORK/server.log" 2>&1 &)
+# Background the server itself, not a subshell containing it: $! must be the
+# server's own PID or the exit trap leaves it bound to the port and the next
+# run talks to a stale server serving a deleted work directory.
+python3 -m http.server "$PORT" --directory "$WORK" > "$WORK/server.log" 2>&1 &
 SERVER_PID=$!
 sleep 1
 
-echo "Running $RUN under $CHROME on WebGL..."
-timeout 300 "$CHROME" --headless=new --enable-gpu --use-angle=gl --no-sandbox \
-	--disable-frame-rate-limit "http://localhost:$PORT/?run=$RUN" >/dev/null 2>&1 || true
-
-RESULT="$(grep -o 'result?code=[^ ]*' "$WORK/server.log" | tail -1 || true)"
-if [ -z "$RESULT" ]; then
-	echo "wasm-gpu-gate: the page never reported a result" >&2
-	exit 1
-fi
-python3 - "$RESULT" <<'PY'
-import sys, urllib.parse
-q = urllib.parse.parse_qs(sys.argv[1].split('?', 1)[1])
-print(urllib.parse.unquote(q.get('data', [''])[0]))
-sys.exit(int(q.get('code', ['1'])[0]))
-PY
+STATUS=0
+for GATE in "${GATES[@]}"; do
+	echo "Running $GATE under $CHROME on WebGL..."
+	# --virtual-time-budget makes the browser exit once the page is idle, which
+	# it otherwise never does headlessly, and --dump-dom gives us the page text
+	# without a round trip through the server log. Virtual time distorts wall
+	# clock measurements, so this drives correctness gates only.
+	OUT="$(timeout 300 "$CHROME" --headless=new --enable-gpu --use-angle=gl --no-sandbox \
+		--virtual-time-budget=60000 --dump-dom "http://localhost:$PORT/?run=$GATE" 2>/dev/null || true)"
+	# Match only a digit-bearing marker: the page's own script text contains
+	# the literal string EXIT: and would otherwise be picked up as a result.
+	RESULT="$(printf '%s' "$OUT" | grep -o 'EXIT:[0-9][0-9]*' | tail -1)"
+	printf '%s\n' "$OUT" | grep -E '^(=== RUN|--- |PASS$|FAIL|ok |gpu gate)' || true
+	if [ -z "$RESULT" ]; then
+		echo "wasm-gpu-gate: $GATE never reported a result" >&2
+		STATUS=1
+	elif [ "$RESULT" != "EXIT:0" ]; then
+		echo "wasm-gpu-gate: $GATE failed ($RESULT)" >&2
+		STATUS=1
+	fi
+done
+exit "$STATUS"

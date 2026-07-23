@@ -26,6 +26,9 @@ import (
 	"github.com/hajimehoshi/ebiten/v2"
 )
 
+// gpuGateRan records that this process has already used its one RunGame.
+var gpuGateRan bool
+
 func runGPUGate(t *testing.T, name string) {
 	t.Helper()
 	runGPUGateOutput(t, name)
@@ -39,6 +42,16 @@ func runGPUGateOutput(t *testing.T, name string) string {
 	if !ok {
 		t.Fatalf("no gate body registered under %q", name)
 	}
+	// Ebitengine permits one RunGame per process and invalidates image
+	// creation once it returns, so a second gate in the same wasm instance
+	// would not exercise WebGL at all. scripts/wasm-gpu-gate.sh launches one
+	// instance per gate; anything else is a harness mistake, and saying so is
+	// better than reporting a pass that tested nothing.
+	if gpuGateRan {
+		t.Fatalf("gate %q is the second in this wasm process; Ebitengine allows one RunGame per process, "+
+			"so run one gate per instance as scripts/wasm-gpu-gate.sh does", name)
+	}
+	gpuGateRan = true
 	game := &gpuGateGame{body: body}
 	if err := ebiten.RunGame(game); err != nil && err != ebiten.Termination {
 		t.Skipf("could not start a graphics backend: %v", err)
