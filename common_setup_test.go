@@ -31,6 +31,11 @@ var (
 )
 
 func TestMain(m *testing.M) {
+	// A GPU gate re-executes this binary and needs Ebiten to own the main
+	// thread, which only TestMain runs on. runGPUGateIfRequested exits the
+	// process when it takes the request, and is a no-op everywhere else.
+	runGPUGateIfRequested()
+
 	var err error
 
 	// Initialize sound

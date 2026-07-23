@@ -93,17 +93,26 @@ func TestGPUConversionFallback_HeadlessSelectsCPUPath(t *testing.T) {
 	}
 }
 
-func TestVideoGPUConvertSwitchIsOptIn(t *testing.T) {
+func TestVideoGPUConvertDefaultsOnWithKillSwitch(t *testing.T) {
 	t.Setenv("IE_VIDEO_GPU_CONVERT", "")
-	if videoGPUConvertRequested() {
-		t.Fatal("GPU conversion requested with the switch unset")
-	}
-	t.Setenv("IE_VIDEO_GPU_CONVERT", "0")
-	if videoGPUConvertRequested() {
-		t.Fatal("GPU conversion requested with the switch off")
+	if !videoGPUConvertRequested() {
+		t.Fatal("GPU conversion not wanted by default")
 	}
 	t.Setenv("IE_VIDEO_GPU_CONVERT", "1")
 	if !videoGPUConvertRequested() {
-		t.Fatal("GPU conversion not requested with the switch on")
+		t.Fatal("GPU conversion not wanted with the switch explicitly on")
+	}
+	t.Setenv("IE_VIDEO_GPU_CONVERT", "0")
+	if videoGPUConvertRequested() {
+		t.Fatal("the kill switch did not force CPU conversion")
+	}
+	// The kill switch has to win over an available backend, and a missing
+	// backend has to win over the default.
+	if got := selectGPUConversion(videoGPUConvertRequested(), true); got != gpuConvertCPU {
+		t.Fatalf("selection with the kill switch set = %v, want cpu", got)
+	}
+	t.Setenv("IE_VIDEO_GPU_CONVERT", "")
+	if got := selectGPUConversion(videoGPUConvertRequested(), false); got != gpuConvertCPU {
+		t.Fatalf("selection without a shader-capable backend = %v, want cpu", got)
 	}
 }

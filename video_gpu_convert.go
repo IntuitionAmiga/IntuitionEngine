@@ -9,18 +9,19 @@ License: GPLv3 or later
 /*
 Compatibility formats reach the compositor as RGBA32 because the video chip
 converts them on the CPU. GPU conversion moves that work into a fragment shader:
-the indexed frame is uploaded as a single-channel texture, the palette as a
-256x1 texture, and the shader does the lookup while it draws.
+the indexed frame and its palette are uploaded as texture data and the shader
+does the lookup while it draws.
 
 This file holds the parts of that scheme that are independent of any GPU: the
 palette texture layout, the index arithmetic the shader performs, and the
-selection policy. The CPU converter stays the canonical oracle, so the pure-Go
-mirror here is what the differential tests compare against; a real GPU render
-and readback is a separate gate, and until it exists the shader path stays
-opt-in.
+selection policy. The CPU converter stays the canonical oracle. The pure-Go
+mirror here is a cheap headless check of the index arithmetic; the binding gate
+is the render and readback differential in video_gpu_convert_gate.go, which is
+what a default flip would rest on.
 
 Selection: GPU conversion needs the Ebiten backend, which rules out headless
-builds. IE_VIDEO_GPU_CONVERT=1 opts in on the builds that can run it. See
+builds. It is on by default where a shader-capable backend exists, and
+IE_VIDEO_GPU_CONVERT=0 forces the CPU path everywhere. See
 sdk/docs/architecture.md, "Build Profiles and Observable Runtime".
 */
 
@@ -36,10 +37,12 @@ import (
 // reads it with a single fetch at (index+0.5)/256.
 const gpuPaletteTextureWidth = 256
 
-// videoGPUConvertRequested reports whether GPU conversion has been asked for.
-// It is a request, not the decision: gpuConversionAvailable settles that.
+// videoGPUConvertRequested reports whether GPU conversion is wanted. It is the
+// default; IE_VIDEO_GPU_CONVERT=0 forces CPU conversion everywhere. It is a
+// request, not the decision: selectGPUConversion settles that, and a build with
+// no shader-capable backend converts on the CPU whatever this says.
 func videoGPUConvertRequested() bool {
-	return os.Getenv("IE_VIDEO_GPU_CONVERT") == "1"
+	return os.Getenv("IE_VIDEO_GPU_CONVERT") != "0"
 }
 
 // gpuConvertSelection is the resolved conversion path for a build.
@@ -115,22 +118,3 @@ func convertCLUT8SpanViaShaderMirror(dst, src []byte, paletteTexture []byte) {
 		copy(dst[i*BYTES_PER_PIXEL:(i+1)*BYTES_PER_PIXEL], paletteTexture[texel:texel+BYTES_PER_PIXEL])
 	}
 }
-
-// clut8KageShaderSource is the Kage fragment shader for CLUT8 conversion.
-// Image 0 is the indexed frame, one index per texel in the red channel; image 1
-// is the 256x1 palette texture built by buildCLUT8PaletteTexture. The index is
-// recovered by scaling the red channel back to 0..255 and rounding, which is
-// exact for the 8-bit texture formats Ebiten uploads.
-//
-// The shader is compiled by the Ebiten backend only. It has no effect until the
-// render-and-readback differential gate in the tranche plan is in place, so it
-// is currently reachable only with IE_VIDEO_GPU_CONVERT=1.
-const clut8KageShaderSource = `//kage:unit pixels
-package main
-
-func Fragment(dst vec4, src vec2, color vec4) vec4 {
-	index := floor(imageSrc0At(src).r*255.0 + 0.5)
-	u := (index + 0.5) / 256.0
-	return imageSrc1At(imageSrc1Origin() + vec2(u*imageSrc1Size().x, 0.5))
-}
-`

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -229,7 +230,22 @@ func TestEbitenOutput_SetDisplayConfig_ClearsHardwareFrame(t *testing.T) {
 	}
 }
 
+// These three checks draw through the real backend and read the pixels back,
+// which Ebiten only permits from the main OS thread inside a running game. They
+// therefore run as registered gate bodies in a re-executed copy of this binary;
+// see video_gpu_convert_gate.go. Before that they panicked with "ReadPixels
+// cannot be called before the game starts".
+func init() {
+	gpuGateBodies["hw_non16x9"] = gateHardwareNon16x9FillsStretchRect
+	gpuGateBodies["hw_noninteger"] = gateHardwareNonIntegerScaleMatchesSoftwareFloor
+	gpuGateBodies["hw_partialalpha"] = gateHardwarePartialAlphaLayerReplacesLowerLayer
+}
+
 func TestEbitenOutput_HardwareCompositor_Non16x9FillsStretchRect(t *testing.T) {
+	runGPUGate(t, "hw_non16x9")
+}
+
+func gateHardwareNon16x9FillsStretchRect() error {
 	const (
 		srcW = 320
 		srcH = 200
@@ -249,12 +265,12 @@ func TestEbitenOutput_HardwareCompositor_Non16x9FillsStretchRect(t *testing.T) {
 
 	out, err := NewEbitenOutput()
 	if err != nil {
-		t.Fatalf("NewEbitenOutput returned error: %v", err)
+		return fmt.Errorf("NewEbitenOutput: %w", err)
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: dstW, Height: dstH, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
-		t.Fatalf("SetDisplayConfig returned error: %v", err)
+		return fmt.Errorf("SetDisplayConfig: %w", err)
 	}
 	update := CompositorFrameUpdate{
 		FrameID:            1,
@@ -271,7 +287,7 @@ func TestEbitenOutput_HardwareCompositor_Non16x9FillsStretchRect(t *testing.T) {
 		}},
 	}
 	if err := eo.UpdateHardwareCompositorFrame(update); err != nil {
-		t.Fatalf("UpdateHardwareCompositorFrame returned error: %v", err)
+		return fmt.Errorf("UpdateHardwareCompositorFrame: %w", err)
 	}
 	screen := ebiten.NewImage(dstW, dstH)
 	eo.Draw(screen)
@@ -286,15 +302,20 @@ func TestEbitenOutput_HardwareCompositor_Non16x9FillsStretchRect(t *testing.T) {
 	} {
 		i := (p[1]*dstW + p[0]) * BYTES_PER_PIXEL
 		if got[i+3] != 0xFF {
-			t.Fatalf("pixel (%d,%d) was not filled by hardware stretch: rgba=%v", p[0], p[1], got[i:i+BYTES_PER_PIXEL])
+			return fmt.Errorf("pixel (%d,%d) was not filled by hardware stretch: rgba=%v", p[0], p[1], got[i:i+BYTES_PER_PIXEL])
 		}
 		if got[i] == 0 && got[i+1] == 0 && got[i+2] == 0 {
-			t.Fatalf("pixel (%d,%d) was black after hardware stretch: rgba=%v", p[0], p[1], got[i:i+BYTES_PER_PIXEL])
+			return fmt.Errorf("pixel (%d,%d) was black after hardware stretch: rgba=%v", p[0], p[1], got[i:i+BYTES_PER_PIXEL])
 		}
 	}
+	return nil
 }
 
 func TestEbitenOutput_HardwareCompositor_NonIntegerScaleMatchesSoftwareFloor(t *testing.T) {
+	runGPUGate(t, "hw_noninteger")
+}
+
+func gateHardwareNonIntegerScaleMatchesSoftwareFloor() error {
 	const (
 		srcW = 3
 		srcH = 1
@@ -308,12 +329,12 @@ func TestEbitenOutput_HardwareCompositor_NonIntegerScaleMatchesSoftwareFloor(t *
 	}
 	out, err := NewEbitenOutput()
 	if err != nil {
-		t.Fatalf("NewEbitenOutput returned error: %v", err)
+		return fmt.Errorf("NewEbitenOutput: %w", err)
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: dstW, Height: dstH, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
-		t.Fatalf("SetDisplayConfig returned error: %v", err)
+		return fmt.Errorf("SetDisplayConfig: %w", err)
 	}
 	update := CompositorFrameUpdate{
 		FrameID:            9,
@@ -330,7 +351,7 @@ func TestEbitenOutput_HardwareCompositor_NonIntegerScaleMatchesSoftwareFloor(t *
 		}},
 	}
 	if err := eo.UpdateHardwareCompositorFrame(update); err != nil {
-		t.Fatalf("UpdateHardwareCompositorFrame returned error: %v", err)
+		return fmt.Errorf("UpdateHardwareCompositorFrame: %w", err)
 	}
 	screen := ebiten.NewImage(dstW, dstH)
 	eo.Draw(screen)
@@ -341,20 +362,25 @@ func TestEbitenOutput_HardwareCompositor_NonIntegerScaleMatchesSoftwareFloor(t *
 	for x, want := range wantR {
 		i := x * BYTES_PER_PIXEL
 		if got[i] != want || got[i+3] != 0xFF {
-			t.Fatalf("pixel %d = rgba %v, want red=%d alpha=255; floor mapping should be [10 10 20 20 30]", x, got[i:i+BYTES_PER_PIXEL], want)
+			return fmt.Errorf("pixel %d = rgba %v, want red=%d alpha=255; floor mapping should be [10 10 20 20 30]", x, got[i:i+BYTES_PER_PIXEL], want)
 		}
 	}
+	return nil
 }
 
 func TestEbitenOutput_HardwareCompositor_PartialAlphaLayerReplacesLowerLayer(t *testing.T) {
+	runGPUGate(t, "hw_partialalpha")
+}
+
+func gateHardwarePartialAlphaLayerReplacesLowerLayer() error {
 	out, err := NewEbitenOutput()
 	if err != nil {
-		t.Fatalf("NewEbitenOutput returned error: %v", err)
+		return fmt.Errorf("NewEbitenOutput: %w", err)
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: 2, Height: 1, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
-		t.Fatalf("SetDisplayConfig returned error: %v", err)
+		return fmt.Errorf("SetDisplayConfig: %w", err)
 	}
 
 	lower := []byte{
@@ -390,7 +416,7 @@ func TestEbitenOutput_HardwareCompositor_PartialAlphaLayerReplacesLowerLayer(t *
 		},
 	}
 	if err := eo.UpdateHardwareCompositorFrame(update); err != nil {
-		t.Fatalf("UpdateHardwareCompositorFrame returned error: %v", err)
+		return fmt.Errorf("UpdateHardwareCompositorFrame: %w", err)
 	}
 	screen := ebiten.NewImage(2, 1)
 	eo.Draw(screen)
@@ -398,11 +424,12 @@ func TestEbitenOutput_HardwareCompositor_PartialAlphaLayerReplacesLowerLayer(t *
 	screen.ReadPixels(got)
 
 	if want := upper[:BYTES_PER_PIXEL]; !sameBytes(got[:BYTES_PER_PIXEL], want) {
-		t.Fatalf("partial-alpha top pixel = %v, want exact copy %v", got[:BYTES_PER_PIXEL], want)
+		return fmt.Errorf("partial-alpha top pixel = %v, want exact copy %v", got[:BYTES_PER_PIXEL], want)
 	}
 	if want := lower[BYTES_PER_PIXEL:]; !sameBytes(got[BYTES_PER_PIXEL:], want) {
-		t.Fatalf("transparent top pixel = %v, want lower layer %v", got[BYTES_PER_PIXEL:], want)
+		return fmt.Errorf("transparent top pixel = %v, want lower layer %v", got[BYTES_PER_PIXEL:], want)
 	}
+	return nil
 }
 
 func sameBytes(a, b []byte) bool {
