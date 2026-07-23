@@ -76,6 +76,7 @@
 | IEScript | binding | `audio.ted_stop` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `audio.use_showreel_normalizer_preset` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `audio.write_reg` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `audio.write_regs` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `bit32.arshift` | `script_engine.go` `registerBit32` binding |
 | IEScript | binding | `bit32.band` | `script_engine.go` `registerBit32` binding |
 | IEScript | binding | `bit32.bnot` | `script_engine.go` `registerBit32` binding |
@@ -321,6 +322,7 @@
 | IEScript | binding | `sys.time_ms` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `sys.wait_frames` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `sys.wait_ms` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `sys.wait_until` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `sys.write_file` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `term.clear` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `term.echo` | `script_engine.go` `registerModules` binding |

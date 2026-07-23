@@ -1654,11 +1654,12 @@ State *not* auto-released: breakpoints, watchpoints, monitor macros, trace watch
 
 Compact reference for IEScript API functions.
 
-### sys (19)
+### sys (20)
 
 | Function | Returns |
 |----------|---------|
 | `sys.wait_frames(n)` | - |
+| `sys.wait_until(predicate [, max_frames])` | boolean |
 | `sys.wait_ms(ms)` | - |
 | `sys.print(...)` | - |
 | `sys.log(...)` | - |
@@ -1733,7 +1734,7 @@ Compact reference for IEScript API functions.
 
 `keys` is a global table of Atari ST make-code constants for use with `term.scancode()` and `term.key_press()`. It contains `ESCAPE`, `BACKSPACE`, `TAB`, `ENTER`, `SPACE`, `LSHIFT`, `RSHIFT`, `LCTRL`, `CAPSLOCK`, `F1` through `F10`, `UP`, `DOWN`, `LEFT`, `RIGHT`, `A` through `Z`, `DIGIT_0` through `DIGIT_9`, `MINUS`, and `EQUAL`.
 
-### audio (44)
+### audio (45)
 
 | Function | Returns |
 |----------|---------|
@@ -1743,6 +1744,7 @@ Compact reference for IEScript API functions.
 | `audio.freeze()` | - |
 | `audio.resume()` | - |
 | `audio.write_reg(addr, value)` | - |
+| `audio.write_regs(list)` | - |
 | `audio.set_master_gain_db(db)` | - |
 | `audio.get_master_gain_db()` | number |
 | `audio.set_master_auto_level_enabled(on)` | - |
