@@ -31,10 +31,29 @@ import (
 	"sort"
 )
 
-// monitorEpochHistoryRequested reports whether epoch-driven reverse history is
-// switched on. It is opt-in until the parity gate is met.
-func monitorEpochHistoryRequested() bool {
-	return os.Getenv("IE_MON_EPOCH_HISTORY") == "1"
+// epochHistoryKilled reports whether the epoch-driven reverse history is held
+// off by its kill switch. Epoch capture is otherwise enabled automatically the
+// first time whole-machine reverse history is recorded, so a session that never
+// reverse-debugs pays none of the page-dirty write-path cost;
+// IE_MON_EPOCH_HISTORY=0 forces the legacy full-scan path instead.
+func epochHistoryKilled() bool {
+	return os.Getenv("IE_MON_EPOCH_HISTORY") == "0"
+}
+
+// ensureEpochHistoryLocked turns epoch capture on the first time whole-machine
+// reverse history is recorded, unless the kill switch or a per-monitor opt-out
+// holds it off. The first whole-machine capture is always a full checkpoint, so
+// enabling here loses no page: the cursor is rebaselined at that capture and
+// later deltas measure only what changed from it.
+func (m *MachineMonitor) ensureEpochHistoryLocked() {
+	if m.epochHistory || m.disableEpochHistory || epochHistoryKilled() {
+		return
+	}
+	m.enableEpochHistoryLocked()
+	if m.busEpochCursor.Active() {
+		m.epochHistory = true
+		m.epochForceFull = true
+	}
 }
 
 // enableEpochHistoryLocked binds a page-dirty cursor to the bus so deltas can be

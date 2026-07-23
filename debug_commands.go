@@ -1234,6 +1234,11 @@ func (m *MachineMonitor) cmdStep(cmd MonitorCommand) bool {
 }
 
 func (m *MachineMonitor) recordWholeMachineHistory() uint64 {
+	// Reverse history is being recorded, so switch epoch capture on now if it is
+	// not already: the cost of page-dirty tracking is only paid once a session
+	// actually reverse-debugs, and the first capture below is a full checkpoint
+	// regardless.
+	m.ensureEpochHistoryLocked()
 	if m.epochHistory && m.busEpochCursor.Active() {
 		if id, ok := m.recordWholeMachineHistoryEpochLocked(); ok {
 			return id

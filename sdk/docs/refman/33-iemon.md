@@ -328,9 +328,11 @@ CPU-local step snapshot for the focussed CPU only. `rg`, `rt`, `tl`,
 and `history` use the retained whole-machine reverse-history
 timeline, which includes registered CPUs, bus RAM, backed RAM, and
 versioned device snapshots. Each delta normally forms by scanning all
-of guest RAM and diffing it against the previous capture; setting
-`IE_MON_EPOCH_HISTORY=1` instead drives deltas from a bus page-dirty
-cursor that copies only written pages, with identical reconstruction.
+of guest RAM and diffing it against the previous capture. The monitor
+arms a bus page-dirty cursor automatically the first time reverse
+history is recorded, driving later deltas from only the written pages
+with identical reconstruction; `IE_MON_EPOCH_HISTORY=0` forces the
+legacy full-scan path.
 
 | Command   | Argument(s)         | Effect                                        |
 |-----------|---------------------|-----------------------------------------------|

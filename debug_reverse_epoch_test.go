@@ -20,6 +20,10 @@ func TestReverseHistory_UsesPageEpochs_StateMatchesLegacy(t *testing.T) {
 		if epoch {
 			mon.epochHistory = true
 			mon.enableEpochHistoryLocked()
+		} else {
+			// Keep this rig on the legacy full-scan path: without the opt-out the
+			// first recordWholeMachineHistory would auto-arm epoch capture.
+			mon.disableEpochHistory = true
 		}
 		mon.wholeCheckpointInterval = 4 // exercise both deltas and rebaselining checkpoints
 		mon.RegisterCPU("ie64", NewDebugIE64(cpu))
@@ -165,5 +169,54 @@ func TestReverseHistory_EpochResyncsAfterRestore(t *testing.T) {
 	}
 	if !wholeSnapshotsEquivalent(latest, live) {
 		t.Fatal("epoch history diverged from live state after a reverse restore")
+	}
+}
+
+// TestReverseHistory_AutoEnablesOnFirstRecord pins the lazy-arm contract: a
+// monitor built with defaults carries no epoch cursor, and the first
+// whole-machine history record switches it on. Non-reverse sessions never reach
+// this path, so they never arm page-dirty tracking.
+func TestReverseHistory_AutoEnablesOnFirstRecord(t *testing.T) {
+	if epochHistoryKilled() {
+		t.Skip("IE_MON_EPOCH_HISTORY=0 in the environment")
+	}
+	bus, err := NewMachineBusSized(uint64(DEFAULT_MEMORY_SIZE))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpu := NewCPU64(bus)
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("ie64", NewDebugIE64(cpu))
+
+	if mon.epochHistory {
+		t.Fatal("epoch capture armed before any reverse history was recorded")
+	}
+	bus.Write32(0x1000, 0xABCD)
+	mon.recordWholeMachineHistory()
+	if !mon.epochHistory || !mon.busEpochCursor.Active() {
+		t.Fatal("first whole-machine record did not auto-arm epoch capture")
+	}
+}
+
+// TestReverseHistory_KillSwitchForcesLegacy proves IE_MON_EPOCH_HISTORY=0 holds
+// epoch capture off even while reverse history is recorded, keeping the legacy
+// full-scan path.
+func TestReverseHistory_KillSwitchForcesLegacy(t *testing.T) {
+	t.Setenv("IE_MON_EPOCH_HISTORY", "0")
+	bus, err := NewMachineBusSized(uint64(DEFAULT_MEMORY_SIZE))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpu := NewCPU64(bus)
+	mon := NewMachineMonitor(bus)
+	mon.RegisterCPU("ie64", NewDebugIE64(cpu))
+
+	bus.Write32(0x1000, 0xABCD)
+	mon.recordWholeMachineHistory()
+	if mon.epochHistory {
+		t.Fatal("kill switch did not hold epoch capture off")
+	}
+	if len(mon.wholeHistory) != 1 {
+		t.Fatalf("legacy reverse history did not record: len=%d", len(mon.wholeHistory))
 	}
 }
