@@ -38,6 +38,17 @@ import (
 	"sync/atomic"
 )
 
+// cacheLineBytes is the padding stride used to put hot atomics on separate
+// cache lines. It is set to the widest line among supported hosts, not the
+// commonest: amd64 and the arm64 parts this runs on (Cortex-A72/A76 on the
+// Raspberry Pi, Cortex-X1/A78 on the Lenovo x13s) use 64-byte lines, but Apple
+// Silicon uses 128, and a 64-byte stride would leave two atomics sharing one
+// line there, which is the whole failure this padding exists to avoid. Padding
+// to 128 separates them on every supported host and costs a few dozen bytes per
+// ring on the 64-byte parts, which is the correct trade. Under-padding is a
+// correctness-of-optimisation bug; over-padding is not.
+const cacheLineBytes = 128
+
 // audioEventRingCapacity is the queue depth. A full ring is not an error: the
 // producer falls back to the barrier path, which is what it would have done
 // with no ring at all.
@@ -66,24 +77,38 @@ type audioEventSlot struct {
 type audioEventRing struct {
 	slots [audioEventRingCapacity]audioEventSlot
 
-	// head is the next sequence to reserve, claimed by producers. tail is the
-	// next sequence to consume, advanced only while chip.mu is held, and read
-	// by producers to test for fullness.
+	// head and tail sit on separate cache lines on purpose. Producers CAS head
+	// on every publish while the consumer stores tail on every drained event, so
+	// left adjacent the two writes ping the same line between the guest bus
+	// goroutine and the renderer. BenchmarkSharedCounters_Parallel measures that
+	// as roughly a 4.5x penalty on this host (about 18 ns against 4 ns per bump),
+	// and the pad removes it. Producers also load tail to test for fullness, but
+	// a load does not invalidate the line the way the two stores do.
 	head atomic.Uint64
+	_    [cacheLineBytes - 8]byte
+	// tail is the next sequence to consume, advanced only while chip.mu is held,
+	// and read by producers to test for fullness.
 	tail atomic.Uint64
+	_    [cacheLineBytes - 8]byte
 
 	// inFlight counts producers between admission and publication. A barrier
 	// writer waits for it to reach zero, which is what makes "everything
-	// committed before me" a stable set.
+	// committed before me" a stable set. It shares its line with the gate flags,
+	// which are all touched by the same producer and barrier paths.
 	inFlight   atomic.Int64
 	gateClosed atomic.Bool
 	gateSealed atomic.Bool
+	_          [cacheLineBytes - 8 - 1 - 1]byte
 
 	// barrierMu serialises the whole barrier protocol, so one writer's reopen
 	// can never let events cross another writer's still-pending barrier.
 	barrierMu sync.Mutex
 
+	// published is bumped by producers, applied by the consumer; the same
+	// store-against-store adjacency as head and tail, so they take separate
+	// lines too. overflows and barriers are rare and ride with applied.
 	published atomic.Uint64
+	_         [cacheLineBytes - 8]byte
 	applied   atomic.Uint64
 	overflows atomic.Uint64
 	barriers  atomic.Uint64

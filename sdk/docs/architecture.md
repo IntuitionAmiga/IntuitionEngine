@@ -488,7 +488,16 @@ flowchart LR
   MOD, WAV, and MIDI/MUS without changing their public MMIO contracts.
 - **Video scheduling** - `VideoScheduler` centralises ticker ownership for the
   compositor and migrated video render-loop shims. Tests can drive it manually;
-  migrated engine files do not own `time.NewTicker` directly.
+  migrated engine files do not own `time.NewTicker` directly. A measurement pass
+  weighed folding these clocks into one deadline-driven timing service and found
+  nothing to gain: an idle machine wakes exactly once per frame per clock, about
+  120 times a second for the compositor and one active video source, with no
+  surplus polling, and the CPU cores that would spin while a guest is halted
+  already park on a backoff sleep rather than a busy loop. Idle CPU sits at a
+  fraction of a percent of one core, all of it in the Go scheduler's own park
+  path. The `IE_PROFILE=1` harness in `timing_idle_profile_test.go` records those
+  numbers, so a future timing service is a measured decision rather than an
+  assumed one.
 - **Voodoo software wrappers** - headless and `novulkan` builds share
   `softwareVoodooBackend` forwarding. The tagged Voodoo files keep feature
   registration and constructor selection only, so their `VoodooBackend` method
@@ -1450,6 +1459,8 @@ Enabled channels that happen to be silent are still mixed. The channel mixer div
 A guest register write and the renderer both want `chip.mu`, and the renderer holds it while it mixes a whole segment, so a CPU write waits for that mix. `IE_AUDIO_EVENT_RING=1` enables an opt-in queue that removes the wait: the guest bus path publishes the write into a ring and returns, and the renderer applies it at the end of the next flush, which is the same boundary the synchronous path got from flushing before it took the lock. Only the guest bus entry point publishes. Engine writes, setters, register reads, reset and shutdown stay synchronous, because they either run on the renderer itself or need the state they just wrote to be visible at once.
 
 Those synchronous callers are barrier writers. Each one closes admission to the ring, waits for every producer that had already entered to publish or back out, flushes the pending block, drains the ring, and only then applies its own mutation, all under a barrier mutex so concurrent barrier writers are strictly serialised. A queued write can therefore never be applied after a write issued later, and a full ring is not a special case: the producer simply takes the barrier path, which is what it would have done with no ring at all. Reset and shutdown seal the ring, draining everything committed and leaving admission shut.
+
+The ring's head and tail are stored by different goroutines, the guest bus path advancing head on every publish and the renderer advancing tail on every drained event. Left adjacent the two stores would contend for one cache line across the two goroutines. A contention benchmark measures that false sharing at roughly a 4.5 times penalty on the development host, so head and tail take separate cache lines, as do the publish and apply counters that mirror them. The padding changes no observable behaviour; it is layout only, has no kill switch, and a static test pins the separation so a later field reshuffle cannot fold two hot atomics back onto one line. This was the only structure a measurement pass found worth padding: the idle machine's other shared counters are either written by a single goroutine or updated far too rarely to share a line under contention.
 
 The sample tap has its own lifetime rules, because a tap callback is guest-facing code the chip calls with its own state exposed. Each installed tap is held in its own record carrying a retired flag, and one chip-wide mutex is held across every callback, whichever record owns it. `SetSampleTap` and `ClearSampleTap` publish the replacement first and then retire the record they replaced, so an invoker that loaded the old record just before the store waits on that mutex and finds the record retired instead of calling into a tap the caller has already removed. On return no callback on the old tap is running and none can start.
 
