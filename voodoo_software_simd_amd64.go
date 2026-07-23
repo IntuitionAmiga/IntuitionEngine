@@ -149,10 +149,15 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 				writeMask = writeMask.And(archsimd.Mask32x8FromBits(bits))
 			}
 
-			// The scalar reference `v0 + dx*ddx + dy*ddy` is fused by the gc
-			// compiler into nested FMA under GOAMD64 v3 (the make build). Match
-			// that exactly with MulAdd so the SIMD depth and colour are bit-
-			// identical to the shipped scalar reference.
+			// The scalar reference is voodooSlopeAttribs, a single shared body,
+			// where gc fuses only the outer `+ dy*ddy` into an FMA and leaves
+			// `v0 + dx*ddx` as a separate multiply and add. The vector form
+			// mirrors that exactly. Which halves gc fuses depends on the
+			// function the expression sits in, which is why the expression is
+			// shared rather than retyped: an unfused half costs an ulp on
+			// roughly a fifth of inputs, and while the truncating
+			// uint32(ch*255) pack hides that on opaque pixels, alpha blending
+			// feeds the colour back through the blend factors and exposes it.
 			dxv := pxv.Sub(v0Xv)
 			r := dyv.MulAdd(drdyv, v0Rv.Add(dxv.Mul(drdxv)))
 			g := dyv.MulAdd(dgdyv, v0Gv.Add(dxv.Mul(dgdxv)))
@@ -279,6 +284,37 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 
 			if s.forceOpaqueAlpha {
 				a = one
+			}
+
+			// Alpha blending reads each target's own destination pixel and
+			// multiplies through per-target factors, so it is a scalar hybrid
+			// over the vector-computed source colour: the surviving lanes run
+			// the exact scalar blend, including getBlendFactor selection, the
+			// inv255 unpack and the clampf/truncate pack. Everything before
+			// this point is still vectorised, which is where the win is.
+			if s.alphaBlendEnable {
+				var ra, ga, ba, aa [8]float32
+				var zz [8]float32
+				r.Store(&ra)
+				g.Store(&ga)
+				bb.Store(&ba)
+				a.Store(&aa)
+				z.Store(&zz)
+				wmBits := writeMask.ToBits()
+				for l := 0; l < sliceLen; l++ {
+					if wmBits&(1<<uint(l)) == 0 {
+						continue
+					}
+					word := wordBase + l
+					for ti, target := range s.targets {
+						targetsU[ti][word] = blendVoodooPixel(b, s.srcBlendFactor, s.dstBlendFactor,
+							target, word*4, ra[l], ga[l], ba[l], aa[l])
+					}
+					if s.depthEnable && s.depthWrite {
+						b.depthBuffer[word] = zz[l]
+					}
+				}
+				continue
 			}
 
 			packed := packCh(r, 0).Or(packCh(g, 8)).Or(packCh(bb, 16)).Or(packCh(a, 24))

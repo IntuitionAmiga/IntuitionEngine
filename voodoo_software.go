@@ -880,14 +880,14 @@ var voodooRasterizeRowsSIMDFn func(b *VoodooSoftwareBackend, s *voodooTriangleSe
 
 // voodooSetupSIMDEligible reports whether a setup is SIMD-eligible: slope-
 // register affine interpolation and RGB write. Texture, alpha test, chroma key,
-// dither and stipple were each added feature by feature, each behind its own
-// bit-exact differential gate (texture and the quantising stages run as scalar
-// hybrids inside the lane loop). Only alpha blending remains scalar-routed, as it
-// reads the destination and multiplies through per-target blend factors.
+// dither, stipple and alpha blending were each added feature by feature, each
+// behind its own bit-exact differential gate (texture, the quantising stages and
+// blending run as scalar hybrids inside the lane loop). Blending reads each
+// target's own destination pixel and multiplies through per-target factors, so
+// only its arithmetic stays scalar; the interpolation ahead of it, which is the
+// bulk of the work, is vectorised like any other setup.
 func voodooSetupSIMDEligible(s *voodooTriangleSetup) bool {
-	return s.slopesValid &&
-		s.rgbWrite &&
-		!s.alphaBlendEnable
+	return s.slopesValid && s.rgbWrite
 }
 
 func (b *VoodooSoftwareBackend) rasterizeRows(s *voodooTriangleSetup, minY, maxY int) {
@@ -1022,23 +1022,8 @@ func (b *VoodooSoftwareBackend) rasterizeRows(s *voodooTriangleSetup, minY, maxY
 					a = 1.0
 				}
 				if s.alphaBlendEnable {
-					srcR, srcG, srcB, srcA := r, g, bVal, a
-					const inv255 = float32(1.0 / 255.0)
 					for _, target := range s.targets {
-						dstR := float32(target[bufIdx+0]) * inv255
-						dstG := float32(target[bufIdx+1]) * inv255
-						dstB := float32(target[bufIdx+2]) * inv255
-						dstA := float32(target[bufIdx+3]) * inv255
-
-						srcFactor := b.getBlendFactor(s.srcBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
-						dstFactor := b.getBlendFactor(s.dstBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
-
-						outR := clampf(srcR*srcFactor+dstR*dstFactor, 0, 1)
-						outG := clampf(srcG*srcFactor+dstG*dstFactor, 0, 1)
-						outB := clampf(srcB*srcFactor+dstB*dstFactor, 0, 1)
-						outA := clampf(srcA*srcFactor+dstA*dstFactor, 0, 1)
-
-						packed := uint32(outR*255) | uint32(outG*255)<<8 | uint32(outB*255)<<16 | uint32(outA*255)<<24
+						packed := blendVoodooPixel(b, s.srcBlendFactor, s.dstBlendFactor, target, bufIdx, r, g, bVal, a)
 						*(*uint32)(unsafe.Pointer(&target[bufIdx])) = packed
 					}
 				} else {
@@ -1226,7 +1211,40 @@ func (b *VoodooSoftwareBackend) applyDither(value, threshold float32) float32 {
 const inv3 = float32(1.0 / 3.0)
 
 // getBlendFactor calculates the blend factor value based on Voodoo blend mode
+// blendVoodooPixel applies the alpha blend for one pixel of one target and
+// returns the packed result. Both the scalar rasteriser and the SIMD kernel's
+// blend stage call it, which is what makes them bit-identical: the expression
+// `src*srcFactor + dst*dstFactor` is fused into an FMA by gc, and the fusion
+// gc chooses depends on the function the expression sits in, so two copies of
+// the same source text drift by an ulp. One body compiled once cannot. It is
+// marked noinline for the same reason, since inlining would recreate the two
+// separate contexts at the call sites.
+func blendVoodooPixel(b *VoodooSoftwareBackend, srcBlendFactor, dstBlendFactor int, target []byte, bufIdx int, srcR, srcG, srcB, srcA float32) uint32 {
+	const inv255 = float32(1.0 / 255.0)
+	dstR := float32(target[bufIdx+0]) * inv255
+	dstG := float32(target[bufIdx+1]) * inv255
+	dstB := float32(target[bufIdx+2]) * inv255
+	dstA := float32(target[bufIdx+3]) * inv255
+
+	srcFactor := b.getBlendFactor(srcBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
+	dstFactor := b.getBlendFactor(dstBlendFactor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
+
+	outR := clampf(srcR*srcFactor+dstR*dstFactor, 0, 1)
+	outG := clampf(srcG*srcFactor+dstG*dstFactor, 0, 1)
+	outB := clampf(srcB*srcFactor+dstB*dstFactor, 0, 1)
+	outA := clampf(srcA*srcFactor+dstA*dstFactor, 0, 1)
+
+	return uint32(outR*255) | uint32(outG*255)<<8 | uint32(outB*255)<<16 | uint32(outA*255)<<24
+}
+
+// getBlendFactor is kept as a method for the existing callers and tests; the
+// selection itself never touches backend state, so it lives in a free function
+// the blend body can call without a receiver.
 func (b *VoodooSoftwareBackend) getBlendFactor(factor int, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA float32) float32 {
+	return voodooBlendFactor(factor, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA)
+}
+
+func voodooBlendFactor(factor int, srcR, srcG, srcB, srcA, dstR, dstG, dstB, dstA float32) float32 {
 	switch factor {
 	case VOODOO_BLEND_ZERO:
 		return 0.0

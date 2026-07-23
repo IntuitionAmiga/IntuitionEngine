@@ -71,6 +71,14 @@ func randTexture(r *rand.Rand) (data []byte, w, h int, clampS, clampT bool, fbzC
 
 // buildEligibleSetup constructs a random SIMD-eligible triangle setup plus the
 // [minY,maxY) band, mirroring rasterizeTriangle's edge/area maths.
+// voodooBlendFactors is every blend factor getBlendFactor implements, including
+// the saturate case and one unmapped value, which must fall through to 1.0.
+var voodooBlendFactors = []int{
+	VOODOO_BLEND_ZERO, VOODOO_BLEND_SRC_ALPHA, VOODOO_BLEND_COLOR,
+	VOODOO_BLEND_DST_ALPHA, VOODOO_BLEND_ONE, VOODOO_BLEND_INV_SRC_A,
+	VOODOO_BLEND_INV_COLOR, VOODOO_BLEND_INV_DST_A, VOODOO_BLEND_SATURATE, 9,
+}
+
 func buildEligibleSetup(r *rand.Rand, w, h int, targets [][]byte) (voodooTriangleSetup, int, int, bool) {
 	v0 := new(VoodooVertex)
 	v1 := new(VoodooVertex)
@@ -138,6 +146,14 @@ func buildEligibleSetup(r *rand.Rand, w, h int, targets [][]byte) (voodooTriangl
 		dadx: sl(), dady: sl(), dzdx: sl(), dzdy: sl(),
 		dsdx: sl(), dsdy: sl(), dtdx: sl(), dtdy: sl(),
 		targets: targets,
+	}
+	// Alpha blending is eligible too: the blend arithmetic is a scalar hybrid
+	// over the vector-computed colour, so every factor combination must still
+	// reproduce the scalar reference exactly.
+	if r.Intn(2) == 0 {
+		s.alphaBlendEnable = true
+		s.srcBlendFactor = voodooBlendFactors[r.Intn(len(voodooBlendFactors))]
+		s.dstBlendFactor = voodooBlendFactors[r.Intn(len(voodooBlendFactors))]
 	}
 	if r.Intn(2) == 0 {
 		s.texActive = true
@@ -317,10 +333,16 @@ func TestVoodooSIMDPathQualification(t *testing.T) {
 	if !voodooSetupSIMDEligible(&base) {
 		t.Fatal("baseline eligible setup rejected")
 	}
+	// Alpha blending is eligible: its arithmetic is a scalar hybrid inside the
+	// lane loop, so the interpolation ahead of it still vectorises.
+	blended := base
+	blended.alphaBlendEnable = true
+	if !voodooSetupSIMDEligible(&blended) {
+		t.Fatal("blended setup rejected; blending runs as a hybrid, not a scalar route")
+	}
 	for name, mut := range map[string]func(s *voodooTriangleSetup){
-		"alphaBlendEnable": func(s *voodooTriangleSetup) { s.alphaBlendEnable = true },
-		"noSlopes":         func(s *voodooTriangleSetup) { s.slopesValid = false },
-		"noRGBWrite":       func(s *voodooTriangleSetup) { s.rgbWrite = false },
+		"noSlopes":   func(s *voodooTriangleSetup) { s.slopesValid = false },
+		"noRGBWrite": func(s *voodooTriangleSetup) { s.rgbWrite = false },
 	} {
 		s := base
 		mut(&s)

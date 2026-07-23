@@ -389,3 +389,82 @@ func BenchmarkVoodooRasterTextured(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkVoodooRasterBlendShare measures what alpha blending costs in the
+// software rasteriser. Blended setups are the last class routed away from the
+// SIMD row kernel, so the three cases here bound what vectorising blend could
+// win: opaque under SIMD, opaque with the SIMD kernel unwired (the scalar
+// oracle, i.e. the speedup vectorisation currently buys), and blended, which is
+// scalar whatever the build.
+func BenchmarkVoodooRasterBlendShare(b *testing.B) {
+	const w, h = 640, 480
+	blendMode := uint32(VOODOO_ALPHA_BLEND_EN |
+		(VOODOO_BLEND_SRC_ALPHA << 8) | (VOODOO_BLEND_INV_SRC_A << 12))
+
+	scenes := []struct {
+		name  string
+		count int
+		size  float32
+	}{
+		{"small", 512, 48},
+		{"large", 16, 0}, // 0 means full-frame spread
+	}
+	for _, scene := range scenes {
+		be := &VoodooSoftwareBackend{}
+		if err := be.Init(w, h); err != nil {
+			b.Fatalf("Init: %v", err)
+		}
+		// Slope registers are what make a setup SIMD-eligible, so bind them:
+		// without them every case here would take the barycentric scalar path
+		// and the SIMD comparison would measure nothing.
+		be.SetSlopes(VoodooSlopes{
+			DRDX: 0x00000100, DGDX: 0x00000080, DBDX: 0x00000040,
+			DADX: 0x00000020, DZDX: 0x00000010,
+			DRDY: 0x00000080, DGDY: 0x00000040, DBDY: 0x00000020,
+			DADY: 0x00000010, DZDY: 0x00000008,
+		}, true)
+		r := rand.New(rand.NewSource(1))
+		tris := make([]VoodooTriangle, 0, scene.count)
+		for range scene.count {
+			var tri VoodooTriangle
+			x := r.Float32() * float32(w)
+			y := r.Float32() * float32(h)
+			for v := range tri.Vertices {
+				vx, vy := r.Float32()*float32(w), r.Float32()*float32(h)
+				if scene.size != 0 {
+					vx, vy = x+r.Float32()*scene.size, y+r.Float32()*scene.size
+				}
+				tri.Vertices[v] = VoodooVertex{
+					X: vx, Y: vy, Z: r.Float32(),
+					R: r.Float32(), G: r.Float32(), B: r.Float32(), A: 0.5,
+				}
+			}
+			tris = append(tris, tri)
+		}
+
+		cases := []struct {
+			name      string
+			alphaMode uint32
+			noSIMD    bool
+		}{
+			{"opaque", 0, false},
+			{"opaque_scalar", 0, true},
+			{"blended", blendMode, false},
+		}
+		for _, c := range cases {
+			b.Run(scene.name+"/"+c.name, func(b *testing.B) {
+				if err := be.UpdatePipelineState(VOODOO_FBZ_RGB_WRITE, c.alphaMode); err != nil {
+					b.Fatalf("UpdatePipelineState: %v", err)
+				}
+				saved := voodooRasterizeRowsSIMDFn
+				if c.noSIMD {
+					voodooRasterizeRowsSIMDFn = nil
+				}
+				defer func() { voodooRasterizeRowsSIMDFn = saved }()
+				for range b.N {
+					be.FlushTriangles(tris)
+				}
+			})
+		}
+	}
+}
