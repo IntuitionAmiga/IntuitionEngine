@@ -195,6 +195,16 @@ type MachineMonitor struct {
 	wholeCheckpointBytes    uint64
 	maxWholeCheckpoints     int
 
+	// epochHistory drives reverse-history deltas from the bus page-dirty cursor
+	// instead of a full RAM scan per step. Opt-in with IE_MON_EPOCH_HISTORY=1.
+	epochHistory   bool
+	busEpochCursor *pageDirtyCursor
+	// epochForceFull makes the next epoch capture a full checkpoint. It is set
+	// after a reverse restore, which rewrites bus and backing memory directly
+	// without publishing those writes to the cursor, so a cursor-driven delta
+	// would omit the changed pages.
+	epochForceFull bool
+
 	// Hex editor (Feature 12)
 	hexEditAddr   uint64
 	hexEditCursor int
@@ -250,6 +260,10 @@ func NewMachineMonitor(bus *MachineBus) *MachineMonitor {
 	}
 	if bus != nil {
 		bus.SetDebugAccessService(monitor.access)
+	}
+	monitor.epochHistory = monitorEpochHistoryRequested()
+	if monitor.epochHistory {
+		monitor.enableEpochHistoryLocked()
 	}
 	monitor.access.SetSequenceSource(monitor.nextTimelineSeq)
 	monitor.loadPersistentHistory()

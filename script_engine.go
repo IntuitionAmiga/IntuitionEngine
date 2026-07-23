@@ -73,6 +73,16 @@ type ScriptEngine struct {
 
 	faultCallbacks       map[string]*lua.LFunction
 	faultListenerRemoves []func()
+
+	// compileCache holds parsed script protos keyed by source text, so a script
+	// run more than once (validate then run, or a re-run of the same automation)
+	// is parsed once rather than on every pass. Protos are state independent, so
+	// one cached proto seeds every fresh Lua state. Opt-in with
+	// IE_SCRIPT_COMPILE_CACHE=1.
+	compileCacheOn bool
+	compileMu      sync.Mutex
+	compileCache   map[string]*lua.FunctionProto
+	compileCount   atomic.Int64
 }
 
 type coprocTicketBuf struct {
@@ -89,6 +99,10 @@ func NewScriptEngine(bus *MachineBus, compositor *VideoCompositor, terminal *Ter
 		faultChan:     make(chan BreakpointEvent, 64),
 		recorder:      NewVideoRecorder(compositor),
 		coprocTickets: make(map[uint32]coprocTicketBuf),
+	}
+	if os.Getenv("IE_SCRIPT_COMPILE_CACHE") == "1" {
+		se.compileCacheOn = true
+		se.compileCache = make(map[string]*lua.FunctionProto)
 	}
 	if compositor != nil {
 		compositor.SetFrameCallback(se.onFrameComplete)
@@ -245,9 +259,16 @@ func (se *ScriptEngine) Cancel() {
 }
 
 func (se *ScriptEngine) validateScript(script string, name string) error {
-	L := se.newSandboxedState(context.Background(), name)
-	defer L.Close()
-	if _, err := L.LoadString(script); err != nil {
+	var err error
+	if se.compileCacheOn {
+		// Parsing does not need a Lua state; the proto is cached for the run.
+		_, _, err = se.compileScript(script, name)
+	} else {
+		L := se.newSandboxedState(context.Background(), name)
+		defer L.Close()
+		_, err = L.LoadString(script)
+	}
+	if err != nil {
 		if name != "" {
 			return fmt.Errorf("script parse failed (%s): %w", name, err)
 		}
@@ -286,9 +307,20 @@ func (se *ScriptEngine) run(ctx context.Context, done chan struct{}, script stri
 	se.registerModules(L, ctx)
 	se.registerBit32(L)
 
-	if err := L.DoString(script); err != nil {
+	var runErr error
+	if se.compileCacheOn {
+		proto, _, compileErr := se.compileScript(script, scriptName)
+		if compileErr != nil {
+			runErr = compileErr
+		} else {
+			runErr = runCompiledScript(L, proto)
+		}
+	} else {
+		runErr = L.DoString(script)
+	}
+	if runErr != nil {
 		se.mu.Lock()
-		se.lastError = err
+		se.lastError = runErr
 		se.mu.Unlock()
 	}
 }
@@ -783,6 +815,7 @@ func (se *ScriptEngine) onFrameComplete() {
 func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 	sys := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
 		"wait_frames":        se.luaSysWaitFrames(ctx),
+		"wait_until":         se.luaSysWaitUntil(ctx),
 		"wait_ms":            se.luaSysWaitMS(ctx),
 		"print":              se.luaSysPrint(),
 		"log":                se.luaSysLog(),
@@ -859,6 +892,7 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"freeze":                         se.luaAudioFreeze(),
 		"resume":                         se.luaAudioResume(),
 		"write_reg":                      se.luaAudioWriteReg(),
+		"write_regs":                     se.luaAudioWriteRegs(),
 		"set_master_gain_db":             se.luaAudioSetMasterGainDB(),
 		"get_master_gain_db":             se.luaAudioGetMasterGainDB(),
 		"set_master_auto_level_enabled":  se.luaAudioSetMasterAutoLevelEnabled(),
@@ -1177,6 +1211,46 @@ func (se *ScriptEngine) luaSysWaitFrames(ctx context.Context) lua.LGFunction {
 		se.lastYieldNS.Store(time.Now().UnixNano())
 		se.pumpFaultCallbacks(L)
 		return 0
+	}
+}
+
+// luaSysWaitUntil blocks until a predicate returns true, checking it once per
+// frame rather than making the script busy-poll with its own wait_frames loop.
+// It returns true when the predicate held, or false if the optional frame
+// budget ran out first. The predicate is evaluated once before the first wait,
+// so a condition already met returns immediately.
+func (se *ScriptEngine) luaSysWaitUntil(ctx context.Context) lua.LGFunction {
+	return func(L *lua.LState) int {
+		pred := L.CheckFunction(1)
+		maxFrames := -1 // no budget: wait indefinitely
+		if L.GetTop() >= 2 && L.Get(2) != lua.LNil {
+			maxFrames = L.CheckInt(2)
+		}
+		check := func() bool {
+			L.Push(pred)
+			L.Call(0, 1)
+			ret := L.Get(-1)
+			L.Pop(1)
+			return lua.LVAsBool(ret)
+		}
+		for frame := 0; maxFrames < 0 || frame <= maxFrames; frame++ {
+			if check() {
+				se.lastYieldNS.Store(time.Now().UnixNano())
+				se.pumpFaultCallbacks(L)
+				L.Push(lua.LTrue)
+				return 1
+			}
+			select {
+			case <-ctx.Done():
+				L.RaiseError("script cancelled")
+				return 0
+			case <-se.frameChan:
+			}
+		}
+		se.lastYieldNS.Store(time.Now().UnixNano())
+		se.pumpFaultCallbacks(L)
+		L.Push(lua.LFalse)
+		return 1
 	}
 }
 
@@ -2611,6 +2685,28 @@ func (se *ScriptEngine) luaAudioWriteReg() lua.LGFunction {
 		addr := uint32(L.CheckInt64(1))
 		val := uint32(L.CheckInt64(2))
 		se.bus.Write32(addr, val)
+		return 0
+	}
+}
+
+// luaAudioWriteRegs applies a whole list of register writes in one Go/Lua
+// crossing. The argument is an array of {addr, value} pairs; the effect is
+// identical to calling write_reg on each pair in order, but a tight register
+// sequence pays one protected transition instead of one per write.
+func (se *ScriptEngine) luaAudioWriteRegs() lua.LGFunction {
+	return func(L *lua.LState) int {
+		list := L.CheckTable(1)
+		n := list.Len()
+		for i := 1; i <= n; i++ {
+			pair, ok := list.RawGetInt(i).(*lua.LTable)
+			if !ok || pair.Len() < 2 {
+				L.ArgError(1, "each entry must be an {addr, value} pair")
+				return 0
+			}
+			addr := uint32(lua.LVAsNumber(pair.RawGetInt(1)))
+			val := uint32(lua.LVAsNumber(pair.RawGetInt(2)))
+			se.bus.Write32(addr, val)
+		}
 		return 0
 	}
 }

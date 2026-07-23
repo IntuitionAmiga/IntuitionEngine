@@ -1234,6 +1234,11 @@ func (m *MachineMonitor) cmdStep(cmd MonitorCommand) bool {
 }
 
 func (m *MachineMonitor) recordWholeMachineHistory() uint64 {
+	if m.epochHistory && m.busEpochCursor.Active() {
+		if id, ok := m.recordWholeMachineHistoryEpochLocked(); ok {
+			return id
+		}
+	}
 	snap, err := m.takeWholeMachineSnapshotLocked()
 	if err != nil {
 		m.appendOutput(fmt.Sprintf("Whole-machine snapshot skipped: %s", err), colorRed)
@@ -1241,6 +1246,7 @@ func (m *MachineMonitor) recordWholeMachineHistory() uint64 {
 	}
 	if len(m.wholeHistory) > 0 {
 		if prev, err := m.materializeWholeMachineSnapshotLocked(m.wholeHistory[len(m.wholeHistory)-1]); err == nil && wholeSnapshotsEquivalent(prev, snap) {
+			m.rebaselineEpochCursor()
 			return prev.ID
 		}
 	}
@@ -1251,15 +1257,7 @@ func (m *MachineMonitor) recordWholeMachineHistory() uint64 {
 	if len(m.wholeHistory) > 0 {
 		prev, err := m.materializeWholeMachineSnapshotLocked(m.wholeHistory[len(m.wholeHistory)-1])
 		if err == nil {
-			interval := m.wholeCheckpointInterval
-			if interval <= 0 {
-				interval = 32
-			}
-			bytesLimit := m.wholeCheckpointBytes
-			if bytesLimit == 0 {
-				bytesLimit = 64 << 20
-			}
-			if m.wholeDeltaCount < interval && m.wholeDeltaBytes < bytesLimit {
+			if !m.wholeCheckpointDue() {
 				snap = makeWholeMachineDelta(snap, prev)
 				m.wholeDeltaCount++
 				m.wholeDeltaBytes += snap.DeltaBytes
@@ -1271,7 +1269,31 @@ func (m *MachineMonitor) recordWholeMachineHistory() uint64 {
 	}
 	m.wholeHistory = append(m.wholeHistory, snap)
 	m.pruneWholeHistoryLocked()
+	// A full scan through the legacy path takes the whole address space, so
+	// rebaseline the cursor to this point: subsequent epoch deltas then carry
+	// only what changes from here.
+	m.rebaselineEpochCursor()
 	return snap.ID
+}
+
+// rebaselineEpochCursor drains the page-dirty cursor so the next epoch delta is
+// measured from the current capture point. It is a no-op outside epoch mode.
+func (m *MachineMonitor) rebaselineEpochCursor() {
+	if m.epochHistory && m.busEpochCursor.Active() {
+		m.busEpochCursor.Collect(func(uint64) {})
+	}
+	m.epochForceFull = false
+}
+
+// resyncEpochHistoryAfterRestore marks the next epoch capture as a full
+// checkpoint. A reverse restore rewrites bus and backing memory directly,
+// bypassing the write path that publishes to the dirty cursor, so a cursor
+// delta taken next would miss exactly those pages. It is a no-op outside epoch
+// mode.
+func (m *MachineMonitor) resyncEpochHistoryAfterRestore() {
+	if m.epochHistory {
+		m.epochForceFull = true
+	}
 }
 
 func (m *MachineMonitor) pruneWholeHistoryLocked() {

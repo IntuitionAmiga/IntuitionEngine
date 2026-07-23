@@ -327,7 +327,10 @@ The monitor keeps two kinds of history. `bs` and `rs` use a
 CPU-local step snapshot for the focussed CPU only. `rg`, `rt`, `tl`,
 and `history` use the retained whole-machine reverse-history
 timeline, which includes registered CPUs, bus RAM, backed RAM, and
-versioned device snapshots.
+versioned device snapshots. Each delta normally forms by scanning all
+of guest RAM and diffing it against the previous capture; setting
+`IE_MON_EPOCH_HISTORY=1` instead drives deltas from a bus page-dirty
+cursor that copies only written pages, with identical reconstruction.
 
 | Command   | Argument(s)         | Effect                                        |
 |-----------|---------------------|-----------------------------------------------|

@@ -65,6 +65,7 @@ Strings may use single or double quotes.
 | Function | Purpose |
 |----------|---------|
 | `sys.wait_frames(n)` | Yield until `n` video frames have passed. |
+| `sys.wait_until(fn, max)` | Yield until `fn()` is truthy, checked once per frame; `max` frames optional. Returns whether it held. |
 | `sys.wait_ms(ms)` | Yield until `ms` milliseconds have passed. |
 | `sys.print(text)` | Print text to the terminal. |
 | `sys.log(text)` | Write a diagnostic line. |
@@ -184,6 +185,7 @@ mask without changing the current raw MMIO selectors.
 | `audio.start()`, `audio.stop()`, `audio.reset()` | Control audio output. |
 | `audio.freeze()`, `audio.resume()` | Pause and resume audio processing. |
 | `audio.write_reg(addr, value)` | Write an audio MMIO register. |
+| `audio.write_regs(pairs)` | Apply a list of `{addr, value}` writes in one Go/Lua crossing; same effect as sequential `write_reg`. |
 | `audio.set_master_gain_db(v)` | Set master gain in dB. |
 | `audio.get_master_gain_db()` | Read master gain in dB. |
 | `audio.set_master_auto_level_enabled(on)` | Enable automatic master levelling. |

@@ -234,6 +234,8 @@ Timing, diagnostics, lifecycle.
 
 `sys.wait_ms(ms)` - Block for `ms` milliseconds (wall-clock timer). Returns: nothing.
 
+`sys.wait_until(predicate, max_frames)` - Block until `predicate()` returns a truthy value, checking it once before the first wait and then once per compositor frame, instead of a scripted `wait_frames` poll loop. `max_frames` is optional; omit it or pass `nil` to wait indefinitely. Returns: boolean, true if the predicate held, false if the frame budget ran out first.
+
 `sys.print(...)` - Print all arguments to host stdout, space-separated, with trailing newline. Returns: nothing.
 
 `sys.log(...)` - Log all arguments to host stdout (mirrors `sys.print` currently). Returns: nothing.
@@ -494,6 +496,8 @@ Sound chip and player controls.
 `audio.resume()` - Resume audio generation after a freeze. Returns: nothing.
 
 `audio.write_reg(addr, value)` - Write a 32-bit `value` to sound chip register at bus address `addr`. This is an MMIO write (no freeze required). Returns: nothing.
+
+`audio.write_regs(pairs)` - Apply a list of register writes in one Go/Lua crossing. `pairs` is an array of `{addr, value}` tables, applied in order; the effect is identical to calling `audio.write_reg` on each pair, but a tight register sequence pays one protected transition instead of one per write. Returns: nothing.
 
 ### Master Mix and Dynamics
 

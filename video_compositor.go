@@ -1138,20 +1138,30 @@ func (c *VideoCompositor) collectScanlineAwareLayers(copyBuffers bool) ([]Compos
 				batch.ProcessScanlineRange(0, maxSourceHeight)
 			})
 		} else {
+			// Bind the interface method once per frame rather than rebinding it
+			// (a heap allocation) on every scanline.
+			proc := entries[0].sa.ProcessScanline
 			for y := 0; y < maxSourceHeight; y++ {
-				safeCallY("ProcessScanline", y, entries[0].sa.ProcessScanline)
+				safeCallY("ProcessScanline", y, proc)
 			}
 		}
 	} else {
+		// Bind each source's ProcessScanline once per frame; the y loop below
+		// runs maxSourceHeight times over every entry, so rebinding the method
+		// value per scanline would allocate on each iteration.
+		procs := make([]func(int), len(entries))
+		for i := range entries {
+			procs[i] = entries[i].sa.ProcessScanline
+		}
 		// Lower layer sources process first to update state, then higher layers
 		// render using the updated palette. This interleaving is guest-visible.
 		for y := 0; y < maxSourceHeight; y++ {
-			for _, e := range entries {
+			for i, e := range entries {
 				sourceY := y
 				if e.height > 0 && sourceY >= e.height {
 					sourceY = e.height - 1
 				}
-				safeCallY("ProcessScanline", sourceY, e.sa.ProcessScanline)
+				safeCallY("ProcessScanline", sourceY, procs[i])
 			}
 		}
 	}

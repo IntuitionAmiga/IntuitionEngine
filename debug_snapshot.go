@@ -630,6 +630,9 @@ func (m *MachineMonitor) restoreWholeMachineSnapshotLocked(snap *WholeMachineSna
 			return fmt.Errorf("restore device %s: %w", blob.Name, err)
 		}
 	}
+	// The bus and backing writes above bypassed the dirty-cursor publish path,
+	// so a cursor-driven epoch delta taken next would omit them.
+	m.resyncEpochHistoryAfterRestore()
 	return nil
 }
 
