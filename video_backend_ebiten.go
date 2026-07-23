@@ -128,6 +128,7 @@ package main
 var SrcSize vec2
 var RectSize vec2
 var DestOrigin vec2
+var Opaque float
 
 func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 	localX := floor(dstPos.x - DestOrigin.x)
@@ -137,6 +138,13 @@ func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 	srcX = clamp(srcX, 0, SrcSize.x - 1)
 	srcY = clamp(srcY, 0, SrcSize.y - 1)
 	p := imageSrc0At(imageSrc0Origin() + vec2(srcX, srcY))
+	// An opaque layer forces alpha here, exactly as the software kernel ORs
+	// 0xFF000000 into every pixel it copies, so neither path needs the source
+	// frame normalised beforehand. Such a layer never discards: it covers what
+	// it draws over, and a fully zero pixel is opaque black on both paths.
+	if Opaque != 0.0 {
+		return vec4(p.r, p.g, p.b, 1.0)
+	}
 	if p.a == 0 && p.r == 0 && p.g == 0 && p.b == 0 {
 		discard()
 	}
@@ -328,7 +336,9 @@ func (eo *EbitenOutput) UpdateHardwareCompositorFrame(update CompositorFrameUpda
 		if layer.Lease != nil {
 			eo.hwLayers[i].Buffer = layer.Buffer[:want]
 		} else {
-			eo.hwLayers[i].Buffer = stageHardwareCompositorBuffer(oldBuf, layer.Buffer, want)
+			// An opaque layer has its alpha forced in the shader, so staging
+			// only needs the bytes, not a pass to promote them.
+			eo.hwLayers[i].Buffer = stageHardwareCompositorBuffer(oldBuf, layer.Buffer, want, layer.Opaque)
 		}
 	}
 	for i := len(update.Layers); i < len(eo.hwLayers); i++ {
@@ -358,6 +368,15 @@ func expandIndexedLayerToRGBA(layer *ebitenHardwareLayer) []byte {
 	return dst
 }
 
+// opaqueUniform maps the layer's opacity onto the shader uniform, which has no
+// boolean type.
+func opaqueUniform(opaque bool) float32 {
+	if opaque {
+		return 1
+	}
+	return 0
+}
+
 // stageHardwareIndexBuffer copies the layer's indices into backend-owned
 // storage, reusing it across frames.
 func stageHardwareIndexBuffer(dst, src []byte) []byte {
@@ -369,13 +388,16 @@ func stageHardwareIndexBuffer(dst, src []byte) []byte {
 	return dst
 }
 
-func stageHardwareCompositorBuffer(dst, src []byte, want int) []byte {
+func stageHardwareCompositorBuffer(dst, src []byte, want int, opaque bool) []byte {
 	if cap(dst) < want {
 		dst = make([]byte, want)
 	} else {
 		dst = dst[:want]
 	}
 	copy(dst, src[:want])
+	if opaque {
+		return dst
+	}
 	for i := 0; i < want; i += BYTES_PER_PIXEL {
 		if dst[i+3] == 0 && (dst[i] != 0 || dst[i+1] != 0 || dst[i+2] != 0) {
 			dst[i+3] = 0xFF
@@ -1633,6 +1655,7 @@ func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image) {
 					float32(layer.DestX),
 					float32(layer.DestY),
 				},
+				"Opaque": opaqueUniform(layer.Opaque),
 			},
 		}
 		op.Images[0] = src

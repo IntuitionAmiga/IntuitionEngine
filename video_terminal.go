@@ -12,6 +12,12 @@ const (
 	tabWidth            = 8
 	cursorPollWindow    = 200 * time.Millisecond
 	cursorBlinkPeriod   = 500 * time.Millisecond
+	// cursorPollSample is how often the guest's poll counter is observed. It
+	// has to be well inside cursorPollWindow: the counter says that a poll
+	// happened since the last look, not when, so the observation cadence is
+	// the uncertainty in a poll's age. Sampling at the blink period would make
+	// a poll up to 500 ms old count as inside a 200 ms window.
+	cursorPollSample = 50 * time.Millisecond
 )
 
 //go:embed TopazPlus_a1200_v1.0.raw
@@ -130,17 +136,44 @@ func NewVideoTerminal(video *VideoChip, term *TerminalMMIO) *VideoTerminal {
 
 func (vt *VideoTerminal) Start() {
 	go func() {
-		ticker := time.NewTicker(cursorBlinkPeriod)
+		// One ticker at the sampling cadence drives both jobs: the poll
+		// counter is observed every tick, and the cursor blinks on every
+		// cursorBlinkPeriod worth of ticks, so the blink rate is unchanged.
+		ticker := time.NewTicker(cursorPollSample)
 		defer ticker.Stop()
+		perBlink := max(1, int(cursorBlinkPeriod/cursorPollSample))
+		ticks := 0
 		for {
 			select {
 			case <-vt.done:
 				return
 			case <-ticker.C:
-				vt.cursorTick()
+				vt.sampleStatusPolls()
+				ticks++
+				if ticks >= perBlink {
+					ticks = 0
+					vt.cursorTick()
+				}
 			}
 		}
 	}()
+}
+
+// sampleStatusPolls observes the guest's poll counter and stamps the time when
+// it has moved. Called far more often than the cursor blinks, because the stamp
+// is only as accurate as the sampling cadence.
+func (vt *VideoTerminal) sampleStatusPolls() {
+	vt.mu.Lock()
+	defer vt.mu.Unlock()
+	vt.sampleStatusPollsLocked()
+}
+
+func (vt *VideoTerminal) sampleStatusPollsLocked() {
+	polls := vt.term.StatusReadCount()
+	if polls != vt.lastStatusPolls {
+		vt.lastStatusPolls = polls
+		vt.lastStatusPollAt = time.Now()
+	}
 }
 
 func (vt *VideoTerminal) Stop() {
@@ -369,16 +402,11 @@ func (vt *VideoTerminal) cursorTick() {
 
 // shouldShowCursorLocked reports whether the guest has polled the terminal
 // status recently enough to be waiting for input, which is when the cursor
-// blinks. It watches the poll counter for movement and stamps the time itself,
-// so the clock is read here, once per cursor tick, instead of on every one of
-// the guest's polls. The resolution becomes the cursor tick rather than the
-// individual poll, which is far finer than the 200 ms window it feeds.
+// blinks. The poll counter is sampled on the cursorPollSample cadence rather
+// than per poll, so the clock stays out of the guest's hot MMIO path while a
+// poll's age is still known to within a quarter of the window it feeds.
 func (vt *VideoTerminal) shouldShowCursorLocked() bool {
-	polls := vt.term.StatusReadCount()
-	if polls != vt.lastStatusPolls {
-		vt.lastStatusPolls = polls
-		vt.lastStatusPollAt = time.Now()
-	}
+	vt.sampleStatusPollsLocked()
 	if vt.lastStatusPollAt.IsZero() {
 		return false
 	}

@@ -839,6 +839,17 @@ func (c *VideoCompositor) appendCopiedCompositeLayer(layers []CompositorFrameLay
 		}), true
 	}
 
+	// An opaque layer needs no alpha normalisation: every consumer of one
+	// forces alpha itself. The software kernels OR 0xFF000000 into each pixel
+	// they copy (compositorOpaqueCopySpan, used by the whole-frame, scaled and
+	// tiled paths alike), and the hardware path does the same in its shader.
+	// Normalising anyway costs a full pass over every frame, which a browser
+	// profile showed as the largest single function in the wasm build.
+	opaque := false
+	if sourceOpaque, ok := source.(OpaqueFrameSource); ok {
+		opaque = sourceOpaque.IsOpaqueFrame()
+	}
+
 	var buf []byte
 	var lease *VideoFrameLease
 	if videoFrameLeasesEnabled() {
@@ -848,7 +859,9 @@ func (c *VideoCompositor) appendCopiedCompositeLayer(layers []CompositorFrameLay
 				acquired.Release()
 				return layers, false
 			}
-			acquired.NormaliseAlpha()
+			if !opaque {
+				acquired.NormaliseAlpha()
+			}
 			lease = acquired
 			buf = acquired.Pixels()[:bufLen]
 		}
@@ -859,11 +872,9 @@ func (c *VideoCompositor) appendCopiedCompositeLayer(layers []CompositorFrameLay
 		if !ok || len(copied) < bufLen {
 			return layers, false
 		}
-		normaliseFrameLeaseAlphaRGBA(buf)
-	}
-	opaque := false
-	if sourceOpaque, ok := source.(OpaqueFrameSource); ok {
-		opaque = sourceOpaque.IsOpaqueFrame()
+		if !opaque {
+			normaliseFrameLeaseAlphaRGBA(buf)
+		}
 	}
 	var dirtyRects []FrameDirtyRect
 	if dirtySource, ok := source.(DirtyFrameSource); ok {

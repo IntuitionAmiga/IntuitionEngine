@@ -1053,3 +1053,53 @@ func TestSelection_ClearOnPlainArrow(t *testing.T) {
 		t.Fatal("expected selection cleared after plain arrow")
 	}
 }
+
+// TestCursorPollAge_SampledFinerThanWindow pins the property the counter must
+// not lose: a poll's age is only known to within the sampling cadence, so
+// sampling has to be well inside the window it feeds. Sampling at the blink
+// period would let a poll 500 ms old count as inside a 200 ms window.
+func TestCursorPollAge_SampledFinerThanWindow(t *testing.T) {
+	if cursorPollSample >= cursorPollWindow {
+		t.Fatalf("poll sampling every %v cannot enforce a %v window", cursorPollSample, cursorPollWindow)
+	}
+	if cursorPollSample > cursorPollWindow/2 {
+		t.Fatalf("poll sampling every %v leaves more than half the %v window as uncertainty",
+			cursorPollSample, cursorPollWindow)
+	}
+}
+
+// TestCursorPollSampling_StampsOnlyWhenTheCountMoves pins that sampling is
+// cheap in the steady state, and that a poll observed while the guest is quiet
+// keeps its original age rather than being refreshed on every look.
+func TestCursorPollSampling_StampsOnlyWhenTheCountMoves(t *testing.T) {
+	vt, _, term := newVideoTerminalForTest(t)
+
+	_ = term.HandleRead(TERM_STATUS)
+	vt.sampleStatusPolls()
+	vt.mu.Lock()
+	first := vt.lastStatusPollAt
+	vt.mu.Unlock()
+	if first.IsZero() {
+		t.Fatal("a poll was not stamped")
+	}
+
+	// No further polls: the stamp must not move, so the poll ages honestly.
+	time.Sleep(2 * time.Millisecond)
+	vt.sampleStatusPolls()
+	vt.mu.Lock()
+	second := vt.lastStatusPollAt
+	vt.mu.Unlock()
+	if !second.Equal(first) {
+		t.Fatalf("sampling refreshed the stamp with no new poll: %v then %v", first, second)
+	}
+
+	// A new poll moves it.
+	_ = term.HandleRead(TERM_STATUS)
+	vt.sampleStatusPolls()
+	vt.mu.Lock()
+	third := vt.lastStatusPollAt
+	vt.mu.Unlock()
+	if !third.After(second) {
+		t.Fatal("a fresh poll did not update the stamp")
+	}
+}
