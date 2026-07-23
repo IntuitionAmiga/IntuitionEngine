@@ -163,6 +163,10 @@ type MachineBus struct {
 	debugAccess             *DebugAccessService
 	debugAccessActiveMirror atomic.Bool
 
+	// pageDirty is the epoch page tracker, nil unless IE_PAGE_DIRTY is on.
+	// See machine_bus_page_dirty.go.
+	pageDirty atomic.Pointer[pageDirtyTracker]
+
 	// memReset is the platform/allocator-specific reset hook for
 	// bus.memory. nil falls back to a plain byte-loop zero. mmap-allocated
 	// buses install a madvise(MADV_DONTNEED)-based reset so a guest reset
@@ -405,8 +409,18 @@ func (bus *MachineBus) readRAM8(addr uint32) uint8 {
 	return 0
 }
 
+// invalidateM68KJITRAMWrite is the notification every guest RAM write already
+// makes, so page dirty publication rides on it rather than on a second set of
+// hooks that a future write path could forget to call. The dirty publication
+// comes first and is not subject to the 32-bit address ceiling below: that
+// ceiling exists because the M68K JIT only ever executes from the low 4 GiB,
+// while the page tracker covers whatever the backing advertises.
 func (bus *MachineBus) invalidateM68KJITRAMWrite(addr uint64, size uint64) {
-	if bus == nil || size == 0 || addr > uint64(^uint32(0)) {
+	if bus == nil || size == 0 {
+		return
+	}
+	bus.markPagesDirty(addr, size)
+	if addr > uint64(^uint32(0)) {
 		return
 	}
 	if bus.m68kJITInvalidator != nil {
@@ -1032,6 +1046,9 @@ func newMachineBusSizedWithAllocator(memSize uint64, allocator func(size uint64)
 		memReset:     reset,
 	}
 	bus.publishMapSnapshot()
+	if pageDirtyRequested() {
+		bus.EnablePageDirtyTracking(uint64(len(mem)))
+	}
 	return bus, nil
 }
 

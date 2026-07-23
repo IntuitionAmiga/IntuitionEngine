@@ -432,10 +432,14 @@ func (g *GemdosInterceptor) handleFread(sp uint32) bool {
 		}
 		n, err := f.Read(buf[:want])
 		if n > 0 {
-			for i := 0; i < n; i++ {
-				if !g.bus.Write8WithFault(bufAddr+total+uint32(i), buf[i]) {
-					g.setD0(signExtend16to32(GEMDOS_EIMBA))
-					return true
+			if g.spanEligible(bufAddr+total, n) {
+				g.bus.WriteSpan(uint64(bufAddr+total), buf[:n])
+			} else {
+				for i := 0; i < n; i++ {
+					if !g.bus.Write8WithFault(bufAddr+total+uint32(i), buf[i]) {
+						g.setD0(signExtend16to32(GEMDOS_EIMBA))
+						return true
+					}
 				}
 			}
 			total += uint32(n)
@@ -476,13 +480,17 @@ func (g *GemdosInterceptor) handleFwrite(sp uint32) bool {
 		if want > uint32(len(buf)) {
 			want = uint32(len(buf))
 		}
-		for i := uint32(0); i < want; i++ {
-			b, ok := g.bus.Read8WithFault(bufAddr + total + i)
-			if !ok {
-				g.setD0(signExtend16to32(GEMDOS_EIMBA))
-				return true
+		if g.spanEligible(bufAddr+total, int(want)) {
+			g.bus.ReadSpan(uint64(bufAddr+total), buf[:want])
+		} else {
+			for i := uint32(0); i < want; i++ {
+				b, ok := g.bus.Read8WithFault(bufAddr + total + i)
+				if !ok {
+					g.setD0(signExtend16to32(GEMDOS_EIMBA))
+					return true
+				}
+				buf[i] = b
 			}
-			buf[i] = b
 		}
 		n, err := f.Write(buf[:want])
 		if err != nil {
@@ -1336,6 +1344,23 @@ func (g *GemdosInterceptor) caseInsensitiveResolve(relPath string) string {
 
 func (g *GemdosInterceptor) setD0(val uint32) {
 	g.cpu.DataRegs[0] = val
+}
+
+// spanEligible reports whether a transfer can go through the bus span API
+// instead of the per-byte fault-checked helpers.
+//
+// It must be no more permissive than those helpers, or a buffer they would have
+// rejected with GEMDOS_EIMBA starts succeeding instead. That is not hypothetical
+// on a machine with a backing bound: guestRangeValid admits addresses up to the
+// profile memory cap, which reaches past bus.memory, and the span API would
+// serve those out of the backing while Read8WithFault and Write8WithFault
+// refuse them. spanFaultCheckedEligible is the narrowed test that keeps the
+// fast path inside the window those helpers accept.
+func (g *GemdosInterceptor) spanEligible(addr uint32, count int) bool {
+	if g.bus == nil || count <= 0 || !busSpansEnabled() {
+		return false
+	}
+	return g.bus.spanFaultCheckedEligible(uint64(addr), uint64(count))
 }
 
 func (g *GemdosInterceptor) guestRangeValid(addr uint32, count uint32) bool {

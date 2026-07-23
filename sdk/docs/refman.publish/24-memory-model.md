@@ -475,7 +475,36 @@ from BASIC, a 68K `MOVE.L D0, ($F0700).L`, and an x86 data store to
 `$000F0700` reach the same terminal register because all three names
 land inside the common low MMIO window.
 
-## 24.10 What comes next
+## 24.10 How the host watches memory
+
+Nothing in this chapter changes what your programme sees. The
+address space, the widths, the alias and the MMIO windows are the
+contract, and the host is not allowed to alter any of it. Two
+mechanisms are worth knowing about anyway, because they explain why
+the emulator behaves differently under a debugger than without one,
+and why a large transfer is not simply a fast loop.
+
+The first is bulk transfer. When a device stages a whole file, a ROM
+image or a directory listing into guest RAM, the host may move it in
+one block instead of one byte at a time. It only does so when the
+block is indistinguishable from the loop: if any part of the range
+lands on an MMIO register, or crosses the boundary between low RAM
+and the large-address backing, or is being watched by the monitor,
+the whole transfer reverts to byte-at-a-time. So an MMIO register
+inside a transfer still sees every individual write, in order, and a
+watchpoint inside one still fires on every byte.
+
+The second is page change tracking. The host can record which
+`4096`-byte pages of guest RAM have changed since each of its own
+consumers last looked, so the compositor, the snapshot machinery and
+the debugger can each ask independently without one of them
+consuming another's answer. This is invisible from the guest side:
+there is no register to read it from and no way to influence it. It
+matters here only because it explains the granularity you will see
+quoted elsewhere. A single byte written anywhere in a page marks
+that whole page as changed.
+
+## 24.11 What comes next
 
 Chapter 25 begins the per-CPU section with IE64, the native
 processor of the Intuition Engine. It is the easiest CPU to write

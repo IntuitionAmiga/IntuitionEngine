@@ -124,7 +124,15 @@ func m68kCoalesceInvalRanges(ranges [][2]uint32) [][2]uint32 {
 // never MMU-mode blocks (PutMMU) — the latter are not threaded through
 // m68kMarkJITCodeRanges and would escape the envelope. If M68K ever adopts
 func invalidateM68KJITForGuestWrite(bus Bus32, addr uint64, size uint64) {
-	if bus == nil || size == 0 || addr > uint64(^uint32(0)) {
+	if bus == nil || size == 0 {
+		return
+	}
+	// Page dirty publication is not bounded by the JIT's 32-bit ceiling; see
+	// MachineBus.invalidateM68KJITRAMWrite for why the two share a call site.
+	if mb, ok := bus.(*MachineBus); ok {
+		mb.markPagesDirty(addr, size)
+	}
+	if addr > uint64(^uint32(0)) {
 		return
 	}
 	if mb, ok := bus.(*MachineBus); ok && mb.m68kJITInvalidator != nil {

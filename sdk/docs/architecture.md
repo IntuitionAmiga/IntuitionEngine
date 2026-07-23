@@ -1328,6 +1328,10 @@ Universal block audio is enabled by default and can be disabled with `IE_AUDIO_B
 
 Alpha-blended Voodoo triangles are vectorised as far as the blend itself. The interpolation, clamp, alpha test, chroma key, fog and dither stages run in the SIMD kernel as for any other setup, and only the blend arithmetic runs per surviving lane, because it reads each target's own destination pixel and multiplies through per-target factors. That arithmetic lives in one shared function called by both the scalar rasteriser and the kernel, which is what makes the two bit-identical: gc's choice of FMA fusion for `src*srcFactor + dst*dstFactor` depends on the function the expression sits in, so two copies of the same source text drift by an ulp, and blending feeds the colour back through the factors where the truncating pack would otherwise have hidden it.
 
+Bulk bus spans are enabled by default and can be disabled with `IE_BUS_SPANS=0`. Device paths that move whole files, ROM images and directory listings through the bus historically did so one byte at a time, which measured at 139 MB/s against 11 GB/s for the same transfer as a copy, and at 24 MB/s against 12 GB/s on a sparse backing. `MachineBus.ReadSpan` and `WriteSpan` take the bulk path only where it cannot be told apart from the loop it replaces: any span touching MMIO, any span the debug access service is observing, and any span not wholly inside either `bus.memory` or the backing falls back to the per-byte path. The switch changes speed and nothing else, which a differential test pins by running both settings.
+
+Page dirty tracking is opt-in with `IE_PAGE_DIRTY=1`. It answers "which pages of guest RAM changed since I last looked" for several consumers at once without any of them destroying another's view: a global epoch counter plus a per-page generation that only ever increases, with nothing ever cleared. A consumer closes the current epoch before scanning and keeps its own cursor, so a page dirtied during a scan belongs to the epoch that scan opened rather than being lost or counted twice. With tracking off no tables are allocated, the write path pays one pointer test, and consumers receive an inactive cursor, which they are required to read as "assume everything is dirty" rather than as "nothing changed". Section 8 describes the writer and consumer protocols.
+
 SIMD acceleration kernels are enabled by default on amd64 builds and can be disabled with `IE_SIMD=0`. Hot pixel and sample spans (compositor blend and normalise, blitter fill and colour expand, software Voodoo untextured and blended spans, audio post-effects) dispatch through package-level function variables that point at bit-exact SIMD variants when the host provides the AVX2 baseline; every kernel keeps a scalar leaf as its canonical reference, and non-amd64 targets, hosts without the baseline, or `IE_SIMD=0` route the scalar path. The SIMD variants are additive and never alter emulated results.
 
 ### Triple-Buffer Protocol
@@ -1894,6 +1898,90 @@ graph LR
     class EXT,DET,CRE,STOP,RST,LOAD,START flow
 ```
 
+### Bus Access Filtering and Bulk Spans
+
+Every guest access asks two questions before it touches memory: is there MMIO on
+this page, and is the debug access service watching. The first is answered by
+the I/O page bitmap and, once execution starts, by a sealed map snapshot that
+turns an atomic pointer load into a plain field read. Sealing is a lifecycle
+decision rather than a performance knob: a guest reset leaves the seal and the
+map alone, because the devices are still mapped and the map is still valid,
+while a reload unseals first, remaps, and reseals when the next runner starts.
+Remapping a sealed bus is a programming error and panics.
+
+The second question used to be expensive. A single watchpoint anywhere makes the
+debug service active, and every access then took a mutex and scanned the guard
+and watch lists to reach an answer that was almost always no, which measured at
+47 ns against 7 ns for an unwatched non-I/O read. A conservative per-page filter
+now answers the cheap half without the mutex. It is one-sided by construction: a
+clear bit means no guard and no watchpoint covers the page and history is off, so
+the access cannot hit anything; a set bit means only "maybe", and the full scan
+runs exactly as before, so guard scope, CPU identity, access kind and the precise
+address range are all still decided by the original code. The filter is rebuilt
+whole whenever the guard set, the watch set or the history setting changes, and
+it is deliberately not an index of watchpoints. History recording widens it to
+every page, because history observes every access regardless of coverage.
+
+Bulk transfers ask both questions once for a whole span instead of once per byte.
+`ReadSpan` and `WriteSpan` take the bulk path only when nothing could make an
+individual byte observable, and fall back to the per-byte path otherwise. That
+fallback is what keeps the fast path honest rather than a corner to be tidied
+away: watchpoints, access history and MMIO side effects are all preserved by
+refusing the span, not by trying to reproduce them in bulk.
+
+A call site whose per-byte path used the fault-checked accessors carries a
+further obligation, because being byte-for-byte identical is not sufficient
+there: the span must not reach anything those accessors would have refused.
+`Read8WithFault` and `Write8WithFault` only ever touch `bus.memory`, rejecting
+every address at or above its end even when the backing would serve it, and
+they fault on an unmapped address inside a strict MMIO window. Those sites use
+`spanFaultCheckedEligible`, which narrows the general test to that window, so a
+guest buffer that used to be rejected keeps being rejected rather than quietly
+succeeding against backing memory. GEMDOS `Fread` and `Fwrite` are the current
+example.
+
+### Page Dirty Epochs
+
+Page dirty tracking exists because several consumers want the same answer from
+guest RAM and a shared flag cannot give it to them. A flag answers "since
+somebody last looked", so whichever consumer reads it first robs the others.
+
+A global epoch counter and a per-page generation replace it. A writer reads the
+epoch, and if the page generation already equals it there is nothing to do; that
+is the steady state and costs two atomic loads and a compare. Otherwise it
+raises the generation to the epoch with a compare-and-swap that only ever
+increases the value, so a slow writer carrying a stale epoch can never pull a
+page backwards, and then re-reads the epoch. If the epoch moved while it was
+publishing, it goes round again. That retry closes the one race the design
+exists to avoid: a writer that read epoch E, was pre-empted while a consumer
+closed E, and then published E into a page the consumer had already scanned.
+The retry republishes into the open epoch, where the next scan finds it.
+
+A consumer closes the current epoch by advancing the counter from E to E+1,
+scans for pages whose generation lies in (lastSeen, E], and then moves its own
+cursor to E. Writes landing during the scan publish E+1 and surface next time.
+Nothing is ever cleared, so consumers cannot interfere with each other, and each
+holds its own cursor.
+
+Scan cost is bounded by grouping pages into chunks that carry the maximum
+generation beneath them, raised by the same monotonic protocol. A chunk at or
+below the cursor cannot hold anything the consumer has not seen, so the scan
+skips it whole rather than walking every page of a multi-gigabyte machine.
+
+Publication rides on the notification every guest RAM write already makes for
+M68K JIT invalidation, so a new write path cannot forget it without also
+forgetting invalidation. Bulk transfers publish one range rather than touching
+per-page state per byte. Publications for addresses past the tracked span are
+counted rather than ignored, because a tracker sized smaller than the RAM it
+covers would otherwise lose writes in silence.
+
+A consumer that copies a dirty page must do so at a defined quiescent point, not
+merely after the scan reports it: within a closed epoch the page is known to have
+changed, but nothing stops it changing again while the copy runs. Whole-machine
+snapshots use the existing snapshot pause point. Any future per-page consumer
+must name its own point, which is why reverse-history capture is rewired to
+epochs separately rather than as part of the tracking mechanism.
+
 ## 9. Concurrency Model and System Timing
 
 ### Goroutine Inventory
@@ -1948,6 +2036,9 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 |------|------|
 | `registers.go` | Master I/O address map - all region boundaries |
 | `machine_bus.go` | MachineBus: autodetected guest RAM, MapIO, ioPageBitmap, Read/Write, SYSINFO accessors |
+| `machine_bus_span.go` | ReadSpan/WriteSpan bulk transfers and the eligibility rules that send a span back to the per-byte path (`IE_BUS_SPANS`) |
+| `machine_bus_page_dirty.go` | Epoch page dirty tracking: writer publication, consumer cursors, chunk-summary scans (`IE_PAGE_DIRTY`) |
+| `debug_access_pagefilter.go` | Conservative per-page pre-filter over guards and watchpoints, rebuilt whenever either set changes |
 | `memory_sizing.go` | Boot-time guest RAM autodetection: total guest RAM + active visible RAM with platform reserves |
 | `profile_bounds.go` | Source-owned profile bounds for EmuTOS, AROS, IE64 BASIC |
 | `emulator_cpu.go` | EmulatorCPU interface definition |

@@ -65,6 +65,11 @@ type DebugAccessService struct {
 	instrumented   atomic.Bool
 	active         atomic.Bool
 	activeMirror   func(bool)
+
+	// pageFilter is a conservative per-page pre-filter over guards and
+	// watchpoints, republished by setActiveLocked. See
+	// debug_access_pagefilter.go for what it may and may not decide.
+	pageFilter atomic.Pointer[debugPageFilter]
 }
 
 type AccessWatchpoint struct {
@@ -149,7 +154,12 @@ func (s *DebugAccessService) SetActiveMirror(fn func(bool)) {
 	}
 }
 
+// setActiveLocked is the single point every guard, watch and history mutation
+// passes through, so the page filter is rebuilt here rather than in each
+// mutator. Rebuilding before publishing active is deliberate: a reader that
+// sees active true must already be able to see the filter that describes it.
 func (s *DebugAccessService) setActiveLocked(active bool) {
+	s.rebuildPageFilterLocked()
 	s.active.Store(active)
 	if s.activeMirror != nil {
 		s.activeMirror(active)
@@ -305,6 +315,11 @@ func (s *DebugAccessService) OnAccess(cpuID int, addr uint64, width int, kind Ac
 
 func (s *DebugAccessService) onAccess(cpuID int, addr uint64, width int, kind AccessKind, oldVal, newVal uint64, oldKnown bool) {
 	if s == nil || !s.active.Load() {
+		return
+	}
+	if !s.mayAffect(addr, width) {
+		// No guard, no watchpoint and no history covers this page, so the
+		// full scan below could only reach the same conclusion.
 		return
 	}
 	if width <= 0 {
