@@ -956,3 +956,52 @@ func BenchmarkBusRead32_IOPage(b *testing.B) {
 		_ = bus.Read32(addr)
 	}
 }
+
+// TestHasMappedLegacyRange_BitmapPrefilterAgreesWithMap pins that the fast
+// rejection cannot disagree with the map it short-circuits. The blitter asks
+// about every page of every rectangle it copies, so this path is hot and the
+// answer must stay exact.
+func TestHasMappedLegacyRange_BitmapPrefilterAgreesWithMap(t *testing.T) {
+	bus := NewMachineBus()
+	// A device mapped somewhere above the RAM the blitter walks.
+	const devBase = uint32(0xF0000)
+	bus.MapIO(devBase, devBase+0x100, func(uint32) uint32 { return 0 }, func(uint32, uint32) {})
+
+	// mapContains is the exact answer, taken straight from the mapping.
+	mapContains := func(addr uint32, width uint64) bool {
+		snap := bus.currentMapSnapshot()
+		start, end := uint64(addr), uint64(addr)+width
+		for page := addr & PAGE_MASK; ; page += PAGE_SIZE {
+			for _, region := range snap.mapping[page] {
+				if uint64(region.start) < end && uint64(region.end) >= start {
+					return true
+				}
+			}
+			if uint64(page)+PAGE_SIZE >= end {
+				break
+			}
+		}
+		return false
+	}
+
+	cases := []struct {
+		addr  uint32
+		width uint64
+	}{
+		{0, 4},
+		{0x1000, 0x1000},
+		{devBase - 8, 4},
+		{devBase - 8, 16},
+		{devBase, 4},
+		{devBase + 0x80, 8},
+		{devBase + 0x100, 4},
+		{devBase - PAGE_SIZE, PAGE_SIZE * 3},
+		{0x20000, 0x40000},
+	}
+	for _, tc := range cases {
+		want := mapContains(tc.addr, tc.width)
+		if got := bus.hasMappedLegacyRange(tc.addr, tc.width); got != want {
+			t.Fatalf("addr %#x width %d: prefiltered %v, map says %v", tc.addr, tc.width, got, want)
+		}
+	}
+}

@@ -1222,6 +1222,18 @@ func (bus *MachineBus) hasMappedLegacyRange(addr uint32, width uint64) bool {
 	}
 	snap := bus.currentMapSnapshot()
 	for page := addr & PAGE_MASK; ; page += PAGE_SIZE {
+		// The bitmap is set for exactly the pages the mapping records, so a
+		// clear bit rules the page out without hashing it. This matters
+		// because the caller is the blitter, which asks about every page of
+		// every rectangle it copies: a browser profile of the rotozoomer put
+		// the map lookups here at the top of its map-access cost, and the
+		// answer is almost always no.
+		if !ioPageMappedInSnapshot(snap, page>>8) {
+			if uint64(page)+PAGE_SIZE >= end {
+				break
+			}
+			continue
+		}
 		if regions, exists := snap.mapping[page]; exists {
 			for i := len(regions) - 1; i >= 0; i-- {
 				region := regions[i]
