@@ -2,7 +2,11 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/hajimehoshi/ebiten/v2"
+)
 
 func TestRuntimeCPUStatusTokensIESPlacementAndState(t *testing.T) {
 	tokens := runtimeCPUStatusTokens(runtimeStatusSnapshot{})
@@ -110,4 +114,81 @@ func statusTokenNames(tokens []statusToken) []string {
 		names[i] = token.name
 	}
 	return names
+}
+
+// TestStatusBarCacheKey_TracksEverythingDrawn pins the cache key against the
+// things the bar renders. A key that missed a change would leave a stale
+// overlay on screen, which is worse than the cost the cache saves.
+func TestStatusBarCacheKey_TracksEverythingDrawn(t *testing.T) {
+	cpu := []statusToken{{name: "IE64", enabled: true}}
+	video := []statusToken{{name: "IEVID", enabled: false}}
+	audio := []statusToken{{name: "SID", enabled: true}}
+	legend := []statusToken{{name: "F11", enabled: false}}
+
+	base := statusBarCacheKey(640, 44, cpu, video, audio, legend)
+	if same := statusBarCacheKey(640, 44, cpu, video, audio, legend); same != base {
+		t.Fatal("identical content produced a different key, so the bar would redraw every frame")
+	}
+
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"width", statusBarCacheKey(800, 44, cpu, video, audio, legend)},
+		{"height", statusBarCacheKey(640, 22, cpu, video, audio, legend)},
+		{"a token toggling on", statusBarCacheKey(640, 44, cpu,
+			[]statusToken{{name: "IEVID", enabled: true}}, audio, legend)},
+		{"a token renamed", statusBarCacheKey(640, 44,
+			[]statusToken{{name: "IE32", enabled: true}}, video, audio, legend)},
+		{"a token added", statusBarCacheKey(640, 44, cpu, video,
+			append(append([]statusToken(nil), audio...), statusToken{name: "PSG"}), legend)},
+		{"the legend changing", statusBarCacheKey(640, 44, cpu, video, audio,
+			[]statusToken{{name: "F11", enabled: true}})},
+	}
+	for _, tc := range cases {
+		if tc.key == base {
+			t.Fatalf("%s did not change the key, so the cached bar would go stale", tc.name)
+		}
+	}
+}
+
+// TestStatusBar_CachedImageReusedAcrossFrames pins that the bar is rendered
+// once and reused while nothing changes, which is the whole point.
+func TestStatusBar_CachedImageReusedAcrossFrames(t *testing.T) {
+	out, err := NewEbitenOutput()
+	if err != nil {
+		t.Fatalf("NewEbitenOutput: %v", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = true
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: 320, Height: 200, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		t.Fatalf("SetDisplayConfig: %v", err)
+	}
+
+	screen := ebiten.NewImage(320, 200)
+	eo.drawRuntimeStatusBar(screen)
+	first := eo.statusBarImage
+	firstKey := eo.statusBarKey
+	if first == nil {
+		t.Fatal("the status bar was not rendered")
+	}
+	for range 5 {
+		eo.drawRuntimeStatusBar(screen)
+	}
+	if eo.statusBarImage != first {
+		t.Fatal("the status bar image was rebuilt with nothing changed")
+	}
+	if eo.statusBarKey != firstKey {
+		t.Fatalf("the cache key moved with nothing changed: %q then %q", firstKey, eo.statusBarKey)
+	}
+
+	// A geometry change must rebuild it.
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: 640, Height: 400, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		t.Fatalf("SetDisplayConfig: %v", err)
+	}
+	wide := ebiten.NewImage(640, 400)
+	eo.drawRuntimeStatusBar(wide)
+	if eo.statusBarImage == first {
+		t.Fatal("the status bar survived a resize, so it would be drawn at the wrong width")
+	}
 }

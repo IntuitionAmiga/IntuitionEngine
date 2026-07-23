@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"image/color"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -46,6 +47,10 @@ type EbitenOutput struct {
 	// backend that cannot compile or run the shader degrades to the CPU
 	// expansion permanently instead of failing every frame.
 	indexedUnsupported atomic.Bool
+	// statusBarImage caches the rendered overlay, rebuilt only when
+	// statusBarKey changes. Touched from Draw only.
+	statusBarImage     *ebiten.Image
+	statusBarKey       string
 	firstFrameOnce     sync.Once
 	window             *ebiten.Image
 	width              int
@@ -1842,6 +1847,14 @@ func ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable bool, scaleMo
 	)
 }
 
+// drawRuntimeStatusBar draws the overlay from a cached image. Its text changes
+// only when a device switches on or off, but redrawing it meant a text.Draw and
+// a text.BoundString for every token on every frame, each hashing through the
+// glyph and kerning caches. A browser profile of the rotozoomer put that at
+// half the remaining map-lookup cost of the whole machine, for pixels that were
+// identical to the previous frame. The bar is now rendered once into an
+// offscreen image and re-rendered only when its content or the window geometry
+// changes.
 func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 	s := runtimeStatus.snapshot()
 
@@ -1863,23 +1876,6 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 		return
 	}
 	y := eo.height - barHeight
-	drawFilledRect(screen, 0, float64(y), float64(eo.width), float64(barHeight), color.RGBA{0, 0, 0, runtimeStatusBarAlpha})
-
-	drawStatusLine(screen, 6, y+13, "CPU  ", runtimeCPUStatusTokens(s))
-	drawStatusLine(screen, 6, y+26, "VIDEO", []statusToken{
-		{name: "IEVID", enabled: videoOn},
-		{name: "|", enabled: false},
-		{name: "VGA", enabled: vgaOn},
-		{name: "|", enabled: false},
-		{name: "ULA", enabled: ulaOn},
-		{name: "|", enabled: false},
-		{name: "TED", enabled: tedVideoOn},
-		{name: "|", enabled: false},
-		{name: "ANTIC", enabled: anticOn},
-		{name: "|", enabled: false},
-		{name: "VOODOO", enabled: voodooOn},
-	})
-	drawStatusLine(screen, 6, y+39, "AUDIO", audioTokens)
 
 	eo.bufferMutex.RLock()
 	compositor := eo.compositor
@@ -1891,8 +1887,60 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 		scaleToggleAvailable = true
 		scaleMode = compositor.GetScaleMode()
 	}
+
+	cpuTokens := runtimeCPUStatusTokens(s)
+	videoTokens := []statusToken{
+		{name: "IEVID", enabled: videoOn},
+		{name: "|", enabled: false},
+		{name: "VGA", enabled: vgaOn},
+		{name: "|", enabled: false},
+		{name: "ULA", enabled: ulaOn},
+		{name: "|", enabled: false},
+		{name: "TED", enabled: tedVideoOn},
+		{name: "|", enabled: false},
+		{name: "ANTIC", enabled: anticOn},
+		{name: "|", enabled: false},
+		{name: "VOODOO", enabled: voodooOn},
+	}
 	legendTokens := ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable, scaleMode)
-	legendW := statusTokensWidth(legendTokens)
-	legendX := max(eo.width-legendW-6, 6)
-	drawStatusTokens(screen, legendX, y+39, legendTokens)
+
+	key := statusBarCacheKey(eo.width, barHeight, cpuTokens, videoTokens, audioTokens, legendTokens)
+	if eo.statusBarImage == nil || eo.statusBarKey != key ||
+		eo.statusBarImage.Bounds().Dx() != eo.width || eo.statusBarImage.Bounds().Dy() != barHeight {
+		if eo.statusBarImage != nil {
+			eo.statusBarImage.Deallocate()
+		}
+		eo.statusBarImage = ebiten.NewImage(eo.width, barHeight)
+		eo.statusBarKey = key
+		bar := eo.statusBarImage
+		drawFilledRect(bar, 0, 0, float64(eo.width), float64(barHeight), color.RGBA{0, 0, 0, runtimeStatusBarAlpha})
+		drawStatusLine(bar, 6, 13, "CPU  ", cpuTokens)
+		drawStatusLine(bar, 6, 26, "VIDEO", videoTokens)
+		drawStatusLine(bar, 6, 39, "AUDIO", audioTokens)
+		legendX := max(eo.width-statusTokensWidth(legendTokens)-6, 6)
+		drawStatusTokens(bar, legendX, 39, legendTokens)
+	}
+
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(0, float64(y))
+	screen.DrawImage(eo.statusBarImage, op)
+}
+
+// statusBarCacheKey summarises everything the bar draws, so the cached image is
+// rebuilt exactly when what it would draw has changed.
+func statusBarCacheKey(width, height int, groups ...[]statusToken) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%dx%d", width, height)
+	for _, tokens := range groups {
+		b.WriteByte(';')
+		for _, token := range tokens {
+			b.WriteString(token.name)
+			if token.enabled {
+				b.WriteByte('+')
+			} else {
+				b.WriteByte('-')
+			}
+		}
+	}
+	return b.String()
 }
