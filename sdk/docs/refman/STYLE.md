@@ -28,6 +28,54 @@ documentation is wrong unless the code itself is being changed in the
 same pass and verified. Record the exact files checked in
 `verify/CLAIM_LEDGER.txt`.
 
+## Current Reverse History And IE Script Editorial Pass
+
+Execute this pass in reader order over Chapter 33, Chapter 34, and
+Appendix L, then update the claim ledger. Finish with focused
+implementation and PRG checks, strict publication, and PDF generation.
+
+Chapter 33 must describe the implemented whole-machine reverse-history
+path without implying that every normal delta scans all guest RAM. The
+first whole-machine history record automatically arms page-dirty
+tracking and takes a full checkpoint. Later deltas copy pages written
+since the preceding capture. Periodic full checkpoints still scan the
+complete address space and rebaseline tracking.
+`IE_MON_EPOCH_HISTORY=0` selects the legacy full-scan-and-diff path.
+Both paths reconstruct the same machine state.
+
+Chapter 34 must state the complete reader-visible contracts for
+`sys.wait_until` and `audio.write_regs`:
+
+- `sys.wait_until` evaluates its predicate immediately and then after
+  each compositor frame. An omitted or `nil` frame budget waits
+  indefinitely. An explicit numeric budget is truncated towards zero
+  to form the integer frame count, and the resulting count must be
+  non-negative. It counts frame notifications, and a budget of zero
+  performs only the immediate evaluation. Expiry returns false;
+  predicate failures remain script errors.
+- `audio.write_regs` accepts an array of `{address, value}` pairs and
+  performs one ordered `32`-bit bus write per pair, matching sequential
+  `audio.write_reg` calls. Addresses and values convert to unsigned
+  `32`-bit quantities. A malformed entry raises an argument error after
+  any preceding valid entries have already been written.
+
+Keep the explanations task-first and concise. Add a small typed example
+for each function and discuss its result. Do not expose compile-cache
+internals, page-table implementation, host profiling, or other
+performance machinery that does not change the reader's programming
+contract.
+
+Appendix L must index both IE Script functions and retain the
+whole-machine reverse-history route. The claim ledger must name the
+monitor, script engine, focused tests, and companion source audits used
+to verify these contracts.
+
+The publish-only section named "How the host watches memory" in
+`sdk/docs/refman.publish/24-memory-model.md` is not canonical and does
+not belong in the PRG. Do not copy it into Chapter 24. Strict
+publication must remove it and restore the published chapter from
+`sdk/docs/refman/24-memory-model.md`.
+
 ## Current Gamepad And MERGE Editorial Pass
 
 This pass documents the canonical gamepad block and the BASIC surface

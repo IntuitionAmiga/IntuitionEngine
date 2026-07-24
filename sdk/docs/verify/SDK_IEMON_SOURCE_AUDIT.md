@@ -402,5 +402,6 @@
 | IEMon | io view | `midilive` | `debug_ioview.go` `ioDevices` key |
 | IEMon | monitor contract | `Entering the monitor freezes every guest CPU and the audio clock; leaving restores the pre-entry audio state unless fa or ta was issued during the session.` | `debug_monitor.go` `freezeMediaOnEntry`/`resumeMediaOnExit`, `debug_commands.go` `cmdFreezeAudio`/`cmdThawAudio` |
 | IEMon | monitor contract | `Second M68K, x86, and IE64 instances are labelled coproc:M68K#1, coproc:X86#1, and coproc:IE64#1 and receive separate monitor CPU IDs; cpu online starts instance 0 only.` | `coprocessor_manager.go` `coprocInstanceLabel`/`RegisterCPU` and `WorkerInventory` |
+| IEMon | monitor contract | `The first whole-machine reverse-history record automatically arms a bus page-dirty cursor and takes a full checkpoint.` | `debug_commands.go` `recordWholeMachineHistory`, `debug_reverse_epoch.go` `ensureEpochHistoryLocked` |
 | IEMon | region divergence row | `6502 \| Page-1 stack, 0xF000-0xF0FF direct MMIO, VGA at 0xD700-0xD70D, and ULA at 0xD800-0xD817` | `cpu_six5go2.go` stack/MMIO mapping, `vga_constants.go` `C6502_VGA_*`, `ula_constants.go` `C6502_ULA_BASE` |
 | IEMon | region divergence row | `Z80 \| 0xF000-0xF0FF direct MMIO window and 0xA0-0xAD VGA port range` | `cpu_z80_runner.go` MMIO translation, `vga_constants.go` `Z80_VGA_PORT_*` |

@@ -408,8 +408,7 @@ func TestAudioEventRing_DrainOnResetAndDisable(t *testing.T) {
 	}
 }
 
-// TestAudioEventRing_DisabledByDefault pins that the ring is opt-in, so an
-// ordinary build takes the synchronous path it always did.
+// TestAudioEventRing_EnabledByDefault pins the default-on ring contract.
 func TestAudioEventRing_EnabledByDefault(t *testing.T) {
 	if !audioEventRingRequested() {
 		t.Skip("IE_AUDIO_EVENT_RING=0 in the environment")

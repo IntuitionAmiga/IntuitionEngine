@@ -2,6 +2,7 @@
 title: "IE Script - Scripted Control and Live Debugging"
 sources:
   - script_engine.go
+  - script_batching_test.go
   - debug_monitor.go
   - debug_commands.go
   - debug_monitor_media_freeze_test.go
@@ -65,7 +66,7 @@ Strings may use single or double quotes.
 | Function | Purpose |
 |----------|---------|
 | `sys.wait_frames(n)` | Yield until `n` video frames have passed. |
-| `sys.wait_until(fn, max)` | Yield until `fn()` is truthy, checked once per frame; `max` frames optional. Returns whether it held. |
+| `sys.wait_until(fn, max)` | Test `fn()` immediately, then after each frame until it is truthy or the optional frame budget expires. |
 | `sys.wait_ms(ms)` | Yield until `ms` milliseconds have passed. |
 | `sys.print(text)` | Print text to the terminal. |
 | `sys.log(text)` | Write a diagnostic line. |
@@ -86,6 +87,30 @@ Strings may use single or double quotes.
 
 Long loops should call `sys.wait_frames` or `sys.wait_ms`; this
 keeps cancellation responsive.
+
+`sys.wait_until` returns true when its predicate becomes truthy and
+false when its frame budget expires. Omit the budget, or pass `nil`,
+to wait indefinitely. An explicit budget must be numeric; it is
+truncated towards zero to form the frame count, and that resulting
+count must be non-negative. The count measures frame notifications.
+Zero performs only the immediate test. An error raised by the
+predicate remains a script error.
+
+This script waits for three completed frames without writing its own
+polling loop:
+
+```ies
+local target = sys.frame_count() + 3
+local reached = sys.wait_until(function()
+  return sys.frame_count() >= target
+end, 3)
+sys.print("REACHED " .. tostring(reached))
+```
+
+The predicate is tested once before the first frame wait, then once
+after each of the three permitted frames. The expected line is
+`REACHED true`. Changing the budget to `0` prints `REACHED false`
+unless the target was already reached during the immediate test.
 
 `sys.perf_reset()` and `sys.perf_report()` are for repeatable
 measurement scripts. The report is empty when performance accounting is
@@ -185,7 +210,7 @@ mask without changing the current raw MMIO selectors.
 | `audio.start()`, `audio.stop()`, `audio.reset()` | Control audio output. |
 | `audio.freeze()`, `audio.resume()` | Pause and resume audio processing. |
 | `audio.write_reg(addr, value)` | Write an audio MMIO register. |
-| `audio.write_regs(pairs)` | Apply a list of `{addr, value}` writes in one Go/Lua crossing; same effect as sequential `write_reg`. |
+| `audio.write_regs(pairs)` | Apply an ordered list of `{addr, value}` 32-bit bus writes in one call. |
 | `audio.set_master_gain_db(v)` | Set master gain in dB. |
 | `audio.get_master_gain_db()` | Read master gain in dB. |
 | `audio.set_master_auto_level_enabled(on)` | Enable automatic master levelling. |
@@ -196,6 +221,12 @@ mask without changing the current raw MMIO selectors.
 | `audio.pokey_load/play/stop/is_playing` | POKEY playback helpers. |
 | `audio.ahx_load/play/stop/is_playing` | AHX playback helpers. |
 | `audio.midi_load/play/stop/pause/resume/set_volume/is_playing/metadata` | MIDI/MUS playback helpers. |
+
+`audio.write_regs` converts each address and value to an unsigned
+`32`-bit quantity and performs the writes in list order, exactly as
+sequential `audio.write_reg` calls would. Every entry must be a table
+with at least two elements. A malformed entry raises an argument error;
+valid entries before it have already been written and are not undone.
 
 Live MIDI has no separate high-level script helper. A script that
 deliberately wants to drive it can use `audio.write_reg(0xF0BF4, byte)`
@@ -353,10 +384,12 @@ Store this as `TONE.IES`:
 ```ies
 -- SoundChip channel 0, square wave at about middle C.
 audio.start()
-audio.write_reg(0xF0A80, 262 * 256)
-audio.write_reg(0xF0A84, 96)
-audio.write_reg(0xF0AA4, 0)
-audio.write_reg(0xF0A88, 3)
+audio.write_regs({
+  {0xF0A80, 262 * 256},
+  {0xF0A84, 96},
+  {0xF0AA4, 0},
+  {0xF0A88, 3}
+})
 sys.wait_ms(250)
 sys.print("CH0 " .. mem.read32(0xF0A88))
 sys.quit()
@@ -364,9 +397,10 @@ sys.quit()
 
 `audio.start()` enables the global audio path. The frequency
 register uses 16.8 fixed-point hertz, so `262 * 256` means about
-`262` Hz. The volume write sets an audible level, `WAVE_TYPE` `0`
-selects a square wave, and control value `3` means enabled plus
-gate. The print should include `CH0 3`.
+`262` Hz. `audio.write_regs` applies the four writes in their listed
+order. The volume write sets an audible level, `WAVE_TYPE` `0` selects
+a square wave, and control value `3` means enabled plus gate. The print
+should include `CH0 3`.
 
 ## 34.15 Fault Callback Example
 

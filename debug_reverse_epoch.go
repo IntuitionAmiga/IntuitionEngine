@@ -5,12 +5,13 @@
 // form a delta. On a machine with gigabytes of RAM that full scan dominates the
 // step, which is exactly the cost this item removes.
 //
-// With IE_MON_EPOCH_HISTORY=1 the monitor keeps a page-dirty cursor over the
-// bus (see machine_bus_page_dirty.go). Between snapshots the bus records which
-// pages the guest wrote; a delta then copies only those pages instead of
-// scanning and diffing the whole address space. Full checkpoints still take the
-// complete scan, because a checkpoint must stand alone, and draining the cursor
-// at each checkpoint rebaselines the delta stream to that point.
+// On the first whole-machine reverse-history record, the monitor keeps a
+// page-dirty cursor over the bus (see machine_bus_page_dirty.go), unless
+// IE_MON_EPOCH_HISTORY=0 selects the legacy path. Between snapshots the bus
+// records which pages the guest wrote; a delta then copies only those pages
+// instead of scanning and diffing the whole address space. Full checkpoints
+// still take the complete scan, because a checkpoint must stand alone, and
+// draining the cursor at each checkpoint rebaselines the delta stream.
 //
 // The reconstruction is identical to the legacy delta's. The cursor reports a
 // page as dirty whenever it was written, even if the write restored its old

@@ -1,6 +1,6 @@
 # IEScript Lua Automation Manual
 
-*Last modified: 2026-07-13*
+*Last modified: 2026-07-23*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
@@ -234,7 +234,7 @@ Timing, diagnostics, lifecycle.
 
 `sys.wait_ms(ms)` - Block for `ms` milliseconds (wall-clock timer). Returns: nothing.
 
-`sys.wait_until(predicate, max_frames)` - Block until `predicate()` returns a truthy value, checking it once before the first wait and then once per compositor frame, instead of a scripted `wait_frames` poll loop. `max_frames` is optional; omit it or pass `nil` to wait indefinitely. Returns: boolean, true if the predicate held, false if the frame budget ran out first.
+`sys.wait_until(predicate, max_frames)` - Evaluate `predicate()` immediately, then after each compositor frame until it returns a truthy value. `max_frames` is optional; omit it or pass `nil` to wait indefinitely. An explicit budget must be an integer greater than or equal to zero and limits the number of frame notifications consumed; zero performs only the immediate evaluation. Predicate errors propagate as script errors. Returns: boolean, true if the predicate held, false if the frame budget expired.
 
 `sys.print(...)` - Print all arguments to host stdout, space-separated, with trailing newline. Returns: nothing.
 
@@ -497,7 +497,7 @@ Sound chip and player controls.
 
 `audio.write_reg(addr, value)` - Write a 32-bit `value` to sound chip register at bus address `addr`. This is an MMIO write (no freeze required). Returns: nothing.
 
-`audio.write_regs(pairs)` - Apply a list of register writes in one Go/Lua crossing. `pairs` is an array of `{addr, value}` tables, applied in order; the effect is identical to calling `audio.write_reg` on each pair, but a tight register sequence pays one protected transition instead of one per write. Returns: nothing.
+`audio.write_regs(pairs)` - Apply a list of register writes in one Lua-to-Go call. `pairs` is an array of `{addr, value}` tables. Each pair performs its own ordered 32-bit bus write, exactly as `audio.write_reg` does. An entry that is not a table with at least two elements raises an argument error after any preceding entries have already been written. Addresses and values are converted to unsigned 32-bit quantities. Returns: nothing.
 
 ### Master Mix and Dynamics
 

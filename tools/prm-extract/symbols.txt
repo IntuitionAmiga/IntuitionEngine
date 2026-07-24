@@ -37,6 +37,7 @@ audio.ted_play
 audio.ted_stop
 audio.use_showreel_normalizer_preset
 audio.write_reg
+audio.write_regs
 bit32.arshift
 bit32.band
 bit32.bnot
@@ -216,6 +217,7 @@ sys.quit
 sys.read_file
 sys.time_ms
 sys.wait_frames
+sys.wait_until
 sys.wait_ms
 sys.write_file
 term.clear

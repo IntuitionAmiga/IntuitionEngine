@@ -1104,9 +1104,8 @@ type SoundChip struct {
 	// postFXConfigCaptures counts block-invariant post-FX captures, so tests
 	// can pin that a flush captures once rather than once per sample.
 	postFXConfigCaptures atomic.Uint64
-	// eventRing queues guest register writes when IE_AUDIO_EVENT_RING=1, so a
-	// CPU write does not contend with the renderer for chip.mu. Nil when the
-	// ring is off, which is the default.
+	// eventRing queues guest register writes by default, so a CPU write does not
+	// contend with the renderer for chip.mu. Nil when IE_AUDIO_EVENT_RING=0.
 	eventRing *audioEventRing
 	sfx       *SFXTrigger // Independent trigger-and-forget sample mixer
 

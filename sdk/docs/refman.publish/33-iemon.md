@@ -315,7 +315,13 @@ The monitor keeps two kinds of history. `bs` and `rs` use a
 CPU-local step snapshot for the focussed CPU only. `rg`, `rt`, `tl`,
 and `history` use the retained whole-machine reverse-history
 timeline, which includes registered CPUs, bus RAM, backed RAM, and
-versioned device snapshots.
+versioned device snapshots. The first whole-machine history record
+automatically arms page-dirty tracking and takes a full checkpoint.
+Later deltas copy only pages written since the preceding capture.
+Periodic full checkpoints scan the complete address space and
+rebaseline tracking. `IE_MON_EPOCH_HISTORY=0` selects the legacy path,
+which scans and compares all guest RAM for every capture. Both paths
+reconstruct the same machine state.
 
 | Command   | Argument(s)         | Effect                                        |
 |-----------|---------------------|-----------------------------------------------|

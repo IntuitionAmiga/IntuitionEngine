@@ -6,10 +6,10 @@
 // the source text and its result, a FunctionProto, does not depend on the Lua
 // state it will run in, so it can be cached and shared.
 //
-// The cache is keyed by the exact source text. It is opt-in with
-// IE_SCRIPT_COMPILE_CACHE=1 until the parity gate is met, and only ever caches
-// scripts that parse cleanly, so a syntax error is reported the same way with
-// the cache on or off.
+// The cache is keyed by the script name plus exact source text. It is opt-in
+// with IE_SCRIPT_COMPILE_CACHE=1 until the parity gate is met, and only ever
+// caches scripts that parse cleanly, so a syntax error is reported the same way
+// with the cache on or off.
 //
 // (c) 2024 - 2026 Zayn Otley
 // https://github.com/IntuitionAmiga/IntuitionEngine

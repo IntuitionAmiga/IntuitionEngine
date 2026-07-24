@@ -3,6 +3,8 @@ title: "IE Mon - the Machine Monitor"
 sources:
   - debug_commands.go
   - debug_monitor.go
+  - debug_reverse_epoch.go
+  - debug_reverse_epoch_test.go
   - debug_overlay.go
   - debug_monitor_media_freeze_test.go
   - debug_asm.go
@@ -327,12 +329,13 @@ The monitor keeps two kinds of history. `bs` and `rs` use a
 CPU-local step snapshot for the focussed CPU only. `rg`, `rt`, `tl`,
 and `history` use the retained whole-machine reverse-history
 timeline, which includes registered CPUs, bus RAM, backed RAM, and
-versioned device snapshots. Each delta normally forms by scanning all
-of guest RAM and diffing it against the previous capture. The monitor
-arms a bus page-dirty cursor automatically the first time reverse
-history is recorded, driving later deltas from only the written pages
-with identical reconstruction; `IE_MON_EPOCH_HISTORY=0` forces the
-legacy full-scan path.
+versioned device snapshots. The first whole-machine history record
+automatically arms page-dirty tracking and takes a full checkpoint.
+Later deltas copy only pages written since the preceding capture.
+Periodic full checkpoints scan the complete address space and
+rebaseline tracking. `IE_MON_EPOCH_HISTORY=0` selects the legacy path,
+which scans and compares all guest RAM for every capture. Both paths
+reconstruct the same machine state.
 
 | Command   | Argument(s)         | Effect                                        |
 |-----------|---------------------|-----------------------------------------------|

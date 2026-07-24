@@ -1105,3 +1105,21 @@ Entry format:
   Expected result: line `10` remains and line `100` is inserted; using `LOAD` instead would replace the programme.
   Author verification workflow: checked tokenisation, dispatch, loader merge flag, compiler rejection inventory, missing-file behaviour, and focused REPL tests before publication.
   Result: the vocabulary, file chapter, and token appendix now agree on the direct-mode editing contract.
+
+- Area: Chapter 33 and Appendix L; IE Mon whole-machine reverse history.
+  Claim: the first whole-machine history record automatically arms page-dirty tracking and takes a full checkpoint; later deltas copy pages written since the preceding capture; periodic full checkpoints scan the complete address space and rebaseline tracking; `IE_MON_EPOCH_HISTORY=0` selects full-scan-and-diff capture; both paths reconstruct the same machine state.
+  Canonical sources checked: debug_commands.go `recordWholeMachineHistory`, debug_monitor.go reverse-history state, debug_reverse_epoch.go `ensureEpochHistoryLocked` and epoch capture, debug_reverse_epoch_test.go automatic-enable, kill-switch, reconstruction, and restore-resynchronisation tests, sdk/docs/iemon.md, sdk/docs/verify/SDK_IEMON_SOURCE_AUDIT.md.
+  Reader workflow: use `rg`, `rt`, `tl`, and `history` normally; the capture path changes no monitor command or reconstructed state.
+  Runnable example: Chapter 33 retains the existing reverse-execution command workflow.
+  Expected result: whole-machine reverse commands restore the same CPU, RAM, backed RAM, and registered device state through either capture path.
+  Author verification workflow: compared the automatic arm point, first-checkpoint path, dirty-page cursor, periodic checkpoint rebaseline, kill switch, and differential reconstruction tests before publication.
+  Result: Chapter 33 no longer presents complete RAM scanning as the normal delta path after automatic epoch tracking is armed.
+
+- Area: Chapter 34 and Appendix L; IE Script `sys.wait_until` and `audio.write_regs`.
+  Claim: `sys.wait_until` evaluates immediately and then after each compositor frame; an omitted or `nil` budget waits indefinitely; a numeric budget is truncated towards zero and the resulting non-negative count measures frame notifications; zero performs only the immediate test; expiry returns false; predicate errors propagate. `audio.write_regs` performs ordered unsigned 32-bit bus writes from `{address, value}` pairs; malformed entries raise an argument error after preceding valid writes have already occurred.
+  Canonical sources checked: script_engine.go `luaSysWaitUntil` and `luaAudioWriteRegs`, Gopher-Lua `LState.CheckInt` and numeric conversion, script_batching_test.go event-wait wake, zero-budget, negative-budget, and ordered-register-write tests.
+  Reader workflow: replace a manual frame-poll loop with `sys.wait_until`, or group an ordered audio register setup into one `audio.write_regs` call.
+  Runnable example: Chapter 34 waits for three frame-count advances and programs a SoundChip tone with one ordered register list.
+  Expected result: the wait prints `REACHED true`; the audio listing sounds about middle C and reads control value `3`.
+  Author verification workflow: checked immediate evaluation, frame-budget boundaries, rejection of negative budgets, predicate error propagation, ordered bus writes, unsigned conversion, malformed-pair handling, and the focused IEScript tests before publication.
+  Result: Chapter 34 documents both functions as complete reader-facing programming contracts rather than terse API-table entries.

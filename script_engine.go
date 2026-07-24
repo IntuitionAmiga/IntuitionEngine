@@ -74,10 +74,10 @@ type ScriptEngine struct {
 	faultCallbacks       map[string]*lua.LFunction
 	faultListenerRemoves []func()
 
-	// compileCache holds parsed script protos keyed by source text, so a script
-	// run more than once (validate then run, or a re-run of the same automation)
-	// is parsed once rather than on every pass. Protos are state independent, so
-	// one cached proto seeds every fresh Lua state. Opt-in with
+	// compileCache holds parsed script protos keyed by script name and source
+	// text, so a script run more than once is parsed once rather than on every
+	// pass without reusing the wrong name in diagnostics. Protos are state
+	// independent, so one cached proto seeds every fresh Lua state. Opt-in with
 	// IE_SCRIPT_COMPILE_CACHE=1.
 	compileCacheOn bool
 	compileMu      sync.Mutex
@@ -1225,6 +1225,10 @@ func (se *ScriptEngine) luaSysWaitUntil(ctx context.Context) lua.LGFunction {
 		maxFrames := -1 // no budget: wait indefinitely
 		if L.GetTop() >= 2 && L.Get(2) != lua.LNil {
 			maxFrames = L.CheckInt(2)
+			if maxFrames < 0 {
+				L.ArgError(2, "must be >= 0")
+				return 0
+			}
 		}
 		check := func() bool {
 			L.Push(pred)
@@ -1233,18 +1237,24 @@ func (se *ScriptEngine) luaSysWaitUntil(ctx context.Context) lua.LGFunction {
 			L.Pop(1)
 			return lua.LVAsBool(ret)
 		}
-		for frame := 0; maxFrames < 0 || frame <= maxFrames; frame++ {
-			if check() {
-				se.lastYieldNS.Store(time.Now().UnixNano())
-				se.pumpFaultCallbacks(L)
-				L.Push(lua.LTrue)
-				return 1
-			}
+		if check() {
+			se.lastYieldNS.Store(time.Now().UnixNano())
+			se.pumpFaultCallbacks(L)
+			L.Push(lua.LTrue)
+			return 1
+		}
+		for frame := 0; maxFrames < 0 || frame < maxFrames; frame++ {
 			select {
 			case <-ctx.Done():
 				L.RaiseError("script cancelled")
 				return 0
 			case <-se.frameChan:
+			}
+			if check() {
+				se.lastYieldNS.Store(time.Now().UnixNano())
+				se.pumpFaultCallbacks(L)
+				L.Push(lua.LTrue)
+				return 1
 			}
 		}
 		se.lastYieldNS.Store(time.Now().UnixNano())
@@ -2690,9 +2700,8 @@ func (se *ScriptEngine) luaAudioWriteReg() lua.LGFunction {
 }
 
 // luaAudioWriteRegs applies a whole list of register writes in one Go/Lua
-// crossing. The argument is an array of {addr, value} pairs; the effect is
-// identical to calling write_reg on each pair in order, but a tight register
-// sequence pays one protected transition instead of one per write.
+// crossing. The argument is an array of {addr, value} pairs; each pair still
+// performs its own ordered bus write, exactly as write_reg does.
 func (se *ScriptEngine) luaAudioWriteRegs() lua.LGFunction {
 	return func(L *lua.LState) int {
 		list := L.CheckTable(1)

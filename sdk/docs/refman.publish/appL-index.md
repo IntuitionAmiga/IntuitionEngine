@@ -20,6 +20,7 @@ symbols, and Appendix J gives the full memory map.
 | ASSEMBLE command | Chapter 2, Chapter 25, Chapter 35, Appendix A, Appendix I |
 | Assemble mode | Chapter 25, Chapter 33, Appendix G |
 | AUDCTL | Chapter 17, Chapter 27, Appendix D |
+| audio.write_regs | Chapter 34 |
 | Audio mixer | Chapter 11, Chapter 23, Appendix K |
 
 ## B
@@ -277,6 +278,7 @@ symbols, and Appendix J gives the full memory map.
 | SYSINFO_TOTAL_RAM_LO | Chapter 24, Appendix D, Appendix J |
 | sys.perf_report | Chapter 34 |
 | sys.perf_reset | Chapter 34 |
+| sys.wait_until | Chapter 34 |
 | SysInfo | Chapter 24, Appendix D, Appendix J |
 
 ## T

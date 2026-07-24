@@ -261,6 +261,12 @@ func sdkIEMonFactsFromSource(t *testing.T) []sdkSourceFact {
 		Name:     "Second M68K, x86, and IE64 instances are labelled coproc:M68K#1, coproc:X86#1, and coproc:IE64#1 and receive separate monitor CPU IDs; cpu online starts instance 0 only.",
 		Evidence: "`coprocessor_manager.go` `coprocInstanceLabel`/`RegisterCPU` and `WorkerInventory`",
 	})
+	facts = append(facts, sdkSourceFact{
+		Surface:  "IEMon",
+		Kind:     "monitor contract",
+		Name:     "The first whole-machine reverse-history record automatically arms a bus page-dirty cursor and takes a full checkpoint.",
+		Evidence: "`debug_commands.go` `recordWholeMachineHistory`, `debug_reverse_epoch.go` `ensureEpochHistoryLocked`",
+	})
 	sortSDKSourceFacts(facts)
 	return facts
 }
@@ -326,6 +332,8 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"mem.fill(addr, len, value) fills bytes, returns nothing, and requires len >= 0", "`script_engine.go` `luaMemFill` length check and write loop"},
 		{"sys.perf_report() returns a string subsystem performance report; it is empty when IE_PERF_ACCT is off or no subsystem counters have recorded work", "`script_engine.go` `luaSysPerfReport`, `perf_accounting_subsys.go` `Report`"},
 		{"sys.perf_reset() resets subsystem performance counters and returns nothing", "`script_engine.go` `luaSysPerfReset`, `perf_accounting_subsys.go` `Reset`"},
+		{"An explicit budget must be an integer greater than or equal to zero and limits the number of frame notifications consumed; zero performs only the immediate evaluation.", "`script_engine.go` `luaSysWaitUntil`, `script_batching_test.go` bounded-wait coverage"},
+		{"Each pair performs its own ordered 32-bit bus write, exactly as audio.write_reg does.", "`script_engine.go` `luaAudioWriteRegs`, `script_batching_test.go` ordered-write coverage"},
 		{"bit32.lshift(x, disp) masks disp to 0..31 and returns number", "`script_engine.go` `registerBit32` `lshift`"},
 		{"bit32.rshift(x, disp) masks disp to 0..31 and returns number", "`script_engine.go` `registerBit32` `rshift`"},
 		{"bit32.arshift(x, disp) masks disp to 0..31, sign-extends, and returns number", "`script_engine.go` `registerBit32` `arshift`"},
@@ -559,6 +567,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"Voodoo swap jobs run asynchronously; oversized triangle batches render mid-frame without presentation or swap callbacks, and STATUS exposes busy and SWAPBUF while a presented swap is pending.", "`video_voodoo.go` `executeSwapBufferCmd`/`flushBatchLocked`/`swapWorker`/`getStatus`, `video_voodoo_batch_overflow_test.go` overflow coverage"},
 		{"Voodoo texture slots retain immutable uploaded textures by slot identifier; VOODOO_TEX_BIND selects a resident texture for subsequently submitted triangles without another guest-memory transfer, and SYSINFO advertises the slot contract.", "`video_voodoo.go` `VOODOO_TEX_SLOT`/`VOODOO_TEX_UPLOAD`/`VOODOO_TEX_BIND`, `voodoo_constants.go` slot registers, and `sysinfo_mmio.go` `SYSINFO_FEATURE_VOODOO_TEX_SLOTS`"},
 		{"Browser builds use an IE64 WebAssembly bytecode JIT for supported MMU-off integer and FP64 blocks, with interpreter fallback and IE64_WASM_JIT=0 as the runtime disable switch.", "`jit_exec_wasm.go` dispatcher gate, `jit_wasm_runtime.go` `wasmJITEnabled`, and `jit_wasm_ie64_emit.go` opcode translation"},
+		{"The x64 live image gives Oto an unreachable PulseAudio server so it selects ALSA, and pipewire-alsa carries that stream into PipeWire.", "`build_x64_ie_img.sh` launch wrapper `PULSE_SERVER`, `pipewire-alsa` package list, and AppArmor audio/PipeWire rules; `x64_live_test.go` launcher contract coverage"},
 		{"M68020 JIT backends are available on amd64 and arm64 Linux, Windows and macOS, plus js/wasm; the wasm backend requires __goMem and M68K_WASM_JIT=0 disables it.", "`jit_m68k_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and `jit_m68k_dispatch_wasm.go` build and activation gates"},
 		{"The M68020 JIT shares an untagged scanner, admission rules, CCR liveness, region formation and tier policy while keeping native and wasm lowering target-specific.", "`jit_m68k_common.go`, `jit_m68k_admission.go`, `jit_m68k_ccr_liveness.go`, `jit_m68k_region_form.go`, `jit_m68k_policy.go`, and per-target dispatch/emitter files"},
 		{"M68020 JIT memory guards use the profile-visible RAM ceiling, and native and wasm stores invalidate compiled code before stale execution.", "`jit_m68k_exec.go` profile-bound context setup and invalidation, `jit_m68k_dispatch_wasm.go` ceiling/stamp checks, and `jit_m68k_wasm_emit.go` code-page probes"},
@@ -592,6 +601,9 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"IE64 self-modifying-code tracking uses 256-byte guest code pages and physical code-page tracking for MMU-compiled blocks.", "`jit_ie64_smc_range.go` guest/physical page marking and `jit_ie64_smc_range_test.go`"},
 		{"x86 self-modifying-code tracking uses 256-byte code pages and range invalidation.", "`jit_x86_smc_range.go` code-page marking and range invalidation, `jit_x86_smc_range_test.go`"},
 		{"ReadSamples uses safe block ticking only when every active sample ticker implements ReadSamplesBlockTicker, SFX allows block ticking, and no sample mixers are registered.", "`audio_chip.go` `ReadSamples`/`canUseReadSamplesBlockGraph`, `audio_chip_block_test.go` block-ticker fallback coverage"},
+		{"The audio event ring is enabled by default and can be disabled with IE_AUDIO_EVENT_RING=0, which restores the synchronous barrier path.", "`audio_event_ring.go` `audioEventRingRequested`, `audio_chip.go` event-ring construction"},
+		{"The IEScript compile cache is opt-in with IE_SCRIPT_COMPILE_CACHE=1.", "`script_engine.go` `NewScriptEngine`, `script_compile_cache.go` cache path"},
+		{"It is cached by script name plus exact source text", "`script_compile_cache.go` `compileScript` cache key"},
 		{"SIMD acceleration kernels are enabled by default on amd64 builds and can be disabled with IE_SIMD=0.", "`simd_gate.go` `simdRequested`/`simdKernelsActive`, `simd_gate_amd64.go` `simdHostSupported` AVX2 gate, and `simd_gate_stub.go` non-amd64 scalar fallback"},
 	} {
 		facts = append(facts, sdkSourceFact{

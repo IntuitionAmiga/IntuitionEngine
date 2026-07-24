@@ -260,7 +260,7 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"`,
 		`C64_MUSIC_SOURCE="${C64_MUSIC_SOURCE:-${HOME}/Music/C64Music}"`,
 		`PROJECTAY_MUSIC_SOURCE="${PROJECTAY_MUSIC_SOURCE:-${HOME}/Music/ProjectAY}"`,
-		`FINAL_IMAGE_SIZE="10G"`,
+		`FINAL_IMAGE_SIZE="${FINAL_IMAGE_SIZE:-10G}"`,
 		`ROOT_PART_SIZE="6G"`,
 		`FATSHARE_LABEL="IESHARE"`,
 		`LIVE_OUT_DIR="${X64_LIVE_OUT_DIR:-${SCRIPT_DIR}/build/x64-live}"`,
@@ -276,7 +276,7 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`virt-filesystems returned no CSV output`,
 		`payload_require_file "$PLYMOUTH_SPLASH" "restore splash.png" "Plymouth splash image"`,
 		`mformat -i "$fat_img" -F -v "${FATSHARE_LABEL}" ::`,
-		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum)`,
+		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum /sbin/debugfs)`,
 		`required_cmds+=(mformat mcopy rsync)`,
 		`local archive_path="${OUTPUT_IMG%.img}.zip"`,
 		`zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True)`,
@@ -316,6 +316,7 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		`export PIPEWIRE_RUNTIME_DIR="$XDG_RUNTIME_DIR"`,
 		`export PULSE_RUNTIME_PATH="$XDG_RUNTIME_DIR/pulse"`,
 		`export PULSE_SERVER="unix:${XDG_RUNTIME_DIR}/pulse/native"`,
+		`export PULSE_SERVER=unix:/nonexistent/ie-force-alsa`,
 		`mkdir -p "$XDG_RUNTIME_DIR" "$XDG_RUNTIME_DIR/pulse"`,
 		`chmod 700 "$XDG_RUNTIME_DIR"`,
 		`audio_log=/tmp/ie-pipewire-ready.log`,
@@ -332,6 +333,9 @@ func TestX64LiveScriptSafetyAndSession(t *testing.T) {
 		`wpctl set-mute @DEFAULT_AUDIO_SINK@ 0`,
 		`wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.90`,
 		`exec /opt/ie/IntuitionEngine "$@" >>"$ie_log" 2>&1`,
+		`#include <abstractions/audio>`,
+		`/usr/share/pipewire/** r,`,
+		`/etc/pipewire/** r,`,
 		`for n in $(seq 1 12); do systemctl mask "getty@tty${n}.service"; done`,
 		`NAutoVTs=0`,
 		`ReserveVT=0`,
@@ -577,7 +581,7 @@ func TestX64LiveNoShareDoesNotRequireMtools(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum)`,
+		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum /sbin/debugfs)`,
 		`if [[ "${CREATE_SHARE}" == "true" ]]; then`,
 		`required_cmds+=(mformat mcopy rsync)`,
 	} {

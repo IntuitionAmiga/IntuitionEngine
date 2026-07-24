@@ -157,6 +157,44 @@ func TestIEScriptEventWait_WakesOnCondition(t *testing.T) {
 	}
 }
 
+func TestIEScriptEventWait_ZeroBudgetDoesNotWait(t *testing.T) {
+	bus := NewMachineBus()
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+
+	const script = `
+		cpu.freeze()
+		local calls = 0
+		local woke = sys.wait_until(function()
+			calls = calls + 1
+			return false
+		end, 0)
+		if not woke and calls == 1 then mem.write8(0x5003, 0x78) end
+		cpu.resume()
+	`
+	if err := se.RunString(script, "wait-zero"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if got := bus.Read8(0x5003); got != 0x78 {
+		t.Fatalf("zero-budget wait sentinel = %#x, want 0x78", got)
+	}
+}
+
+func TestIEScriptEventWait_RejectsNegativeBudget(t *testing.T) {
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	const script = `sys.wait_until(function() return false end, -1)`
+	if err := se.RunString(script, "wait-negative"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil {
+		t.Fatal("negative max_frames did not raise an error")
+	}
+}
+
 // TestIEScriptCompileCache_KeyedByName checks the cache does not return a proto
 // compiled under a different script name for identical source, which would make
 // runtime stack traces report the wrong script.

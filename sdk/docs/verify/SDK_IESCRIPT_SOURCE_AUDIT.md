@@ -3,6 +3,8 @@
 | Surface | Kind | Name | Executable evidence |
 |---------|------|------|---------------------|
 | IEScript | api claim | `raw memory access requires cpu.freeze()` | `script_engine.go` `requireFrozenForRange` error path |
+| IEScript | api contract | `An explicit budget must be an integer greater than or equal to zero and limits the number of frame notifications consumed; zero performs only the immediate evaluation.` | `script_engine.go` `luaSysWaitUntil`, `script_batching_test.go` bounded-wait coverage |
+| IEScript | api contract | `Each pair performs its own ordered 32-bit bus write, exactly as audio.write_reg does.` | `script_engine.go` `luaAudioWriteRegs`, `script_batching_test.go` ordered-write coverage |
 | IEScript | api contract | `bit32.arshift(x, disp) masks disp to 0..31, sign-extends, and returns number` | `script_engine.go` `registerBit32` `arshift` |
 | IEScript | api contract | `bit32.btest(...) returns boolean true when the bitwise AND result is non-zero` | `script_engine.go` `registerBit32` `btest` |
 | IEScript | api contract | `bit32.extract(x, field[, width]) raises an error for field < 0, width <= 0, or field + width > 32` | `script_engine.go` `registerBit32` `extract` range check |
