@@ -30,7 +30,7 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v42-audio-session-dracut"
+GOLDEN_STAMP_VERSION="x64-live-golden-v43-oto-alsa-route"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
 COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core,kbd"
@@ -1005,10 +1005,18 @@ fi
         wpctl set-volume @DEFAULT_AUDIO_SINK@ 0.90 || true
     fi
 } >>"$audio_log" 2>&1
+# oto tries its PulseAudio backend (github.com/jfreymuth/pulse) before ALSA and
+# only falls back when the pulse client fails to connect. That client (v0.1.1)
+# overruns its own playback buffer and panics against the fragment geometry
+# pipewire-pulse negotiates in this image, which kills IE immediately after the
+# boot banner. Point PULSE_SERVER at an unreachable socket so the pulse
+# connection fails at once and oto selects its ALSA backend, which the installed
+# pipewire-alsa plugin bridges back to pipewire.
+export PULSE_SERVER=unix:/nonexistent/ie-force-alsa
 {
     echo "launching IntuitionEngine at $(date -Is)"
     echo "args: $*"
-    echo "PULSE_SERVER=${PULSE_SERVER}"
+    echo "PULSE_SERVER=${PULSE_SERVER} (forced unreachable: oto uses ALSA->pipewire)"
     echo "audio readiness log: ${audio_log}"
 } >>"$ie_log"
 exec /opt/ie/IntuitionEngine "$@" >>"$ie_log" 2>&1
@@ -1286,9 +1294,17 @@ EOF
 
 profile opt.ie.IntuitionEngine /opt/ie/IntuitionEngine flags=(attach_disconnected) {
   #include <abstractions/base>
+  #include <abstractions/audio>
   #include <abstractions/dbus-session>
   #include <abstractions/fonts>
   #include <abstractions/nameservice>
+
+  # oto's ALSA backend loads the pipewire ALSA plugin, which reads the pipewire
+  # client configuration. The plugin .so files themselves are covered by the
+  # multiarch library rules in abstractions/base; only these config trees need
+  # adding for the ALSA->pipewire route to initialise.
+  /usr/share/pipewire/** r,
+  /etc/pipewire/** r,
 
   capability setgid,
   capability setuid,
