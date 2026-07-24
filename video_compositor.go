@@ -200,42 +200,44 @@ func (s *VideoScheduler) tickAll() {
 
 // VideoCompositor blends multiple video sources into a single output
 type VideoCompositor struct {
-	mu                 sync.Mutex
-	outputMu           sync.Mutex
-	output             VideoOutput
-	sources            []registeredSource
-	nextSourceID       uint64
-	finalFrame         []byte
-	outputBuf          []byte
-	onFrameComplete    func()
-	done               chan struct{}
-	frameWidth         int
-	frameHeight        int
-	scaleMode          PresentationScaleMode
-	pendingResolution  atomic.Uint64
-	lockedResolution   bool
-	prevHasContent     bool
-	frameCounter       uint64
-	frameTimestamp     time.Time
-	scheduler          *VideoScheduler
-	schedulerTaskID    uint64
-	hardwareDisabled   bool
-	lastHardwareFrame  uint64
-	lastHardwareLayers []CompositorFrameLayer
-	frameLeaseRings    map[uint64]*VideoFrameLeaseRing
-	frameLeaseBytes    map[uint64]int
-	lastSourceGens     map[uint64]uint64
-	skipStreak         uint64
-	softwareFrameRing  *VideoFrameLeaseRing
-	softwareFrameBytes int
-	finalFrameLease    *VideoFrameLease
-	lastSnapshotFrame  uint64
-	lastSnapshot       []byte
-	blendJobs          chan blendStripJob
-	blendWorkerStop    chan struct{}
-	blendWorkerWG      sync.WaitGroup
-	softwareDirtyRects []FrameDirtyRect
-	forceFullFrame     bool
+	mu                  sync.Mutex
+	outputMu            sync.Mutex
+	output              VideoOutput
+	sources             []registeredSource
+	nextSourceID        uint64
+	finalFrame          []byte
+	outputBuf           []byte
+	onFrameComplete     func()      // pixel consumer: composed ticks only
+	onFrameTiming       func()      // logical-frame/timing: every tick, incl. skipped
+	pixelConsumerActive func() bool // when true, a live pixel consumer disables the skip
+	done                chan struct{}
+	frameWidth          int
+	frameHeight         int
+	scaleMode           PresentationScaleMode
+	pendingResolution   atomic.Uint64
+	lockedResolution    bool
+	prevHasContent      bool
+	frameCounter        uint64
+	frameTimestamp      time.Time
+	scheduler           *VideoScheduler
+	schedulerTaskID     uint64
+	hardwareDisabled    bool
+	lastHardwareFrame   uint64
+	lastHardwareLayers  []CompositorFrameLayer
+	frameLeaseRings     map[uint64]*VideoFrameLeaseRing
+	frameLeaseBytes     map[uint64]int
+	lastSourceGens      map[uint64]uint64
+	skipStreak          uint64
+	softwareFrameRing   *VideoFrameLeaseRing
+	softwareFrameBytes  int
+	finalFrameLease     *VideoFrameLease
+	lastSnapshotFrame   uint64
+	lastSnapshot        []byte
+	blendJobs           chan blendStripJob
+	blendWorkerStop     chan struct{}
+	blendWorkerWG       sync.WaitGroup
+	softwareDirtyRects  []FrameDirtyRect
+	forceFullFrame      bool
 
 	// Tile-based retained composition state. tileSlotFrame records, per
 	// software lease slot, the frame whose complete composite that slot's
@@ -538,7 +540,17 @@ func (c *VideoCompositor) composite() {
 	// Source TickFrame calls above (VBlank edges, chip state) have
 	// already run, so guest-visible timing is unaffected.
 	if c.canSkipUnchangedCompositeLocked() {
+		// No new pixels this tick, but the logical frame still advances:
+		// bump frame metadata the skip would otherwise bypass and deliver
+		// the unconditional timing callback (frame count, VBL, frameChan
+		// wake). The pixel consumer is deliberately NOT invoked.
+		c.frameCounter++
+		c.frameTimestamp = time.Now()
+		cbTiming := c.onFrameTiming
 		c.mu.Unlock()
+		if cbTiming != nil {
+			cbTiming()
+		}
 		return
 	}
 
@@ -580,7 +592,8 @@ func (c *VideoCompositor) composite() {
 	c.frameCounter = frameID
 	c.frameTimestamp = time.Now()
 	out := c.output
-	cb := c.onFrameComplete
+	cbTiming := c.onFrameTiming
+	cbPixels := c.onFrameComplete
 	c.mu.Unlock()
 	defer releaseFrameLayerLeases(layers)
 	defer func() {
@@ -616,8 +629,11 @@ func (c *VideoCompositor) composite() {
 	} else {
 		c.updateOutput(out, outputFrame, outputRegions)
 	}
-	if cb != nil {
-		cb()
+	if cbTiming != nil {
+		cbTiming()
+	}
+	if cbPixels != nil {
+		cbPixels()
 	}
 	if shouldOutput {
 		c.mu.Lock()
@@ -630,12 +646,21 @@ func (c *VideoCompositor) composite() {
 // can skip all pixel work because no enabled source published a new
 // frame since the last composite. Conservative by construction: any
 // enabled source that does not implement FrameGenerationSource, a
-// pending force-full-frame, a frame-complete consumer (recorder), or a
-// scanline-compositing frame all disable the skip. On a false return
+// pending force-full-frame, an active pixel consumer (recorder/capture),
+// or a scanline-compositing frame all disable the skip. On a false return
 // the caller proceeds to composite and this function has already
 // recorded the new generations.
 func (c *VideoCompositor) canSkipUnchangedCompositeLocked() bool {
-	if c.forceFullFrame || c.onFrameComplete != nil || !c.prevHasContent {
+	if !compositeSkipEnabled() {
+		return false
+	}
+	if c.forceFullFrame || !c.prevHasContent {
+		return false
+	}
+	// A live pixel consumer (recorder/capture) needs materialised pixels
+	// every tick, so it disables the skip. The plain timing callback does
+	// not: it fires unconditionally on the skip path.
+	if c.pixelConsumerActive != nil && c.pixelConsumerActive() {
 		return false
 	}
 	if c.frameCounter == 0 {
@@ -797,6 +822,20 @@ type scanlineSourceEntry struct {
 	height int
 }
 
+// sourceContentGen returns a content generation for a layer from this source.
+// A FrameGenerationSource reports its own generation (bumped only on visible
+// change), so an unchanged layer keeps a stable value. Any other source gets a
+// per-composite unique value (the next frame id), which differs every frame and
+// so forces the backend to re-upload: the conservative fallback that never
+// claims unchanged pixels it cannot prove. The high bit tags fallback values so
+// they can never collide with a real generation.
+func (c *VideoCompositor) sourceContentGen(source VideoSource) uint64 {
+	if gen, ok := source.(FrameGenerationSource); ok {
+		return gen.FrameGeneration()
+	}
+	return (uint64(1) << 63) | (c.frameCounter + 1)
+}
+
 func (c *VideoCompositor) collectCompositeLayers(copyBuffers bool) ([]CompositorFrameLayer, bool) {
 	layers, hasContent, usedScanline := c.collectScanlineAwareLayers(copyBuffers)
 	if usedScanline {
@@ -835,6 +874,7 @@ func (c *VideoCompositor) appendCopiedCompositeLayer(layers []CompositorFrameLay
 			DestWidth:    rect.w,
 			DestHeight:   rect.h,
 			Opaque:       opaque,
+			ContentGen:   c.sourceContentGen(source),
 			Indexed:      indexed,
 		}), true
 	}
@@ -894,6 +934,7 @@ func (c *VideoCompositor) appendCopiedCompositeLayer(layers []CompositorFrameLay
 		Buffer:       buf,
 		Lease:        lease,
 		Opaque:       opaque,
+		ContentGen:   c.sourceContentGen(source),
 		DirtyRects:   dirtyRects,
 	})
 	return layers, true
@@ -948,6 +989,7 @@ func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, re
 		Buffer:       buf,
 		Lease:        lease,
 		Opaque:       opaque,
+		ContentGen:   c.sourceContentGen(source),
 		DirtyRects:   dirtyRects,
 	})
 	return layers, true
@@ -955,6 +997,13 @@ func (c *VideoCompositor) appendCompositeLayer(layers []CompositorFrameLayer, re
 
 func videoFrameLeasesEnabled() bool {
 	return os.Getenv("IE_VIDEO_FRAME_LEASES") != "0"
+}
+
+// compositeSkipEnabled reports whether the unchanged-frame composite skip is
+// permitted. Default-on; IE_VIDEO_COMPOSITE_SKIP=0 forces every tick to
+// composite. Read at use time so tests can toggle it with t.Setenv.
+func compositeSkipEnabled() bool {
+	return os.Getenv("IE_VIDEO_COMPOSITE_SKIP") != "0"
 }
 
 // collectIndexedLayerLocked returns the source's frame as palette indices when
@@ -1711,10 +1760,28 @@ func compositorOpaquePixel(srcPixel uint32) (uint32, bool) {
 	return 0, false
 }
 
-// SetFrameCallback installs a callback invoked after each composite() pass.
+// SetFrameCallback installs the pixel-consumer callback, invoked only after a
+// composed (non-skipped) composite() pass, when materialised pixels exist.
 func (c *VideoCompositor) SetFrameCallback(cb func()) {
 	c.mu.Lock()
 	c.onFrameComplete = cb
+	c.mu.Unlock()
+}
+
+// SetFrameTimingCallback installs the unconditional logical-frame/timing
+// callback, invoked on every tick including skipped ones (no pixels required).
+func (c *VideoCompositor) SetFrameTimingCallback(cb func()) {
+	c.mu.Lock()
+	c.onFrameTiming = cb
+	c.mu.Unlock()
+}
+
+// SetPixelConsumerActiveFunc installs a predicate reporting whether a live
+// pixel consumer (recording/capture) currently needs materialised pixels every
+// tick. When it returns true the unchanged-frame skip is disabled.
+func (c *VideoCompositor) SetPixelConsumerActiveFunc(fn func() bool) {
+	c.mu.Lock()
+	c.pixelConsumerActive = fn
 	c.mu.Unlock()
 }
 

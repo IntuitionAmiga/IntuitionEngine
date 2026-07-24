@@ -946,6 +946,24 @@ func BenchmarkBusWrite32_RAM(b *testing.B) {
 	}
 }
 
+// BenchmarkBusWriteSpan_RAM measures MachineBus.WriteSpan over guest RAM, the
+// bulk-write path the page-dirty overhead gate checks alongside the scalar
+// Write32 variants. No bus-level span-write benchmark existed before Slice 3.
+func BenchmarkBusWriteSpan_RAM(b *testing.B) {
+	bus := NewMachineBus()
+	const addr uint64 = 0x4000
+	src := make([]byte, 4096)
+	for i := range src {
+		src[i] = byte(i)
+	}
+	b.SetBytes(int64(len(src)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		bus.WriteSpan(addr, src)
+	}
+}
+
 func BenchmarkBusRead32_IOPage(b *testing.B) {
 	bus := NewMachineBus()
 	const addr uint32 = 0xF6000

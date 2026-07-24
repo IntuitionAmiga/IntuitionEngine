@@ -292,7 +292,7 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 			})
 		}
 	}
-	registerBit32 := sourceBetween(t, source, "func (se *ScriptEngine) registerBit32", "func (se *ScriptEngine) onFrameComplete")
+	registerBit32 := sourceBetween(t, source, "func (se *ScriptEngine) registerBit32", "func (se *ScriptEngine) onFrameTiming")
 	for _, key := range keyRe.FindAllStringSubmatch(registerBit32, -1) {
 		facts = append(facts, sdkSourceFact{
 			Surface:  "IEScript",

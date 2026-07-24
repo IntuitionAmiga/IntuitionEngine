@@ -105,7 +105,9 @@ func NewScriptEngine(bus *MachineBus, compositor *VideoCompositor, terminal *Ter
 		se.compileCache = make(map[string]*lua.FunctionProto)
 	}
 	if compositor != nil {
-		compositor.SetFrameCallback(se.onFrameComplete)
+		compositor.SetFrameTimingCallback(se.onFrameTiming)
+		compositor.SetFrameCallback(se.onFramePixels)
+		compositor.SetPixelConsumerActiveFunc(se.pixelConsumerActive)
 	}
 	return se
 }
@@ -787,11 +789,15 @@ func (se *ScriptEngine) registerBit32(L *lua.LState) {
 	L.SetGlobal("bit32", bit32)
 }
 
-func (se *ScriptEngine) onFrameComplete() {
+// onFrameTiming is the unconditional logical-frame/timing callback. It runs on
+// every compositor tick, including skipped (unchanged-pixel) ticks, so the
+// script frame count, EmuTOS VBL contract and frameChan wake advance at a
+// steady 60 Hz regardless of whether pixels were materialised.
+func (se *ScriptEngine) onFrameTiming() {
 	se.frameCount.Add(1)
 
 	// EmuTOS on M68K relies on VBL (level 4) for periodic screen service.
-	// Deliver one VBL interrupt per composed frame when execution is in ROM space.
+	// Deliver one VBL interrupt per logical frame when execution is in ROM space.
 	snap := runtimeStatus.snapshot()
 	if snap.selectedCPU == runtimeCPUM68K && snap.m68k != nil {
 		cpu := snap.m68k.CPU()
@@ -803,13 +809,24 @@ func (se *ScriptEngine) onFrameComplete() {
 		}
 	}
 
-	if se.recorder != nil {
-		se.recorder.OnFrame()
-	}
 	select {
 	case se.frameChan <- struct{}{}:
 	default:
 	}
+}
+
+// onFramePixels is the pixel consumer, invoked only after a composed
+// (non-skipped) tick when materialised pixels exist for the recorder.
+func (se *ScriptEngine) onFramePixels() {
+	if se.recorder != nil {
+		se.recorder.OnFrame()
+	}
+}
+
+// pixelConsumerActive reports whether recording currently needs materialised
+// pixels every tick, disabling the compositor's unchanged-frame skip.
+func (se *ScriptEngine) pixelConsumerActive() bool {
+	return se.recorder != nil && se.recorder.IsRecording()
 }
 
 func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {

@@ -48,6 +48,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	vk "github.com/goki/vulkan"
@@ -110,6 +111,29 @@ type VulkanBackend struct {
 	// Staging buffer for readback
 	stagingBuffer       vk.Buffer
 	stagingBufferMemory vk.DeviceMemory
+	// stagingMapped is a persistent host mapping of stagingBufferMemory (Slice
+	// 5). The memory is host-coherent, so a single map at creation is valid for
+	// the buffer's lifetime and every readback copies from it directly instead
+	// of a per-frame MapMemory/UnmapMemory. nil when IE_VOODOO_PERSIST_MAP=0 or
+	// the map failed; the readback then falls back to the per-frame map.
+	stagingMapped unsafe.Pointer
+	// deferredPresent marks that a frame-final render pass is recorded but not
+	// yet submitted in commandBuffer (Slice 6 one-submit present). SwapBuffers
+	// appends the readback copy and issues the single QueueSubmit.
+	deferredPresent bool
+	// readbackSeq increments every time a completed frame is copied into
+	// outputFrame. The swap worker publishes only when it advances, so an async
+	// swap whose frame is still in flight never republishes the previous frame
+	// as a new generation (Slice 7 P1).
+	readbackSeq atomic.Uint64
+	// asyncFencePending marks that a present submission (frame N) has been
+	// queued but its fence not yet waited and its staging not yet drained to
+	// outputFrame (Slice 7 async present). The wait is deferred to the start of
+	// the next frame's record, where a whole guest CPU frame has elapsed so the
+	// GPU work is already complete and the fence wait no longer stalls. Until
+	// then outputFrame holds the previously completed frame (N-1), so consumers
+	// observe N-1 while the renderer produces N.
+	asyncFencePending bool
 
 	// Command pool and buffer
 	commandPool   vk.CommandPool
@@ -277,6 +301,8 @@ func (vb *VulkanBackend) Init(width, height int) error {
 	vb.outputFrame = make([]byte, width*height*4)
 
 	vb.clearedSinceFlush = true
+	vb.deferredPresent = false
+	vb.asyncFencePending = false
 
 	// Vulkan is the only render path: an init failure is fatal rather
 	// than a silent downgrade.
@@ -322,6 +348,8 @@ func (vb *VulkanBackend) Resize(width, height int) error {
 	vb.height = height
 	vb.outputFrame = make([]byte, width*height*4)
 	vb.clearedSinceFlush = true
+	vb.deferredPresent = false
+	vb.asyncFencePending = false
 	return nil
 }
 
@@ -1251,7 +1279,25 @@ func (vb *VulkanBackend) createStagingBuffer() error {
 	vb.stagingBufferMemory = memory
 
 	vk.BindBufferMemory(vb.device, buffer, memory, 0)
+
+	// Persistently map the host-coherent staging memory once, so every readback
+	// copies straight from the mapping (Slice 5). Falls back to per-frame
+	// mapping if disabled or the map fails.
+	vb.stagingMapped = nil
+	if voodooPersistMapEnabled() {
+		var data unsafe.Pointer
+		if res := vk.MapMemory(vb.device, memory, 0, memReqs.Size, 0, &data); res == vk.Success {
+			vb.stagingMapped = data
+		}
+	}
 	return nil
+}
+
+// voodooPersistMapEnabled reports whether the Voodoo staging buffer keeps a
+// persistent host mapping. Default-on; IE_VOODOO_PERSIST_MAP=0 restores the
+// per-frame MapMemory/UnmapMemory readback. Read at use time.
+func voodooPersistMapEnabled() bool {
+	return os.Getenv("IE_VOODOO_PERSIST_MAP") != "0"
 }
 
 // createCommandBuffer allocates a command buffer
@@ -2393,7 +2439,24 @@ func (vb *VulkanBackend) FlushTriangles(triangles []VoodooTriangle) {
 	vb.renderMu.Lock()
 	defer vb.renderMu.Unlock()
 	fs := vb.captureFlushState()
-	vb.flushTrianglesLocked(triangles, &fs)
+	vb.flushTrianglesLocked(triangles, &fs, false)
+	vb.restoreUnconsumedLiveTexture(&fs)
+}
+
+// FlushTrianglesForPresent renders the frame-final batch. With one-submit
+// present enabled it records the render without submitting, so the following
+// SwapBuffers folds the readback copy into the same submission; otherwise it
+// submits immediately exactly like FlushTriangles. Only the swap worker's
+// presentation job calls this; overflow and direct callers keep FlushTriangles.
+func (vb *VulkanBackend) FlushTrianglesForPresent(triangles []VoodooTriangle) {
+	if !voodooOneSubmitEnabled() {
+		vb.FlushTriangles(triangles)
+		return
+	}
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
+	fs := vb.captureFlushState()
+	vb.flushTrianglesLocked(triangles, &fs, true)
 	vb.restoreUnconsumedLiveTexture(&fs)
 }
 
@@ -2425,7 +2488,7 @@ func (vb *VulkanBackend) FlushTrianglesSync(triangles []VoodooTriangle) {
 	vb.renderMu.Lock()
 	defer vb.renderMu.Unlock()
 	fs := vb.captureFlushState()
-	vb.flushTrianglesLocked(triangles, &fs)
+	vb.flushTrianglesLocked(triangles, &fs, false)
 	vb.restoreUnconsumedLiveTexture(&fs)
 	if vb.initialized {
 		vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
@@ -2434,7 +2497,7 @@ func (vb *VulkanBackend) FlushTrianglesSync(triangles []VoodooTriangle) {
 
 // flushTrianglesLocked renders a batch. The caller holds renderMu; all
 // live-register inputs arrive in fs, so the state mutex is not needed.
-func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vulkanFlushState) {
+func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vulkanFlushState, deferSubmit bool) {
 	if !vb.initialized {
 		// Vulkan-only: nothing can render this batch.
 		vb.clearedSinceFlush = false
@@ -2459,7 +2522,7 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vu
 
 	// If no triangles, still need to render an empty frame with clear color
 	if len(triangles) == 0 {
-		vb.renderEmptyFrame(fs)
+		vb.renderEmptyFrame(fs, deferSubmit)
 		return
 	}
 
@@ -2544,6 +2607,9 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vu
 
 	// Wait for previous frame
 	vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
+	// The previous frame's GPU work is now complete: drain its deferred async
+	// readback (Slice 7) before this frame reuses the staging buffer.
+	vb.drainAsyncReadbackAfterFenceLocked()
 	vk.ResetFences(vb.device, 1, []vk.Fence{vb.fence})
 
 	// Record command buffer
@@ -2613,16 +2679,33 @@ func (vb *VulkanBackend) flushTrianglesLocked(triangles []VoodooTriangle, fs *vu
 	}
 
 	vk.CmdEndRenderPass(vb.commandBuffer)
-	vk.EndCommandBuffer(vb.commandBuffer)
+	vb.submitOrDeferPresent(deferSubmit)
+}
 
-	// Submit
+// submitOrDeferPresent finalises a recorded render command buffer. When
+// deferSubmit is set (Slice 6 one-submit present) it leaves the buffer open and
+// unsubmitted so SwapBuffers can append the readback copy into the same buffer
+// and issue a single QueueSubmit; otherwise it ends and submits the buffer as
+// its own render submission (the legacy two-submission path).
+func (vb *VulkanBackend) submitOrDeferPresent(deferSubmit bool) {
+	if deferSubmit {
+		vb.deferredPresent = true
+		return
+	}
+	vk.EndCommandBuffer(vb.commandBuffer)
 	submitInfo := vk.SubmitInfo{
 		SType:              vk.StructureTypeSubmitInfo,
 		CommandBufferCount: 1,
 		PCommandBuffers:    []vk.CommandBuffer{vb.commandBuffer},
 	}
-
 	vk.QueueSubmit(vb.graphicsQueue, 1, []vk.SubmitInfo{submitInfo}, vb.fence)
+}
+
+// voodooOneSubmitEnabled reports whether the frame-final render and the readback
+// copy are folded into one submission. Default-on; IE_VOODOO_ONE_SUBMIT=0 keeps
+// the two-submission path (render submit, then a separate readback submit).
+func voodooOneSubmitEnabled() bool {
+	return os.Getenv("IE_VOODOO_ONE_SUBMIT") != "0"
 }
 
 // livePushConstants builds push constants from the live backend state
@@ -2685,9 +2768,12 @@ func voodooScissorForState(st *VoodooRasterState, width, height int) vk.Rect2D {
 }
 
 // renderEmptyFrame renders a frame with just the clear color (no triangles)
-func (vb *VulkanBackend) renderEmptyFrame(fs *vulkanFlushState) {
+func (vb *VulkanBackend) renderEmptyFrame(fs *vulkanFlushState, deferSubmit bool) {
 	// Wait for previous frame
 	vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
+	// Drain the previous frame's deferred async readback (Slice 7) before this
+	// frame reuses the staging buffer.
+	vb.drainAsyncReadbackAfterFenceLocked()
 	vk.ResetFences(vb.device, 1, []vk.Fence{vb.fence})
 
 	// Record command buffer
@@ -2717,16 +2803,7 @@ func (vb *VulkanBackend) renderEmptyFrame(fs *vulkanFlushState) {
 	vk.CmdBeginRenderPass(vb.commandBuffer, &renderPassBegin, vk.SubpassContentsInline)
 	// No draw calls - just clear
 	vk.CmdEndRenderPass(vb.commandBuffer)
-	vk.EndCommandBuffer(vb.commandBuffer)
-
-	// Submit
-	submitInfo := vk.SubmitInfo{
-		SType:              vk.StructureTypeSubmitInfo,
-		CommandBufferCount: 1,
-		PCommandBuffers:    []vk.CommandBuffer{vb.commandBuffer},
-	}
-
-	vk.QueueSubmit(vb.graphicsQueue, 1, []vk.SubmitInfo{submitInfo}, vb.fence)
+	vb.submitOrDeferPresent(deferSubmit)
 }
 
 // ClearFramebuffer clears the framebuffer. The engine issues clears
@@ -2762,11 +2839,132 @@ func (vb *VulkanBackend) SwapBuffers(waitVSync bool) {
 		return
 	}
 
+	if vb.deferredPresent {
+		// One-submit path: the frame-final render pass is already recorded in
+		// commandBuffer but unsubmitted. Append the readback copy into the same
+		// buffer and issue the single QueueSubmit.
+		vb.completeDeferredPresentLocked()
+		return
+	}
+
 	// Wait for rendering to complete
 	vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
 
 	// Read back framebuffer
 	vb.readbackFramebuffer()
+}
+
+// completeDeferredPresentLocked finalises the one-submit present. The frame-final
+// render pass is recorded but unsubmitted in commandBuffer; this barriers the
+// colour writes to the transfer read, records the image-to-buffer copy, ends the
+// buffer, submits once and waits, then copies the readback to the output frame.
+func (vb *VulkanBackend) completeDeferredPresentLocked() {
+	vb.deferredPresent = false
+
+	// The render pass leaves colorImage in TransferSrcOptimal. With no fence
+	// between the render and the copy now, an explicit barrier makes the colour
+	// attachment writes available and visible to the transfer read.
+	barrier := vk.ImageMemoryBarrier{
+		SType:               vk.StructureTypeImageMemoryBarrier,
+		SrcAccessMask:       vk.AccessFlags(vk.AccessColorAttachmentWriteBit),
+		DstAccessMask:       vk.AccessFlags(vk.AccessTransferReadBit),
+		OldLayout:           vk.ImageLayoutTransferSrcOptimal,
+		NewLayout:           vk.ImageLayoutTransferSrcOptimal,
+		SrcQueueFamilyIndex: vk.QueueFamilyIgnored,
+		DstQueueFamilyIndex: vk.QueueFamilyIgnored,
+		Image:               vb.colorImage,
+		SubresourceRange: vk.ImageSubresourceRange{
+			AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit),
+			LevelCount: 1,
+			LayerCount: 1,
+		},
+	}
+	vk.CmdPipelineBarrier(vb.commandBuffer,
+		vk.PipelineStageFlags(vk.PipelineStageColorAttachmentOutputBit),
+		vk.PipelineStageFlags(vk.PipelineStageTransferBit),
+		0, 0, nil, 0, nil, 1, []vk.ImageMemoryBarrier{barrier})
+
+	region := vk.BufferImageCopy{
+		BufferOffset:      0,
+		BufferRowLength:   0,
+		BufferImageHeight: 0,
+		ImageSubresource: vk.ImageSubresourceLayers{
+			AspectMask:     vk.ImageAspectFlags(vk.ImageAspectColorBit),
+			MipLevel:       0,
+			BaseArrayLayer: 0,
+			LayerCount:     1,
+		},
+		ImageOffset: vk.Offset3D{X: 0, Y: 0, Z: 0},
+		ImageExtent: vk.Extent3D{Width: uint32(vb.width), Height: uint32(vb.height), Depth: 1},
+	}
+	vk.CmdCopyImageToBuffer(vb.commandBuffer, vb.colorImage, vk.ImageLayoutTransferSrcOptimal, vb.stagingBuffer, 1, []vk.BufferImageCopy{region})
+	vk.EndCommandBuffer(vb.commandBuffer)
+
+	submitInfo := vk.SubmitInfo{
+		SType:              vk.StructureTypeSubmitInfo,
+		CommandBufferCount: 1,
+		PCommandBuffers:    []vk.CommandBuffer{vb.commandBuffer},
+	}
+	vk.QueueSubmit(vb.graphicsQueue, 1, []vk.SubmitInfo{submitInfo}, vb.fence)
+
+	if voodooAsyncPresentEnabled() {
+		// Async present (Slice 7): do not wait on the fence now. The next
+		// frame's record-start fence wait drains this frame's readback, by
+		// which point the GPU work has completed behind a whole guest CPU
+		// frame. outputFrame still holds the previously completed frame.
+		vb.asyncFencePending = true
+		return
+	}
+
+	vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
+	vb.copyStagingToOutputLocked()
+}
+
+// copyStagingToOutputLocked copies the readback staging buffer into outputFrame,
+// via the persistent map (Slice 5) or a per-frame map.
+func (vb *VulkanBackend) copyStagingToOutputLocked() {
+	if vb.stagingMapped != nil {
+		copy(vb.outputFrame, (*[1 << 30]byte)(vb.stagingMapped)[:len(vb.outputFrame)])
+	} else {
+		var data unsafe.Pointer
+		vk.MapMemory(vb.device, vb.stagingBufferMemory, 0, vk.DeviceSize(len(vb.outputFrame)), 0, &data)
+		copy(vb.outputFrame, (*[1 << 30]byte)(data)[:len(vb.outputFrame)])
+		vk.UnmapMemory(vb.device, vb.stagingBufferMemory)
+	}
+	// A completed frame now sits in outputFrame; mark it so the swap worker
+	// publishes exactly on readback completion rather than speculatively.
+	vb.readbackSeq.Add(1)
+}
+
+// ReadbackSeq reports how many completed frames have been copied into
+// outputFrame. The swap worker publishes only when this advances.
+func (vb *VulkanBackend) ReadbackSeq() uint64 {
+	return vb.readbackSeq.Load()
+}
+
+// drainAsyncReadbackAfterFenceLocked copies a pending async frame's staging into
+// outputFrame. The caller must already have waited on vb.fence, so no wait
+// happens here; it makes the just-completed frame observable to consumers.
+func (vb *VulkanBackend) drainAsyncReadbackAfterFenceLocked() {
+	if !vb.asyncFencePending {
+		return
+	}
+	vb.copyStagingToOutputLocked()
+	vb.asyncFencePending = false
+}
+
+// FinishPendingReadback forces any deferred async present to complete: it waits
+// the pending fence and drains the frame into outputFrame, so a synchronous
+// consumer (swap-hash, screenshot, conformance) observes the frame just swapped
+// rather than the previous one. No-op when nothing is pending.
+func (vb *VulkanBackend) FinishPendingReadback() {
+	vb.renderMu.Lock()
+	defer vb.renderMu.Unlock()
+	if !vb.initialized || !vb.asyncFencePending {
+		return
+	}
+	vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
+	vb.drainAsyncReadbackAfterFenceLocked()
 }
 
 // readbackFramebuffer copies the rendered image to CPU memory
@@ -2808,11 +3006,9 @@ func (vb *VulkanBackend) readbackFramebuffer() {
 	vk.QueueSubmit(vb.graphicsQueue, 1, []vk.SubmitInfo{submitInfo}, vb.fence)
 	vk.WaitForFences(vb.device, 1, []vk.Fence{vb.fence}, vk.True, ^uint64(0))
 
-	// Map staging buffer and copy to output
-	var data unsafe.Pointer
-	vk.MapMemory(vb.device, vb.stagingBufferMemory, 0, vk.DeviceSize(len(vb.outputFrame)), 0, &data)
-	copy(vb.outputFrame, (*[1 << 30]byte)(data)[:len(vb.outputFrame)])
-	vk.UnmapMemory(vb.device, vb.stagingBufferMemory)
+	// Copy the readback to the output frame (persistent map or per-frame),
+	// advancing the readback sequence.
+	vb.copyStagingToOutputLocked()
 }
 
 // GetFrame returns the rendered frame. Vulkan is the only render
@@ -2853,6 +3049,12 @@ func (vb *VulkanBackend) Reset() {
 		// Engine reset drops all snapshot references; release their GPU copies.
 		vb.destroyTextureCache(true)
 	}
+	// Async present state (Slice 7) belongs to the pre-reset content being
+	// discarded here. DeviceWaitIdle above already drained the GPU, so drop the
+	// pending flags rather than let the next flush drain the stale pre-reset
+	// staging image back into the freshly zeroed output frame.
+	vb.deferredPresent = false
+	vb.asyncFencePending = false
 	for i := range vb.outputFrame {
 		vb.outputFrame[i] = 0
 	}
@@ -3009,6 +3211,12 @@ func (vb *VulkanBackend) destroyVertexBuffer() {
 }
 
 func (vb *VulkanBackend) destroyStagingBuffer() {
+	// Drop the persistent mapping (Slice 5) before freeing the memory. This is
+	// the single choke point for resize, destruction and failed-init cleanup.
+	if vb.stagingMapped != nil {
+		vk.UnmapMemory(vb.device, vb.stagingBufferMemory)
+		vb.stagingMapped = nil
+	}
 	if vb.stagingBuffer != vk.NullBuffer {
 		vk.DestroyBuffer(vb.device, vb.stagingBuffer, nil)
 	}

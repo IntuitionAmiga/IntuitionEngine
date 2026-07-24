@@ -911,14 +911,33 @@ re-raises the signal so termination behaves as it normally would, and exits
 explicitly if the re-raise is unavailable, which is the case on Windows.
 
 The profiles produced this way are the input to `default.pgo`. To regenerate
-it, build a capture binary with `go build -pgo=off`, run each workload in the
-manifest for the stated duration with `IE_CPUPROFILE` pointed at a separate
-file, merge the results with
-`go tool pprof -proto p1 p2 ... > default.pgo`, and confirm that
-`go build -pgo=default.pgo .` completes without a warning or a fallback. Record
-the revision, toolchain, workloads and durations in `default.pgo.manifest`
-beside the profile, and accept the new profile only when benchstat shows no
-regression against `-pgo=off` across the video, audio and bus benchmarks.
+it, run `make pgo-regenerate` (which builds a `-pgo=off` capture binary, runs
+each manifest workload for its stated duration with `IE_CPUPROFILE`, merges the
+results and verifies the merged profile builds without fallback, writing
+`default.pgo.new` rather than overwriting in place); or do the same steps by
+hand. Confirm that `go build -pgo=default.pgo .` completes without a warning or a
+fallback. Record the revision, toolchain, workloads and durations in
+`default.pgo.manifest` beside the profile, and accept the new profile only when
+benchstat shows no regression against `-pgo=off` across the video, audio and bus
+benchmarks.
+
+Profiles are per target, passed with `-pgo` explicitly rather than by Go's root
+auto-discovery, so a regenerated root profile cannot silently change a target
+that should use its own. The amd64 targets (native, novulkan, headless,
+headless-novulkan, x86-64-v3) use `PGO_PROFILE` (default `default.pgo`). The wasm
+targets use `WASM_PGO`, which also defaults to `default.pgo`: a PGO profile is
+symbolic (function names and edge weights) and Go applies it in the
+arch-independent inliner, so `default.pgo`'s samples for the functions shared
+between the native and wasm builds (bus, IE64 interpreter, BASIC runtime, video
+kernels) drive the wasm codegen as well; entries for amd64-only functions such
+as the native JIT are dropped, and PGO never pessimises, so it is no worse than
+`-pgo=off` (measured cost ~0.2 per cent wasm size). Go cannot sample-profile
+js/wasm itself, because the single-threaded WebAssembly runtime has no
+SIGPROF-equivalent, so an `IE_CPUPROFILE` capture on wasm yields zero samples; a
+profile that also covers the wasm JIT paths must come from a browser or Node CPU
+capture converted to pprof, at which point `WASM_PGO=default.wasm.pgo` selects
+it. Each is a Makefile variable, so any target can be pointed at a
+target-specific profile.
 
 ### Programme Benchmark Inventory
 
@@ -930,10 +949,10 @@ rename cannot quietly drop a gate.
 
 | Subsystem | Benchmarks |
 |-----------|------------|
-| Compositor | `BenchmarkComposite_StaticScene`, `BenchmarkComposite_FullDirty`, `BenchmarkCompositeScaled_Resample`, `BenchmarkCompositeScanline_MultiLayer` |
+| Compositor | `BenchmarkComposite_StaticScene`, `BenchmarkComposite_SkipUnchanged`, `BenchmarkComposite_FullDirty`, `BenchmarkCompositeScaled_Resample`, `BenchmarkCompositeScanline_MultiLayer` |
 | Software Voodoo | `BenchmarkVoodooRasterTextured`, `BenchmarkVoodooRasterScene`, `BenchmarkVoodoo_FullscreenQuad_Software` |
 | Audio | `BenchmarkReadSamplesBlock_AllChips`, `BenchmarkAudioRegisterWrite_UnderRender` |
-| Bus and memory | `BenchmarkRead32_NonIO`, `BenchmarkWrite32_NonIO`, `BenchmarkSparseBackingReadSpan`, `BenchmarkSparseBackingWriteSpan`, `BenchmarkDirtyMark` |
+| Bus and memory | `BenchmarkRead32_NonIO`, `BenchmarkWrite32_NonIO`, `BenchmarkBusWrite32_RAM`, `BenchmarkBusWriteSpan_RAM`, `BenchmarkSparseBackingReadSpan`, `BenchmarkSparseBackingWriteSpan`, `BenchmarkDirtyMark` |
 | Monitor | `BenchmarkMonitorHooks_Disabled` |
 | IEScript | `BenchmarkIEScriptHotLoop` |
 
@@ -1272,6 +1291,48 @@ Consecutive triangles may share an internal state snapshot until a raster-state 
 
 Voodoo swap jobs run asynchronously; oversized triangle batches render mid-frame without presentation or swap callbacks, and STATUS exposes busy and SWAPBUF while a presented swap is pending. `VOODOO_SWAP_BUFFER_CMD` hands the current batch to the swap worker, and `VOODOO_STATUS` reports framebuffer and SST busy plus `SWAPBUF` while that presented swap is active. A later swap waits only when the swap pipeline is full (two jobs in flight), giving up to two frames of run-ahead. If a frame exceeds `VOODOO_MAX_BATCH_TRIANGLES`, the full batch is rendered into the draw buffer as a mid-frame render-only flush, without presenting the frame or firing swap callbacks, and triangle submission continues into a fresh batch. This preserves oversized tiled frames instead of dropping triangles.
 
+The native Vulkan backend defers the present fence wait to the next frame,
+enabled by default and disabled with `IE_VOODOO_ASYNC_PRESENT=0`. A present
+submission (frame N) is queued without blocking on its fence; the wait is drained
+at the start of the next frame's record, by which point a whole guest CPU frame
+has elapsed and the GPU work is already complete, so the wait no longer stalls.
+Until then the readback output holds the previously completed frame, so consumers
+observe frame N-1 while the renderer produces frame N. Because the persistent
+staging map (above) already makes the readback copy itself effectively free, a
+single draw image is kept and the overlap comes from hiding the fence wait behind
+the guest CPU frame rather than from duplicating GPU images. Swap-hash and
+duplicate-frame tracing force the deferred readback to complete first
+(`FinishPendingReadback`) so they observe the exact frame swapped; with the switch
+off every present waits synchronously in `SwapBuffers`. The N-1/N contract is
+pinned by the native-Vulkan gate `TestVulkanAsyncPresent_NMinus1Contract`.
+
+The native Vulkan backend folds the frame-final render and the framebuffer
+readback into one submission, enabled by default and disabled with
+`IE_VOODOO_ONE_SUBMIT=0`. The swap worker's presentation flush records the
+frame-final render pass without submitting it (`FlushTrianglesForPresent`), and
+`SwapBuffers` appends an explicit colour-to-transfer image-memory barrier and the
+image-to-buffer copy into the same command buffer, then issues a single
+`vkQueueSubmit` and one fence wait, removing the separate render submission and
+its fence wait. Mid-frame overflow flushes and direct `FlushTriangles` callers
+keep their immediate-submit semantics. An empty (clear-only) frame still records
+and holds a final command buffer so one submission always occurs. With the switch
+off the render submits on its own and `SwapBuffers` does its own readback
+submission as before. The two paths are proven to produce a bit-identical
+framebuffer by the native-Vulkan gates `TestVulkanOneSubmit_MatchesTwoSubmitEmptyFrame`
+and `TestVulkanOneSubmit_MatchesTwoSubmitTriangle`.
+
+The native Vulkan backend keeps a persistent host mapping of its readback
+staging buffer, enabled by default and disabled with `IE_VOODOO_PERSIST_MAP=0`.
+The staging memory is host-coherent, so it is mapped once when the staging
+buffer is created and every framebuffer readback copies straight from that
+mapping instead of a per-frame `vkMapMemory`/`vkUnmapMemory` pair. The mapping is
+dropped at the single staging-buffer teardown point, which covers resize,
+destruction and failed-initialisation cleanup, and re-established when the buffer
+is recreated. With the switch off the readback maps and unmaps per frame as
+before. The behaviour is proven on a real device by the native-Vulkan gate
+`TestVulkanPersistentStagingMap_ReadbackAndLifecycle` (headless builds wrap the
+software backend and never map device memory).
+
 ### Copper Cross-Chip Bus Access
 
 The copper coprocessor is internal to VideoChip but can write to any MMIO-mapped chip on the bus:
@@ -1337,7 +1398,9 @@ Two rendering paths:
 
 All-zero frame pixels are transparent; any nonzero alpha or RGB value is opaque. During compositing, zero-alpha nonzero-RGB pixels are promoted to opaque `0xFFRRGGBB` before they overwrite the destination. The compositor tick remains fixed at 60 Hz for guest VBlank compatibility; `GetRefreshRate()` reports the output backend rate, while `GetTickRate()` reports the compositor tick.
 
-FrameGenerationSource lets the compositor skip collect/copy/blend/upload work only after source TickFrame hooks run and only when every enabled source generation is unchanged. A pending full-frame update, a frame-complete callback, an enabled source without generation tracking, or a scanline-compositing source disables this skip for that tick.
+FrameGenerationSource lets the compositor skip collect/copy/blend/upload work only after source TickFrame hooks run and only when every enabled source generation is unchanged. A pending full-frame update, an active pixel consumer, an enabled source without generation tracking, or a scanline-compositing source disables this skip for that tick. The skip is enabled by default and can be disabled with `IE_VIDEO_COMPOSITE_SKIP=0`, which forces a full composite every tick.
+
+The frame callback is split into two responsibilities so the skip preserves the timing contract. An unconditional logical-frame/timing callback (script frame count, EmuTOS VBL delivery, `frameChan` wake) fires on every tick, including skipped ones, and advances the compositor frame counter and timestamp; a skipped tick therefore still advances the logical frame and delivers VBL without materialising pixels. A separate pixel-consumer callback (the recorder) fires only after a composed tick. While a pixel consumer is live (recording or capturing), a pixel-consumer-active predicate disables the skip so materialised pixels exist every tick. This split is pinned by `TestCompositeSkip_TimingFiresPixelsDoNot`, `TestCompositeSkip_KillSwitchForcesComposite` and `TestCompositeSkip_ActivePixelConsumerDisablesSkip`.
 
 Video frame leases are enabled by default and can be disabled with `IE_VIDEO_FRAME_LEASES=0`. Copy-buffer paths use three-slot lease rings to keep source-layer buffers alive while the hardware compositor or snapshot path still references them. Sources that implement the compositor copy interface can copy a stable frame directly into the caller-provided lease buffer, avoiding an intermediate source snapshot before compositor handoff. The software output path can also retain a lease-backed final frame for `UpdateFrame` instead of copying through the legacy output buffer. Frame leases keep compositor handoff buffers stable until release; hardware layers retain leases or stage copies when leases are unavailable. Snapshot APIs still return deep copies.
 
@@ -1351,9 +1414,13 @@ Scaled composition samples each destination column through a resample plan built
 
 Tiled software Voodoo rasterisation is enabled by default and can be disabled with `IE_VOODOO_TILE_RASTER=0`. A triangle flush is binned once, in submission order, over a 64 by 64 tile grid, and workers then take whole tiles rather than row bands of a single triangle. A tile owns its colour and depth pixels exclusively and replays its own binned list in submission order, so depth-equal, blended, fogged, chroma-keyed and overlapping translucent primitives land exactly as they would serially and the framebuffer is bit-identical to the per-triangle path. Tiles are indexed in raster rows, before the Y-flip, which is a bijection on rows and so preserves the disjointness. `IE_VOODOO_WORKERS` overrides the worker count, with `1` replaying every tile on the calling goroutine. Flushes still complete before `FlushTriangles` returns, so `WaitSwapIdle` keeps meaning that all raster work has finished.
 
+Pooled Voodoo texture uploads are enabled by default and can be disabled with `IE_VOODOO_TEXPOOL=0`. The guest texture bytes are read into a reusable pooled scratch buffer, then a single fused pass swaps big-endian to little-endian directly into both the retained per-upload buffer and the resident texture memory, removing the separate in-place swap and texture-memory copy passes. The returned upload buffer stays a fresh per-upload allocation because it is retained immutably by the raster-state snapshot and texture slots. With the switch off the legacy allocate-read-swap-copy path runs. The two paths are proven byte-identical (returned buffer and texture memory) by `TestVoodooTexPool_MatchesUnpooledByteForByte`.
+
 GPU-side compatibility-format conversion is enabled by default and can be disabled with `IE_VIDEO_GPU_CONVERT=0`. It needs a shader-capable Ebiten backend, so headless builds convert on the CPU whatever the switch says, and the CPU converter remains the canonical oracle. CLUT8 conversion runs as a Kage fragment shader over one retained source texture, which holds the 256 palette entries in the rows above the packed index rows, four indices to an RGBA texel. Palette and indices share a texture because Ebiten requires every source image bound to a shader draw to be the same size, and the texture is only as wide as the index rows need, with the palette wrapping across that width, because Ebiten cannot write part of an image: every `WritePixels` replaces the whole texture. A 320 by 200 frame therefore uploads about 64 KiB, against 256 KiB for the expanded RGBA frame the CPU path uploads.
 
 The shader is gated by a render and readback differential against the CPU expander, not by a pure-Go mirror alone, since only a real render exercises the compiled shader, the texture formats, the bindings and the coordinate rules. Ebiten needs the main OS thread for that, which a test function never has: creating a texture from one faults inside the driver, and reading pixels back outside a running game panics with "ReadPixels cannot be called before the game starts". Such checks therefore register a named body and re-execute the test binary with `IE_GPU_GATE_BODY` set to that name, and `TestMain` hands the main thread to Ebiten before any test state exists. The hardware compositor readback tests use the same mechanism, which is what they needed once Ebitengine moved to v2.10.
+
+Retained hardware-compositor layer textures are enabled by default and can be disabled with `IE_VIDEO_RETAINED_LAYERS=0`. Each RGBA hardware layer keeps its uploaded texture between frames and skips the whole-image `WritePixels` when the retained texture already holds the same source's unchanged content, decided by a per-layer content generation: a source that tracks a frame generation reports it, and any other source gets a per-frame unique value so its layer always re-uploads (the conservative fallback, which never claims unchanged pixels it cannot prove). The quad vertices and the uniform/option storage are cached per layer and rebuilt only when the source or destination geometry changes. With the switch off, every layer uploads and rebuilds its draw state each frame as before. The skip and geometry-reuse decisions are pinned by `TestEbitenRetainedLayer_UploadSkipDecision` and `TestEbitenRetainedLayer_GeomReuseDecision`, and the end-to-end upload skip by the GPU-gated `TestEbitenOutput_HardwareCompositor_RetainedLayerSkipsUpload`.
 
 The live path carries the frame as indices end to end. A source in CLUT8 mode publishes `IndexedFrameForCompositor`, the compositor hands the layer on unexpanded when the conversion is wanted and the output implements `AcceptsIndexedLayers`, and the Ebiten backend stages the indices and expands them with the shader as it draws. Every other case keeps the RGBA path: the kill switch, a headless or software output, a source that is not in an indexed mode, and the software fallback taken when a hardware frame update fails. A backend that cannot run the conversion shader is handled at the backend, not by the compositor, which cannot rescue it because the frame update it accepted had already reported success: the failing frame is expanded on the CPU so it still presents correctly, and the failure latches so `AcceptsIndexedLayers` returns false and every later frame arrives as RGBA. Indexed layers are expanded on the CPU at one choke point in the software renderer, so nothing downstream needs to know a layer ever arrived as indices, and a retained snapshot layer takes its own copy of the indices because the compositor reuses that scratch each frame.
 

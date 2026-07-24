@@ -23,6 +23,7 @@ package main
 import (
 	"fmt"
 	"image/color"
+	"os"
 	"runtime"
 	"strings"
 	"sync"
@@ -100,6 +101,9 @@ type EbitenOutput struct {
 	hwHasContent     bool
 	hwLayers         []ebitenHardwareLayer
 	hwCopyShader     *ebiten.Shader
+	// hwUploadCount counts hardware-layer WritePixels uploads, for the retained-
+	// layer tests to prove an unchanged frame performs no upload.
+	hwUploadCount atomic.Uint64
 
 	// Software cursor overlay for guests that need host-side cursor rendering.
 	// ROM desktops that draw into VRAM set noSoftwareCursor to avoid duplicates.
@@ -116,6 +120,50 @@ type ebitenHardwareLayer struct {
 	indices []byte
 	palette [256]uint32
 	conv    *clut8GPUConverter
+
+	// Retained-layer state (Slice 8). uploadedSourceID/uploadedGen record what
+	// the retained image currently holds, so an unchanged RGBA layer skips
+	// WritePixels; geomKey caches the quad and uniform storage so geometry is
+	// rebuilt only when the source or destination dimensions change.
+	haveUpload       bool
+	uploadedSourceID uint64
+	uploadedGen      uint64
+	geomValid        bool
+	geomKey          ebitenLayerGeomKey
+	cachedVertices   []ebiten.Vertex
+	cachedOptions    *ebiten.DrawTrianglesShaderOptions
+}
+
+// ebitenLayerGeomKey is the geometry identity of a hardware layer's quad; the
+// cached vertices and uniforms are valid while it is unchanged.
+type ebitenLayerGeomKey struct {
+	sw, sh, dx, dy, dw, dh int
+	opaque                 bool
+}
+
+// retainedUploadSkippable reports whether the retained texture already holds
+// this layer's exact content, so the whole-image WritePixels can be skipped.
+func (l *ebitenHardwareLayer) retainedUploadSkippable(newImage, retained bool) bool {
+	return retained && l.haveUpload && !newImage &&
+		l.uploadedSourceID == l.SourceID &&
+		l.uploadedGen == l.ContentGen
+}
+
+// geomReusable reports whether the cached quad and uniform storage are still
+// valid for the given geometry identity.
+func (l *ebitenHardwareLayer) geomReusable(retained bool, key ebitenLayerGeomKey) bool {
+	return retained && l.geomValid && l.geomKey == key && l.cachedOptions != nil
+}
+
+// ebitenHWQuadIndices is the fixed two-triangle index list shared by every
+// hardware layer quad. DrawTrianglesShader does not mutate it.
+var ebitenHWQuadIndices = []uint16{0, 1, 2, 1, 3, 2}
+
+// retainedLayersEnabled reports whether the hardware compositor retains unchanged
+// layer textures and cached draw state. Default-on; IE_VIDEO_RETAINED_LAYERS=0
+// restores the upload-and-rebuild-every-frame path. Read at use time.
+func retainedLayersEnabled() bool {
+	return os.Getenv("IE_VIDEO_RETAINED_LAYERS") != "0"
 }
 
 // AcceptsIndexedLayers reports that this backend can expand palette indices in
@@ -463,6 +511,10 @@ func (eo *EbitenOutput) releaseHardwareLayerLocked(i int) {
 	// Keep the backing array but drop the contents, so a released slot is
 	// never mistaken for an indexed layer on a later frame.
 	eo.hwLayers[i].indices = eo.hwLayers[i].indices[:0]
+	// Invalidate the retained upload/geometry cache so a reused slot never
+	// short-circuits an upload against a stale generation.
+	eo.hwLayers[i].haveUpload = false
+	eo.hwLayers[i].geomValid = false
 }
 
 func (eo *EbitenOutput) SetDisplayConfig(config DisplayConfig) error {
@@ -1626,45 +1678,68 @@ func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image) {
 				src = converted
 			}
 		}
+		retained := retainedLayersEnabled()
 		if !indexed {
-			if layer.image == nil || layer.image.Bounds().Dx() != layer.SourceWidth || layer.image.Bounds().Dy() != layer.SourceHeight {
+			newImage := layer.image == nil || layer.image.Bounds().Dx() != layer.SourceWidth || layer.image.Bounds().Dy() != layer.SourceHeight
+			if newImage {
 				if layer.image != nil {
 					layer.image.Dispose()
 				}
 				layer.image = ebiten.NewImage(layer.SourceWidth, layer.SourceHeight)
+				layer.haveUpload = false
 			}
-			pixelBytes := layer.SourceWidth * layer.SourceHeight * BYTES_PER_PIXEL
-			layer.image.WritePixels(layer.Buffer[:pixelBytes])
+			// Skip the whole-image WritePixels when the retained texture already
+			// holds this exact source's unchanged content. A source that does not
+			// track a generation gets a per-frame ContentGen, so this never
+			// short-circuits it.
+			if !layer.retainedUploadSkippable(newImage, retained) {
+				pixelBytes := layer.SourceWidth * layer.SourceHeight * BYTES_PER_PIXEL
+				layer.image.WritePixels(layer.Buffer[:pixelBytes])
+				layer.haveUpload = true
+				layer.uploadedSourceID = layer.SourceID
+				layer.uploadedGen = layer.ContentGen
+				eo.hwUploadCount.Add(1)
+			}
 			src = layer.image
 		}
 
-		x0 := float32(layer.DestX)
-		y0 := float32(layer.DestY)
-		x1 := float32(layer.DestX + layer.DestWidth)
-		y1 := float32(layer.DestY + layer.DestHeight)
-		sw := float32(layer.SourceWidth)
-		sh := float32(layer.SourceHeight)
-		vertices := []ebiten.Vertex{
-			{DstX: x0, DstY: y0, SrcX: 0, SrcY: 0, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
-			{DstX: x1, DstY: y0, SrcX: sw, SrcY: 0, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
-			{DstX: x0, DstY: y1, SrcX: 0, SrcY: sh, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
-			{DstX: x1, DstY: y1, SrcX: sw, SrcY: sh, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+		key := ebitenLayerGeomKey{
+			sw: layer.SourceWidth, sh: layer.SourceHeight,
+			dx: layer.DestX, dy: layer.DestY,
+			dw: layer.DestWidth, dh: layer.DestHeight,
+			opaque: layer.Opaque,
 		}
-		indices := []uint16{0, 1, 2, 1, 3, 2}
-		op := &ebiten.DrawTrianglesShaderOptions{
-			Blend: ebiten.BlendCopy,
-			Uniforms: map[string]any{
-				"SrcSize":  []float32{float32(layer.SourceWidth), float32(layer.SourceHeight)},
-				"RectSize": []float32{float32(layer.DestWidth), float32(layer.DestHeight)},
-				"DestOrigin": []float32{
-					float32(layer.DestX),
-					float32(layer.DestY),
+		if !layer.geomReusable(retained, key) {
+			x0 := float32(layer.DestX)
+			y0 := float32(layer.DestY)
+			x1 := float32(layer.DestX + layer.DestWidth)
+			y1 := float32(layer.DestY + layer.DestHeight)
+			sw := float32(layer.SourceWidth)
+			sh := float32(layer.SourceHeight)
+			layer.cachedVertices = []ebiten.Vertex{
+				{DstX: x0, DstY: y0, SrcX: 0, SrcY: 0, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+				{DstX: x1, DstY: y0, SrcX: sw, SrcY: 0, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+				{DstX: x0, DstY: y1, SrcX: 0, SrcY: sh, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+				{DstX: x1, DstY: y1, SrcX: sw, SrcY: sh, ColorR: 1, ColorG: 1, ColorB: 1, ColorA: 1},
+			}
+			layer.cachedOptions = &ebiten.DrawTrianglesShaderOptions{
+				Blend: ebiten.BlendCopy,
+				Uniforms: map[string]any{
+					"SrcSize":  []float32{sw, sh},
+					"RectSize": []float32{float32(layer.DestWidth), float32(layer.DestHeight)},
+					"DestOrigin": []float32{
+						float32(layer.DestX),
+						float32(layer.DestY),
+					},
+					"Opaque": opaqueUniform(layer.Opaque),
 				},
-				"Opaque": opaqueUniform(layer.Opaque),
-			},
+			}
+			layer.geomKey = key
+			layer.geomValid = true
 		}
+		op := layer.cachedOptions
 		op.Images[0] = src
-		screen.DrawTrianglesShader(vertices, indices, eo.hwCopyShader, op)
+		screen.DrawTrianglesShader(layer.cachedVertices, ebitenHWQuadIndices, eo.hwCopyShader, op)
 	}
 }
 

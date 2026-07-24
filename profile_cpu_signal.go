@@ -31,6 +31,11 @@ func installCPUProfileSignalStop() {
 	go func() {
 		sig := <-ch
 		stopCPUProfile()
+		// This handler owns the interrupt when profiling is active, so it also
+		// flushes the subsystem perf report (a no-op unless IE_PERF_ACCT=1).
+		// installPerfReportExit stands down in that case, so the report is not
+		// raced by a second handler that could exit before the profile flushes.
+		dumpSubsysPerfReport()
 		signal.Stop(ch)
 		// Re-raise so the process still terminates the way it would have.
 		// os.Process.Signal is not implemented on Windows, so fall back to an

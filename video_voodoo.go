@@ -352,6 +352,12 @@ type VoodooEngine struct {
 	cmdStreamPtr     uint32
 	cmdStreamCount   uint32
 	cmdStreamScratch []byte
+
+	// texUploadScratch is a reusable read buffer for guest texture bytes. The
+	// returned upload buffer itself stays a fresh per-upload allocation because
+	// it is retained immutably by the state snapshot and texture slots; only
+	// the transient read staging is pooled. See textureUploadDataLocked.
+	texUploadScratch []byte
 }
 
 // voodooTexSlotNone means no slot is selected: TEX_UPLOAD behaves as the
@@ -921,9 +927,28 @@ func (v *VoodooEngine) textureUploadSizeLocked() (int, bool) {
 }
 
 func (v *VoodooEngine) textureUploadDataLocked(size int) []byte {
+	// The returned buffer is retained immutably (snapshot + texture slots) so it
+	// must be a fresh allocation; it cannot be pooled.
 	data := make([]byte, size)
 	if v.bus != nil && v.texSrcPtr != 0 && v.texSrcBytes >= uint32(size) {
-		if err := ReadGuestBytes(v.bus, v.texSrcPtr, 0, data); err == nil {
+		if voodooTexPoolEnabled() {
+			// Read the guest bytes into a pooled scratch, then in one fused pass
+			// swap big-endian to little-endian directly into both the retained
+			// upload buffer and the resident texture memory. This removes the
+			// separate in-place swap and textureMemory copy passes.
+			if cap(v.texUploadScratch) < size {
+				v.texUploadScratch = make([]byte, size)
+			}
+			scratch := v.texUploadScratch[:size]
+			if err := ReadGuestBytes(v.bus, v.texSrcPtr, 0, scratch); err == nil {
+				for i := 0; i < size; i += 4 {
+					word := binary.BigEndian.Uint32(scratch[i : i+4])
+					binary.LittleEndian.PutUint32(data[i:i+4], word)
+					binary.LittleEndian.PutUint32(v.textureMemory[i:i+4], word)
+				}
+				return data
+			}
+		} else if err := ReadGuestBytes(v.bus, v.texSrcPtr, 0, data); err == nil {
 			for i := 0; i < size; i += 4 {
 				word := binary.BigEndian.Uint32(data[i : i+4])
 				binary.LittleEndian.PutUint32(data[i:i+4], word)
@@ -934,6 +959,13 @@ func (v *VoodooEngine) textureUploadDataLocked(size int) []byte {
 	}
 	copy(data, v.textureMemory[:size])
 	return data
+}
+
+// voodooTexPoolEnabled reports whether pooled+fused texture uploads are on.
+// Default-on; IE_VOODOO_TEXPOOL=0 restores the allocate-read-swap-copy path.
+// Read at use time so tests can toggle it with t.Setenv.
+func voodooTexPoolEnabled() bool {
+	return os.Getenv("IE_VOODOO_TEXPOOL") != "0"
 }
 
 func voodooCommandStreamControlRegister(addr uint32) bool {
@@ -1287,6 +1319,9 @@ func (v *VoodooEngine) executeSwapBufferCmd(value uint32) {
 // engine fields (Destroy nils them under the engine lock).
 func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- struct{}) {
 	defer close(workerEnd)
+	// lastReadbackSeq tracks the backend's readback counter at the last publish,
+	// so a frame is published exactly once, when its readback completes.
+	var lastReadbackSeq uint64
 	for job := range jobs {
 		backend := job.backend
 		if job.updatePipeline {
@@ -1329,7 +1364,16 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 		if perfAcctOn {
 			perfT0 = time.Now()
 		}
-		backend.FlushTriangles(job.triangles)
+		// Frame-final present. A backend that folds the render and readback into
+		// one submission (Vulkan, Slice 6) records here without submitting and
+		// completes the single submission in SwapBuffers; others submit now.
+		if fp, ok := backend.(interface {
+			FlushTrianglesForPresent([]VoodooTriangle)
+		}); ok {
+			fp.FlushTrianglesForPresent(job.triangles)
+		} else {
+			backend.FlushTriangles(job.triangles)
+		}
 		if perfAcctOn {
 			perfSubsysAcct.VoodooFlush.AddSince(perfT0, 1)
 			perfT0 = time.Now()
@@ -1338,6 +1382,15 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 		if perfAcctOn {
 			perfSubsysAcct.VoodooSwapWait.AddSince(perfT0, 1)
 			perfT0 = time.Now()
+		}
+		// Async present (Slice 7) leaves the just-swapped frame in flight, so
+		// GetFrame would return the previous frame. Swap-hash and duplicate
+		// tracing must observe the exact frame swapped, so force the deferred
+		// readback to complete first. Normal runs stay async.
+		if voodooSwapHashOn || voodooDupTraceOn {
+			if fp, ok := backend.(interface{ FinishPendingReadback() }); ok {
+				fp.FinishPendingReadback()
+			}
 		}
 		frame := backend.GetFrame()
 		if perfAcctOn {
@@ -1362,22 +1415,20 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 		}
 		v.mu.Lock()
 		if voodooSwapHashOn {
+			// Swap-hash sequencing stays aligned with guest swaps regardless of
+			// when a readback completes, so it advances unconditionally.
 			v.swapHashSeq++
 			v.swapHashRing[v.swapHashSeq%voodooSwapHashRingSize] =
 				struct{ seq, hash uint32 }{v.swapHashSeq, swapHash}
 		}
-		// Copy rendered frame to write buffer for triple-buffer publish:
-		// swap our write buffer into the shared slot, get back the old
-		// shared buffer to write next frame. The generation is stamped
-		// on the buffer before the swap makes it visible, so the
-		// consumer can tell a newer shared frame from the one it
-		// already returned (see GetFrame).
-		if frame != nil && len(frame) == len(v.frameBufs[v.writeIdx]) {
-			gen := v.frameGen.Add(1)
-			copy(v.frameBufs[v.writeIdx], frame)
-			v.bufGens[v.writeIdx] = gen
-			v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
-			v.sharedGen.Store(gen)
+		// Publish only when a readback actually completed (Slice 7 P1): an async
+		// swap whose frame is still in flight must not republish the previous
+		// frame as a new generation. A synchronous backend reports no readback
+		// sequence and completes its readback in SwapBuffers, so it publishes
+		// every swap.
+		if seq, ok := backendReadbackSeq(backend); !ok || seq != lastReadbackSeq {
+			lastReadbackSeq = seq
+			v.publishBackendFrameLocked(frame)
 		}
 		if perfAcctOn {
 			perfSubsysAcct.VoodooPublish.AddSince(perfT0, 1)
@@ -1397,6 +1448,31 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 			onSwapComplete()
 		}
 
+		// Pipeline about to drain: under async present (Slice 7) the frame just
+		// swapped is still in flight and was not published above (the published
+		// frame was the previous one). With no further swap job queued, no later
+		// flush would ever drain it, so the final frame would stay unshown and
+		// WaitSwapIdle would report idle a frame behind the guest. Complete and
+		// publish it now, outside v.mu so the backend readback lock never nests
+		// under the engine lock.
+		v.mu.Lock()
+		lastJob := v.jobsInFlight == 1
+		v.mu.Unlock()
+		if lastJob && voodooAsyncPresentEnabled() && len(jobs) == 0 {
+			if fp, ok := backend.(interface{ FinishPendingReadback() }); ok {
+				fp.FinishPendingReadback()
+				// Publish only if that drain completed a new readback, so a swap
+				// whose frame was already published does not republish it.
+				if seq, ok := backendReadbackSeq(backend); !ok || seq != lastReadbackSeq {
+					lastReadbackSeq = seq
+					final := backend.GetFrame()
+					v.mu.Lock()
+					v.publishBackendFrameLocked(final)
+					v.mu.Unlock()
+				}
+			}
+		}
+
 		v.mu.Lock()
 		v.jobsInFlight--
 		if v.jobsInFlight == 0 {
@@ -1407,6 +1483,43 @@ func (v *VoodooEngine) swapWorker(jobs <-chan voodooSwapJob, workerEnd chan<- st
 		v.mu.Unlock()
 		v.swapIdle.Broadcast()
 	}
+}
+
+// voodooAsyncPresentEnabled reports whether Vulkan present submissions defer
+// their fence wait to the next frame (Slice 7). Default-on; IE_VOODOO_ASYNC_PRESENT=0
+// waits synchronously in SwapBuffers so consumers always observe the frame just
+// swapped. Defined here (untagged) because the swap worker, which is built for
+// every backend, consults it.
+func voodooAsyncPresentEnabled() bool {
+	return os.Getenv("IE_VOODOO_ASYNC_PRESENT") != "0"
+}
+
+// backendReadbackSeq returns the backend's readback-completion counter and
+// whether the backend reports one. A backend without it (the synchronous
+// software backend) has already completed its readback by publish time, so the
+// worker publishes every swap for it.
+func backendReadbackSeq(backend VoodooBackend) (uint64, bool) {
+	if rb, ok := backend.(interface{ ReadbackSeq() uint64 }); ok {
+		return rb.ReadbackSeq(), true
+	}
+	return 0, false
+}
+
+// publishBackendFrameLocked copies a completed backend frame into the triple
+// buffer under a fresh generation, making it the frame consumers observe. The
+// caller holds v.mu.
+func (v *VoodooEngine) publishBackendFrameLocked(frame []byte) {
+	if frame == nil || len(frame) != len(v.frameBufs[v.writeIdx]) {
+		return
+	}
+	// The generation is stamped on the buffer before the swap makes it visible,
+	// so the consumer can tell a newer shared frame from the one it already
+	// returned (see GetFrame).
+	gen := v.frameGen.Add(1)
+	copy(v.frameBufs[v.writeIdx], frame)
+	v.bufGens[v.writeIdx] = gen
+	v.writeIdx = int(v.sharedIdx.Swap(int32(v.writeIdx)))
+	v.sharedGen.Store(gen)
 }
 
 // waitSwapIdleLocked blocks until no swap job is in flight. The caller

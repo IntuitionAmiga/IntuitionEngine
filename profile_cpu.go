@@ -71,6 +71,7 @@ func stopCPUProfile() {
 // process. os.Exit skips deferred cleanup, so every exit in main.go goes
 // through here; without a profile running it is exactly os.Exit.
 func exitProfiled(code int) {
+	dumpSubsysPerfReport()
 	stopCPUProfile()
 	os.Exit(code)
 }

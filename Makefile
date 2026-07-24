@@ -164,6 +164,28 @@ GO_FLAGS := -ldflags "-s -w -X main.Version=$(APP_VERSION) -X main.Commit=$(COMM
 VM_EMBED_TAGS := embed_basic embed_emutos embed_aros
 VM_NOVULKAN_TAGS := novulkan $(VM_EMBED_TAGS)
 
+# Profile-guided optimisation. Go auto-discovers a root `default.pgo` for the
+# main package. Each recipe passes -pgo explicitly rather than relying on that
+# auto-discovery, so a regenerated root profile cannot silently change targets
+# that should use their own, and so the wasm target's choice is deliberate:
+#   - PGO_PROFILE is the amd64 profile used by the native, novulkan and headless
+#     builds (all amd64). Override to point a recipe at a target-specific profile
+#     (e.g. `make novulkan PGO_PROFILE=default.novulkan.pgo`).
+#   - WASM_PGO is the wasm build's profile. It defaults to the amd64 default.pgo:
+#     a PGO profile is symbolic (function names and edge weights) and Go applies
+#     it in the arch-independent inliner, so the profile's samples for functions
+#     shared between the native and wasm builds (bus, IE64 interpreter, BASIC
+#     runtime, video kernels) drive the wasm codegen too. Entries for
+#     amd64-only functions (the native JIT) are simply dropped, and PGO never
+#     pessimises, so this is >= -pgo=off; the measured cost is ~0.2 % wasm size.
+#     Go cannot sample-profile js/wasm itself (no threads/SIGPROF, so an
+#     IE_CPUPROFILE capture there yields zero samples), so a wasm-native profile
+#     would have to come from a browser/Node CPU capture converted to pprof; set
+#     WASM_PGO=default.wasm.pgo once such a profile exists to also cover the wasm
+#     JIT paths. Set WASM_PGO=off to opt out entirely.
+PGO_PROFILE ?= default.pgo
+WASM_PGO    ?= default.pgo
+
 # Release amd64 VM builds target x86-64-v3 for the best Go codegen (AVX2/BMI/
 # FMA). This is a perf default, not a hard requirement: the JIT only needs
 # SSE4.1, checked at runtime in checkJITHostFeatures (older hosts fall back to
@@ -335,7 +357,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare
+.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -432,10 +454,17 @@ setup:
 	@echo "Creating build directories..."
 	@$(MKDIR) -p $(BIN_DIR)
 
+# Regenerate the amd64 default.pgo from the manifest workloads. Writes
+# default.pgo.new (never overwrites default.pgo in place); review with benchstat,
+# then move it into place and update default.pgo.manifest. Needs a display.
+.PHONY: pgo-regenerate
+pgo-regenerate:
+	@GO="$(GO)" bash scripts/pgo-regenerate.sh default.pgo.new
+
 # Build the Intuition Engine VM
 intuition-engine: setup
 	@echo "Building Intuition Engine VM..."
-	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -trimpath .
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -trimpath -pgo=$(PGO_PROFILE) .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
@@ -446,7 +475,7 @@ x86-64-v3: x64-live-embed-assets
 	@echo "Building IE for x86-64-v3 (AVX2+FMA+BMI)..."
 	mkdir -p $(BIN_DIR)
 	GOOS=linux GOARCH=amd64 GOAMD64=v3 CGO_ENABLED=1 \
-	$(GO) build $(GO_FLAGS) -trimpath -pgo=default.pgo \
+	$(GO) build $(GO_FLAGS) -trimpath -pgo=$(PGO_PROFILE) \
 	  -tags "$(VM_EMBED_TAGS)" \
 	  -o $(BIN_DIR)/IntuitionEngine_v3 .
 	@strip $(BIN_DIR)/IntuitionEngine_v3 || true
@@ -612,7 +641,7 @@ $(X64_LIVE_IMG):
 # Build without Vulkan (software Voodoo rasterizer only)
 novulkan: setup
 	@echo "Building Intuition Engine VM (novulkan)..."
-	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags novulkan .
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -pgo=$(PGO_PROFILE) -tags novulkan .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/
@@ -621,7 +650,7 @@ novulkan: setup
 # Build headless (no display, no audio, no Vulkan - for CI/testing)
 headless: setup
 	@echo "Building Intuition Engine VM (headless)..."
-	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags headless .
+	@CGO_JOBS=$(NCORES) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -pgo=$(PGO_PROFILE) -tags headless .
 	@echo "Stripping debug symbols..."
 	@$(NICE) -$(NICE_LEVEL) $(SSTRIP) -z IntuitionEngine
 	@mv IntuitionEngine $(BIN_DIR)/IntuitionEngine
@@ -631,7 +660,7 @@ headless: setup
 # Build headless+novulkan with CGO disabled (fully portable, cross-compile safe)
 headless-novulkan: setup
 	@echo "Building Intuition Engine VM (headless-novulkan, CGO_ENABLED=0)..."
-	@CGO_ENABLED=0 $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "novulkan headless" .
+	@CGO_ENABLED=0 $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -pgo=$(PGO_PROFILE) -tags "novulkan headless" .
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM (headless-novulkan) build complete"
 
@@ -678,7 +707,7 @@ web-demos:
 wasm: setup web-demos
 	@echo "Building WebAssembly demo (IE64 BASIC with wasm JIT)..."
 	@mkdir -p $(WASM_DEMO_DIR)
-	$(WASM_GOENV) $(GO) build -ldflags "-s -w" -tags "$(WASM_TAGS)" -o $(WASM_BINARY) .
+	$(WASM_GOENV) $(GO) build -ldflags "-s -w" -pgo=$(WASM_PGO) -tags "$(WASM_TAGS)" -o $(WASM_BINARY) .
 	@cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_DEMO_DIR)/wasm_exec.js
 	@if command -v wasm-opt >/dev/null 2>&1; then \
 		echo "Optimising with wasm-opt..."; \
@@ -704,7 +733,7 @@ wasm: setup web-demos
 wasm-profile: setup
 	@echo "Building WebAssembly demo (PROFILING: symbols kept, unoptimised)..."
 	@mkdir -p $(WASM_DEMO_DIR)
-	$(WASM_GOENV) $(GO) build -tags "$(WASM_TAGS)" -o $(WASM_BINARY) .
+	$(WASM_GOENV) $(GO) build -pgo=$(WASM_PGO) -tags "$(WASM_TAGS)" -o $(WASM_BINARY) .
 	@cp "$$($(GO) env GOROOT)/lib/wasm/wasm_exec.js" $(WASM_DEMO_DIR)/wasm_exec.js
 	@ls -lh $(WASM_BINARY) | awk '{print "  wasm size:", $$5, "(profiling build - do not deploy)"}'
 

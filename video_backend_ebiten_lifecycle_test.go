@@ -239,6 +239,87 @@ func init() {
 	gpuGateBodies["hw_non16x9"] = gateHardwareNon16x9FillsStretchRect
 	gpuGateBodies["hw_noninteger"] = gateHardwareNonIntegerScaleMatchesSoftwareFloor
 	gpuGateBodies["hw_partialalpha"] = gateHardwarePartialAlphaLayerReplacesLowerLayer
+	gpuGateBodies["hw_retained"] = gateHardwareRetainedLayerSkipsUpload
+}
+
+// TestEbitenOutput_HardwareCompositor_RetainedLayerSkipsUpload (Slice 8) proves
+// an unchanged-generation layer performs no WritePixels on a repeat frame and
+// reuses cached geometry, while a changed generation re-uploads, and the drawn
+// pixels still match the software floor either way.
+func TestEbitenOutput_HardwareCompositor_RetainedLayerSkipsUpload(t *testing.T) {
+	runGPUGate(t, "hw_retained")
+}
+
+func gateHardwareRetainedLayerSkipsUpload() error {
+	const srcW, srcH = 2, 2
+	frame := solidTestFrame(srcW, srcH, 0x40, 0x80, 0xC0, 0xFF)
+
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("NewEbitenOutput: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: srcW, Height: srcH, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("SetDisplayConfig: %w", err)
+	}
+
+	present := func(frameID, gen uint64, buf []byte) error {
+		return eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{
+			FrameID:            frameID,
+			PresentationWidth:  srcW,
+			PresentationHeight: srcH,
+			HasContent:         true,
+			Layers: []CompositorFrameLayer{{
+				SourceID:     1,
+				SourceWidth:  srcW,
+				SourceHeight: srcH,
+				DestWidth:    srcW,
+				DestHeight:   srcH,
+				Buffer:       buf,
+				ContentGen:   gen,
+			}},
+		})
+	}
+	screen := ebiten.NewImage(srcW, srcH)
+
+	// First frame: one upload.
+	if err := present(1, 100, frame); err != nil {
+		return err
+	}
+	eo.Draw(screen)
+	if got := eo.hwUploadCount.Load(); got != 1 {
+		return fmt.Errorf("first frame uploads = %d, want 1", got)
+	}
+	verts := &eo.hwLayers[0].cachedVertices
+
+	// Second frame: same generation, no upload, cached geometry reused.
+	if err := present(2, 100, frame); err != nil {
+		return err
+	}
+	eo.Draw(screen)
+	if got := eo.hwUploadCount.Load(); got != 1 {
+		return fmt.Errorf("unchanged frame uploads = %d, want 1 (skip)", got)
+	}
+	if verts != &eo.hwLayers[0].cachedVertices {
+		return fmt.Errorf("cachedVertices slot changed across unchanged frame")
+	}
+
+	// Third frame: changed generation, re-upload, pixels still correct.
+	changed := solidTestFrame(srcW, srcH, 0x11, 0x22, 0x33, 0xFF)
+	if err := present(3, 101, changed); err != nil {
+		return err
+	}
+	eo.Draw(screen)
+	if got := eo.hwUploadCount.Load(); got != 2 {
+		return fmt.Errorf("changed frame uploads = %d, want 2", got)
+	}
+	pix := make([]byte, srcW*srcH*BYTES_PER_PIXEL)
+	screen.ReadPixels(pix)
+	if pix[0] != 0x11 || pix[1] != 0x22 || pix[2] != 0x33 {
+		return fmt.Errorf("changed pixel = %v, want [0x11 0x22 0x33 ..]", pix[:BYTES_PER_PIXEL])
+	}
+	return nil
 }
 
 func TestEbitenOutput_HardwareCompositor_Non16x9FillsStretchRect(t *testing.T) {
@@ -540,6 +621,46 @@ func BenchmarkEbitenGPUCompositor960x540To1080p(b *testing.B) {
 			PresentationHeight: 1080,
 			HasContent:         true,
 			Layers:             []CompositorFrameLayer{layer},
+		}
+		for i := range 16 {
+			update.FrameID = uint64(i + 1)
+			if err := eo.UpdateHardwareCompositorFrame(update); err != nil {
+				b.Fatalf("UpdateHardwareCompositorFrame warmup: %v", err)
+			}
+			eo.Draw(screen)
+		}
+		b.ResetTimer()
+		for i := range b.N {
+			update.FrameID = uint64(i + 17)
+			// Vary the content generation so the retained-layer skip never
+			// engages: this sub-benchmark measures the per-frame upload path.
+			update.Layers[0].ContentGen = uint64(i + 17)
+			if err := eo.UpdateHardwareCompositorFrame(update); err != nil {
+				b.Fatalf("UpdateHardwareCompositorFrame: %v", err)
+			}
+			eo.Draw(screen)
+		}
+	})
+
+	// Slice 8: an unchanged layer (stable content generation) must skip the
+	// whole-image WritePixels and reuse cached geometry every frame after the
+	// first, leaving only the GPU draw.
+	b.Run("native-unchanged-layer-skip", func(b *testing.B) {
+		out, err := NewEbitenOutput()
+		if err != nil {
+			b.Fatalf("NewEbitenOutput: %v", err)
+		}
+		eo := out.(*EbitenOutput)
+		eo.showStatusBar = false
+		screen := ebiten.NewImage(1920, 1080)
+		stable := layer
+		stable.ContentGen = 999
+		update := CompositorFrameUpdate{
+			FrameID:            1,
+			PresentationWidth:  1920,
+			PresentationHeight: 1080,
+			HasContent:         true,
+			Layers:             []CompositorFrameLayer{stable},
 		}
 		for i := range 16 {
 			update.FrameID = uint64(i + 1)

@@ -2018,6 +2018,47 @@ func BenchmarkComposite_StaticScene(b *testing.B) {
 	}
 }
 
+// BenchmarkComposite_SkipUnchanged measures the unchanged-frame skip path with
+// a production-shaped source that implements FrameGenerationSource and holds a
+// stable generation. Unlike BenchmarkComposite_StaticScene (whose mockOpaqueSource
+// has no generation, so the skip stays ineligible and it measures the full static
+// composite), this benchmark exercises the skip: after the initial materialised
+// frames prime the generation baseline, every measured tick must skip all
+// collect/blend/upload work and perform no output writes and no allocations.
+func BenchmarkComposite_SkipUnchanged(b *testing.B) {
+	b.Setenv("IE_VIDEO_COMPOSITE_SKIP", "1")
+	out := newMockVideoOutput()
+	_ = out.Start()
+	comp := NewVideoCompositor(out)
+	comp.LockResolution(640, 480)
+	comp.SetFrameTimingCallback(func() {})
+	src := newGenTickSource()
+	src.w, src.h = 640, 480
+	src.frame = solidTestFrame(640, 480, 0x22, 0x44, 0x66, 0xFF)
+	comp.RegisterSource(src)
+
+	// Prime: first tick records nothing, second records the generation baseline.
+	comp.composite()
+	comp.composite()
+	out.mu.Lock()
+	out.updateCalls = 0
+	out.regionCalls = 0
+	out.mu.Unlock()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		comp.composite()
+	}
+	b.StopTimer()
+
+	out.mu.Lock()
+	defer out.mu.Unlock()
+	if out.updateCalls != 0 || out.regionCalls != 0 {
+		b.Fatalf("skip benchmark performed output work: updateCalls=%d regionCalls=%d", out.updateCalls, out.regionCalls)
+	}
+}
+
 func BenchmarkComposite_FullDirty(b *testing.B) {
 	out := newMockVideoOutput()
 	_ = out.Start()

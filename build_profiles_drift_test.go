@@ -34,6 +34,12 @@ var programmeProductionEnvVars = []string{
 	"IE_PAGE_DIRTY",           // T3: epoch page dirty tracking
 	"IE_MON_EPOCH_HISTORY",    // T5: epoch-driven reverse history
 	"IE_SCRIPT_COMPILE_CACHE", // T5: IEScript compile cache
+	"IE_VIDEO_COMPOSITE_SKIP", // Perf: unchanged-frame composite skip (timing/pixel split)
+	"IE_VOODOO_TEXPOOL",        // Perf: pooled+fused Voodoo texture upload
+	"IE_VIDEO_RETAINED_LAYERS", // Perf: retained hardware-compositor layer textures + cached draw state
+	"IE_VOODOO_PERSIST_MAP",    // Perf: persistent host mapping of the Voodoo staging buffer
+	"IE_VOODOO_ONE_SUBMIT",     // Perf: fold Voodoo render + readback into one Vulkan submission
+	"IE_VOODOO_ASYNC_PRESENT",  // Perf: defer the Voodoo present fence wait to the next frame
 }
 
 // excludedFromProgrammeAllowlist are switches that must never appear in the

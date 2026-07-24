@@ -270,6 +270,7 @@ func main() {
 	// the flush).
 	startCPUProfileFromEnv()
 	installCPUProfileSignalStop()
+	installPerfReportExit()
 
 	var (
 		modeIE32        bool
@@ -1911,6 +1912,13 @@ func main() {
 		monitor.RegisterCPU("IE64", NewDebugIE64(ie64CPU))
 
 		if startExecution {
+			if modeBasic {
+				// Initial BASIC boot: collect image-load transients before the
+				// render/audio loops and StartExecution below, so this sweep
+				// never runs concurrently with the CPU, compositor, render or
+				// audio activity. See boot_gc.go.
+				bootForcedGC()
+			}
 			stageConfiguredCoprocService()
 			videoChip.Start()
 			compositor.Start()
@@ -2573,8 +2581,9 @@ func main() {
 			}
 		}
 		if forceBasicBoot {
-			// Optional cleanup point: BASIC image is now loaded into reset state.
-			runtime.GC()
+			// Full reset: BASIC image is loaded into reset state; collect
+			// transients before StartAfterReset below. See boot_gc.go.
+			bootForcedGC()
 		}
 
 		// runProgramWithFullReset clears RAM and coprocessor MMIO; restage any
@@ -2657,10 +2666,9 @@ func main() {
 	_ = reloadProgram
 	_ = currentMode
 	_ = currentPath
-	if modeBasic {
-		// Initial BASIC startup: collect transient allocations after image setup.
-		runtime.GC()
-	}
+	// The initial BASIC boot collection now runs before StartExecution in the
+	// IE64 startup branch above (see boot_gc.go), so it can no longer race the
+	// CPU, compositor, render and audio loops. No post-execution sweep here.
 
 	if scriptFile != "" {
 		if err := scriptEngine.RunFile(scriptFile); err != nil {
@@ -2760,6 +2768,9 @@ func main() {
 	if anticEngine != nil {
 		anticEngine.StopRenderLoop()
 	}
+	// Normal (window-close) shutdown returns from main rather than through
+	// exitProfiled, so dump the subsystem perf report here too.
+	dumpSubsysPerfReport()
 	stopCPUProfile()
 }
 

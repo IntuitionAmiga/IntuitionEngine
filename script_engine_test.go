@@ -44,7 +44,7 @@ func driveFramesUntilStopped(t *testing.T, se *ScriptEngine) {
 		if !se.IsRunning() {
 			return
 		}
-		se.onFrameComplete()
+		se.onFrameTiming()
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("script did not stop before timeout")

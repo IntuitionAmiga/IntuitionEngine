@@ -145,7 +145,7 @@ func TestIEScriptEventWait_WakesOnCondition(t *testing.T) {
 		if !se.IsRunning() {
 			break
 		}
-		se.onFrameComplete()
+		se.onFrameTiming()
 		time.Sleep(5 * time.Millisecond)
 	}
 	waitScriptStopped(t, se)

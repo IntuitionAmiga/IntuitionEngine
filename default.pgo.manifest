@@ -1,14 +1,39 @@
 # default.pgo capture manifest
 
-Regenerate with the procedure in sdk/docs/architecture.md, "Build Profiles and
+Regenerate with `make pgo-regenerate` (which runs scripts/pgo-regenerate.sh),
+or by hand with the procedure in sdk/docs/architecture.md, "Build Profiles and
 Observable Runtime". Update this file in the same change set as default.pgo.
 
-    revision:   569c5ec1
+    revision:   0d1b91b3 + uncommitted runtime performance programme
     toolchain:  go1.26.4 linux/amd64
     host CPU:   Intel(R) Xeon(R) W-11955M CPU @ 2.60GHz
-    captured:   2026-07-22
+    captured:   2026-07-24
     capture:    IE_CPUPROFILE=<path> on a `go build -pgo=off` binary
     merge:      go tool pprof -proto <profiles...> > default.pgo
+
+Captured after the runtime performance programme's structural changes
+(compositor unchanged-frame skip, retained hardware-compositor layers, the
+Voodoo one-submit/persistent-map/async-present present path), which shifted the
+amd64 hot paths. Total samples 131.77 s over 169.72 s wall (77.6 %).
+
+## Per-target profiles
+
+`default.pgo` is the amd64 profile. The Makefile passes -pgo explicitly per
+target rather than relying on Go's root auto-discovery, which would otherwise
+apply this amd64 profile to every build including js/wasm:
+
+  - native / novulkan / headless / headless-novulkan / x86-64-v3: `-pgo=$(PGO_PROFILE)`
+    (default `default.pgo`; override to point at a target-specific profile).
+  - wasm / wasm-profile: `-pgo=$(WASM_PGO)` (default `default.pgo`). PGO input is
+    symbolic and applied in the arch-independent inliner, so `default.pgo`'s
+    samples for functions shared between the native and wasm builds (bus, IE64
+    interpreter, BASIC runtime, video kernels) drive the wasm codegen too;
+    amd64-only entries (the native JIT) are dropped and PGO never pessimises, so
+    it is >= -pgo=off (measured ~0.2 % wasm size cost). Go cannot sample-profile
+    js/wasm directly (no threads/SIGPROF: an IE_CPUPROFILE capture there yields
+    zero samples), so covering the wasm JIT paths needs a browser/Node CPU
+    capture converted to pprof; set `WASM_PGO=default.wasm.pgo` when one exists,
+    or `WASM_PGO=off` to opt out.
 
 ## Workloads
 
@@ -32,5 +57,7 @@ benchstat over BenchmarkComposite_*, BenchmarkVoodoo_FullFrame,
 BenchmarkSoundChip_ReadSamples and BenchmarkRead32_* (headless,
 GOEXPERIMENT=simd, benchtime 1s, count 6):
 
-    versus -pgo=off:            geomean -1.25 %, no benchmark regressed
-    versus the previous default.pgo: geomean -0.25 %, no benchmark regressed
+    versus -pgo=off (2026-07-24, count 6): geomean -7.18 %, no benchmark
+    regressed. Notable: VoodooRasterScene/tiled -20.7 %, VoodooRasterTextured
+    /serial -17.7 %, BusWrite32_RAM -9.8 %, Write32_NonIO -9.8 %,
+    Composite_StaticScene -6.8 %, ReadSamplesBlock_AllChips/POKEY -6.0 %.
