@@ -161,12 +161,6 @@ The texture memory aperture is byte-addressed RGBA. When a 32-bit
 word appears as `$AABBGGRR`. For example, `&HFF0000FF` stores an
 opaque red texture pixel.
 
-Texture uploads from guest memory are pooled and fused internally
-(the emulator reads the guest bytes into a reusable scratch buffer and
-byte-swaps them into texture memory in a single pass). This is enabled by
-default and has no guest-visible effect on texel contents; `IE_VOODOO_TEXPOOL=0`
-restores the older per-upload path for comparison.
-
 ## 9.5 Register block
 
 Voodoo's register block runs from `$F8000` to `$F87FF`. Registers

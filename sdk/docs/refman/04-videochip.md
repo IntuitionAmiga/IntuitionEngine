@@ -159,13 +159,6 @@ values below `&H01000000`, such as `&H000000FF` for red, because
 those integers are exact in BASIC's numeric format. The compositor
 still treats any non-black direct-colour pixel as opaque.
 
-On the hardware (GPU) compositor path each layer's texture is retained
-between frames and only re-uploaded when its content actually changes,
-and the layer's draw geometry is cached and rebuilt only when the source
-or destination rectangle changes. This is an internal optimisation with
-no effect on what the guest sees; it is on by default and can be turned
-off with `IE_VIDEO_RETAINED_LAYERS=0`.
-
 In **CLUT8** mode every pixel is one byte, which is an index into
 the 256-entry CLUT palette. The chip expands each index into an
 RGBA32 pixel on the fly. The alpha byte produced by the expansion

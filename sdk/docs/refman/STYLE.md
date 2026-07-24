@@ -28,6 +28,42 @@ documentation is wrong unless the code itself is being changed in the
 same pass and verified. Record the exact files checked in
 `verify/CLAIM_LEDGER.txt`.
 
+## Current Runtime Optimisation Scope Correction
+
+This pass audits commit `4bf6fe5e` in reader order over Chapters 4 and
+9, then updates the claim ledger. Finish with focused PRG checks,
+strict publication, and PDF generation.
+
+Host runtime optimisations that preserve the guest-visible contract do
+not belong in the PRG. Do not document backend texture retention,
+cached draw geometry, pooled upload buffers, fused host byte swapping,
+persistent mappings, submission counts, deferred fence waits, PGO
+plumbing, host garbage collection, or diagnostic environment switches.
+
+Chapter 4 must describe VideoChip pixels, modes, timing, compositor
+behaviour, and programmable registers only. Remove the paragraph about
+retained hardware-compositor textures, cached geometry, and
+`IE_VIDEO_RETAINED_LAYERS`.
+
+Chapter 9 must describe Voodoo texture contents, upload contracts,
+bound state, swaps, and guest-visible status only. Remove the paragraph
+about pooled or fused upload implementation and
+`IE_VOODOO_TEXPOOL`.
+
+The source-backed invariant contracts for this pass are:
+
+- skipped visual composites still advance logical frame timing and
+  VBlank or frame waits;
+- Voodoo swap commands remain asynchronous, expose the documented
+  busy and pending status and two-job limit, and publish the final
+  frame before idle;
+- texture upload bytes and guest-visible texture state remain
+  unchanged.
+
+Do not add reader prose for the internal kill switches. Record the
+source and tests checked in `verify/CLAIM_LEDGER.txt`. Strict
+publication must restore the published tree from canonical source.
+
 ## Current Reverse History And IE Script Editorial Pass
 
 Execute this pass in reader order over Chapter 33, Chapter 34, and

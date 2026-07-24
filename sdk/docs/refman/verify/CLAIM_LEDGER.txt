@@ -1123,3 +1123,12 @@ Entry format:
   Expected result: the wait prints `REACHED true`; the audio listing sounds about middle C and reads control value `3`.
   Author verification workflow: checked immediate evaluation, frame-budget boundaries, rejection of negative budgets, predicate error propagation, ordered bus writes, unsigned conversion, malformed-pair handling, and the focused IEScript tests before publication.
   Result: Chapter 34 documents both functions as complete reader-facing programming contracts rather than terse API-table entries.
+
+- Area: Chapters 4 and 9; runtime optimisation scope audit for commit `4bf6fe5e`.
+  Claim: unchanged VideoChip composites preserve logical frame timing and frame notifications; Voodoo texture upload preserves exact texel bytes; asynchronous Voodoo presentation preserves the documented busy and pending status, two-job limit, and final-frame-before-idle contract. Backend retention, upload pools, mappings, submission and fence details, and host diagnostic switches are not PRG programming interfaces.
+  Canonical sources checked: video_compositor.go, script_engine.go, video_compositor_skip_test.go, video_backend_ebiten.go, video_backend_ebiten_retained_test.go, video_voodoo.go, video_voodoo_texpool_test.go, voodoo_vulkan.go, voodoo_vulkan_async_test.go, voodoo_vulkan_finalframe_test.go, voodoo_vulkan_onesubmit_test.go, voodoo_vulkan_persistmap_test.go.
+  Reader workflow: unchanged; program VideoChip and Voodoo through the documented BASIC commands and registers, then use the existing status and wait contracts.
+  Runnable example: the existing Chapter 4 VideoChip examples and Chapter 9 Voodoo examples.
+  Expected result: the same pixels, frame timing, texture contents, and status semantics are visible regardless of the selected host optimisation path.
+  Author verification workflow: traced skipped-frame notification, compositor callback, texture upload, swap queue, busy status, queue limit, and idle publication paths; compared their focused regression tests with the reader-facing contracts.
+  Result: removed two non-programmable host implementation paragraphs and retained the source-backed guest-visible contracts.

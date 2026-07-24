@@ -511,6 +511,14 @@ flowchart LR
   accounting avoids atomic hot-path updates. Deopt reasons are `unsupported`,
   `helper`, `mmio`, `smc`, `interrupt`, `cache_pressure`, and `debug`. These
   counters are diagnostics only and do not change guest-visible execution.
+  When `IE_PERF_ACCT` is enabled, the subsystem report is written to standard
+  error once during clean shutdown or terminal-signal shutdown;
+  `IE_PERF_ACCT_OUT` also writes it to a file. This includes a no-activity
+  report when no instrumented counter advanced.
+- **Boot collection point** - IE64 BASIC startup and a full reset that reloads
+  BASIC force one Go collection after image loading and before CPU, compositor,
+  render-loop, and audio startup. This collects transient loader allocations
+  without imposing a recurring runtime collection policy.
 - **IE64 JIT tiers** - amd64 Linux, Windows and macOS builds, plus Linux arm64,
   promote hot static control-flow chains into bounded multi-block regions.
   Regions retain selected GPR and FPU
@@ -921,23 +929,26 @@ fallback. Record the revision, toolchain, workloads and durations in
 benchstat shows no regression against `-pgo=off` across the video, audio and bus
 benchmarks.
 
-Profiles are per target, passed with `-pgo` explicitly rather than by Go's root
-auto-discovery, so a regenerated root profile cannot silently change a target
-that should use its own. The amd64 targets (native, novulkan, headless,
+The Makefile passes PGO profiles explicitly: `PGO_PROFILE` selects native
+profiles and `WASM_PGO` selects wasm profiles; `make pgo-regenerate` writes
+`default.pgo.new`. This avoids relying on Go's root auto-discovery, so a
+regenerated root profile cannot silently change a target that should use its
+own. The amd64 targets (native, novulkan, headless,
 headless-novulkan, x86-64-v3) use `PGO_PROFILE` (default `default.pgo`). The wasm
 targets use `WASM_PGO`, which also defaults to `default.pgo`: a PGO profile is
 symbolic (function names and edge weights) and Go applies it in the
 arch-independent inliner, so `default.pgo`'s samples for the functions shared
 between the native and wasm builds (bus, IE64 interpreter, BASIC runtime, video
 kernels) drive the wasm codegen as well; entries for amd64-only functions such
-as the native JIT are dropped, and PGO never pessimises, so it is no worse than
-`-pgo=off` (measured cost ~0.2 per cent wasm size). Go cannot sample-profile
-js/wasm itself, because the single-threaded WebAssembly runtime has no
-SIGPROF-equivalent, so an `IE_CPUPROFILE` capture on wasm yields zero samples; a
-profile that also covers the wasm JIT paths must come from a browser or Node CPU
-capture converted to pprof, at which point `WASM_PGO=default.wasm.pgo` selects
-it. Each is a Makefile variable, so any target can be pointed at a
-target-specific profile.
+as the native JIT are dropped. The current profile adds approximately 0.2 per
+cent to the wasm binary size; performance acceptance still requires measurement
+against `-pgo=off`, because PGO is not an architectural guarantee against
+regression. Go cannot sample-profile js/wasm itself, because the single-threaded
+WebAssembly runtime has no SIGPROF-equivalent, so an `IE_CPUPROFILE` capture on
+wasm yields zero samples; a profile that also covers the wasm JIT paths must
+come from a browser or Node CPU capture converted to pprof, at which point
+`WASM_PGO=default.wasm.pgo` selects it. Each is a Makefile variable, so any
+target can be pointed at a target-specific profile.
 
 ### Programme Benchmark Inventory
 
@@ -1398,7 +1409,7 @@ Two rendering paths:
 
 All-zero frame pixels are transparent; any nonzero alpha or RGB value is opaque. During compositing, zero-alpha nonzero-RGB pixels are promoted to opaque `0xFFRRGGBB` before they overwrite the destination. The compositor tick remains fixed at 60 Hz for guest VBlank compatibility; `GetRefreshRate()` reports the output backend rate, while `GetTickRate()` reports the compositor tick.
 
-FrameGenerationSource lets the compositor skip collect/copy/blend/upload work only after source TickFrame hooks run and only when every enabled source generation is unchanged. A pending full-frame update, an active pixel consumer, an enabled source without generation tracking, or a scanline-compositing source disables this skip for that tick. The skip is enabled by default and can be disabled with `IE_VIDEO_COMPOSITE_SKIP=0`, which forces a full composite every tick.
+FrameGenerationSource lets the compositor skip collect/copy/blend/upload work only after source TickFrame hooks run and only when every enabled source generation is unchanged. A pending full-frame update, an active pixel consumer, an enabled source without generation tracking, or a scanline-compositing source disables this skip for that tick. The unchanged-frame composite skip is enabled by default and can be disabled with `IE_VIDEO_COMPOSITE_SKIP=0`; logical frame timing still advances on skipped ticks.
 
 The frame callback is split into two responsibilities so the skip preserves the timing contract. An unconditional logical-frame/timing callback (script frame count, EmuTOS VBL delivery, `frameChan` wake) fires on every tick, including skipped ones, and advances the compositor frame counter and timestamp; a skipped tick therefore still advances the logical frame and delivers VBL without materialising pixels. A separate pixel-consumer callback (the recorder) fires only after a composed tick. While a pixel consumer is live (recording or capturing), a pixel-consumer-active predicate disables the skip so materialised pixels exist every tick. This split is pinned by `TestCompositeSkip_TimingFiresPixelsDoNot`, `TestCompositeSkip_KillSwitchForcesComposite` and `TestCompositeSkip_ActivePixelConsumerDisablesSkip`.
 
