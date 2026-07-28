@@ -453,7 +453,37 @@ acknowledgement at offsets `+$00` through `+$04`; requests begin at
 | `+$14` | `SYSINFO_LOW_WINDOW_LO`. |
 | `+$18` | `SYSINFO_LOW_WINDOW_HI`. |
 
-## D.21 HOST appliance block (`$F1400`-`$F140F`)
+## D.21 Shared network sockets (`$F2500`-`$F257F`)
+
+Nine `32`-bit registers point at one fixed `96`-byte big-endian
+request descriptor in guest RAM.
+
+| Offset | Register | Notes |
+|--------|----------|-------|
+| `+$00` | `HOST_SOCKET_CMD` | Write command `1` through `23` to dispatch. |
+| `+$04` | `HOST_SOCKET_REQ_PTR` | Guest request-descriptor address. |
+| `+$08` | `HOST_SOCKET_REQ_LEN` | Descriptor byte length; use `96`. |
+| `+$0C` | `HOST_SOCKET_RES1` | Primary result or `$FFFFFFFF`. |
+| `+$10` | `HOST_SOCKET_RES2` | Secondary result. |
+| `+$14` | `HOST_SOCKET_ERRNO` | Socket error. |
+| `+$18` | `HOST_SOCKET_HERRNO` | Resolver error. |
+| `+$1C` | `HOST_SOCKET_STATUS` | `0` ready, `1` busy, `2` error. |
+| `+$20` | `HOST_SOCKET_EVENTS` | Pending event bits. |
+
+Commands are `SOCKET`, `BIND`, `LISTEN`, `ACCEPT`, `CONNECT`,
+`SENDTO`, `RECVFROM`, `SHUTDOWN`, `SETSOCKOPT`, `GETSOCKOPT`,
+`GETSOCKNAME`, `GETPEERNAME`, `IOCTL`, `CLOSE`, `WAITSELECT`,
+`GETHOSTBYNAME`, `GETHOSTBYADDR`, `GETHOSTNAME`, `DUP2`,
+`GETEVENTS`, `RELEASE`, `RELEASECOPY`, and `OBTAIN`, numbered `1`
+through `23` in that order.
+
+IE64, IE32, M68K, and x86 use the physical addresses. The 6502 and Z80
+select Bank 3 value `$79` and use `$6500` through `$657F`. Their byte
+lanes are big-endian, and a byte-written command dispatches only after
+all four command lanes have been written. The block is not mapped in
+BASIC mode. See Chapter 39.
+
+## D.22 HOST appliance block (`$F1400`-`$F140F`)
 
 | Offset | Name     | Width  | Notes |
 |--------|----------|--------|-------|
@@ -466,7 +496,7 @@ See Chapter 36 for the subverb enum and the state machine.
 Reachable from IE64, IE32, M68K, and x86; not reachable from the
 6502 or Z80.
 
-## D.22 CPU Wait (`$F2580`-`$F259F`)
+## D.23 CPU Wait (`$F2580`-`$F259F`)
 
 | Offset | Register |
 |--------|----------|
@@ -478,7 +508,7 @@ Reachable from IE64, IE32, M68K, and x86; not reachable from the
 Waits have a short safety timeout so a programme continues if video
 presentation is unavailable.
 
-## D.23 Gamepad input (`$F25C0`-`$F25FF`)
+## D.24 Gamepad input (`$F25C0`-`$F25FF`)
 
 Updated once per displayed frame. Reads have no side effects. Writes
 are accepted but ignored, and disconnected slots read as zero.
@@ -502,7 +532,7 @@ X, `7` Y, `8` LB, `9` RB, `10` LT, `11` RT, `12` Select, `13` Start,
 `-32767` through `32767`; left and up are negative, right and down are
 positive. Documented in Chapter 37.
 
-## D.24 Voodoo 3D (`$F8000`-`$F87FF`)
+## D.25 Voodoo 3D (`$F8000`-`$F87FF`)
 
 Status, framebuffer base, clip rect, triangle setup, texture
 descriptors, fog, alpha, chroma-key, Z-buffer. Documented in

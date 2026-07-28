@@ -308,7 +308,7 @@ check_live_payload_inputs() {
     payload_require_glob "${SCRIPT_DIR}/sdk/examples/c/*.c" "make sdk-build" "SDK C source examples"
     payload_require_glob "${REFMAN_PDF_DIR}/*.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide PDFs"
     payload_require_file "${REFMAN_PDF_DIR}/00-Preface.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide preface PDF"
-    payload_require_file "${REFMAN_PDF_DIR}/39-whole-machine-capstone.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final chapter PDF"
+    payload_require_file "${REFMAN_PDF_DIR}/66-lessons-ie-ports.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final chapter PDF"
     payload_require_file "${REFMAN_PDF_DIR}/appK-block-diagrams.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final appendix PDF"
     if [[ -e "${REFMAN_PDF_DIR}/README.pdf" || -e "${REFMAN_PDF_DIR}/17-pokey-sap.pdf" ]]; then
         log_error "Stale refman PDF output found under ${REFMAN_PDF_DIR}"
@@ -383,7 +383,7 @@ verify_staged_share_payload() {
     fi
     payload_require_file "${payload_root}/Systems/README.TXT" "build_x64_ie_img.sh stage_share_payload" "Systems README"
     payload_require_file "${payload_root}/Docs/IEProgRefGuide/00-Preface.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide preface"
-    payload_require_file "${payload_root}/Docs/IEProgRefGuide/39-whole-machine-capstone.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final chapter"
+    payload_require_file "${payload_root}/Docs/IEProgRefGuide/66-lessons-ie-ports.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final chapter"
     payload_require_file "${payload_root}/Docs/IEProgRefGuide/appK-block-diagrams.pdf" "make x64-live-refman-pdfs" "staged Programmer's Reference Guide final appendix"
     payload_require_file "${payload_root}/Docs/IE64_ISA.pdf" "make x64-live-sdk-companion-pdfs" "staged IE64 ISA companion PDF"
     payload_require_file "${payload_root}/Docs/IE32_ISA.pdf" "make x64-live-sdk-companion-pdfs" "staged IE32 ISA companion PDF"
@@ -2041,7 +2041,7 @@ compress_image() {
     done
     payload_require_glob "${REFMAN_PDF_DIR}/*.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide PDFs"
     payload_require_file "${REFMAN_PDF_DIR}/00-Preface.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide preface PDF"
-    payload_require_file "${REFMAN_PDF_DIR}/39-whole-machine-capstone.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final chapter PDF"
+    payload_require_file "${REFMAN_PDF_DIR}/66-lessons-ie-ports.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final chapter PDF"
     payload_require_file "${REFMAN_PDF_DIR}/appK-block-diagrams.pdf" "make x64-live-refman-pdfs" "Programmer's Reference Guide final appendix PDF"
     cp -f "${SDK_COMPANION_PDFS[@]}" "$archive_docs_dir/"
     cp -f "${REFMAN_PDF_DIR}"/*.pdf "$archive_refman_docs_dir/"

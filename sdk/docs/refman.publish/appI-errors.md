@@ -105,7 +105,35 @@ A non-zero exit code at `$F140C` after a terminal status of `2`
 gives the underlying action's exit value; the meaning is
 action-specific and is not normalised across subverbs.
 
-## I.5 RUN loader block
+## I.5 Shared network sockets
+
+The shared socket block in Chapter 39 reports:
+
+| Register | Value | Meaning |
+|----------|-------|---------|
+| `HOST_SOCKET_STATUS` | `0` | Ready or last command succeeded. |
+| `HOST_SOCKET_STATUS` | `1` | Busy, reserved by the interface. |
+| `HOST_SOCKET_STATUS` | `2` | Last command failed. |
+| `HOST_SOCKET_RES1` | `$FFFFFFFF` | Integer error result. |
+
+Common `HOST_SOCKET_ERRNO` values are:
+
+| Code | Meaning |
+|------|---------|
+| `0` | No socket error. |
+| `9` | Bad or unknown descriptor. |
+| `22` | Invalid argument, descriptor, pointer, or length. |
+| `35` | Operation would block or released key is unavailable. |
+| `40` | Message or requested transfer is too large. |
+| `45` | Operation is not supported. |
+| `55` | No buffer or descriptor capacity remains. |
+| `78` | Network service unavailable. |
+
+`HOST_SOCKET_HERRNO` value `1` means host not found. Value `3` is
+defined as a non-recoverable resolver failure; the current resolver
+path reports its failures as `1`.
+
+## I.6 RUN loader block
 
 The RUN loader block (`RUN "<name>"`, Chapter 35) reports status:
 
@@ -132,7 +160,7 @@ For `.ie64` images, load failed includes an image too large to fit at
 `PROG_START`; the image is rejected before it can partially overwrite
 memory.
 
-## I.6 Media loader
+## I.7 Media loader
 
 The media loader (`SOUND PLAY`, Chapter 23) reports status:
 
@@ -158,7 +186,7 @@ For MIDI/MUS, bad SMF headers, unsupported SMF type `2`, SMPTE timing,
 bad MUS score ranges, and unsupported MUS event types all report as bad
 format.
 
-## I.7 Coprocessor
+## I.8 Coprocessor
 
 `COSTATUS` (Chapter 32) reports:
 
@@ -191,7 +219,7 @@ Raw coprocessor commands report their last command result through
 | `8`  | `COPROC_ERR_INVALID_INSTANCE` | The CPU type is valid, but the selected instance is beyond its limit. |
 | `9`  | `COPROC_ERR_STALE_WORKER` | The worker did not acknowledge the current mailbox layout version. |
 
-## I.8 Raised by the CPU itself
+## I.9 Raised by the CPU itself
 
 Per CPU, the chapter (Ch 25-30) lists the trap and exception
 vectors and their meanings. The monitor's `r` command displays

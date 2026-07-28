@@ -91,42 +91,43 @@ the same Intuition Engine.
 36. The HOST Command
 37. Keyboard, Mouse, Controllers, and Time of Day
 38. Serial Devices
+39. Network Sockets
 
 ### Part VI - Whole-Machine Project
 
-39. Whole-Machine Capstone
-40. Interrupts, Raster Timing, and Polling
-41. Building, Loading, and Laying Out Programmes
-42. Coprocessor Positive Cookbook
-43. Debugging and Profiling Cookbook
-44. A Larger Whole-Machine Example
+40. Whole-Machine Capstone
+41. Interrupts, Raster Timing, and Polling
+42. Building, Loading, and Laying Out Programmes
+43. Coprocessor Positive Cookbook
+44. Debugging and Profiling Cookbook
+45. A Larger Whole-Machine Example
 
 ### Part VII - Demo Programming
 
-45. Your First Frame Loop
-46. The Rotozoomer In BASIC
-47. Driving The Hardware From IE Script
-48. From Floating Point To Tables
-49. The Rotozoomer In IE64 And IE32
-50. One Effect, Six CPUs
-51. Wobble, Texture Building, And Logo Motion
-52. Music-Synchronised Effects
-53. Copper, Raster Bands, And Layered Presentation
-54. Building A Complete Intro
-55. When BASIC Is Not Enough
+46. Your First Frame Loop
+47. The Rotozoomer In BASIC
+48. Driving The Hardware From IE Script
+49. From Floating Point To Tables
+50. The Rotozoomer In IE64 And IE32
+51. One Effect, Six CPUs
+52. Wobble, Texture Building, And Logo Motion
+53. Music-Synchronised Effects
+54. Copper, Raster Bands, And Layered Presentation
+55. Building A Complete Intro
+56. When BASIC Is Not Enough
 
 ### Part VIII - A Full Game Port Case Study
 
-56. Why This Port Is Different
-57. Separating Game Code From Platform Code
-58. The IE Runtime Layer
-59. Fast3D To Voodoo
-60. Hardware TnL With The Coprocessor System
-61. Native IE Audio Instead Of RSP-Style Mixing
-62. Assets, ROM Data, And Build Hygiene
-63. Performance Work On A Real Port
-64. Input, Save Data, And Player-Facing Polish
-65. Lessons For Your Own IE Ports
+57. Why This Port Is Different
+58. Separating Game Code From Platform Code
+59. The IE Runtime Layer
+60. Fast3D To Voodoo
+61. Hardware TnL With The Coprocessor System
+62. Native IE Audio Instead Of RSP-Style Mixing
+63. Assets, ROM Data, And Build Hygiene
+64. Performance Work On A Real Port
+65. Input, Save Data, And Player-Facing Polish
+66. Lessons For Your Own IE Ports
 
 ### Appendices
 

@@ -62,7 +62,7 @@ Address Range       Size    Device              Constants File
 	0xF23C0-0xF23DF     32B     IRQ Diagnostics     registers.go
 	0xF23E0-0xF23FF     32B     Bootstrap HostFS    bootstrap_hostfs_constants.go
 	0xF2400-0xF24FF     256B    SysInfo             sysinfo_mmio.go
-	0xF2500-0xF257F     128B    AROS Host Sockets   aros_host_socket_constants.go
+	0xF2500-0xF257F     128B    Shared Host Sockets aros_host_socket_constants.go
 	0xF2580-0xF259F     32B     CPU Wait            cpu_wait_mmio.go
 	0xF25A0-0xF25BF     32B     Coprocessor EXT2    coprocessor_constants.go
 	0xF25C0-0xF25FF     64B     Gamepad             input_gamepad.go
@@ -297,7 +297,7 @@ const (
 	SYSINFO_FEATURE_MMIO_STATS        = 1 << 2
 	SYSINFO_FEATURE_VOODOO_TEX_SLOTS  = 1 << 3
 
-	// AROS host socket bridge. The planning draft proposed 0xF2400, but
+	// Shared host socket bridge. The planning draft proposed 0xF2400, but
 	// that range is occupied by SYSINFO, so sockets use the next 128-byte gap.
 	AROS_HOST_SOCKET_REGION_BASE = 0xF2500
 	AROS_HOST_SOCKET_REGION_END  = 0xF257F

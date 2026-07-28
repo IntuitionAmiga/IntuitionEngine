@@ -179,3 +179,7 @@ unless the power action is the result you want.
 commands, read files, write files, or send network packets from a
 BASIC program. File work goes through Chapter 35. Keyboard and
 terminal traffic go through Chapters 37 and 38.
+
+`HOST NET` configures the machine's network service. It is not a
+packet-I/O command. Machine-language programmes use the shared socket
+device in Chapter 39; that device is not mapped in BASIC mode.

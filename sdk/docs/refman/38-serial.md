@@ -155,4 +155,6 @@ statement.
 The terminal is the only byte-stream console in the machine. There is
 no UART, parallel port, IEC bus, RS-232 line, or separate keyboard
 scan port. Programs that need binary file data use Chapter 35.
-Programs that need raw keystrokes use Chapter 37.
+Programs that need raw keystrokes use Chapter 37. Machine-language
+programmes that need IPv4 TCP or UDP use the shared socket device in
+Chapter 39.

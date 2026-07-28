@@ -64,7 +64,8 @@ var docsRemediationMarkdownAllowlist = []string{
 	"sdk/docs/refman/36-host.md",
 	"sdk/docs/refman/37-input-mmio.md",
 	"sdk/docs/refman/38-serial.md",
-	"sdk/docs/refman/39-whole-machine-capstone.md",
+	"sdk/docs/refman/39-network-sockets.md",
+	"sdk/docs/refman/40-whole-machine-capstone.md",
 	"sdk/docs/refman/STYLE.md",
 	"sdk/docs/refman/appA-token-map.md",
 	"sdk/docs/refman/appB-screen-codes.md",
@@ -237,7 +238,8 @@ func TestDocs_StaticRefmanAllowlistIsExplicit(t *testing.T) {
 	}
 	for _, required := range []string{
 		"sdk/docs/refman/00-Preface.md",
-		"sdk/docs/refman/39-whole-machine-capstone.md",
+		"sdk/docs/refman/39-network-sockets.md",
+		"sdk/docs/refman/40-whole-machine-capstone.md",
 		"sdk/docs/refman/appL-index.md",
 	} {
 		if !stringSliceContains(docsRemediationMarkdownAllowlist, required) {

@@ -187,6 +187,8 @@ The full map:
 | `$F23C0`-`$F23DF` | `32B`  | IRQ diagnostics              |
 | `$F23E0`-`$F23FF` | `32B`  | Bootstrap file bridge        |
 | `$F2400`-`$F24FF` | `256B` | SysInfo (RAM-size discovery) |
+| `$F2500`-`$F257F` | `128B` | Shared network sockets       |
+| `$F2580`-`$F259F` | `32B`  | CPU wait controls            |
 | `$F25A0`-`$F25BF` | `32B`  | Coprocessor capability and instance discovery |
 | `$F25C0`-`$F25FF` | `64B`  | Gamepad status, buttons, and stick axes |
 | `$F2600`-`$F29FF` | `1K`   | SFX trigger extended window, channels `0`-`31` |
@@ -210,6 +212,12 @@ MMIO width depends on the device.
 Do not widen a byte register just because the address is in the MMIO
 region. POKEY, TED audio, SID, PSG, and many VGA registers are
 byte-oriented. Use the owning chapter's table.
+
+The shared socket block at `$F2500` uses `32`-bit registers and a
+big-endian request descriptor in ordinary guest RAM. IE64, IE32, M68K,
+and x86 reach the block directly. The 6502 and Z80 select Bank 3 value
+`$79` and use the `$6500` window. Chapter 39 gives the complete
+descriptor, command, status, and byte-lane rules.
 
 `PEEK16`/`POKE16`, `PEEK32`/`POKE32`, and `PEEK64`/`POKE64` require
 2-, 4-, and 8-byte aligned addresses. `PEEK`, `POKE`, `PEEK8`, and `POKE8`

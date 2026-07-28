@@ -6,6 +6,8 @@ sources:
   - machine_bus.go
   - coprocessor_constants.go
   - coprocessor_manager.go
+  - aros_host_socket_constants.go
+  - host_socket_mapping.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -125,7 +127,12 @@ priority encoding above the CPU / DMA distinction.
               Audio --------+   |   |
               File I/O ---------+   |
               Coprocessor ---------+
+              Network sockets -----+
 ```
+
+The socket device at `$F2500` is a shared MMIO client like File I/O
+and the coprocessor block. Wide CPUs address it directly. The 6502 and
+Z80 reach it through Bank 3 value `$79`.
 
 IE32, M68K, and x86 are `32`-bit bus clients. The 8-bit CPUs (6502,
 Z80) reach the bus through an address translator that turns their

@@ -1093,7 +1093,7 @@ SOUND STOP</code></pre>
 710 BLIT MEMCOPY BB,FB,1228800
 720 VSYNC
 760 GOTO 400</code></pre>
-          <p>Open <a href="/demo/">the browser demo</a>, type <code>LOAD "sdk/examples/basic/wobble_zoom.bas"</code>, then <code>RUN</code>. Or type <code>RUN AOT</code> to compile the same BASIC to native IE64 code and run that instead. Chapter 51 of the Reference Guide explains how it works, buffer by buffer. To pass your own work to someone else, send them the source and its assets: they open the browser demo, add the files to the disk, and it runs, with nothing installed either side. Programmes that keep to the compiled core of BASIC also <code>COMPILE</code> to a standalone <code>.ie64</code> you can hand to anyone who has the machine. The source and examples are <a href="https://github.com/IntuitionAmiga/IntuitionEngine">on GitHub</a>.</p>
+          <p>Open <a href="/demo/">the browser demo</a>, type <code>LOAD "sdk/examples/basic/wobble_zoom.bas"</code>, then <code>RUN</code>. Or type <code>RUN AOT</code> to compile the same BASIC to native IE64 code and run that instead. Chapter 52 of the Reference Guide explains how it works, buffer by buffer. To pass your own work to someone else, send them the source and its assets: they open the browser demo, add the files to the disk, and it runs, with nothing installed either side. Programmes that keep to the compiled core of BASIC also <code>COMPILE</code> to a standalone <code>.ie64</code> you can hand to anyone who has the machine. The source and examples are <a href="https://github.com/IntuitionAmiga/IntuitionEngine">on GitHub</a>.</p>
         </article>
         <div class="actions">
           <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
@@ -1108,7 +1108,7 @@ SOUND STOP</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>The Programmer's Reference Guide</h2>
-          <p>A from-zero tutorial and a reference in one book. It starts at the BASIC prompt because that is the quickest way to touch the machine: you type short programmes, inspect memory with <code>PEEK</code>, change hardware with <code>POKE</code>, and later enter machine code directly in IE Mon. No assembler, no build system and no second computer are needed to follow it. Sixty-five chapters and twelve appendices later, it ends with a complete game port, and every register, opcode and memory map along the way is written down.</p>
+          <p>A from-zero tutorial and a reference in one book. It starts at the BASIC prompt because that is the quickest way to touch the machine: you type short programmes, inspect memory with <code>PEEK</code>, change hardware with <code>POKE</code>, and later enter machine code directly in IE Mon. No assembler, no build system and no second computer are needed to follow it. Sixty-six chapters and twelve appendices later, it ends with a complete game port, and every register, opcode and memory map along the way is written down.</p>
         </div>
 
         <article class="card" style="margin-bottom: 1rem">
@@ -1120,14 +1120,14 @@ SOUND STOP</code></pre>
         <div class="grid two" style="margin-bottom: 1rem">
           <article class="card">
             <span class="kicker">Never programmed before</span>
-            <h3>Five milestones, not sixty-five chapters</h3>
+            <h3>Five milestones, not sixty-six chapters</h3>
             <p>You do not read the whole book first. You climb it, one finished thing at a time:</p>
             <ol>
               <li>First command: Chapter 1 starts you at the Ready prompt.</li>
               <li>First picture on screen: Chapters 3 and 4.</li>
-              <li>First moving effect: Chapter 45, Your First Frame Loop.</li>
-              <li>First effect locked to music: Chapter 52.</li>
-              <li>First complete intro: Chapter 54.</li>
+              <li>First moving effect: Chapter 46, Your First Frame Loop.</li>
+              <li>First effect locked to music: Chapter 53.</li>
+              <li>First complete intro: Chapter 55.</li>
             </ol>
             <p>Everything between the milestones is there for the day you want it, not a prerequisite.</p>
           </article>
@@ -1152,10 +1152,10 @@ SOUND STOP</code></pre>
               <tr><td>II. Programming Graphics</td><td>3 to 10</td><td>The display model, VideoChip, VGA, TED, ANTIC/GTIA, ULA, Voodoo, and tile and sprite layers.</td></tr>
               <tr><td>III. Programming Sound and Music</td><td>11 to 23</td><td>Every sound chip and player, from SoundChip and SID to MOD, MIDI/MUS and Paula DMA.</td></tr>
               <tr><td>IV. BASIC to Machine Language</td><td>24 to 34</td><td>The memory model, all six CPUs, timing and traps, coprocessors, IE Mon and IEScript.</td></tr>
-              <tr><td>V. Input / Output Guide</td><td>35 to 38</td><td>Disk and file I/O, the HOST command, keyboard, mouse and controller input, and serial.</td></tr>
-              <tr><td>VI. Whole-Machine Project</td><td>39 to 44</td><td>Interrupts, raster timing, programme layout, and two cookbooks, built into a working machine.</td></tr>
-              <tr><td>VII. Demo Programming</td><td>45 to 55</td><td>A guided build from a first frame loop to a complete intro.</td></tr>
-              <tr><td>VIII. A Full Game Port Case Study</td><td>56 to 65</td><td>A complete game port, from Fast3D to hardware T&amp;L and native IE audio.</td></tr>
+              <tr><td>V. Input / Output Guide</td><td>35 to 39</td><td>Disk and file I/O, the HOST command, keyboard, mouse and controller input, serial, and network sockets.</td></tr>
+              <tr><td>VI. Whole-Machine Project</td><td>40 to 45</td><td>Interrupts, raster timing, programme layout, and two cookbooks, built into a working machine.</td></tr>
+              <tr><td>VII. Demo Programming</td><td>46 to 56</td><td>A guided build from a first frame loop to a complete intro.</td></tr>
+              <tr><td>VIII. A Full Game Port Case Study</td><td>57 to 66</td><td>A complete game port, from Fast3D to hardware T&amp;L and native IE audio.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1181,7 +1181,7 @@ SOUND STOP</code></pre>
 
         <div class="actions">
           <a class="button" href="docs/00-Preface.pdf">Start with the preface</a>
-          <a class="button secondary" href="docs/45-first-frame-loop.pdf">Read a chapter: Your First Frame Loop</a>
+          <a class="button secondary" href="docs/46-first-frame-loop.pdf">Read a chapter: Your First Frame Loop</a>
           <a class="button secondary" href="docs/Intuition%20Engine%20Programmers%20Reference%20Guide.zip">Download the whole book</a>
         </div>
         <p style="margin-top: 0.8rem; color: var(--muted); font-size: 0.92rem;">The guide is written to be read in order, one finished thing at a time. The preface and the frame-loop chapter each read on their own if you want a taste before the full download.</p>
@@ -1308,13 +1308,14 @@ SOUND STOP</code></pre>
         <div class="grid two">
           <article class="card">
             <h3>Common ranges</h3>
-            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal, keyboard, mouse and USB gamepad input, CPU wait, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. Through that helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates the live image's host OS packages, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
+            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal, keyboard, mouse and USB gamepad input, CPU wait, shared network sockets, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. The socket block gives machine-language programmes IPv4 TCP and UDP in every recognised non-BASIC mode. Through the host-command helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates the live image's host OS packages, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
             <div class="tag-row">
               <span class="tag">SYSINFO</span>
               <span class="tag">FILE_DATA_PTR64</span>
               <span class="tag">MEDIA</span>
               <span class="tag">EXEC</span>
               <span class="tag">WAIT</span>
+              <span class="tag">HOST_SOCKET</span>
               <span class="tag">VOODOO</span>
               <span class="tag">BOOT_HOSTFS</span>
               <span class="tag">GAMEPAD</span>
@@ -1332,11 +1333,11 @@ SOUND STOP</code></pre>
           </article>
           <article class="card">
             <h3>Profile bridges</h3>
-            <p>AROS maps DOS packets, Paula-style audio DMA, host sockets, clipboard access, IRQ diagnostics, and live MIDI through a CAMD driver (DEVS:Midi/ie) under camd.library. EmuTOS uses an Atari MIDI ACIA shim that feeds the live-MIDI engine.</p>
+            <p>AROS maps DOS packets, Paula-style audio DMA, clipboard access, IRQ diagnostics, and live MIDI through a CAMD driver (DEVS:Midi/ie) under camd.library. It also supplies guest-side integration for the shared network-socket block. EmuTOS uses an Atari MIDI ACIA shim that feeds the live-MIDI engine.</p>
             <div class="tag-row">
               <span class="tag">AROS_DOS</span>
               <span class="tag">AROS_AUDIO_DMA</span>
-              <span class="tag">AROS_HOST_SOCKET</span>
+              <span class="tag">HOST_SOCKET</span>
               <span class="tag">AROS_CLIPBOARD</span>
               <span class="tag">camd.library</span>
               <span class="tag">IRQ_DIAG</span>

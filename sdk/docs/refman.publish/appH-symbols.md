@@ -142,6 +142,11 @@ mechanism described in Chapters 27 and 28.
 | `$F2400`  | SysInfo. |
 | `$F2410` | `SYSINFO_FEATURES`; bit `3`, `SYSINFO_FEATURE_VOODOO_TEX_SLOTS`, reports retained Voodoo texture slots. |
 | `$F2414`/`$F2418` | `SYSINFO_LOW_WINDOW_LO` / `SYSINFO_LOW_WINDOW_HI`, dense low-RAM window size. |
+| `$F2500`-`$F257F` | `HOST_SOCKET_BASE` and the shared `HOST_SOCKET_*` register block. |
+| `HOST_SOCKET_REQ_*` | Offsets in the `24`-word, `96`-byte big-endian socket request descriptor. |
+| `HOST_SOCKET_CMD_*` | Socket command values `1` through `23`. |
+| `HOST_SOCKET_MAX_IO` / `MAX_ADDR` / `DTABLE` / `FDSET_LEN` | Limits `65536`, `128`, `64`, and `8`. |
+| `HOST_SOCKET_BANK` / `HOST_SOCKET_SELECT` | 6502/Z80 Bank 3 value `$79` and helper for the `$6500` socket window. |
 | `$F8000`  | Voodoo 3D. |
 | `$F833C`/`$F8340`/`$F8344` | `VOODOO_CMD_PTR` / `VOODOO_CMD_COUNT` / `VOODOO_CMD_SUBMIT`, Voodoo command-stream replay. |
 | `$00000001`/`$00000002` | `VOODOO_CMD_SUBMIT_REPLAY` / `VOODOO_CMD_SUBMIT_REPLAY_LE`, big-endian or little-endian command-stream pairs. |

@@ -28,6 +28,75 @@ documentation is wrong unless the code itself is being changed in the
 same pass and verified. Record the exact files checked in
 `verify/CLAIM_LEDGER.txt`.
 
+## Current Shared Network Sockets Editorial Pass
+
+This pass integrates commit `de423204` and the matching tracked
+register-name correction as one reader-facing machine contract. Execute
+it in ascending order: Preface and contents, Chapter 24, Chapter 36,
+Chapter 38, new Chapter 39, renumbered Chapters 40 through 66, then
+Appendices D, H, I, J, K, and L. Finish with the symbol allow-list,
+claim ledger, focused checks, strict publication, and PDF generation.
+
+The shared network-socket block is an Intuition Engine machine-language
+facility. It is not an AROS chapter, an operating-system integration
+chapter, or a description of host networking internals. Use the neutral
+`HOST_SOCKET_*` names throughout. Do not mention compatibility aliases,
+guest operating-system libraries, host descriptor tables, backend
+types, Unix calls, mapping ownership, reload cleanup, build constraints,
+source paths, tests, or host platform implementation.
+
+The reader-facing contract is:
+
+- `$F2500` through `$F257F`, with nine `32`-bit registers from
+  `HOST_SOCKET_CMD` through `HOST_SOCKET_EVENTS`;
+- one fixed `24`-word, `96`-byte request descriptor in guest memory,
+  with every descriptor word stored big-endian;
+- command values `1` through `23`, covering socket creation, connection,
+  data transfer, options, names, selection, resolution, duplication,
+  event access, release, and obtain;
+- status values `0` ready, `1` busy, and `2` error, with results,
+  `errno`, and resolver error fields in the register block;
+- IPv4 TCP and UDP, non-blocking descriptors, `64` KiB data transfers,
+  `128`-byte socket addresses, `64` guest descriptors, and `8`-byte
+  descriptor sets;
+- direct `$F2500` access from IE64, IE32, M68K, and x86;
+- bank `$79` and the `$6500` window for 6502 and Z80;
+- big-endian byte lanes for byte access, with offset zero carrying the
+  most significant byte;
+- a command written as four bytes dispatches only after all four command
+  lanes have been supplied;
+- no socket mapping in BASIC mode; Chapter 36 must continue to state
+  that BASIC cannot send network packets;
+- status `2` and `errno 78` when the network service is unavailable.
+
+Add Chapter 39, Network Sockets, at the end of Part V. Renumber the old
+Chapters 39 through 65 as Chapters 40 through 66. Rename their canonical
+files, repair headings, contents, prose cross-references, appendix
+entries, claim-ledger references, publish names, and PDF names. Do not
+leave aliases or duplicate old chapter numbers.
+
+Chapter 39 must teach purpose, setup, register and descriptor formats,
+commands, byte order, CPU access, results, status and errors, limits,
+and cleanup. Its typed IE-native example must use IE Mon and the
+in-machine IE64 assembler to create and close an IPv4 UDP socket. It
+must report success or failure through a visible VideoChip colour and
+an audible SoundChip result. It must not require an external server,
+host tool, source tree, or BASIC socket access.
+
+Chapter 24 and Appendices D and J must include the complete MMIO range.
+Appendix H must expose the neutral symbols and both small-CPU bank
+selectors. Appendix I must list the documented status, socket error,
+and resolver error values. Appendix K must show the socket block on the
+shared bus. Appendix L must index the chapter and principal registers
+and commands. `tools/prm-extract/symbols.txt` is an IE Script
+call-target allow-list, not a hardware-symbol list. Do not add socket
+constants to it because this pass adds no IE Script call.
+
+Adversarially verify the text against `aros_host_socket_constants.go`,
+`aros_host_socket.go`, `host_socket_mapping.go`, all six public CPU
+include files, the 6502 and Z80 bank adapters, and focused socket tests.
+Record the exact evidence in `verify/CLAIM_LEDGER.txt`.
+
 ## Current Runtime Optimisation Scope Correction
 
 This pass audits commit `4bf6fe5e` in reader order over Chapters 4 and
@@ -296,12 +365,12 @@ all intervening published files for stale coprocessor addresses,
 instance rules, errors, BASIC syntax, and cross-references even when no
 edit is expected.
 
-Chapter 42 remains a positive, IE-native 6502 example. Its entered
+Chapter 43 remains a positive, IE-native 6502 example. Its entered
 worker must acknowledge the mailbox layout version before polling the
 ring, and its bytes, disassembly, allocation length, DATA statements,
 mailbox addresses, expected result, and explanatory prose must agree.
 
-Part VIII, Chapters 56 through 65, follows the checked porting tree and
+Part VIII, Chapters 57 through 66, follows the checked porting tree and
 must be revised after that tree has migrated to this ABI. The current
 case-study architecture is:
 
@@ -325,8 +394,8 @@ mailbox facts; the current `../mk64-ie` clients and services own the port's
 division of labour. Older engineering prose is evidence only where it
 still agrees with those implementations.
 
-Execute the Part VIII migration in ascending order from Chapter 56
-through Chapter 65, then replace the matching claim-ledger entries in the
+Execute the Part VIII migration in ascending order from Chapter 57
+through Chapter 66, then replace the matching claim-ledger entries in the
 same order. Preserve the fixed opening boundary and each chapter's
 `The General IE Lesson` ending. This is an architecture case study, not a
 host build guide or a source-file tour.
@@ -344,7 +413,7 @@ ascending reader order:
   assigned ring's layout byte at `+$03` to the acknowledgement byte at
   `+$04`. `COPROC_MAILBOX_VERSION` is the main-CPU discovery register,
   not the value a worker reads through its ring.
-- Chapter 56 must keep quantities in its teaching prose consistent with
+- Chapter 57 must keep quantities in its teaching prose consistent with
   the numbered rules that follow.
 - Appendix E author provenance must name the implementation files that
   exist on disk. Provenance paths are evidence, not approximate module
@@ -377,16 +446,16 @@ Current controlled polish pass:
 
   The Part VIII chapters are:
 
-  1. Chapter 56, Why This Port Is Different.
-  2. Chapter 57, Separating Game Code From Platform Code.
-  3. Chapter 58, The IE Runtime Layer.
-  4. Chapter 59, Fast3D To Voodoo.
-  5. Chapter 60, Hardware TnL With The Coprocessor System.
-  6. Chapter 61, Native IE Audio Instead Of RSP-Style Mixing.
-  7. Chapter 62, Assets, ROM Data, And Build Hygiene.
-  8. Chapter 63, Performance Work On A Real Port.
-  9. Chapter 64, Input, Save Data, And Player-Facing Polish.
-  10. Chapter 65, Lessons For Your Own IE Ports.
+  1. Chapter 57, Why This Port Is Different.
+  2. Chapter 58, Separating Game Code From Platform Code.
+  3. Chapter 59, The IE Runtime Layer.
+  4. Chapter 60, Fast3D To Voodoo.
+  5. Chapter 61, Hardware TnL With The Coprocessor System.
+  6. Chapter 62, Native IE Audio Instead Of RSP-Style Mixing.
+  7. Chapter 63, Assets, ROM Data, And Build Hygiene.
+  8. Chapter 64, Performance Work On A Real Port.
+  9. Chapter 65, Input, Save Data, And Player-Facing Polish.
+  10. Chapter 66, Lessons For Your Own IE Ports.
 
   Canonical sources to check before and while writing:
 
@@ -440,17 +509,17 @@ Current controlled polish pass:
 
   The Part VII chapters are:
 
-  1. Chapter 45, Your First Frame Loop.
-  2. Chapter 46, The Rotozoomer In BASIC.
-  3. Chapter 47, Driving The Hardware From IE Script.
-  4. Chapter 48, From Floating Point To Tables.
-  5. Chapter 49, The Rotozoomer In IE64 And IE32.
-  6. Chapter 50, One Effect, Six CPUs.
-  7. Chapter 51, Wobble, Texture Building, And Logo Motion.
-  8. Chapter 52, Music-Synchronised Effects.
-  9. Chapter 53, Copper, Raster Bands, And Layered Presentation.
-  10. Chapter 54, Building A Complete Intro.
-  11. Chapter 55, When BASIC Is Not Enough.
+  1. Chapter 46, Your First Frame Loop.
+  2. Chapter 47, The Rotozoomer In BASIC.
+  3. Chapter 48, Driving The Hardware From IE Script.
+  4. Chapter 49, From Floating Point To Tables.
+  5. Chapter 50, The Rotozoomer In IE64 And IE32.
+  6. Chapter 51, One Effect, Six CPUs.
+  7. Chapter 52, Wobble, Texture Building, And Logo Motion.
+  8. Chapter 53, Music-Synchronised Effects.
+  9. Chapter 54, Copper, Raster Bands, And Layered Presentation.
+  10. Chapter 55, Building A Complete Intro.
+  11. Chapter 56, When BASIC Is Not Enough.
 
   Canonical sources to check before and while writing:
 
@@ -508,11 +577,11 @@ Current controlled polish pass:
 
   The five draft chapters are:
 
-  1. Chapter 40, Interrupts, Raster Timing, and Polling.
-  2. Chapter 41, Building, Loading, and Laying Out Programmes.
-  3. Chapter 42, Coprocessor Positive Cookbook.
-  4. Chapter 43, Debugging and Profiling Cookbook.
-  5. Chapter 44, A Larger Whole-Machine Example.
+  1. Chapter 41, Interrupts, Raster Timing, and Polling.
+  2. Chapter 42, Building, Loading, and Laying Out Programmes.
+  3. Chapter 43, Coprocessor Positive Cookbook.
+  4. Chapter 44, Debugging and Profiling Cookbook.
+  5. Chapter 45, A Larger Whole-Machine Example.
 
   Canonical sources to check before and while writing:
 
@@ -1596,23 +1665,23 @@ Current controlled polish pass:
   - `../mk64-ie/ie/coproc/ie_coproc.c`,
     `../mk64-ie/ie/coproc/ie_coproc.h`,
     `../mk64-ie/ie/coproc/tnl_proto.h`,
-    `../mk64-ie/ie/coproc/tnl_service_ie64.asm`, and Chapter 60 for
+    `../mk64-ie/ie/coproc/tnl_service_ie64.asm`, and Chapter 61 for
     the checked transform-and-lighting coprocessor boundary.
-  - Chapters 40 through 65 and Appendix L for index coverage after the
+  - Chapters 41 through 66 and Appendix L for index coverage after the
     workflow, demoscene, and case-study chapters are added.
 
   Execute this pass in book order:
 
   1. Chapter 37: describe `TERM_KEY_IN` and `TERM_KEY_STATUS` as the
      raw key queue used by the terminal MMIO path.
-  2. Chapter 40: state that writing any value to `ANTIC_NMIST` clears
+  2. Chapter 41: state that writing any value to `ANTIC_NMIST` clears
      the pending DLI/VBI latches. Do not describe the write value as a
      selective bit mask.
-  3. Chapter 60: keep the coprocessor lesson tied to the checked IE64
+  3. Chapter 61: keep the coprocessor lesson tied to the checked IE64
      worker. If the chapter uses the phrase "hardware TnL", clarify
      that this means another IE bus CPU doing the work, not a
      fixed-function Voodoo TnL unit.
-  4. Appendix L: add practical lookup entries for Chapters 40 through
+  4. Appendix L: add practical lookup entries for Chapters 41 through
      65, including interrupts, frame loops, rotozoomers, IE Script
      lab work, Fast3D, TnL, pack layout, save data, profiling, Voodoo
      case-study work, and the game-port case study.
@@ -1661,10 +1730,10 @@ Current controlled polish pass:
   2. Chapter 24: add `SYSINFO_FEATURES` to the system-information table
      and define bits `0` through `3`; correct the prose count so it
      matches the seven implemented read-only words.
-  3. Chapter 59: describe the case-study's generation-aware first
+  3. Chapter 60: describe the case-study's generation-aware first
      upload, later bind, and feature-bit fallback without introducing a
      repository or host-tool reader path.
-  4. Chapter 63: describe texture-slot residency as a measured traffic
+  4. Chapter 64: describe texture-slot residency as a measured traffic
      reduction, while retaining retransmission as the fallback.
   5. Appendices D, H, and L: add the compact SysInfo, register, symbol,
      and lookup entries. Appendix J needs no new row because the Voodoo
@@ -1715,7 +1784,7 @@ Current controlled polish pass:
      override that final restoration. Only monitor `fa` or `ta`, including
      `dbg.command("fa")` or `dbg.command("ta")`, establishes an audio
      state that survives monitor exit.
-  3. Chapter 43: add a compact task-first recipe for listening to sound
+  3. Chapter 44: add a compact task-first recipe for listening to sound
      hardware while CPUs remain stopped, using `ta` to run the audio
      clock and `fa` to hold it again.
   4. Appendix L: add lookup routes for monitor audio freeze, `fa`, `ta`,
@@ -2033,7 +2102,7 @@ Execute this pass in ascending reader order:
 4. Chapter 35: remove resident-interpreter fallback wording, document the
    self-contained typed helper closure, and state the standalone `LOAD`
    limitation precisely.
-5. Chapter 41: make the native-image example a real prompt transcript rather
+5. Chapter 42: make the native-image example a real prompt transcript rather
    than a numbered listing containing direct-mode commands.
 6. Appendix I: record the target-specific stored `LOAD` compile error.
 7. Appendix L: add lookup entries for compiled BASIC, standalone BASIC images,
