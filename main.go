@@ -1116,6 +1116,8 @@ func main() {
 	// active value, not the zero placeholder bootGuestRAMFromComputed
 	// publishes during backing allocation.
 	RegisterSysInfoMMIOFromBus(sysBus)
+	hostSocketMapping := NewHostSocketMapping(sysBus)
+	hostSocketMapping.Configure(hostSocketRuntimeMode(bootMode))
 	hostHelper := NewHostHelper(hostHelperFlags.HostHelperConfig())
 	RegisterHostHelperMMIO(sysBus, hostHelper)
 	psgPlayer.AttachBus(sysBus)
@@ -1789,6 +1791,7 @@ func main() {
 		EnsureAROSHostRoot:           ensureAROSHostRoot,
 		StageConfiguredCoprocService: stageConfiguredCoprocService,
 	})
+	machine.SetHostSocketMapping(hostSocketMapping)
 	machineRenderLoops := func() []MachineRenderLoop {
 		var loops []MachineRenderLoop
 		if vgaEngine != nil {
@@ -2102,10 +2105,6 @@ func main() {
 			runtimeStatus.setAROSDOS(arosDOS)
 			fmt.Printf("AROS DOS: IE: → %s\r\n", arosHostRoot)
 		}
-
-		arosSockets := NewArosHostSocketDevice(sysBus, NewUnixArosHostSocketBackend(), true)
-		sysBus.MapIO(AROS_HOST_SOCKET_REGION_BASE, AROS_HOST_SOCKET_REGION_END, arosSockets.HandleRead, arosSockets.HandleWrite)
-		fmt.Printf("AROS sockets: host bridge enabled at 0x%05X-0x%05X\r\n", AROS_HOST_SOCKET_REGION_BASE, AROS_HOST_SOCKET_REGION_END)
 
 		// Initialize AROS Audio DMA engine (AROS Paula-style DMA shim -> flex channel DAC)
 		arosDMA, dmaErr := NewArosAudioDMA(sysBus, soundChip, m68kCPU)

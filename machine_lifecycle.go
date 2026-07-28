@@ -159,6 +159,11 @@ type Machine struct {
 	media  MachineMediaLoader
 
 	resetProgram func(path string) error
+	hostSockets  *HostSocketMapping
+}
+
+func (m *Machine) SetHostSocketMapping(mapping *HostSocketMapping) {
+	m.hostSockets = mapping
 }
 
 func NewMachine(deps MachineDeps) *Machine {
@@ -446,6 +451,13 @@ func (m *Machine) ResetDevicesBeforeLoad(mode string, t MachineDeviceResetTarget
 		}
 		t.Memory.Reset()
 	}
+	if m.hostSockets != nil {
+		socketMode := mode
+		if t.ForceBasicBoot {
+			socketMode = "basic"
+		}
+		m.hostSockets.Configure(socketMode)
+	}
 	if t.ApplyRuntimeVisibleRAM != nil {
 		t.ApplyRuntimeVisibleRAM(mode)
 	}
@@ -663,9 +675,6 @@ func (m *Machine) LoadROMProfile(mode string, bytes []byte, path string, t Machi
 		t.Bus.MapIO(AROS_DOS_REGION_BASE, AROS_DOS_REGION_END, arosDOS.HandleRead, arosDOS.HandleWrite)
 		t.RuntimeStatus.setAROSDOS(arosDOS)
 		fmt.Printf("AROS DOS: IE: → %s\r\n", hostRoot)
-
-		arosSockets := NewArosHostSocketDevice(t.Bus, NewUnixArosHostSocketBackend(), true)
-		t.Bus.MapIO(AROS_HOST_SOCKET_REGION_BASE, AROS_HOST_SOCKET_REGION_END, arosSockets.HandleRead, arosSockets.HandleWrite)
 
 		arosDMA, dmaErr := m.deps.NewArosAudioDMA(t.Bus, t.SoundChip, r.cpu)
 		if dmaErr != nil {

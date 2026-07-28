@@ -23,6 +23,34 @@ func NewUnixArosHostSocketBackend() arosHostSocketBackend {
 	return &unixArosHostSocketBackend{next: 3, nextReleaseID: 1, fds: make(map[int]int), released: make(map[int]int)}
 }
 
+func (b *unixArosHostSocketBackend) CloseAll() {
+	b.mu.Lock()
+	fds := make([]int, 0, len(b.fds)+len(b.released))
+	seen := make(map[int]struct{}, len(b.fds)+len(b.released))
+	for _, fd := range b.fds {
+		if fd != arosHostSocketReservedFD {
+			if _, duplicate := seen[fd]; !duplicate {
+				seen[fd] = struct{}{}
+				fds = append(fds, fd)
+			}
+		}
+	}
+	for _, fd := range b.released {
+		if fd != arosHostSocketReservedFD {
+			if _, duplicate := seen[fd]; !duplicate {
+				seen[fd] = struct{}{}
+				fds = append(fds, fd)
+			}
+		}
+	}
+	clear(b.fds)
+	clear(b.released)
+	b.mu.Unlock()
+	for _, fd := range fds {
+		_ = syscall.Close(fd)
+	}
+}
+
 func (b *unixArosHostSocketBackend) Socket(domain, typ, protocol int) (int, uint32) {
 	if errno := validateArosHostSocketCreate(domain, typ, protocol); errno != 0 {
 		return -1, errno

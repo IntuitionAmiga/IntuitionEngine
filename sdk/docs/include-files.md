@@ -185,12 +185,14 @@ As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/
 ### System Control
 - `SYS_GC_TRIGGER` - Write any value to trigger garbage collection at a safe point
 
-### AROS m68k-ie Host Sockets
+### Shared Host Sockets
 
-The AROS-side `arch/m68k-ie/include/ie_hwreg.h` exports the `IE_SOCK_*`
-registers for the ROM `bsdsocket.library`. The block is `0xF2500-0xF257F`, not
-`0xF2400`, because SYSINFO owns `0xF2400-0xF24FF`. See
-`sdk/docs/AROSHostSockets.md` for the descriptor ABI and supported v1 calls.
+All six CPU include files export the complete neutral `HOST_SOCKET_*` register,
+command, descriptor and limit constants. The 6502 and Z80 includes use the bank
+three window and provide `HOST_SOCKET_SELECT`. Existing AROS names remain
+aliases. The block is `0xF2500-0xF257F`, not `0xF2400`, because SYSINFO owns
+`0xF2400-0xF24FF`. See `sdk/docs/AROSHostSockets.md` for the descriptor ABI and
+supported calls.
 
 ## Per-CPU Details
 

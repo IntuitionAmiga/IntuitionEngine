@@ -34,14 +34,16 @@ type ArosHostSocketDevice struct {
 	backend arosHostSocketBackend
 	enabled bool
 
-	reqPtr uint32
-	reqLen uint32
-	res1   uint32
-	res2   uint32
-	errno  uint32
-	herrno uint32
-	status uint32
-	events uint32
+	reqPtr        uint32
+	reqLen        uint32
+	res1          uint32
+	res2          uint32
+	errno         uint32
+	herrno        uint32
+	status        uint32
+	events        uint32
+	cmd           uint32
+	byteWriteMask [3]uint8
 }
 
 func NewArosHostSocketDevice(bus *MachineBus, backend arosHostSocketBackend, enabled bool) *ArosHostSocketDevice {
@@ -81,7 +83,39 @@ func (d *ArosHostSocketDevice) HandleWrite(addr uint32, val uint32) {
 	case AROS_HOST_SOCKET_REQ_LEN:
 		d.reqLen = val
 	case AROS_HOST_SOCKET_CMD:
+		d.byteWriteMask[0] = 0
 		d.dispatch(val)
+	}
+}
+
+func (d *ArosHostSocketDevice) HandleRead8(addr uint32) uint8 {
+	base := addr &^ 3
+	shift := uint(24 - 8*(addr&3))
+	return uint8(d.HandleRead(base) >> shift)
+}
+
+func (d *ArosHostSocketDevice) HandleWrite8(addr uint32, val uint8) {
+	base := addr &^ 3
+	lane := addr & 3
+	shift := uint(24 - 8*lane)
+	var dst *uint32
+	var mask *uint8
+	switch base {
+	case HOST_SOCKET_CMD:
+		dst, mask = &d.cmd, &d.byteWriteMask[0]
+	case HOST_SOCKET_REQ_PTR:
+		dst, mask = &d.reqPtr, &d.byteWriteMask[1]
+	case HOST_SOCKET_REQ_LEN:
+		dst, mask = &d.reqLen, &d.byteWriteMask[2]
+	default:
+		return
+	}
+	*dst = (*dst &^ (uint32(0xff) << shift)) | uint32(val)<<shift
+	*mask |= 1 << lane
+	if base == HOST_SOCKET_CMD && *mask == 0x0f {
+		cmd := *dst
+		*mask = 0
+		d.dispatch(cmd)
 	}
 }
 

@@ -9,6 +9,33 @@ import (
 	"testing"
 )
 
+func TestUnixArosHostSocketCloseAll(t *testing.T) {
+	b := NewUnixArosHostSocketBackend().(*unixArosHostSocketBackend)
+	pair1, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair2, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Close(pair1[1])
+	defer syscall.Close(pair2[1])
+	b.fds[3] = pair1[0]
+	b.fds[4] = arosHostSocketReservedFD
+	b.released[7] = pair2[0]
+	b.CloseAll()
+	b.CloseAll()
+	if len(b.fds) != 0 || len(b.released) != 0 {
+		t.Fatal("CloseAll did not clear descriptor tables")
+	}
+	for _, fd := range []int{pair1[0], pair2[0]} {
+		if err := syscall.Close(fd); err != syscall.EBADF {
+			t.Fatalf("descriptor %d close error=%v, want EBADF", fd, err)
+		}
+	}
+}
+
 func TestUnixArosHostSocketRejectsUnownedDescriptors(t *testing.T) {
 	backend := NewUnixArosHostSocketBackend()
 	if errno := backend.Close(1); errno != arosSockErrBadf {

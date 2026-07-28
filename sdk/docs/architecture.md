@@ -78,7 +78,7 @@ flowchart LR
         AROS["AROS loader"]
         ADOS["AROS DOS handler"]
         ADMA["AROS Paula-style audio DMA"]
-        ASOCK["AROS host socket bridge"]
+        ASOCK["Shared host socket bridge"]
         HOSTFS["Bootstrap HostFS"]
         FILEIO["File I/O MMIO"]
         MEDIA["Media loader"]
@@ -1676,9 +1676,11 @@ The guest writes up to four argument registers and then writes `AROS_DOS_CMD`; t
 
 AROS HostFS fast paths use strict bulk guest-memory helpers, a 64 KiB sequential read-ahead cache, and cache invalidation on non-sequential reads, seeks outside cache, writes, truncates, close, create, delete, rename, and dirty close paths. Spans outside active guest RAM, high-pointer requests unsupported by the active bus, and low/high backing seam crossings fail closed. External host changes are best-effort and are not continuously watched.
 
-### AROS Host Socket ABI
+### Shared Host Socket ABI
 
-The AROS host socket block at `0xF2500-0xF257F` backs the m68k-ie ROM `bsdsocket.library`. `0xF2400-0xF24FF` remains the SYSINFO ABI, so socket registers occupy the next 128-byte MMIO block. The AROS host socket block at 0xF2500-0xF257F uses 96-byte big-endian request descriptors, strict guest-memory helper copies, 64 KiB send/recv caps, 128-byte sockaddr caps, guest-visible descriptor handles, WaitSelect fd_set translation, Release/ReleaseCopy/Obtain transfer keys, and ENOSYS fail-closed behaviour when disabled. The guest writes `REQ_PTR` and `REQ_LEN`, places the descriptor in guest RAM, and triggers synchronous dispatch by writing `CMD`. Payload, fd_set, timeval, hostname, hostent, and sockaddr buffers are copied through those validated guest spans.
+The shared host socket block at `0xF2500-0xF257F` is mapped in every recognised CPU and operating-system mode except BASIC. It is available to IE64, IE32, M68K, x86, 6502, Z80, IntuitionOS, EmuTOS and AROS. EmuTOS and IntuitionOS expose the hardware mapping but do not yet provide guest-side socket integration. BASIC does not map this block. BASIC `HOST NET` configures host Wi-Fi only and does not enable guest sockets.
+
+`0xF2400-0xF24FF` remains the SYSINFO ABI, so socket registers occupy the next 128-byte MMIO block. The socket block uses 96-byte big-endian request descriptors, strict guest-memory helper copies, 64 KiB send/receive caps, 128-byte sockaddr caps, guest-visible descriptor handles, WaitSelect fd_set translation and Release/ReleaseCopy/Obtain transfer keys. The guest writes `REQ_PTR` and `REQ_LEN`, places the descriptor in guest RAM, and triggers synchronous dispatch by writing `CMD`. Each 32-bit register and descriptor word is big-endian. Byte writes are ordered from the most significant byte at offset zero to the least significant byte at offset three. A command assembled from byte writes dispatches only after all four command bytes have been written. Payload, fd_set, timeval, hostname, hostent and sockaddr buffers are copied through validated guest spans. The neutral names use the `HOST_SOCKET_*` prefix. Existing `AROS_HOST_SOCKET_*` names remain aliases with the same values.
 
 Supported command values are `1=socket`, `2=bind`, `3=listen`, `4=accept`, `5=connect`, `6=sendto`, `7=recvfrom`, `8=shutdown`, `9=setsockopt`, `10=getsockopt`, `11=getsockname`, `12=getpeername`, `13=ioctl`, `14=close`, `15=WaitSelect`, `16=gethostbyname`, `17=gethostbyaddr`, `18=gethostname`, `19=Dup2`, `20=GetEvents`, `21=ReleaseSocket`, `22=ReleaseCopyOfSocket`, and `23=ObtainSocket`. The Unix backend supports IPv4 TCP and UDP sockets, makes host file descriptors non-blocking, hides them behind guest-visible handles, maps `WaitSelect` fd_sets through that handle table, and rejects arbitrary emulator process descriptors with `EBADF`. `ReleaseSocket` removes the caller's guest descriptor and stores the host descriptor under a release key. `ReleaseCopyOfSocket` stores a duplicated host descriptor and leaves the caller's descriptor active. Passing release key `-1` asks the backend to allocate a positive key; `ObtainSocket` consumes that key and returns a new guest descriptor, or fails with `EWOULDBLOCK` when the key is absent. Raw sockets, packet filters, route manipulation, interface configuration, and monitoring APIs return unsupported errors. When networking is disabled or no backend is present, the block fails closed with `ENOSYS`.
 
@@ -1763,7 +1765,7 @@ are intentional when a reservation lives inside a broader shared-RAM range.
 | `0xF23C0-0xF23DF` | 32B | MMIO | AROS IRQ diagnostic registers | AROS M68K profile while AROS loader is active | AROS profile | Read-only diagnostic MMIO mapped by the AROS loader and unmapped during AROS DMA teardown; not a universal interrupt-controller ABI. |
 | `0xF23E0-0xF23FF` | 32B | MMIO | Bootstrap HostFS | All CPU cores | Bootstrap profile | HostFS boot helper register block. |
 | `0xF2400-0xF24FF` | 256B | MMIO | SYSINFO RAM-size discovery | All CPU cores | System information ABI | Reports total and active visible RAM. |
-| `0xF2500-0xF257F` | 128B | MMIO | AROS host socket bridge | AROS M68K profile | AROS profile | Host-backed `bsdsocket.library` command bridge. |
+| `0xF2500-0xF257F` | 128B | MMIO | Shared host socket bridge | All CPU cores while mapped | Every recognised non-BASIC mode | Host-backed socket command bridge. EmuTOS and IntuitionOS have no guest-side integration yet. |
 | `0xF2580-0xF259F` | 32B | MMIO | CPU wait service | All CPU cores | Timing/wait ABI | CPU wait writes park until the next VBlank edge or a latched `RTC_MONO_USEC` deadline, capped by a 50 ms safety timeout; reads return 0. |
 | `0xF25A0-0xF25BF` | 32B | MMIO | Coprocessor instance discovery | 32-bit-addressing CPU cores and main-CPU BASIC | Coprocessor subsystem | Selected type's instance limit, selected-instance state, mailbox layout version, worker window and ring addresses, plus an atomic all-instance liveness mask. |
 | `0xF25C0-0xF25FF` | 64B | MMIO | Gamepad discovery | All CPU cores | Gamepad ABI | Read-only canonical status, buttons, and stick axes for four pads. Non-headless Ebiten builds, including js/wasm browser builds, publish once per frame; headless builds report no pads. Writes are ignored. |
