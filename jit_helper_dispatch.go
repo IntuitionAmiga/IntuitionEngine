@@ -81,7 +81,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 	if op == HELPER_NONE {
 		return 0, false
 	}
-	if op <= HELPER_DTRANS {
+	if op < HELPER_SENTINEL {
 		globalIE64JITStats.helperExits[op].Add(1)
 	}
 	cpu.jitCtx.NeedHelper = HELPER_NONE
@@ -145,6 +145,8 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 			return 0, true
 		}
 		switch opcode {
+		case OP_DMOD:
+			cpu.FPU.DMOD(rd, rs, rt)
 		case OP_DSIN:
 			cpu.FPU.DSIN(rd, rs)
 		case OP_DCOS:
@@ -159,6 +161,37 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 			cpu.FPU.DEXP(rd, rs)
 		case OP_DPOW:
 			cpu.FPU.DPOW(rd, rs, rt)
+		default:
+			return 0, true
+		}
+		cpu.PC += IE64_INSTR_SIZE
+		return 1, true
+
+	case HELPER_FTRANS:
+		opcode := byte(size)
+		rs := byte(addr)
+		rt := byte(val)
+		if cpu.FPU == nil || !validIE64FPUEncoding(opcode, rd, rs, rt) {
+			cpu.haltFPUFault(rd)
+			return 0, true
+		}
+		switch opcode {
+		case OP_FMOD:
+			cpu.FPU.FMOD(rd, rs, rt)
+		case OP_FSIN:
+			cpu.FPU.FSIN(rd, rs)
+		case OP_FCOS:
+			cpu.FPU.FCOS(rd, rs)
+		case OP_FTAN:
+			cpu.FPU.FTAN(rd, rs)
+		case OP_FATAN:
+			cpu.FPU.FATAN(rd, rs)
+		case OP_FLOG:
+			cpu.FPU.FLOG(rd, rs)
+		case OP_FEXP:
+			cpu.FPU.FEXP(rd, rs)
+		case OP_FPOW:
+			cpu.FPU.FPOW(rd, rs, rt)
 		default:
 			return 0, true
 		}

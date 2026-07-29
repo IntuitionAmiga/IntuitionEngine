@@ -54,7 +54,7 @@ type ie64JITStats struct {
 	ioBails             atomic.Uint64
 	ioBailOpcodes       [256]atomic.Uint64
 	invalidations       atomic.Uint64
-	helperExits         [HELPER_DTRANS + 1]atomic.Uint64
+	helperExits         [HELPER_SENTINEL]atomic.Uint64
 	helperResumes       atomic.Uint64
 	helperResumeCancels atomic.Uint64
 }
@@ -73,7 +73,7 @@ type ie64JITStatsSnapshot struct {
 	ioBails             uint64
 	ioBailOpcodes       [256]uint64
 	invalidations       uint64
-	helperExits         [HELPER_DTRANS + 1]uint64
+	helperExits         [HELPER_SENTINEL]uint64
 	helperResumes       uint64
 	helperResumeCancels uint64
 }

@@ -230,6 +230,55 @@ func TestHandleJITHelper_DTRANS_ExecutesFP64AndAdvances(t *testing.T) {
 	}
 }
 
+// The FP helper exits are deliberately tested at the dispatcher boundary.  A
+// helper must perform precisely the one bailing guest instruction, including
+// its canonical FPSR updates, before the JIT dispatcher may continue.
+func TestHandleJITHelper_DTRANS_DMOD_ExecutesAndAdvances(t *testing.T) {
+	cpu := dispatchTestCPU(t)
+	cpu.FPU.setDPair(2, 5.5)
+	cpu.FPU.setDPair(4, 2)
+	cpu.jitCtx.NeedHelper = HELPER_DTRANS
+	cpu.jitCtx.HelperSize = uint32(OP_DMOD)
+	cpu.jitCtx.HelperRd = 6
+	cpu.jitCtx.HelperAddr = 2
+	cpu.jitCtx.HelperVal = 4
+	cpu.jitCtx.HelperPC = phase4HighPC + 0x288
+
+	retired, handled := cpu.handleJITHelper()
+	if !handled || retired != 1 {
+		t.Fatalf("handled=%v retired=%d", handled, retired)
+	}
+	if got := cpu.FPU.getDPair(6); got != 1.5 {
+		t.Fatalf("DMOD result = %v, want 1.5", got)
+	}
+	if want := phase4HighPC + 0x288 + IE64_INSTR_SIZE; cpu.PC != want {
+		t.Fatalf("PC = %#x, want %#x", cpu.PC, want)
+	}
+}
+
+func TestHandleJITHelper_FTRANS_FMOD_ExecutesAndAdvances(t *testing.T) {
+	cpu := dispatchTestCPU(t)
+	cpu.FPU.FPRegs[2] = math.Float32bits(5.5)
+	cpu.FPU.FPRegs[4] = math.Float32bits(2)
+	cpu.jitCtx.NeedHelper = HELPER_FTRANS
+	cpu.jitCtx.HelperSize = uint32(OP_FMOD)
+	cpu.jitCtx.HelperRd = 6
+	cpu.jitCtx.HelperAddr = 2
+	cpu.jitCtx.HelperVal = 4
+	cpu.jitCtx.HelperPC = phase4HighPC + 0x290
+
+	retired, handled := cpu.handleJITHelper()
+	if !handled || retired != 1 {
+		t.Fatalf("handled=%v retired=%d", handled, retired)
+	}
+	if got := math.Float32frombits(cpu.FPU.FPRegs[6]); got != 1.5 {
+		t.Fatalf("FMOD result = %v, want 1.5", got)
+	}
+	if want := phase4HighPC + 0x290 + IE64_INSTR_SIZE; cpu.PC != want {
+		t.Fatalf("PC = %#x, want %#x", cpu.PC, want)
+	}
+}
+
 func TestHandleJITHelper_PUSH_HighSP_DecrementsAndWrites(t *testing.T) {
 	cpu := dispatchTestCPU(t)
 	const sp = phase4HighPC + 0x300

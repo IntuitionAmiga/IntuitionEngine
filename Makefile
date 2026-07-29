@@ -379,6 +379,11 @@ test:
 # kernels must not disturb. No full headless sweep (standing rule).
 SIMD_TEST_REGEX ?= TestSIMD|TestSparseBacking|Characterisation|TestBlitColorExpand|TestVoodoo.*Golden|TestVoodooRasterizeRows|TestVoodooSIMDPathQualification|TestEmuTOS_DesktopGoldenFramebuffer|TestCLUT8Expand|TestScaleF32Span|TestClampF32Span
 
+# Keep every NVIDIA measurement, including warm-ups and focused tests, on the
+# discrete GPU when Switcheroo is available.  Ordinary hosts retain a portable
+# `env` launcher; CI or a controlled run can always override BENCH_LAUNCH.
+BENCH_LAUNCH ?= $(if $(shell command -v switcherooctl 2>/dev/null),switcherooctl launch -g 1,env)
+
 # test-simd runs the gating set three ways: SIMD build with -race, the IE_SIMD=0
 # kill-switch (scalar kernels in a SIMD binary), and a GOEXPERIMENT=none build
 # check proving the scalar world still compiles. GOEXPERIMENT=none is required
@@ -406,13 +411,14 @@ bench-baseline:
 		echo "# governor: $$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"; \
 		echo "# GOAMD64: $(GOAMD64)"; \
 		echo "# GOEXPERIMENT: $(BENCH_GOEXPERIMENT)"; \
+		echo "# launcher: $(BENCH_LAUNCH)"; \
 		echo "# tags: $(BENCH_TAGS)"; \
 		echo "# bench: $(BENCH_REGEX)"; \
 		echo "# benchtime: $(BENCH_TIME)"; \
 		echo "# count: $(BENCH_COUNT)"; \
 	} > "$(BENCH_DIR)/before.txt"
 	@tmp="$(BENCH_DIR)/before.cmd.out"; status=0; \
-	GOEXPERIMENT=$(BENCH_GOEXPERIMENT) GOAMD64=$(GOAMD64) $(GO) test -tags "$(BENCH_TAGS)" -run '^$$' -bench '$(BENCH_REGEX)' -benchtime "$(BENCH_TIME)" -count "$(BENCH_COUNT)" $(BENCH_PKG) > "$$tmp" 2>&1 || status=$$?; \
+	$(BENCH_LAUNCH) env GOEXPERIMENT=$(BENCH_GOEXPERIMENT) GOAMD64=$(GOAMD64) $(GO) test -tags "$(BENCH_TAGS)" -run '^$$' -bench '$(BENCH_REGEX)' -benchtime "$(BENCH_TIME)" -count "$(BENCH_COUNT)" $(BENCH_PKG) > "$$tmp" 2>&1 || status=$$?; \
 	tee -a "$(BENCH_DIR)/before.txt" < "$$tmp" || status=$$?; \
 	$(RM) -f "$$tmp"; \
 	exit $$status
@@ -427,13 +433,14 @@ bench-after:
 		echo "# governor: $$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || echo unknown)"; \
 		echo "# GOAMD64: $(GOAMD64)"; \
 		echo "# GOEXPERIMENT: $(BENCH_GOEXPERIMENT)"; \
+		echo "# launcher: $(BENCH_LAUNCH)"; \
 		echo "# tags: $(BENCH_TAGS)"; \
 		echo "# bench: $(BENCH_REGEX)"; \
 		echo "# benchtime: $(BENCH_TIME)"; \
 		echo "# count: $(BENCH_COUNT)"; \
 	} > "$(BENCH_DIR)/after.txt"
 	@tmp="$(BENCH_DIR)/after.cmd.out"; status=0; \
-	GOEXPERIMENT=$(BENCH_GOEXPERIMENT) GOAMD64=$(GOAMD64) $(GO) test -tags "$(BENCH_TAGS)" -run '^$$' -bench '$(BENCH_REGEX)' -benchtime "$(BENCH_TIME)" -count "$(BENCH_COUNT)" $(BENCH_PKG) > "$$tmp" 2>&1 || status=$$?; \
+	$(BENCH_LAUNCH) env GOEXPERIMENT=$(BENCH_GOEXPERIMENT) GOAMD64=$(GOAMD64) $(GO) test -tags "$(BENCH_TAGS)" -run '^$$' -bench '$(BENCH_REGEX)' -benchtime "$(BENCH_TIME)" -count "$(BENCH_COUNT)" $(BENCH_PKG) > "$$tmp" 2>&1 || status=$$?; \
 	tee -a "$(BENCH_DIR)/after.txt" < "$$tmp" || status=$$?; \
 	$(RM) -f "$$tmp"; \
 	exit $$status

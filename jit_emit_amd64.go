@@ -2137,7 +2137,7 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 	// FPU - Category C (transcendentals, bail to interpreter)
 	// ======================================================================
 	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
-		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		emitFPTransHelperExitAMD64(cb, ji, instrPC, HELPER_FTRANS, br, writtenSoFar)
 	case OP_DLOAD:
 		emitDLOAD_AMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DSTORE:
@@ -2162,7 +2162,9 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitDCVTIF_AMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DCVTFI:
 		emitDCVTFI_AMD64(cb, ji, instrPC, br, writtenSoFar)
-	case OP_DMOD, OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS:
+	case OP_DMOD:
+		emitFPTransHelperExitAMD64(cb, ji, instrPC, HELPER_DTRANS, br, writtenSoFar)
+	case OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
 	// MMU/privilege opcodes: always bail to interpreter
@@ -6003,7 +6005,7 @@ func emitFPMemHelperExit(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op uint32
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
-func emitDTransHelperExitAMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+func emitFPTransHelperExitAMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, helper uint32, br *blockRegs, writtenSoFar uint32) {
 	amd64MOV_reg_mem(cb, amd64R11, amd64RSP, int32(amd64OffCtxPtr))
 	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffHelperSize), uint32(ji.opcode))
 	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffHelperRd), uint32(ji.rd))
@@ -6014,9 +6016,13 @@ func emitDTransHelperExitAMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br 
 	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffLiveSP), amd64RegIE64SP)
 	amd64MOV_reg_imm64(cb, amd64RCX, instrPC)
 	amd64MOV_mem_reg(cb, amd64R11, int32(jitCtxOffHelperPC), amd64RCX)
-	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffNeedHelper), HELPER_DTRANS)
+	amd64MOV_mem_imm32(cb, amd64R11, int32(jitCtxOffNeedHelper), helper)
 
 	bailCount := ji.pcOffset / IE64_INSTR_SIZE
 	emitPackedPCAndCount(cb, instrPC, bailCount, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
+}
+
+func emitDTransHelperExitAMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	emitFPTransHelperExitAMD64(cb, ji, instrPC, HELPER_DTRANS, br, writtenSoFar)
 }

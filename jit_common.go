@@ -148,7 +148,11 @@ const (
 	HELPER_JSR     uint32 = 9  // push retAddr (HelperVal); PC = HelperAddr (call target)
 	HELPER_RTS     uint32 = 10 // pop val; PC = val
 	HELPER_JSR_IND uint32 = 11 // push retAddr (HelperVal); PC = HelperAddr (rs + imm32)
-	HELPER_DTRANS  uint32 = 12 // FP64 transcendental; HelperSize carries the IE64 opcode
+	HELPER_DTRANS  uint32 = 12 // FP64 helper operation; HelperSize carries the IE64 opcode
+	HELPER_FTRANS  uint32 = 13 // FP32 transcendental helper; payload matches HELPER_DTRANS
+	// HELPER_SENTINEL is one past the final helper value.  Counter storage must
+	// use this sentinel rather than naming the current final helper directly.
+	HELPER_SENTINEL uint32 = 14
 )
 
 // JITContext field offsets (must match struct layout above)
@@ -623,8 +627,6 @@ func needsFallback(instrs []JITInstr) bool {
 	// Block-entry-only checks (legacy behavior).
 	op := instrs[0].opcode
 	switch op {
-	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW, OP_DMOD:
-		return true
 	case OP_HALT64, OP_WAIT64, OP_RTI64:
 		return true
 	case OP_SYSCALL, OP_ERET, OP_MTCR, OP_MFCR, OP_TLBFLUSH, OP_TLBINVAL, OP_SMODE,

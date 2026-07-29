@@ -1347,10 +1347,10 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitFSTORE(cb, ji, instrPC, br, writtenSoFar)
 
 	// ======================================================================
-	// FPU — Category C (transcendentals, bail to interpreter)
+	// FPU — Category C (transcendentals use canonical helper exits)
 	// ======================================================================
 	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
-		emitFPUBail(cb, ji, instrPC, br, writtenSoFar)
+		emitFPTransHelperExitARM64(cb, ji, instrPC, HELPER_FTRANS, br, writtenSoFar)
 	case OP_DLOAD:
 		emitDLOAD(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DSTORE:
@@ -1376,9 +1376,11 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 	case OP_DCVTFI:
 		emitDCVTFI_ARM64(cb, ji, instrPC, br, writtenSoFar)
 
+	case OP_DMOD:
+		emitFPTransHelperExitARM64(cb, ji, instrPC, HELPER_DTRANS, br, writtenSoFar)
 	// Still interpreted on both backends. Keep this list and the amd64 one in
 	// step: sdk/docs/IE64_JIT.md documents a single shared fallback table.
-	case OP_DMOD, OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS:
+	case OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS:
 		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
 	// MMU/privilege opcodes: always bail to interpreter
@@ -4369,7 +4371,7 @@ func emitFPMemHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, op u
 	emitEpilogue(cb, writtenSoFar, br.used)
 }
 
-func emitDTransHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+func emitFPTransHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, helper uint32, br *blockRegs, writtenSoFar uint32) {
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                                  // X1 = ctx ptr
 	emitLoadImm32(cb, 2, uint32(ji.opcode))                               //
 	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffHelperSize/4)))        // HelperSize = opcode
@@ -4382,12 +4384,16 @@ func emitDTransHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br 
 	cb.Emit32(arm64STR_imm(arm64RegIE64SP, 1, uint32(jitCtxOffLiveSP/8))) // LiveSP
 	emitLoadImm64(cb, 2, instrPC)                                         //
 	cb.Emit32(arm64STR_imm(2, 1, uint32(jitCtxOffHelperPC/8)))            // HelperPC
-	emitLoadImm32(cb, 2, HELPER_DTRANS)                                   //
+	emitLoadImm32(cb, 2, helper)                                          //
 	cb.Emit32(arm64STR_W_imm(2, 1, uint32(jitCtxOffNeedHelper/4)))        // NeedHelper
 
 	bailCount := uint32(ji.pcOffset / IE64_INSTR_SIZE)
 	emitPackedPCAndCount(cb, uint64(instrPC), bailCount, br)
 	emitEpilogue(cb, writtenSoFar, br.used)
+}
+
+func emitDTransHelperExitARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	emitFPTransHelperExitARM64(cb, ji, instrPC, HELPER_DTRANS, br, writtenSoFar)
 }
 
 func emitDLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
