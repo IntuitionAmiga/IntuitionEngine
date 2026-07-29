@@ -279,6 +279,77 @@ func TestHandleJITHelper_FTRANS_FMOD_ExecutesAndAdvances(t *testing.T) {
 	}
 }
 
+func TestHandleJITHelper_DTRANS_UnaryAndConversionOpsExecute(t *testing.T) {
+	tests := []struct {
+		name   string
+		opcode byte
+		setup  func(*CPU64)
+		check  func(*testing.T, *CPU64)
+	}{
+		{
+			name: "dabs", opcode: OP_DABS,
+			setup: func(cpu *CPU64) { cpu.FPU.setDPair(2, -3.5) },
+			check: func(t *testing.T, cpu *CPU64) {
+				if got := cpu.FPU.getDPair(6); got != 3.5 {
+					t.Fatalf("DABS result = %v", got)
+				}
+			},
+		},
+		{
+			name: "dneg", opcode: OP_DNEG,
+			setup: func(cpu *CPU64) { cpu.FPU.setDPair(2, 3.5) },
+			check: func(t *testing.T, cpu *CPU64) {
+				if got := cpu.FPU.getDPair(6); got != -3.5 {
+					t.Fatalf("DNEG result = %v", got)
+				}
+			},
+		},
+		{
+			name: "dsqrt", opcode: OP_DSQRT,
+			setup: func(cpu *CPU64) { cpu.FPU.setDPair(2, 9) },
+			check: func(t *testing.T, cpu *CPU64) {
+				if got := cpu.FPU.getDPair(6); got != 3 {
+					t.Fatalf("DSQRT result = %v", got)
+				}
+			},
+		},
+		{
+			name: "fcvtsd", opcode: OP_FCVTSD,
+			setup: func(cpu *CPU64) { cpu.FPU.FPRegs[2] = math.Float32bits(1.25) },
+			check: func(t *testing.T, cpu *CPU64) {
+				if got := cpu.FPU.getDPair(6); got != 1.25 {
+					t.Fatalf("FCVTSD result = %v", got)
+				}
+			},
+		},
+		{
+			name: "fcvtds", opcode: OP_FCVTDS,
+			setup: func(cpu *CPU64) { cpu.FPU.setDPair(2, 1.25) },
+			check: func(t *testing.T, cpu *CPU64) {
+				if got := math.Float32frombits(cpu.FPU.FPRegs[6]); got != 1.25 {
+					t.Fatalf("FCVTDS result = %v", got)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cpu := dispatchTestCPU(t)
+			tt.setup(cpu)
+			cpu.jitCtx.NeedHelper = HELPER_DTRANS
+			cpu.jitCtx.HelperSize = uint32(tt.opcode)
+			cpu.jitCtx.HelperRd = 6
+			cpu.jitCtx.HelperAddr = 2
+			cpu.jitCtx.HelperPC = phase4HighPC + 0x2A0
+			retired, handled := cpu.handleJITHelper()
+			if !handled || retired != 1 {
+				t.Fatalf("handled=%v retired=%d", handled, retired)
+			}
+			tt.check(t, cpu)
+		})
+	}
+}
+
 func TestHandleJITHelper_PUSH_HighSP_DecrementsAndWrites(t *testing.T) {
 	cpu := dispatchTestCPU(t)
 	const sp = phase4HighPC + 0x300

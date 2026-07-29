@@ -2162,10 +2162,8 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitDCVTIF_AMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DCVTFI:
 		emitDCVTFI_AMD64(cb, ji, instrPC, br, writtenSoFar)
-	case OP_DMOD:
+	case OP_DMOD, OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS:
 		emitFPTransHelperExitAMD64(cb, ji, instrPC, HELPER_DTRANS, br, writtenSoFar)
-	case OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS:
-		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
 
 	// MMU/privilege opcodes: always bail to interpreter
 	case OP_MTCR, OP_MFCR, OP_ERET, OP_TLBFLUSH, OP_TLBINVAL, OP_SYSCALL, OP_SMODE,

@@ -1385,6 +1385,18 @@ func TestARM64_DTrans_UsesHelperExit(t *testing.T) {
 	}
 }
 
+func TestARM64_DTrans_ExtendedOpsUseHelperExit(t *testing.T) {
+	for _, op := range []byte{OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS} {
+		t.Run(string(rune(op)), func(t *testing.T) {
+			r := newJITTestRig(t)
+			r.compileAndRun(t, ie64Instr(op, 6, 0, 0, 2, 4, 0))
+			if r.ctx.NeedHelper != HELPER_DTRANS || r.ctx.HelperSize != uint32(op) {
+				t.Fatalf("helper = (%d, %#x), want DTRANS/%#x", r.ctx.NeedHelper, r.ctx.HelperSize, op)
+			}
+		})
+	}
+}
+
 // ===========================================================================
 // FPU Tests — Category B: Native ARM64 FP arithmetic
 // ===========================================================================

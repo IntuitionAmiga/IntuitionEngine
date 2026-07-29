@@ -145,6 +145,12 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 			return 0, true
 		}
 		switch opcode {
+		case OP_DABS:
+			cpu.FPU.DABS(rd, rs)
+		case OP_DNEG:
+			cpu.FPU.DNEG(rd, rs)
+		case OP_DSQRT:
+			cpu.FPU.DSQRT(rd, rs)
 		case OP_DMOD:
 			cpu.FPU.DMOD(rd, rs, rt)
 		case OP_DSIN:
@@ -161,6 +167,10 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 			cpu.FPU.DEXP(rd, rs)
 		case OP_DPOW:
 			cpu.FPU.DPOW(rd, rs, rt)
+		case OP_FCVTSD:
+			cpu.FPU.FCVTSD(rd, rs)
+		case OP_FCVTDS:
+			cpu.FPU.FCVTDS(rd, rs)
 		default:
 			return 0, true
 		}
