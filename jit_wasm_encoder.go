@@ -145,6 +145,8 @@ const (
 	wasmOpF64Mul  byte = 0xa2
 	wasmOpF64Div  byte = 0xa3
 
+	wasmOpF32Add byte = 0x92
+	wasmOpF32Sub byte = 0x93
 	wasmOpF32Mul byte = 0x94
 	wasmOpF32Div byte = 0x95
 
@@ -158,7 +160,9 @@ const (
 	wasmOpF64ConvertI64S    byte = 0xb9
 	wasmOpF64ConvertI64U    byte = 0xba
 	wasmOpI64ReinterpretF64 byte = 0xbd
+	wasmOpI32ReinterpretF32 byte = 0xbc
 	wasmOpF64ReinterpretI64 byte = 0xbf
+	wasmOpF32ReinterpretI32 byte = 0xbe
 	wasmOpI64Extend8S       byte = 0xc2
 	wasmOpI64Extend16S      byte = 0xc3
 	wasmOpI64Extend32S      byte = 0xc4

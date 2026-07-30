@@ -983,6 +983,92 @@ func TestWasmJIT_SMC_SpanSkipsFalseShare(t *testing.T) {
 // FP64
 // ---------------------------------------------------------------------------
 
+func TestWasmJIT_Diff_FP32LoadStoreAndArith(t *testing.T) {
+	init := map[int]uint64{
+		2: 0x50000,
+		3: uint64(math.Float32bits(1.5)),
+		4: uint64(math.Float32bits(-2.25)),
+	}
+	program := bytes.Join([][]byte{
+		ie64Instr(OP_STORE, 3, IE64_SIZE_L, 0, 2, 0, 0),
+		ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 2, 0, 4),
+		ie64Instr(OP_FLOAD, 0, 0, 0, 2, 0, 0),
+		ie64Instr(OP_FLOAD, 1, 0, 0, 2, 0, 4),
+		ie64Instr(OP_FADD, 2, 0, 0, 0, 1, 0),
+		ie64Instr(OP_FSUB, 3, 0, 0, 0, 1, 0),
+		ie64Instr(OP_FMUL, 4, 0, 0, 0, 1, 0),
+		ie64Instr(OP_FSTORE, 4, 0, 0, 2, 0, 8),
+	}, nil)
+	diffRun(t, init, program)
+}
+
+func TestWasmJIT_Diff_FP32StickyExceptions(t *testing.T) {
+	init := map[int]uint64{
+		2: uint64(0x50000),
+		3: uint64(math.Float32bits(float32(math.MaxFloat32))),
+		4: uint64(math.Float32bits(2)),
+		5: uint64(math.Float32bits(float32(math.SmallestNonzeroFloat32))),
+		6: uint64(math.Float32bits(float32(math.Inf(1)))),
+	}
+	program := bytes.Join([][]byte{
+		ie64Instr(OP_STORE, 3, IE64_SIZE_L, 0, 2, 0, 0),
+		ie64Instr(OP_STORE, 4, IE64_SIZE_L, 0, 2, 0, 4),
+		ie64Instr(OP_STORE, 5, IE64_SIZE_L, 0, 2, 0, 8),
+		ie64Instr(OP_STORE, 6, IE64_SIZE_L, 0, 2, 0, 12),
+		ie64Instr(OP_FLOAD, 0, 0, 0, 2, 0, 0),
+		ie64Instr(OP_FLOAD, 1, 0, 0, 2, 0, 4),
+		ie64Instr(OP_FLOAD, 2, 0, 0, 2, 0, 8),
+		ie64Instr(OP_FLOAD, 3, 0, 0, 2, 0, 12),
+		ie64Instr(OP_FMUL, 4, 0, 0, 0, 1, 0), // overflow: OE
+		ie64Instr(OP_FMUL, 5, 0, 0, 2, 2, 0), // underflow: UE
+		ie64Instr(OP_FSUB, 6, 0, 0, 3, 3, 0), // Inf-Inf: IO
+	}, nil)
+	diffRun(t, init, program)
+}
+
+func TestWasmJIT_HelperExit_FP32LoadStoreMMIO(t *testing.T) {
+	mmio := uint64(0xF0048)
+	init := map[int]uint64{2: mmio, 3: uint64(math.Float32bits(1.5)), 4: 0x50000}
+	program := bytes.Join([][]byte{
+		ie64Instr(OP_STORE, 3, IE64_SIZE_L, 0, 4, 0, 0),
+		ie64Instr(OP_FLOAD, 0, 0, 0, 4, 0, 0),
+		ie64Instr(OP_FSTORE, 0, 0, 0, 2, 0, 0),
+	}, nil)
+	res := runWasmDiffBlock(t, program, init, markIOPage(t, mmio))
+	if res.needHelper != HELPER_FSTORE {
+		t.Fatalf("NeedHelper = %d, want HELPER_FSTORE", res.needHelper)
+	}
+	if res.helperVal != uint64(math.Float32bits(1.5)) {
+		t.Errorf("HelperVal = %#x, want bits of 1.5", res.helperVal)
+	}
+	if res.retCount != 2 {
+		t.Errorf("RetCount = %d, want 2", res.retCount)
+	}
+
+	res = runWasmDiffBlock(t, ie64Instr(OP_FLOAD, 4, 0, 0, 2, 0, 4), init, markIOPage(t, mmio))
+	if res.needHelper != HELPER_FLOAD {
+		t.Fatalf("NeedHelper = %d, want HELPER_FLOAD", res.needHelper)
+	}
+	if res.helperRd != 4 || res.helperAddr != mmio+4 {
+		t.Errorf("FLOAD payload rd=%d addr=%#x, want rd=4 addr=%#x", res.helperRd, res.helperAddr, mmio+4)
+	}
+}
+
+func TestWasmJIT_HelperExit_FPTransPayload(t *testing.T) {
+	program := bytes.Join([][]byte{
+		ie64Instr(OP_FMOD, 3, 0, 0, 4, 5, 0),
+		ie64Instr(OP_DPOW, 6, 0, 0, 8, 10, 0),
+	}, nil)
+	res := runWasmDiffBlock(t, program, nil, nil)
+	if res.needHelper != HELPER_FTRANS || res.helperSize != OP_FMOD || res.helperRd != 3 || res.helperAddr != 4 || res.helperVal != 5 || res.retCount != 0 {
+		t.Fatalf("FP32 helper payload = helper=%d opcode=%#x rd=%d rs=%d rt=%d retired=%d", res.needHelper, res.helperSize, res.helperRd, res.helperAddr, res.helperVal, res.retCount)
+	}
+	res = runWasmDiffBlock(t, program[8:], nil, nil)
+	if res.needHelper != HELPER_DTRANS || res.helperSize != OP_DPOW || res.helperRd != 6 || res.helperAddr != 8 || res.helperVal != 10 || res.retCount != 0 {
+		t.Fatalf("FP64 helper payload = helper=%d opcode=%#x rd=%d rs=%d rt=%d retired=%d", res.needHelper, res.helperSize, res.helperRd, res.helperAddr, res.helperVal, res.retCount)
+	}
+}
+
 // dloadBits builds STORE+DLOAD pairs that plant exact f64 bit patterns into
 // FP pairs: regs[srcReg] holds the bits, regs[2] a RAM scratch base.
 func dloadBits(pair byte, srcReg byte, scratchOff uint32) [][]byte {

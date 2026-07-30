@@ -866,6 +866,13 @@ func (rt *wasmJITRuntime) markStackSMCWrite(addr uint64) {
 	}
 }
 
+// wasmHaltFPUFault mirrors the native helper dispatcher's invalid-FPU
+// termination without relying on its native-only build-tagged helper.
+func wasmHaltFPUFault(cpu *CPU64, rd byte) {
+	fmt.Printf("IE64: Invalid FP register index %d at PC=0x%X\n", rd, cpu.PC)
+	cpu.running.Store(false)
+}
+
 // handleHelper services the helper exits this backend's translator emits,
 // mirroring the native dispatcher's semantics (jit_helper_dispatch.go).
 // Returns true when the bailing instruction retired.
@@ -901,6 +908,78 @@ func (rt *wasmJITRuntime) handleHelper() bool {
 	}
 
 	switch ctx.NeedHelper {
+	case HELPER_FLOAD:
+		if cpu.FPU == nil || rd > 15 {
+			wasmHaltFPUFault(cpu, rd)
+			return false
+		}
+		v := uint32(cpu.loadMem(ctx.HelperAddr, IE64_SIZE_L))
+		if cpu.trapped {
+			cpu.trapped = false
+			return false
+		}
+		cpu.FPU.FPRegs[rd] = v
+		cpu.FPU.setConditionCodesBits(v)
+		cpu.PC += IE64_INSTR_SIZE
+		return true
+	case HELPER_FSTORE:
+		if cpu.FPU == nil || rd > 15 {
+			wasmHaltFPUFault(cpu, rd)
+			return false
+		}
+		cpu.storeMem(ctx.HelperAddr, uint64(cpu.FPU.FPRegs[rd]), IE64_SIZE_L)
+		if cpu.trapped {
+			cpu.trapped = false
+			return false
+		}
+		if page := ctx.HelperAddr >> 8; page < uint64(len(cpu.jitCodePageBitmap)) && cpu.jitCodePageBitmap[page] != 0 {
+			rt.invalidateRange(ctx.HelperAddr, 4)
+		}
+		cpu.PC += IE64_INSTR_SIZE
+		return true
+	case HELPER_DTRANS, HELPER_FTRANS:
+		if cpu.FPU == nil {
+			return false
+		}
+		opcode, rs, rt := byte(ctx.HelperSize), byte(ctx.HelperAddr), byte(ctx.HelperVal)
+		switch opcode {
+		case OP_DMOD:
+			cpu.FPU.DMOD(rd, rs, rt)
+		case OP_DSIN:
+			cpu.FPU.DSIN(rd, rs)
+		case OP_DCOS:
+			cpu.FPU.DCOS(rd, rs)
+		case OP_DTAN:
+			cpu.FPU.DTAN(rd, rs)
+		case OP_DATAN:
+			cpu.FPU.DATAN(rd, rs)
+		case OP_DLOG:
+			cpu.FPU.DLOG(rd, rs)
+		case OP_DEXP:
+			cpu.FPU.DEXP(rd, rs)
+		case OP_DPOW:
+			cpu.FPU.DPOW(rd, rs, rt)
+		case OP_FMOD:
+			cpu.FPU.FMOD(rd, rs, rt)
+		case OP_FSIN:
+			cpu.FPU.FSIN(rd, rs)
+		case OP_FCOS:
+			cpu.FPU.FCOS(rd, rs)
+		case OP_FTAN:
+			cpu.FPU.FTAN(rd, rs)
+		case OP_FATAN:
+			cpu.FPU.FATAN(rd, rs)
+		case OP_FLOG:
+			cpu.FPU.FLOG(rd, rs)
+		case OP_FEXP:
+			cpu.FPU.FEXP(rd, rs)
+		case OP_FPOW:
+			cpu.FPU.FPOW(rd, rs, rt)
+		default:
+			return false
+		}
+		cpu.PC += IE64_INSTR_SIZE
+		return true
 	case HELPER_LOAD:
 		if ctx.HelperPC == rt.lastLoadPC {
 			rt.loadStreak++

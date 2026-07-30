@@ -214,9 +214,12 @@ func wasmSupportedOpcode(op byte) bool {
 		OP_BEQ, OP_BNE, OP_BLT, OP_BGE, OP_BGT, OP_BLE, OP_BHI, OP_BLS,
 		OP_BRA, OP_JMP, OP_HALT64,
 		OP_JSR64, OP_RTS64, OP_PUSH64, OP_POP64, OP_JSR_IND,
+		OP_FLOAD, OP_FSTORE, OP_FADD, OP_FSUB, OP_FMUL,
+		OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW,
 		OP_DMOV, OP_DLOAD, OP_DSTORE,
 		OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV,
 		OP_DABS, OP_DNEG, OP_DSQRT, OP_DINT,
+		OP_DMOD, OP_DSIN, OP_DCOS, OP_DTAN, OP_DATAN, OP_DLOG, OP_DEXP, OP_DPOW,
 		OP_DCMP, OP_DCVTIF, OP_DCVTFI,
 		OP_NOP64:
 		return true
@@ -312,6 +315,8 @@ func wasmInstructionSupported(ins *JITInstr) bool {
 
 func wasmFPCCSetter(ins *JITInstr) bool {
 	switch ins.opcode {
+	case OP_FLOAD, OP_FADD, OP_FSUB, OP_FMUL:
+		return true
 	case OP_DADD, OP_DSUB, OP_DMUL, OP_DDIV, OP_DABS, OP_DNEG, OP_DSQRT,
 		OP_DINT, OP_DCVTIF, OP_DLOAD:
 		return true
@@ -335,7 +340,7 @@ func wasmFPSRCCLive(instrs []JITInstr) []bool {
 			live = false
 		}
 		switch ins.opcode {
-		case OP_LOAD, OP_STORE, OP_DLOAD, OP_DSTORE, OP_PUSH64, OP_POP64,
+		case OP_LOAD, OP_STORE, OP_FLOAD, OP_FSTORE, OP_DLOAD, OP_DSTORE, OP_PUSH64, OP_POP64,
 			OP_JSR64, OP_JSR_IND, OP_RTS64, OP_BEQ, OP_BNE, OP_BLT, OP_BGE,
 			OP_BGT, OP_BLE, OP_BHI, OP_BLS, OP_BRA, OP_JMP, OP_HALT64:
 			live = true
@@ -403,9 +408,9 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 	needsMem, needsSMC := false, false
 	for i := range instrs {
 		switch instrs[i].opcode {
-		case OP_LOAD, OP_POP64, OP_RTS64, OP_DLOAD:
+		case OP_LOAD, OP_POP64, OP_RTS64, OP_FLOAD, OP_DLOAD:
 			needsMem = true
-		case OP_STORE, OP_PUSH64, OP_JSR64, OP_JSR_IND, OP_DSTORE:
+		case OP_STORE, OP_PUSH64, OP_JSR64, OP_JSR_IND, OP_FSTORE, OP_DSTORE:
 			needsMem = true
 			needsSMC = true
 		}
@@ -490,6 +495,8 @@ func wasmCompileBlocks(blocks []wasmRegionBlock) ([]byte, error) {
 		// Internal helper first, so the block function can call it.
 		ccType := m.addType([]byte{wasmTypeI32, wasmTypeI64}, nil)
 		e.ccFunc = m.addFunc(ccType, []byte{wasmTypeI32}, wasmEmitCCUpdate64())
+		cc32Type := m.addType([]byte{wasmTypeI32, wasmTypeI32}, nil)
+		e.cc32Func = m.addFunc(cc32Type, []byte{wasmTypeI32}, wasmEmitCCUpdate32())
 	}
 	e.prologue()
 	idx := uint32(0)
@@ -673,8 +680,9 @@ func flatBlockStart(blocks []wasmRegionBlock, blockIdx int) int {
 
 // wasmBlockEmitter emits the body of one block function.
 type wasmBlockEmitter struct {
-	b      *wasmBody
-	ccFunc uint32 // index of the FPSR condition-code helper (FP blocks only)
+	b        *wasmBody
+	ccFunc   uint32 // index of the FP64 condition-code helper (FP blocks only)
+	cc32Func uint32 // index of the FP32 condition-code helper (FP blocks only)
 
 	// Prologue trimming: context fields are only loaded into locals when
 	// the block contains instructions that read them. Chained dispatch
@@ -925,6 +933,21 @@ func (e *wasmBlockEmitter) instr(ins *JITInstr, idx uint32, instrPC uint64) {
 		return
 	case OP_DSTORE:
 		e.emitDStore(ins, idx, instrPC)
+		return
+	case OP_FLOAD:
+		e.emitFLoad(ins, idx, instrPC)
+		return
+	case OP_FSTORE:
+		e.emitFStore(ins, idx, instrPC)
+		return
+	case OP_FADD, OP_FSUB, OP_FMUL:
+		e.emitFP32(ins)
+		return
+	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
+		e.emitFPTransHelperExit(ins, idx, instrPC, HELPER_FTRANS)
+		return
+	case OP_DMOD, OP_DSIN, OP_DCOS, OP_DTAN, OP_DATAN, OP_DLOG, OP_DEXP, OP_DPOW:
+		e.emitFPTransHelperExit(ins, idx, instrPC, HELPER_DTRANS)
 		return
 	}
 	e.value(ins)
@@ -1238,6 +1261,36 @@ func (e *wasmBlockEmitter) helperExit(code uint32, size, rd byte, idx uint32, in
 	e.exit(instrPC, idx)
 	b.localGet(wasmLocCtx)
 	b.i32Const(int32(code))
+	b.i32Store(2, jitCtxOffNeedHelper)
+	b.op(wasmOpReturn)
+}
+
+// emitFPTransHelperExit packages the register operands in the shared FPU
+// helper layout. wasm always resumes through its normal dispatcher, so it
+// deliberately publishes no in-function continuation.
+func (e *wasmBlockEmitter) emitFPTransHelperExit(ins *JITInstr, idx uint32, instrPC uint64, helper uint32) {
+	b := e.b
+	b.localGet(wasmLocCtx)
+	b.i32Const(int32(ins.opcode))
+	b.i32Store(2, jitCtxOffHelperSize)
+	b.localGet(wasmLocCtx)
+	b.i32Const(int32(ins.rd))
+	b.i32Store(2, jitCtxOffHelperRd)
+	b.localGet(wasmLocCtx)
+	b.i64Const(int64(ins.rs))
+	b.i64Store(3, jitCtxOffHelperAddr)
+	b.localGet(wasmLocCtx)
+	b.i64Const(int64(ins.rt))
+	b.i64Store(3, jitCtxOffHelperVal)
+	b.localGet(wasmLocCtx)
+	e.loadReg(31)
+	b.i64Store(3, jitCtxOffLiveSP)
+	b.localGet(wasmLocCtx)
+	b.i64Const(int64(instrPC))
+	b.i64Store(3, jitCtxOffHelperPC)
+	e.exit(instrPC, idx)
+	b.localGet(wasmLocCtx)
+	b.i32Const(int32(helper))
 	b.i32Store(2, jitCtxOffNeedHelper)
 	b.op(wasmOpReturn)
 }
@@ -1854,6 +1907,70 @@ func wasmEmitCCUpdate64() []byte {
 	return b.code
 }
 
+// wasmEmitCCUpdate32 mirrors IE64FPU.setConditionCodesBits for an FP32 bit
+// pattern. It is separate from the FP64 helper because sign extension would
+// otherwise misclassify positive FP32 values with bit 31 set in an i64.
+func wasmEmitCCUpdate32() []byte {
+	b := &wasmBody{}
+	const locFpu, locBits, locCC = 0, 1, 2
+	b.localGet(locBits)
+	b.i32Const(0x7F800000)
+	b.op(wasmOpI32And)
+	b.i32Const(0x7F800000)
+	b.op(wasmOpI32Eq)
+	b.ifVoid()
+	{
+		b.localGet(locBits)
+		b.i32Const(0x007FFFFF)
+		b.op(wasmOpI32And)
+		b.op(wasmOpI32Eqz)
+		b.ifVoid()
+		b.localGet(locBits)
+		b.i32Const(0)
+		b.op(wasmOpI32LtS)
+		b.ifTyped(wasmTypeI32)
+		b.i32Const(int32(IE64_FPU_CC_I | IE64_FPU_CC_N))
+		b.elseBranch()
+		b.i32Const(int32(IE64_FPU_CC_I))
+		b.end()
+		b.localSet(locCC)
+		b.elseBranch()
+		b.i32Const(int32(IE64_FPU_CC_NAN))
+		b.localSet(locCC)
+		b.end()
+	}
+	b.elseBranch()
+	{
+		b.localGet(locBits)
+		b.i32Const(0x7FFFFFFF)
+		b.op(wasmOpI32And)
+		b.op(wasmOpI32Eqz)
+		b.ifVoid()
+		b.i32Const(int32(IE64_FPU_CC_Z))
+		b.localSet(locCC)
+		b.elseBranch()
+		b.localGet(locBits)
+		b.i32Const(0)
+		b.op(wasmOpI32LtS)
+		b.ifVoid()
+		b.i32Const(int32(IE64_FPU_CC_N))
+		b.localSet(locCC)
+		b.end()
+		b.end()
+	}
+	b.end()
+	b.localGet(locFpu)
+	b.localGet(locFpu)
+	b.i32Load(2, wasmFPSROff)
+	b.i32Const(int32(-0x0F000001))
+	b.op(wasmOpI32And)
+	b.localGet(locCC)
+	b.op(wasmOpI32Or)
+	b.i32Store(2, wasmFPSROff)
+	b.end()
+	return b.code
+}
+
 func fpPairOff(idx byte) uint32 { return uint32(idx&0x0E) * 4 }
 
 // loadPairBits pushes the raw bits of an FP pair as i64.
@@ -1888,6 +2005,39 @@ func (e *wasmBlockEmitter) callCC(local uint32) {
 	e.b.localGet(wasmLocFpu)
 	e.b.localGet(local)
 	e.b.call(e.ccFunc)
+}
+
+func (e *wasmBlockEmitter) callCC32(local uint32) {
+	if !e.emitFPCC {
+		return
+	}
+	e.b.localGet(wasmLocFpu)
+	e.b.localGet(local)
+	e.b.op(wasmOpI32WrapI64)
+	e.b.call(e.cc32Func)
+}
+
+func (e *wasmBlockEmitter) fp32IsInf(local uint32) {
+	e.b.localGet(local)
+	e.b.i64Const(0x7F800000)
+	e.b.op(wasmOpI64And)
+	e.b.i64Const(0x7F800000)
+	e.b.op(wasmOpI64Eq)
+}
+
+func (e *wasmBlockEmitter) fp32IsNaN(local uint32) {
+	e.b.localGet(local)
+	e.b.i64Const(0x7FFFFFFF)
+	e.b.op(wasmOpI64And)
+	e.b.i64Const(0x7F800000)
+	e.b.op(wasmOpI64GtU)
+}
+
+func (e *wasmBlockEmitter) fp32IsZero(local uint32) {
+	e.b.localGet(local)
+	e.b.i64Const(0x7FFFFFFF)
+	e.b.op(wasmOpI64And)
+	e.b.op(wasmOpI64Eqz)
 }
 
 // Predicates on the i64 bits in a local; each leaves an i32 boolean.
@@ -2278,6 +2428,104 @@ func (e *wasmBlockEmitter) emitDStore(ins *JITInstr, idx uint32, instrPC uint64)
 	b.localGet(wasmLocB)
 	b.i64Store(0, 0)
 	e.smcProbe(8)
+	e.smcExitIfDirty(instrPC, idx)
+}
+
+// emitFP32 implements the scalar FP32 arithmetic subset. Sticky flags use the
+// same result predicates as IE64FPU so the wasm fast path remains bit-for-bit
+// interchangeable with the interpreter.
+func (e *wasmBlockEmitter) emitFP32(ins *JITInstr) {
+	b := e.b
+	b.localGet(wasmLocFpu)
+	b.i32Load(2, uint32(ins.rs)*4)
+	b.op(wasmOpI64ExtendI32U)
+	b.localSet(wasmLocA)
+	b.localGet(wasmLocFpu)
+	b.i32Load(2, uint32(ins.rt)*4)
+	b.op(wasmOpI64ExtendI32U)
+	b.localSet(wasmLocB)
+	b.localGet(wasmLocA)
+	b.op(wasmOpI32WrapI64)
+	b.op(wasmOpF32ReinterpretI32)
+	b.localGet(wasmLocB)
+	b.op(wasmOpI32WrapI64)
+	b.op(wasmOpF32ReinterpretI32)
+	switch ins.opcode {
+	case OP_FADD:
+		b.op(wasmOpF32Add)
+	case OP_FSUB:
+		b.op(wasmOpF32Sub)
+	case OP_FMUL:
+		b.op(wasmOpF32Mul)
+	}
+	b.op(wasmOpI32ReinterpretF32)
+	b.op(wasmOpI64ExtendI32U)
+	b.localSet(wasmLocT0)
+	e.fp32IsInf(wasmLocT0)
+	e.fp32IsInf(wasmLocA)
+	e.not()
+	b.op(wasmOpI32And)
+	e.fp32IsInf(wasmLocB)
+	e.not()
+	b.op(wasmOpI32And)
+	e.fpsrOrIf(IE64_FPU_EX_OE)
+	e.fp32IsNaN(wasmLocT0)
+	e.fp32IsNaN(wasmLocA)
+	e.not()
+	b.op(wasmOpI32And)
+	e.fp32IsNaN(wasmLocB)
+	e.not()
+	b.op(wasmOpI32And)
+	e.fpsrOrIf(IE64_FPU_EX_IO)
+	if ins.opcode == OP_FMUL {
+		e.fp32IsZero(wasmLocT0)
+		e.fp32IsZero(wasmLocA)
+		e.not()
+		b.op(wasmOpI32And)
+		e.fp32IsZero(wasmLocB)
+		e.not()
+		b.op(wasmOpI32And)
+		e.fpsrOrIf(IE64_FPU_EX_UE)
+	}
+	b.localGet(wasmLocFpu)
+	b.localGet(wasmLocT0)
+	b.op(wasmOpI32WrapI64)
+	b.i32Store(2, uint32(ins.rd)*4)
+	e.callCC32(wasmLocT0)
+}
+
+func (e *wasmBlockEmitter) emitFLoad(ins *JITInstr, idx uint32, instrPC uint64) {
+	b := e.b
+	e.effAddr(ins)
+	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, IE64_SIZE_L); !proven && !e.loopAccessHoisted(idx) {
+		e.memChecks(4, func() { e.helperExit(HELPER_FLOAD, IE64_SIZE_L, ins.rd, idx, instrPC, false) })
+	}
+	e.guestAddr()
+	b.i32Load(0, 0)
+	b.op(wasmOpI64ExtendI32U)
+	b.localSet(wasmLocT0)
+	b.localGet(wasmLocFpu)
+	b.localGet(wasmLocT0)
+	b.op(wasmOpI32WrapI64)
+	b.i32Store(2, uint32(ins.rd)*4)
+	e.callCC32(wasmLocT0)
+}
+
+func (e *wasmBlockEmitter) emitFStore(ins *JITInstr, idx uint32, instrPC uint64) {
+	b := e.b
+	b.localGet(wasmLocFpu)
+	b.i32Load(2, uint32(ins.rd)*4)
+	b.op(wasmOpI64ExtendI32U)
+	b.localSet(wasmLocB)
+	e.effAddr(ins)
+	if _, proven := ie64ConstLowRAMAccess(ins.rs, ins.imm32, IE64_SIZE_L); !proven && !e.loopAccessHoisted(idx) {
+		e.memChecks(4, func() { e.helperExit(HELPER_FSTORE, IE64_SIZE_L, ins.rd, idx, instrPC, true) })
+	}
+	e.guestAddr()
+	b.localGet(wasmLocB)
+	b.op(wasmOpI32WrapI64)
+	b.i32Store(0, 0)
+	e.smcProbe(4)
 	e.smcExitIfDirty(instrPC, idx)
 }
 

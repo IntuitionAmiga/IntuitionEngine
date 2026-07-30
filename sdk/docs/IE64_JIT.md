@@ -87,6 +87,13 @@ The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and st
 
 **Activation:** JIT is enabled by default on supported platforms. Disable with the `-nojit` flag.
 
+The wasm backend directly emits scalar `FLOAD`, `FSTORE`, `FADD`, `FSUB` and
+`FMUL` for low RAM. It preserves FP32 FPSR condition codes and sticky
+exceptions, and uses the ordinary helper exit for MMIO and other non-RAM
+accesses. FP32 and FP64 transcendental operations use a helper exit carrying
+the original opcode and FP-register operands; the wasm dispatcher applies the
+canonical FPU operation and resumes at the next guest PC.
+
 ---
 
 ## Architecture
