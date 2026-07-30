@@ -2602,6 +2602,90 @@ func emitHighAddrBailCheckARM64(cb *CodeBuffer, instrPC uint64, pcOffset uint32,
 	cb.PatchUint32(inRangeOff, arm64Bcond(arm64CondLO, int32(inRangePC-inRangeOff)))
 }
 
+// emitIE64SMCStoreCheckARM64 records a deferred cache invalidation after a
+// direct store. MMU micro-TLB hits arrive with X0 holding a physical address,
+// so they first probe the physical code-page map. A physical hit can alias a
+// different compiled virtual page and therefore requests a full invalidation.
+// On a miss, and for MMU-off stores, the original virtual address saved in
+// HelperAddr is checked against the ordinary virtual code-page map.
+func emitIE64SMCStoreCheckARM64(cb *CodeBuffer, size byte, translatedPhys bool) {
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	emitIE64SMCStoreCheckARM64Pages(cb, size, translatedPhys)
+}
+
+// Multi-byte writes are conservatively invalidated. This includes the second
+// 256-byte page when a write straddles it and avoids a stale native block even
+// when a physical alias is involved. Byte stores retain the bitmap fast path.
+func emitIE64SMCStoreCheckARM64Pages(cb *CodeBuffer, size byte, translatedPhys bool) {
+	if size != IE64_SIZE_B {
+		if translatedPhys {
+			cb.Emit32(arm64LDR_W_imm(4, 1, uint32(jitCtxOffMMUEnabled/4)))
+			virtual := cb.Len()
+			cb.Emit32(0) // CBZ X4, virtual range
+			emitLoadImm32(cb, 3, 1)
+			cb.Emit32(arm64STR_W_imm(3, 1, uint32(jitCtxOffNeedInval/4)))
+			cb.Emit32(arm64STR_W_imm(31, 1, uint32(jitCtxOffInvalSize/4)))
+			done := cb.Len()
+			cb.Emit32(0)
+			virtualPC := cb.Len()
+			cb.PatchUint32(virtual, arm64CBZ(4, int32(virtualPC-virtual)))
+			cb.Emit32(arm64LDR_imm(0, 1, uint32(jitCtxOffHelperAddr/8)))
+			cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffInvalAddr/8)))
+			emitLoadImm32(cb, 3, ie64AccessBytes(size))
+			cb.Emit32(arm64STR_W_imm(3, 1, uint32(jitCtxOffInvalSize/4)))
+			emitLoadImm32(cb, 3, 1)
+			cb.Emit32(arm64STR_W_imm(3, 1, uint32(jitCtxOffNeedInval/4)))
+			cb.PatchUint32(done, arm64B(int32(cb.Len()-done)))
+			return
+		}
+		cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffInvalAddr/8)))
+		emitLoadImm32(cb, 3, ie64AccessBytes(size))
+		cb.Emit32(arm64STR_W_imm(3, 1, uint32(jitCtxOffInvalSize/4)))
+		emitLoadImm32(cb, 3, 1)
+		cb.Emit32(arm64STR_W_imm(3, 1, uint32(jitCtxOffNeedInval/4)))
+		return
+	}
+	// A translated MMU byte store can alias compiled code at a different virtual
+	// address. MMU-off stores still have their virtual address in X0 and retain
+	// the precise bitmap path below.
+	fullDone := -1
+	if translatedPhys {
+		cb.Emit32(arm64LDR_W_imm(4, 1, uint32(jitCtxOffMMUEnabled/4)))
+		mmuOff := cb.Len()
+		cb.Emit32(0) // CBZ X4, precise virtual path
+		emitLoadImm32(cb, 3, 1)
+		cb.Emit32(arm64STR_W_imm(3, 1, uint32(jitCtxOffNeedInval/4)))
+		cb.Emit32(arm64STR_W_imm(31, 1, uint32(jitCtxOffInvalSize/4)))
+		fullDone = cb.Len()
+		cb.Emit32(0) // B done
+		virtualPC := cb.Len()
+		cb.PatchUint32(mmuOff, arm64CBZ(4, int32(virtualPC-mmuOff)))
+	}
+	// Byte writes can never straddle a code page. Keep MMU-off writes precise.
+	cb.Emit32(arm64LDR_imm(2, 1, uint32(jitCtxOffCodePageBitmapPtr/8)))
+	done := cb.Len()
+	cb.Emit32(0)
+	cb.Emit32(arm64LDR_W_imm(4, 1, uint32(jitCtxOffCodePageBitmapLen/4)))
+	cb.Emit32(arm64LSR_imm(3, 0, 8))
+	cb.Emit32(arm64CMP(3, 4))
+	high := cb.Len()
+	cb.Emit32(0)
+	cb.Emit32(arm64LDRB_reg(3, 2, 3))
+	miss := cb.Len()
+	cb.Emit32(0)
+	cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffInvalAddr/8)))
+	emitLoadImm32(cb, 3, 1)
+	cb.Emit32(arm64STR_W_imm(3, 1, uint32(jitCtxOffInvalSize/4)))
+	cb.Emit32(arm64STR_W_imm(3, 1, uint32(jitCtxOffNeedInval/4)))
+	end := cb.Len()
+	cb.PatchUint32(done, arm64CBZ(2, int32(end-done)))
+	cb.PatchUint32(high, arm64Bcond(arm64CondHS, int32(end-high)))
+	cb.PatchUint32(miss, arm64CBZ(3, int32(end-miss)))
+	if fullDone >= 0 {
+		cb.PatchUint32(fullDone, arm64B(int32(end-fullDone)))
+	}
+}
+
 // emitSTORE handles STORE rd, disp(rs)
 func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
 	// Compute address: int64(rs) + int64(int32(imm32)).
@@ -2635,14 +2719,23 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 		return
 	}
 
-	// Keep MMU stores on the canonical helper path. Unlike loads, a native
-	// store also needs the physical code-page SMC probe before it can bypass
-	// the dispatcher. The helper is therefore the correctness boundary until
-	// that probe is emitted on ARM64.
+	// Preserve the virtual address for the helper and the post-store SMC path.
+	// A micro-TLB hit replaces X0 with the physical address, while the helper
+	// protocol and virtual code-page invalidation remain defined in guest VA.
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64STR_imm(0, 1, uint32(jitCtxOffHelperAddr/8)))
+	// The two-way probe uses X3/X4 as scratch. Save the already masked store
+	// value before it so both a hit and a helper miss retain the exact payload.
+	cb.Emit32(arm64STR_imm(srcReg, 1, uint32(jitCtxOffHelperVal/8)))
 	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
-	mmuHelperOff := cb.Len()
-	cb.Emit32(0) // CBNZ X1, helper
+	physicalPathOff := cb.Len()
+	cb.Emit32(0) // CBZ X1, MMU-off direct path
+	mmuMissOff := emitMMUMicroTLBProbeARM64(cb, jitCtxOffMicroTLBWritePrefix)
+	physicalPathPC := cb.Len()
+	cb.PatchUint32(physicalPathOff, arm64CBZ(1, int32(physicalPathPC-physicalPathOff)))
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_imm(3, 1, uint32(jitCtxOffHelperVal/8)))
+	srcReg = 3
 
 	// The shared constant-address proof covers the complete access and low RAM
 	// is always inside the direct window for the MMU-off path.
@@ -2657,11 +2750,14 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 		case IE64_SIZE_Q:
 			cb.Emit32(arm64STR_reg(srcReg, arm64RegMemBase, 0))
 		}
+		emitIE64SMCStoreCheckARM64(cb, ji.size, true)
 		doneOff := cb.Len()
 		cb.Emit32(0)
 
 		helperPC := cb.Len()
-		cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+		cb.PatchUint32(mmuMissOff, arm64Bcond(arm64CondNE, int32(helperPC-mmuMissOff)))
+		cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+		cb.Emit32(arm64LDR_imm(3, 1, uint32(jitCtxOffHelperVal/8)))
 		resumePatch := emitSTOREHelperExitARM64(cb, ji, instrPC, srcReg, br, writtenSoFar)
 		resumeOff := cb.Len()
 		patchResumeADRARM64(cb, resumePatch, resumeOff)
@@ -2690,6 +2786,7 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 	case IE64_SIZE_Q:
 		cb.Emit32(arm64STR_reg(srcReg, arm64RegMemBase, 0))
 	}
+	emitIE64SMCStoreCheckARM64(cb, ji.size, true)
 
 	// Branch over slow path / helper to converged done.
 	doneOff1 := cb.Len()
@@ -2739,12 +2836,15 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 	case IE64_SIZE_Q:
 		cb.Emit32(arm64STR_reg(srcReg, arm64RegMemBase, 0))
 	}
+	emitIE64SMCStoreCheckARM64(cb, ji.size, true)
 	doneOff2 := cb.Len()
 	cb.Emit32(0) // placeholder B done
 
 	// Helper exit label.
 	helperPC := cb.Len()
-	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+	cb.PatchUint32(mmuMissOff, arm64Bcond(arm64CondNE, int32(helperPC-mmuMissOff)))
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64LDR_imm(3, 1, uint32(jitCtxOffHelperVal/8)))
 	cb.PatchUint32(highHelperOff, arm64B(int32(helperPC-highHelperOff)))
 	cb.PatchUint32(ioHelperOff, arm64B(int32(helperPC-ioHelperOff)))
 	resumePatch := emitSTOREHelperExitARM64(cb, ji, instrPC, srcReg, br, writtenSoFar)
