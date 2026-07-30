@@ -936,6 +936,44 @@ func emitResumeEntryARM64(cb *CodeBuffer, resumePC uint64, br *blockRegs) {
 	emitPrologue(cb, resumePC, br)
 }
 
+// emitMMUMicroTLBProbeARM64 emits the native half of an MMU LOAD.
+// X0 holds the virtual address. On a hit it is replaced with the physical
+// address and execution falls through. On a miss it branches through the
+// returned placeholder to the caller's existing helper exit. The helper is
+// deliberately still responsible for translation, protection, first-touch
+// A/D updates and refill.
+func emitMMUMicroTLBProbeARM64(cb *CodeBuffer, prefixOff int32) int {
+	// X1=ctx, X2=key, X3=entry byte offset, X4=key/physical page scratch.
+	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
+	cb.Emit32(arm64MOV(2, 0))
+	cb.Emit32(arm64LSR_imm(2, 2, MMU_PAGE_SHIFT))
+	cb.Emit32(arm64AND_imm(3, 2, 0, 2, 1)) // set = VPN & (sets - 1)
+	cb.Emit32(arm64LDR_imm(4, 1, uint32(prefixOff/8)))
+	cb.Emit32(arm64ORR(2, 2, 4))
+	cb.Emit32(arm64LSL_imm(3, 3, 3)) // eight-byte entries
+
+	cb.Emit32(arm64ADD(4, 1, 3))
+	cb.Emit32(arm64LDR_imm(4, 4, uint32(jitCtxOffMicroTLBKeys/8)))
+	cb.Emit32(arm64CMP(2, 4))
+	hitWay0Off := cb.Len()
+	cb.Emit32(0) // B.EQ hit
+
+	cb.Emit32(arm64ADD_imm(3, 3, jitCtxMicroTLBSets*8))
+	cb.Emit32(arm64ADD(4, 1, 3))
+	cb.Emit32(arm64LDR_imm(4, 4, uint32(jitCtxOffMicroTLBKeys/8)))
+	cb.Emit32(arm64CMP(2, 4))
+	missOff := cb.Len()
+	cb.Emit32(0) // B.NE helper
+
+	hitPC := cb.Len()
+	cb.PatchUint32(hitWay0Off, arm64Bcond(arm64CondEQ, int32(hitPC-hitWay0Off)))
+	cb.Emit32(arm64ADD(4, 1, 3))
+	cb.Emit32(arm64LDR_imm(4, 4, uint32(jitCtxOffMicroTLBPhys/8)))
+	cb.Emit32(arm64AND_imm(0, 0, 0, MMU_PAGE_SHIFT-1, 1))
+	cb.Emit32(arm64ORR(0, 0, 4))
+	return missOff
+}
+
 func emitHelperResumeFieldsARM64(cb *CodeBuffer, ctxReg byte, resumePC uint64, countBase uint32, br *blockRegs) int {
 	if br.hasBackwardBranch {
 		emitLoadImm32(cb, 2, 0)
@@ -2361,22 +2399,19 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 		return
 	}
 
-	// Phase 5 cycle 5.4: MMU-on check. ctx.MMUEnabled is refreshed by
-	// the Go dispatcher before every callNative; any non-zero value
-	// means virtual addresses must be translated by the interpreter
-	// helper. Branch to helper exit.
+	// MMU-on probes the per-context two-way micro-TLB. A miss retains the
+	// canonical helper path, which performs the translation and refill.
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))                           // X1 = ctx ptr (SP+96)
 	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4))) // W1 = MMUEnabled (zero-extends)
-	mmuHelperOff := cb.Len()
-	cb.Emit32(0) // placeholder CBNZ X1, helperLabel
+	physicalPathOff := cb.Len()
+	cb.Emit32(0) // CBZ X1, physical path
+	mmuMissOff := emitMMUMicroTLBProbeARM64(cb, jitCtxOffMicroTLBReadPrefix)
+	physicalPathPC := cb.Len()
+	cb.PatchUint32(physicalPathOff, arm64CBZ(1, int32(physicalPathPC-physicalPathOff)))
 
 	// R0 is hardwired zero, so a non-negative displacement whose complete
-	// access lies below IO_REGION_START is immutable low RAM. ARM64 has no
-	// native MMU micro-TLB path: MMU-on execution always takes the helper above.
-	// The MMU-off fallthrough may therefore omit the I/O comparison, window
-	// bound and I/O-page bitmap probe entirely. Keep the helper after the hot
-	// direct load so the only hot-path branch skips a cold bailout and resume
-	// entry.
+	// access lies below IO_REGION_START is immutable low RAM. The MMU hit path
+	// above has already replaced X0 with a refillable low-RAM physical address.
 	if _, ok := ie64ConstLowRAMAccess(ji.rs, ji.imm32, ji.size); ok {
 		dstReg, mapped := ie64ToARM64Reg(ji.rd)
 		if !mapped {
@@ -2399,7 +2434,7 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 		cb.Emit32(0)
 
 		helperPC := cb.Len()
-		cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+		cb.PatchUint32(mmuMissOff, arm64Bcond(arm64CondNE, int32(helperPC-mmuMissOff)))
 		resumePatch := emitLOADHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
 		resumeOff := cb.Len()
 		patchResumeADRARM64(cb, resumePatch, resumeOff)
@@ -2497,7 +2532,7 @@ func emitLOAD(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writt
 	// I/O page) converge here. emitLOADHelperExitARM64 ends with
 	// emitEpilogue → RET, so no fallthrough into done.
 	helperPC := cb.Len()
-	cb.PatchUint32(mmuHelperOff, arm64CBNZ(1, int32(helperPC-mmuHelperOff)))
+	cb.PatchUint32(mmuMissOff, arm64Bcond(arm64CondNE, int32(helperPC-mmuMissOff)))
 	cb.PatchUint32(highHelperOff, arm64B(int32(helperPC-highHelperOff)))
 	cb.PatchUint32(ioHelperOff, arm64B(int32(helperPC-ioHelperOff)))
 	resumePatch := emitLOADHelperExitARM64(cb, ji, instrPC, br, writtenSoFar)
@@ -2600,17 +2635,17 @@ func emitSTORE(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writ
 		return
 	}
 
-	// Phase 5 cycle 5.5: MMU-on check → helper exit.
+	// Keep MMU stores on the canonical helper path. Unlike loads, a native
+	// store also needs the physical code-page SMC probe before it can bypass
+	// the dispatcher. The helper is therefore the correctness boundary until
+	// that probe is emitted on ARM64.
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
 	cb.Emit32(arm64LDR_W_imm(1, 1, uint32(jitCtxOffMMUEnabled/4)))
 	mmuHelperOff := cb.Len()
-	cb.Emit32(0) // CBNZ X1, helperLabel
+	cb.Emit32(0) // CBNZ X1, helper
 
 	// The shared constant-address proof covers the complete access and low RAM
-	// is always inside the direct window. With the MMU-on case already routed
-	// to the helper, the MMU-off hot path can store directly without I/O,
-	// bounds or bitmap checks. The helper and resume entry remain cold and the
-	// direct store branches around them.
+	// is always inside the direct window for the MMU-off path.
 	if _, ok := ie64ConstLowRAMAccess(ji.rs, ji.imm32, ji.size); ok {
 		switch ji.size {
 		case IE64_SIZE_B:

@@ -16,6 +16,26 @@ const (
 	ie64JITTierRegion = 1
 )
 
+// The ARM64 emitter records region compilation diagnostics too. It does not
+// share AMD64's register allocator, so its policy view intentionally carries
+// only the counters the emitter consumes until it grows an ARM64 allocator.
+type ie64RegionPlan struct {
+	spillOps    int
+	fpuSpillOps int
+}
+
+func ie64PlanRegion(region *ie64Region) ie64RegionPlan { return ie64RegionPlan{} }
+
+func ie64CountFusedLeafCalls(instrs []JITInstr) int {
+	n := 0
+	for i := range instrs {
+		if instrs[i].fusedFlag&ie64FusedJSRLeafCall != 0 {
+			n++
+		}
+	}
+	return n
+}
+
 func ie64RegionPromotionEnabled() bool {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "arm64" {
 		return false

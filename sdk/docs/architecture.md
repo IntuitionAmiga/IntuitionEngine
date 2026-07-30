@@ -788,7 +788,9 @@ Interrupt Delivery" section of this manual for the full model.
   dispatcher refreshes `ctx.MMUEnabled` before every `callNative` so the native
   guards are never stale.
 - **JIT MMU micro-TLB**: IE64 JIT MMU helpers use a four-entry read/write
-  micro-TLB for translated low-window RAM pages. Helper dispatch fills the cache
+  micro-TLB for translated low-window RAM pages. AMD64 probes it for `LOAD` and
+  `STORE`; ARM64 probes it for `LOAD` only, retaining helper-mediated stores for
+  physical self-modifying-code invalidation. Helper dispatch fills the cache
   only after a successful translation to dense RAM below `IO_REGION_START`; high
   physical backing and MMIO are not inserted. Native probes include the access
   type and CPU privilege/SUA/SKAC/SKEF mode bits in the key. `TLBFLUSH` clears

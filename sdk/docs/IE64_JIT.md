@@ -799,12 +799,12 @@ This inventory summarises the techniques used by the Linux and browser IE64 back
 
 When the IE64 MMU is enabled (MMU_CTRL bit 0 = 1), the native emitters check
 `ctx.MMUEnabled`, which the dispatcher refreshes before every `callNative`.
-ARM64 routes non-atomic data, stack, FP and control-flow memory operations
-through the JITContext helper exit. AMD64 first probes a four-entry native
-micro-TLB for ordinary LOAD and STORE operations. A hit translates the virtual
-page and continues through the native low-window RAM path. A miss uses the
-helper exit, which performs the canonical translation and may fill the entry.
-The remaining non-atomic amd64 memory operations use the helper exit directly;
+AMD64 probes a four-entry native micro-TLB for ordinary `LOAD` and `STORE`
+operations. ARM64 probes the same cache for `LOAD` only, while retaining helper
+mediated stores for physical self-modifying-code invalidation. A hit translates
+the virtual page and continues through the native low-window RAM path. A miss
+uses the helper exit, which performs the canonical translation and may fill the
+entry. The remaining non-atomic memory operations use the helper exit directly;
 atomics retain their whole-instruction bail path.
 
 ### Helper Exit for Memory Operations Under MMU

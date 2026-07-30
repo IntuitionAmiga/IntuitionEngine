@@ -11,6 +11,7 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"testing"
 )
 
@@ -66,6 +67,36 @@ func TestJIT_ARM64_LOAD_MMUEnabled_SetsHelper(t *testing.T) {
 	r.compileAndRun(t, ie64Instr(OP_LOAD, 3, IE64_SIZE_L, 0, 2, 0, 0))
 
 	assertLOADHelperFields(t, r.ctx, lowAddr, uint32(IE64_SIZE_L), 3, PROG_START, 0x1000)
+}
+
+func TestJIT_ARM64_LOAD_MicroTLBHitUsesTranslatedPhysicalAddress(t *testing.T) {
+	for _, way := range []uint64{0, 1} {
+		t.Run(fmt.Sprintf("way_%d", way), func(t *testing.T) {
+			r := newJITTestRig(t)
+			const virt = uint64(0x4A8)
+			const phys = uint64(0x7000)
+			const want = uint64(0xA1B2C3D4E5F60718)
+			binary.LittleEndian.PutUint64(r.cpu.memory[phys+(virt&MMU_PAGE_MASK):], want)
+
+			r.cpu.mmuEnabled = true
+			r.ctx.MMUEnabled = 1
+			r.ctx.refreshMicroTLBPrefixes(r.cpu)
+			idx := ie64MicroTLBIndex(ie64MicroTLBSet(virt), way)
+			r.ctx.MicroTLBKeys[idx] = ie64MicroTLBKey(r.cpu, virt, ACCESS_READ)
+			r.ctx.MicroTLBPhys[idx] = phys
+			r.ctx.NeedHelper = HELPER_NONE
+			r.cpu.regs[2] = virt
+
+			r.compileAndRun(t, ie64Instr(OP_LOAD, 1, IE64_SIZE_Q, 0, 2, 0, 0))
+
+			if r.cpu.regs[1] != want {
+				t.Fatalf("R1 = %#x, want %#x from translated physical page", r.cpu.regs[1], want)
+			}
+			if r.ctx.NeedHelper != HELPER_NONE {
+				t.Fatalf("NeedHelper = %d, want no helper on a micro-TLB hit", r.ctx.NeedHelper)
+			}
+		})
+	}
 }
 
 func TestJIT_ARM64_LOAD_LowAddr_NoHelper(t *testing.T) {

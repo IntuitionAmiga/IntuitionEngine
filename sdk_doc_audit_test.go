@@ -3538,6 +3538,7 @@ func TestSDKCompanionDocs_ArchitecturePerformanceRoadmapClaimsMatchSource(t *tes
 		"IE64 helper resume is enabled by default and can be disabled with `IE64_JIT_RESUME=0`, `false`, `off`, or `no`.",
 		"IE64 helper resume is cancelled by timer delivery, debug breakpoints, pending invalidation, PC changes, MMU mode changes, or PTBR changes.",
 		"IE64 JIT MMU helpers use a four-entry read/write micro-TLB for translated low-window RAM pages.",
+		"AMD64 probes it for `LOAD` and `STORE`; ARM64 currently probes it for `LOAD` only, retaining helper-mediated stores for physical self-modifying-code invalidation.",
 		"`TLBFLUSH` clears the IE64 JIT micro-TLB and `TLBINVAL` invalidates matching micro-TLB VPN entries",
 		"IE64 self-modifying-code tracking uses 256-byte guest code pages and physical code-page tracking for MMU-compiled blocks.",
 		"x86 self-modifying-code tracking uses 256-byte code pages and range invalidation.",
