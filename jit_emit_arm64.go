@@ -936,7 +936,7 @@ func emitResumeEntryARM64(cb *CodeBuffer, resumePC uint64, br *blockRegs) {
 	emitPrologue(cb, resumePC, br)
 }
 
-// emitMMUMicroTLBProbeARM64 emits the native half of an MMU LOAD.
+// emitMMUMicroTLBProbeARM64 emits the native half of an MMU LOAD or STORE.
 // X0 holds the virtual address. On a hit it is replaced with the physical
 // address and execution falls through. On a miss it branches through the
 // returned placeholder to the caller's existing helper exit. The helper is
@@ -1426,8 +1426,7 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitFCVTDS_ARM64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DMOD:
 		emitFPTransHelperExitARM64(cb, ji, instrPC, HELPER_DTRANS, br, writtenSoFar)
-	// Still interpreted on both backends. Keep this list and the amd64 one in
-	// step: sdk/docs/IE64_JIT.md documents a single shared fallback table.
+	// DMOD uses the shared helper-exit path on both native backends.
 
 	// MMU/privilege opcodes: always bail to interpreter
 	case OP_MTCR, OP_MFCR, OP_ERET, OP_TLBFLUSH, OP_TLBINVAL, OP_SYSCALL, OP_SMODE,

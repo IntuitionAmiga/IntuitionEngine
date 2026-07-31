@@ -25,9 +25,9 @@ loops, changing pointers and stack accesses retain the established checks.
 
 ### Optimisation slices
 
-Three optimisation slices were implemented conservatively, benchmarked with
-`benchstat`, then extended to their aggressive forms. All showed significant
-targeted improvements without related regressions and are retained.
+Three optimisation slices are implemented conservatively. Their performance
+characteristics must be established with the benchmark suite for the build and
+host under test.
 
 **Constant-only folding** (`jit_ie64_const_fold.go`) runs a forward analysis
 over one basic block and precomputes results whose inputs are all statically
@@ -81,7 +81,7 @@ emitted before the structured `loop` opens. Region plans never hoist.
 
 The IE64 JIT compiler translates blocks of IE64 machine code into native ARM64 or x86-64 instructions at runtime, executing them directly on the host CPU. This bypasses the Go interpreter loop and yields significant performance improvements for compute-heavy workloads.
 
-The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64`; there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the full contract). `DLOAD`/`DSTORE` use native low-window fast paths and helper exits for MMU/high/MMIO cases. FP64 transcendentals (`DSIN` through `DPOW`) compile to a helper-exit path that calls the same FPU methods as the interpreter, writes FP register pairs and FPSR, and resumes at the next PC. The remaining interpreter fallbacks are: atomics outside aligned non-MMU low-window RAM, fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` for `emitBailToInterpreter`), MMU/privilege opcodes, FP32 transcendentals, the double-precision arithmetic/conversion opcodes neither backend emits (see "Category D: Double precision" below; amd64 and arm64 both emit the FP64 core natively and bail only for `DMOD`/`DABS`/`DNEG`/`DSQRT`/`FCVTSD`/`FCVTDS`), and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`). The high-PC stack-op restriction prevents the fused raw stack path from indexing beyond `cpu.memory[]` when SP is high. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)`. IE64-family modes cap this window at `busMemMaxBytes`, which is `0xFFFF0000`, rather than the complete 32-bit address range. The excluded top 64 KiB begins the M68K sign-extended alias window. Non-mmap hosts may clamp the window further. Addresses above the low window cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
+The IE64 JIT is fully 64-bit. The block builder, return channel, PC, data and stack addresses, branch targets, and chain targets are all `uint64`; there is no `uint32` truncation. High virtual/physical PCs are scanned and compiled: `scanBlockBus` fetches instruction words through `bus.ReadPhys64WithFault` when the physical address is outside the low `cpu.memory` window, and stops cleanly on an unmapped page. High-address and MMU-on data, FP, and control-flow memory operations, plus unfused stack operations, route through the JITContext helper-exit protocol rather than bailing the whole instruction; the amd64 non-MMU fused JSR/RTS leaf high-SP case is the stack exception because it raw-indexes `[MemBase+SP]` before those guards (see "IE64 JIT 64-bit Execution Model" in `architecture.md` for the full contract). `DLOAD`/`DSTORE` use native low-window fast paths and helper exits for MMU/high/MMIO cases. FP32 transcendental operations, `DMOD`, and FP64 transcendental operations (`DSIN` through `DPOW`) compile to helper exits which call the same FPU methods as the interpreter and resume at the next PC. Both native backends emit the remaining supported FP64 arithmetic and conversion operations, including `DABS`, `DNEG`, `DSQRT`, `FCVTSD`, and `FCVTDS`. The remaining whole-instruction interpreter fallbacks are atomics outside aligned non-MMU low-window RAM, fused JSR/RTS leaves under MMU (`compileBlockMMU` sets `mmuBail` for `emitBailToInterpreter`), MMU/privilege opcodes, and any block *fetched from* a high physical PC that itself contains a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`). The high-PC stack-op restriction prevents the fused raw stack path from indexing beyond `cpu.memory[]` when SP is high. The low `cpu.memory[]` window is `min(autodetected total guest RAM, busMemCap)`. IE64-family modes cap this window at `busMemMaxBytes`, which is `0xFFFF0000`, rather than the complete 32-bit address range. The excluded top 64 KiB begins the M68K sign-extended alias window. Non-mmap hosts may clamp the window further. Addresses above the low window cover the guest's full active visible RAM through the bus / `Backing` interface, so JIT-executed code reaches the same address space the interpreter sees.
 
 **Supported platforms:** ARM64/Linux, ARM64/macOS, ARM64/Windows, x86-64/Linux, x86-64/macOS, x86-64/Windows (x86-64 requires SSE4.1; release builds target x86-64-v3)
 
@@ -351,14 +351,14 @@ cpu.PC = cpu.jitCtx.RetPC
 executed := uint64(cpu.jitCtx.RetCount)
 ```
 
-Native emitters load `RetPC` into the PC host register (`R15`/`X28`) as a full 64-bit immediate, so block exits and branch/JSR targets above `0xFFFFFFFF` round-trip without truncation. Chain transitions accumulate their predecessor counts into `ctx.ChainCount` (added by the dispatcher), so a chain entry no longer extracts a count from the PC register.
+Native emitters load `RetPC` into the PC host register (`R15`/`X28`) as a full 64-bit immediate, so block exits and branch/JSR targets above `0xFFFFFFFF` round-trip without truncation. Native chain exits accumulate predecessor counts in `ctx.ChainCount`; the dispatcher adds that accumulated count after `callNative` returns. A chain entry therefore no longer extracts a count from the PC register.
 
 **Every exit path must set `RetPC` and the count:**
 - Normal block end: `staticCount = len(instrs)`
 - Branch taken: `staticCount = instrIdx + 1`
 - I/O bail: `bailCount = ji.pcOffset / IE64_INSTR_SIZE`
 - Backward-branch budget exit: dynamic count from loop counter
-- Chained block exits: predecessor counts accumulated in `JITContext.ChainCount` are added by the dispatcher after `callNative` returns.
+- Chained block exits: native chain exits accumulate predecessor counts in `JITContext.ChainCount`; the dispatcher adds that total after `callNative` returns.
 
 **Important distinction for bail paths:**
 - `bailCount` (retired instruction count) goes into `RetCount` (via the count argument)
@@ -526,10 +526,12 @@ discarded without changing the cache.
 The wasm tier is disabled while the architectural timer or MMU is enabled.
 Blocks are then neither compiled nor entered, and execution stays in the
 interpreter. The supported compiled surface is the MMU-off integer core,
-including ALU, load/store, branches, subroutine and stack operations, plus
-FP64 arithmetic, moves, comparisons, conversions, DINT rounding modes, sticky
-exception flags and condition codes. FP64 transcendentals, FP32 and remaining
-system opcodes stay in the interpreter.
+including ALU, load/store, branches, subroutine and stack operations. It also
+emits `FLOAD`, `FSTORE`, `FADD`, `FSUB`, `FMUL`, FP64 moves, loads, stores,
+arithmetic, `DABS`, `DNEG`, `DSQRT`, comparisons, integer conversions and
+`DINT`. FP32 transcendental operations, `DMOD`, and FP64 transcendental
+operations use the wasm helper protocol. Unsupported FP32 operations and
+remaining system opcodes stay in the interpreter.
 
 The compiler stops a block before its first unsupported opcode, leaving that
 instruction for the interpreter. Supported instructions that need dispatcher
@@ -640,7 +642,7 @@ The FP64 transcendental opcodes are emitted as helper exits rather than whole-bl
 
 ### Category D: Double precision
 
-amd64 and arm64 emit the same FP64 core natively: `DMOV`, `DADD`, `DSUB`, `DMUL`, `DDIV`, `DINT`, `DCMP`, `DCVTIF`, `DCVTFI`. Both bail for `DMOD`, `DABS`, `DNEG`, `DSQRT`, `FCVTSD`, `FCVTDS`. The two lists are deliberately identical, so this table describes both backends rather than one each.
+amd64 and arm64 emit the same FP64 operations natively: `DMOV`, `DADD`, `DSUB`, `DMUL`, `DDIV`, `DINT`, `DCMP`, `DCVTIF`, `DCVTFI`, `DABS`, `DNEG`, `DSQRT`, `FCVTSD`, and `FCVTDS`. `DMOD` uses the helper-exit path. The native lists are deliberately identical, so this table describes both backends rather than one each.
 
 Native FP64 arithmetic bails to the interpreter whenever an operand is non-finite (`emitDPairNonFiniteBailAMD64`, `emitDPairNonFiniteBailARM64`), so NaN and infinity operands take interpreter semantics by construction and the native path only has to account for overflow, underflow and divide-by-zero on finite inputs.
 
@@ -650,8 +652,9 @@ That bail also discharges every `!isInf(operand)` and `!isNaN(operand)` clause i
 
 `DLOAD` and `DSTORE` are JIT-emitted on both backends with native low-window fast paths and helper exits (`HELPER_DLOAD`/`HELPER_DSTORE`) for MMU, high-address, MMIO, or invalid-pair cases. They are not in `needsFallback()` and do not force whole-block fallback.
 
-### Category E: Interpreter Bail
-FMOD, FSIN, FCOS, FTAN, FATAN, FLOG, FEXP, FPOW on both backends.
+### Category E: Helper Exit
+FMOD, FSIN, FCOS, FTAN, FATAN, FLOG, FEXP and FPOW use a helper exit on both
+native backends.
 
 ---
 
@@ -668,8 +671,8 @@ The JIT falls back to the interpreter in these cases:
 | High-PC block containing a stack op (`PUSH`/`POP`/`JSR`/`RTS`/`JSR_IND`) | `highPhys && containsStackOp`, so the dispatcher runs the block via `interpretOne()` |
 | High address or MMU-on data/stack/FP/control op | JITContext helper exit (serviced by the dispatcher) - **not** a whole-instruction bail |
 | I/O page memory access | Dual-path: bail to interpreter on I/O bitmap hit |
-| FP32 FMOD/transcendentals | Bail to interpreter on both backends |
-| Double-precision arithmetic/conversion | `DMOD`/`DABS`/`DNEG`/`DSQRT`/`FCVTSD`/`FCVTDS` bail on both amd64 and arm64; the rest of the FP64 core is native on both. `DLOAD`/`DSTORE` and `DSIN` through `DPOW` are JIT-emitted via helper exit on both, not bailed |
+| FP32 FMOD/transcendentals | JIT helper exit on both native backends |
+| Double-precision arithmetic/conversion | `DMOD`, `DLOAD`/`DSTORE`, and `DSIN` through `DPOW` use JIT helper exits on both native backends. `DABS`, `DNEG`, `DSQRT`, `FCVTSD`, `FCVTDS`, and the FP64 core are native on both |
 | Non-finite operand to native FP64 arithmetic | Bail to interpreter (`emitDPairNonFiniteBailAMD64`, `emitDPairNonFiniteBailARM64`), so NaN/infinity operands take interpreter semantics |
 | Atomic RMW (CAS, XCHG, FAA, FAND, FOR, FXOR) | Native only for aligned non-MMU low-window RAM; MMU-on, high-address, MMIO, or unaligned cases bail to interpreter |
 | SEI64, CLI64 | Emitted as bail-to-interpreter (`emitBailToInterpreter`) so `interruptEnabled` is mutated; compiling them as NOPs silently dropped the state change under timer-off native execution |
@@ -757,7 +760,7 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 
 ### Deferred
 - Direct (non-helper) native fast path for high-physical data/stack access: high addresses currently route through the JITContext helper exit; inlining the sparse-backing / MMU translation into native code is a future perf item
-- Native `DMOD`, `DABS`, `DNEG`, `DSQRT`, `FCVTSD`, `FCVTDS` on both backends
+- Native `DMOD` on both backends
 - Memory operands for spilled-source ALU
 - Peephole patterns (MOVE imm, ADD/SUB imm, compare against zero)
 - Smaller prologue variants for simple blocks
@@ -799,18 +802,17 @@ This inventory summarises the techniques used by the Linux and browser IE64 back
 
 When the IE64 MMU is enabled (MMU_CTRL bit 0 = 1), the native emitters check
 `ctx.MMUEnabled`, which the dispatcher refreshes before every `callNative`.
-AMD64 probes a four-entry native micro-TLB for ordinary `LOAD` and `STORE`
-operations. ARM64 probes the same cache for `LOAD` only, while retaining helper
-mediated stores for physical self-modifying-code invalidation. A hit translates
-the virtual page and continues through the native low-window RAM path. A miss
-uses the helper exit, which performs the canonical translation and may fill the
-entry. The remaining non-atomic memory operations use the helper exit directly;
-atomics retain their whole-instruction bail path.
+AMD64 and ARM64 probe a four-entry native micro-TLB for ordinary `LOAD` and
+`STORE` operations. A hit translates the virtual page and continues through the
+native low-window RAM path. ARM64 store hits retain physical self-modifying-code
+invalidation. A miss uses the helper exit, which performs the canonical
+translation and may fill the entry. The remaining non-atomic memory operations
+use the helper exit directly; atomics retain their whole-instruction bail path.
 
 ### Helper Exit for Memory Operations Under MMU
 
-The following use the helper exit when the MMU is on, except that amd64 LOAD
-and STORE may complete after a native micro-TLB hit. They also use the helper
+The following use the helper exit when the MMU is on, except that native LOAD
+and STORE may complete after a micro-TLB hit. They also use the helper
 when an address escapes the low window with the MMU off:
 
 - **LOAD, STORE** (general-purpose memory access)
@@ -864,5 +866,5 @@ All 9 MMU/privilege instructions (MTCR, MFCR, ERET, TLBFLUSH, TLBINVAL, SYSCALL,
 
 ### Future Work
 
-- Extend native micro-TLB probing beyond amd64 LOAD and STORE operations.
+- Extend native micro-TLB probing beyond ordinary LOAD and STORE operations.
 - Add address-space identifiers if the architecture gains an ASID contract.

@@ -2134,7 +2134,7 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitFSTORE_AMD64(cb, ji, instrPC, br, writtenSoFar)
 
 	// ======================================================================
-	// FPU - Category C (transcendentals, bail to interpreter)
+	// FPU - Category C (transcendentals, helper exit)
 	// ======================================================================
 	case OP_FMOD, OP_FSIN, OP_FCOS, OP_FTAN, OP_FATAN, OP_FLOG, OP_FEXP, OP_FPOW:
 		emitFPTransHelperExitAMD64(cb, ji, instrPC, HELPER_FTRANS, br, writtenSoFar)

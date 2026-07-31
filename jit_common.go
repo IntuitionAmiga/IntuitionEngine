@@ -596,11 +596,10 @@ func scanBlockWithLimit(memory []byte, startPC, maxPC uint64) []JITInstr {
 	return instrs
 }
 
-// containsStackOp returns true if any instruction in the block touches
-// the stack (PUSH/POP/JSR/RTS/JSR_IND). The non-MMU stack emitters
-// still address the stack as raw [memBase+R31], so a high-phys block
-// whose SP is also in high RAM would read/write past cpu.memory. Used
-// as a Phase 4 interim guard until Phase 5 wires bus-aware helpers.
+// containsStackOp returns true if any instruction in the block touches the
+// stack (PUSH/POP/JSR/RTS/JSR_IND). It guards blocks fetched from high
+// physical memory because the non-MMU fused stack fast path still indexes
+// [memBase+R31] directly and cannot address a high stack safely.
 func containsStackOp(instrs []JITInstr) bool {
 	for i := range instrs {
 		switch instrs[i].opcode {
@@ -611,15 +610,10 @@ func containsStackOp(instrs []JITInstr) bool {
 	return false
 }
 
-// needsFallback returns true if the block contains any instruction that
-// the JIT cannot safely compile. The first-instruction-only opcodes
-// (HALT/WAIT/RTI/MMU privileged) preserve legacy block-entry behavior;
-// the new full-block scan catches PLAN_MAX_RAM.md slice 4 hazards where
-// the JIT memory emitters and dynamic-JMP target masking still operate
-// in 32-bit address space — a LOAD/STORE to a high-phys backing page or
-// a JMP/JSR_IND to a high VA would either alias or wrap. Forcing those
-// blocks through the interpreter is correct until the JIT emitters
-// widen to 64-bit addressing.
+// needsFallback returns true when a block cannot safely enter the JIT. The
+// first-instruction-only opcodes (HALT/WAIT/RTI/MMU privileged) preserve the
+// legacy block-entry behaviour. The full-block scan rejects invalid FPU
+// register encodings because the interpreter must halt for them.
 func needsFallback(instrs []JITInstr) bool {
 	if len(instrs) == 0 {
 		return true
@@ -647,14 +641,9 @@ func needsFallback(instrs []JITInstr) bool {
 	//   reach the full uint32 PC; with MMU on compileBlockMMU still bails
 	//   JSR_IND per instruction.
 	//
-	// Phase4d safety boundary (mmu_ie64_phase4b_test.go):
-	//   (a) MMU-off uint32 window — direct emit, asserted parity vs
-	//       interpreter via TestPhase4d_NonMMU_AllowsMemOps_NoBlockBail
-	//       and the broader ExecuteJIT memory tests.
-	//   (b) MMU-on — compileBlockMMU sets mmuBail per memory op, asserted
-	//       by TestPhase4d_MMU_BailsAllMemOps + TestPhase4d_MMU_BailsAllAtomics.
-	//   (c) Dispatch — exec.go selects compileBlockMMU vs compileBlock
-	//       on cpu.mmuEnabled, asserted by TestPhase4d_DispatchSelectsMMUCompiler.
+	// Under the MMU, native memory emitters perform their runtime MMUEnabled
+	// check and use helper exits when required. compileBlockMMU marks only
+	// atomic operations and fused JSR/RTS leaves for interpreter bailout.
 	for i := range instrs {
 		if isIE64FPUOpcode(instrs[i].opcode) && !validIE64FPUEncoding(instrs[i].opcode, instrs[i].rd, instrs[i].rs, instrs[i].rt) {
 			return true
