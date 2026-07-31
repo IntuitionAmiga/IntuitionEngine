@@ -151,6 +151,40 @@ func TestX86JIT_X87PrefixedDirectFormUsesOpcodePCForFIP(t *testing.T) {
 	}
 }
 
+func TestX86JIT_X87BinaryEmptyStackMatchesInterpreter(t *testing.T) {
+	// FADD ST(0),ST(1) on the reset FPU must raise the interpreter's stack
+	// fault. Native SSE would otherwise silently add the backing zeroes.
+	code := []byte{0xD8, 0xC1, 0xF4}
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+
+	if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+		t.Fatalf("FSW = 0x%04X, want interpreter 0x%04X", got, want)
+	}
+	if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+		t.Fatalf("FTW = 0x%04X, want interpreter 0x%04X", got, want)
+	}
+	if got, want := jit.FPU.FIP, interp.FPU.FIP; got != want {
+		t.Fatalf("FIP = 0x%08X, want interpreter 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_X87MemoryBinaryEmptyStackMatchesInterpreter(t *testing.T) {
+	// FADD dword [0x2000] must check ST(0) before the direct SSE operation.
+	// The backing register slots are zero after reset but are architecturally
+	// empty, so the interpreter raises a stack fault.
+	code := []byte{0xD8, 0x05, 0x00, 0x20, 0x00, 0x00, 0xF4}
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+
+	if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+		t.Fatalf("FSW = 0x%04X, want interpreter 0x%04X", got, want)
+	}
+	if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+		t.Fatalf("FTW = 0x%04X, want interpreter 0x%04X", got, want)
+	}
+}
+
 func TestX86JIT_IDIVFallsBackToInterpreter(t *testing.T) {
 	cpu := runX86JITProgram(t, 0x1000,
 		0xB8, 0x9C, 0xFF, 0xFF, 0xFF, // MOV EAX,-100
