@@ -103,6 +103,54 @@ func TestX86JIT_Exec_HLT(t *testing.T) {
 	}
 }
 
+func TestX86JIT_X87DirectFormsPublishInterpreterProvenance(t *testing.T) {
+	// FLD1; FST qword [0x2000]; HLT. The final instruction is a memory form,
+	// so it proves both operation and data-pointer provenance without relying
+	// on preloaded guest memory.
+	code := []byte{
+		0xD9, 0xE8,
+		0xDD, 0x15, 0x00, 0x20, 0x00, 0x00,
+		0xF4,
+	}
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+
+	if got, want := jit.FPU.FIP, interp.FPU.FIP; got != want {
+		t.Fatalf("FIP = 0x%08X, want interpreter 0x%08X", got, want)
+	}
+	if got, want := jit.FPU.FCS, interp.FPU.FCS; got != want {
+		t.Fatalf("FCS = 0x%04X, want interpreter 0x%04X", got, want)
+	}
+	if got, want := jit.FPU.FOP, interp.FPU.FOP; got != want {
+		t.Fatalf("FOP = 0x%03X, want interpreter 0x%03X", got, want)
+	}
+	if got, want := jit.FPU.FDP, interp.FPU.FDP; got != want {
+		t.Fatalf("FDP = 0x%08X, want interpreter 0x%08X", got, want)
+	}
+	if got, want := jit.FPU.FDS, interp.FPU.FDS; got != want {
+		t.Fatalf("FDS = 0x%04X, want interpreter 0x%04X", got, want)
+	}
+	for i := uint32(0); i < 8; i++ {
+		if got, want := jit.memory[0x2000+i], interp.memory[0x2000+i]; got != want {
+			t.Fatalf("FST result byte %d = 0x%02X, want interpreter 0x%02X", i, got, want)
+		}
+	}
+}
+
+func TestX86JIT_X87PrefixedDirectFormUsesOpcodePCForFIP(t *testing.T) {
+	// REP is accepted by the decoder for this x87 form. It has no x87 repeat
+	// meaning, but it moves opcodePC away from the escape byte.
+	code := []byte{0xF3, 0xD9, 0xE8, 0xF4} // REP FLD1; HLT
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	if got, want := jit.FPU.FIP, interp.FPU.FIP; got != want {
+		t.Fatalf("FIP = 0x%08X, want interpreter opcode PC 0x%08X", got, want)
+	}
+	if got, want := jit.FPU.FOP, interp.FPU.FOP; got != want {
+		t.Fatalf("FOP = 0x%03X, want interpreter 0x%03X", got, want)
+	}
+}
+
 func TestX86JIT_IDIVFallsBackToInterpreter(t *testing.T) {
 	cpu := runX86JITProgram(t, 0x1000,
 		0xB8, 0x9C, 0xFF, 0xFF, 0xFF, // MOV EAX,-100

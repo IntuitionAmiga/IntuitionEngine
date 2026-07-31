@@ -257,6 +257,38 @@ func TestX86JIT_MOV_EbGb_RegisterDoesNotClobberIOBitmapRegister(t *testing.T) {
 	}
 }
 
+func TestX86JIT_X87FDSStoreUsesRAXBase(t *testing.T) {
+	r := newX86JITTestRig(t)
+	startPC := uint32(0x1000)
+	// FLD1; FST qword [0x2000]; HLT.
+	copy(r.cpu.memory[startPC:], []byte{0xD9, 0xE8, 0xDD, 0x15, 0x00, 0x20, 0x00, 0x00, 0xF4})
+	instrs := x86ScanBlock(r.cpu.memory, startPC)
+	block, err := x86CompileBlock(instrs[:2], startPC, r.execMem, r.cpu.memory)
+	if err != nil {
+		t.Fatalf("x86CompileBlock: %v", err)
+	}
+	code, ok := lookupExecBytes(block.execAddr, block.execSize)
+	if !ok {
+		t.Fatal("compiled x86 block bytes not available")
+	}
+	// 66 44 89 58 54 is MOV word [RAX+84], R11W. REX.B must stay clear:
+	// 66 45 89 58 54 would target R8 instead.
+	if !bytes.Contains(code, []byte{0x66, 0x44, 0x89, 0x58, byte(fpuOffFDS)}) {
+		t.Fatalf("FDS store is not encoded with RAX base: % X", code)
+	}
+	if bytes.Contains(code, []byte{0x66, 0x45, 0x89, 0x58, byte(fpuOffFDS)}) {
+		t.Fatalf("FDS store incorrectly uses R8 base: % X", code)
+	}
+	if !bytes.Contains(code, []byte{0x45, 0x0F, 0xB7, 0x52, byte(x86SegCS * 2)}) {
+		t.Fatalf("FCS load does not use R10 as its base: % X", code)
+	}
+	// FST reads ST(0) through an R8 SIB index. The REX.X bit is essential:
+	// without it the host decodes RAX as the index and dereferences FPU*2.
+	if !bytes.Contains(code, []byte{0xF2, 0x42, 0x0F, 0x10, 0x04, 0x00}) {
+		t.Fatalf("FST ST(0) load omits REX.X for its R8 index: % X", code)
+	}
+}
+
 func TestX86JIT_Region_InternalCallPushesReturnAddress(t *testing.T) {
 	r := newX86JITTestRig(t)
 	entryPC := uint32(0x1000)

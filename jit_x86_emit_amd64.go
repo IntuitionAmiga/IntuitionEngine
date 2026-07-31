@@ -3359,6 +3359,11 @@ const (
 	fpuOffFCW  = 64 // FCW uint16
 	fpuOffFSW  = 66 // FSW uint16
 	fpuOffFTW  = 68 // FTW uint16
+	fpuOffFIP  = 72 // FIP uint32
+	fpuOffFCS  = 76 // FCS uint16
+	fpuOffFDP  = 80 // FDP uint32
+	fpuOffFDS  = 84 // FDS uint16
+	fpuOffFOP  = 86 // FOP uint16
 )
 
 // x86EmitFPU dispatches x87 FPU instructions (D8-DF).
@@ -3371,9 +3376,19 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 	mod := modrm >> 6
 	regOp := (modrm >> 3) & 7
 	rm := modrm & 7
+	// x86EmitComputeEA only implements 32-bit addressing. Never let an x87
+	// address-size override reach it: the interpreter owns that form until a
+	// decoder-correct 16-bit emitter exists.
+	if ji.prefixes&x86PrefAddrSize != 0 {
+		return false
+	}
+	if !x86FPUFormSupported(ji) {
+		return false
+	}
 
 	// Load FPU pointer
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureOp(cb, ji, memory)
 
 	switch escape {
 	case 0xD8: // FADD/FMUL/FCOM/FCOMP/FSUB/FSUBR/FDIV/FDIVR ST(0), src
@@ -3507,6 +3522,94 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 	}
 
 	return false
+}
+
+// x86FPUFormSupported is the admission check for direct x87 lowering. It
+// deliberately runs before x86EmitFPUCaptureOp: an instruction that is about
+// to fall back must not leave provenance for an operation it did not retire.
+func x86FPUFormSupported(ji *X86JITInstr) bool {
+	if !ji.hasModRM {
+		return false
+	}
+	modrm, mod := ji.modrm, ji.modrm>>6
+	regOp := (modrm >> 3) & 7
+	switch byte(ji.opcode) {
+	case 0xD8:
+		return true
+	case 0xDA:
+		return mod != 3 && (regOp == 0 || regOp == 1 || regOp >= 4)
+	case 0xDB:
+		return mod != 3 && (regOp == 0 || regOp == 3)
+	case 0xDC:
+		return regOp == 0 || regOp == 1 || regOp >= 4
+	case 0xDE:
+		return mod == 3 && (regOp == 0 || regOp == 1 || regOp >= 4)
+	case 0xDF:
+		return modrm == 0xE0 || (mod != 3 && regOp == 0)
+	case 0xD9:
+		if mod == 3 {
+			return (modrm >= 0xC0 && modrm <= 0xCF) || modrm == 0xE0 ||
+				modrm == 0xE1 || modrm == 0xE4 || modrm == 0xE8 || modrm == 0xEE
+		}
+		return regOp == 0 || regOp == 2 || regOp == 3 || regOp == 5 || regOp == 7
+	case 0xDD:
+		if mod == 3 {
+			return (modrm >= 0xD0 && modrm <= 0xDF)
+		}
+		return regOp == 0 || regOp == 2 || regOp == 3
+	}
+	return false
+}
+
+// x86EmitFPUCaptureOp mirrors FPU_X87.captureOp for direct x87 lowering.
+// RAX must contain FPUPtr. Direct native operations do not pass through
+// CPU_X86.Step, so their provenance must be published before changing x87
+// state. Memory forms additionally call x86EmitFPUCaptureMem once their
+// effective address has been resolved.
+func x86EmitFPUCaptureOp(cb *CodeBuffer, ji *X86JITInstr, memory []byte) {
+	// opcodePC includes prefixes. captureOp runs after the interpreter has
+	// fetched the escape and ModR/M bytes, so its EIP-2 is the escape opcode.
+	// x86FindModRMPC is decoder-owned and therefore keeps this calculation
+	// correct for any accepted prefix sequence.
+	fip := x86FindModRMPC(ji, memory) - 1
+	amd64MOV_mem_imm32(cb, amd64RAX, fpuOffFIP, fip)
+
+	// FCS is the current CS in jitSegRegs[CS]. Segment-changing instructions
+	// already deopt, so loading the live JIT copy preserves interpreter order.
+	amd64MOV_reg_mem(cb, amd64R10, x86AMD64RegCtx, int32(x86CtxOffSegRegsPtr))
+	cb.EmitBytes(0x45, 0x0F, 0xB7, 0x52, byte(x86SegCS*2)) // MOVZX R10D,[R10+CS*2]
+	cb.EmitBytes(0x66, 0x44, 0x89, 0x50, byte(fpuOffFCS))  // MOV [RAX+FCS],R10W
+
+	// FOP is the project's compact escape/ModR/M representation, not the
+	// host instruction encoding.
+	fop := (uint16(byte(ji.opcode)&0x7) << 8) | uint16(ji.modrm)
+	cb.EmitBytes(0x66, 0xC7, 0x40, byte(fpuOffFOP), byte(fop), byte(fop>>8))
+}
+
+// x86EmitFPUCaptureMem mirrors FPU_X87.captureMemAccess. addrReg holds the
+// already checked flat effective address and RAX must contain FPUPtr.
+func x86EmitFPUCaptureMem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, addrReg byte) {
+	amd64MOV_mem_reg32(cb, amd64RAX, fpuOffFDP, addrReg)
+
+	seg := x86SegDS
+	mod, rm := ji.modrm>>6, ji.modrm&7
+	// [ESP]/[EBP] and SIB forms based on ESP/EBP default to SS. A disp32-only
+	// form remains DS. Segment overrides are rejected before direct emission.
+	if rm == 4 {
+		modrmPC := x86FindModRMPC(ji, memory)
+		if modrmPC+1 < uint32(len(memory)) {
+			base := memory[modrmPC+1] & 7
+			if !(base == 5 && mod == 0) && (base == 4 || base == 5) {
+				seg = x86SegSS
+			}
+		}
+	} else if rm == 5 && mod != 0 {
+		seg = x86SegSS
+	}
+	// Keep addrReg live for the actual guest-memory access that follows.
+	amd64MOV_reg_mem(cb, amd64R11, x86AMD64RegCtx, int32(x86CtxOffSegRegsPtr))
+	cb.EmitBytes(0x45, 0x0F, 0xB7, 0x5B, byte(seg*2))     // MOVZX R11D,[R11+seg*2]
+	cb.EmitBytes(0x66, 0x44, 0x89, 0x58, byte(fpuOffFDS)) // MOV [RAX+FDS],R11W
 }
 
 // x86EmitFPUReadTOP emits code to read the FPU TOP field into the given register.
@@ -3679,6 +3782,8 @@ func x86EmitFPUArithMem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 
 	// RAX = FPUPtr (reload since IOCheck may have clobbered)
@@ -3728,6 +3833,8 @@ func x86EmitFSTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx 
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 
@@ -3774,6 +3881,8 @@ func x86EmitFILD_mem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx in
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 
@@ -3810,6 +3919,8 @@ func x86EmitFISTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 
@@ -3872,6 +3983,8 @@ func x86EmitFPUCompare(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx 
 		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 			return false
 		}
+		amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+		x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 		amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 		cb.EmitBytes(0xF3)
@@ -3963,6 +4076,8 @@ func x86EmitFLDCW(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) 
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 
@@ -3980,6 +4095,8 @@ func x86EmitFNSTCW(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int)
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 
@@ -4194,6 +4311,8 @@ func x86EmitFLD_mem64(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 
 	// RAX = FPUPtr (reload since IOCheck may have clobbered)
@@ -4228,6 +4347,8 @@ func x86EmitFLD_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
@@ -4260,6 +4381,8 @@ func x86EmitFSTP_mem64(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx 
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
@@ -4273,7 +4396,7 @@ func x86EmitFSTP_mem64(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx 
 	// Load ST(0): MOVSD XMM0, [RAX + TOP*8]
 	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
 	amd64SHL_imm32(cb, amd64R8, 3)
-	cb.EmitBytes(0xF2, 0x0F, 0x10, modRM(0, 0, 4), sibByte(0, amd64R8, amd64RAX))
+	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
 
 	// Store to [memBase + R10]: MOVSD [RSI+R10], XMM0
 	cb.EmitBytes(0xF2)
@@ -4294,6 +4417,8 @@ func x86EmitFST_mem64(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
@@ -4305,7 +4430,7 @@ func x86EmitFST_mem64(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 
 	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
 	amd64SHL_imm32(cb, amd64R8, 3)
-	cb.EmitBytes(0xF2, 0x0F, 0x10, modRM(0, 0, 4), sibByte(0, amd64R8, amd64RAX))
+	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
 
 	cb.EmitBytes(0xF2)
 	emitREX_SIB(cb, false, 0, amd64R10, x86AMD64RegMemBase)

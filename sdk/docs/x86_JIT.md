@@ -419,11 +419,11 @@ The x87 FPU is JIT-compiled using SSE2 scalar double instructions on the x86-64 
 
 ### FPU State Management
 
-TOP is read from FSW bits 13:11, updated via `x86EmitUpdateFSWTop()`. Physical register index = `(TOP + i) & 7`. FPU struct field offsets: regs at 0, FCW at 64, FSW at 66, FTW at 68.
+TOP is read from FSW bits 13:11, updated via `x86EmitUpdateFSWTop()`. Physical register index = `(TOP + i) & 7`. FPU struct field offsets: regs at 0, FCW at 64, FSW at 66, FTW at 68, FIP at 72, FCS at 76, FDP at 80, FDS at 84 and FOP at 86. Each directly emitted form publishes FIP, FCS and FOP before changing x87 state. Memory forms additionally publish their resolved FDP and default DS or SS selector, matching the interpreter's environment-save state.
 
 ### Interpreter Fallback
 
-All transcendentals (FSIN, FCOS, etc.), integer conversion (FILD/FIST), comparisons (FCOM/FUCOM), control (FINIT/FLDCW/FSTCW/FSTSW), constants (FLD1/FLDPI), BCD, FCMOV, and FST/FSTP mem32 (requires PE exception flag) fall back to the interpreter.
+All transcendentals (FSIN, FCOS, etc.), BCD, FCMOV and unsupported environment forms fall back to the interpreter. The current direct set also includes the implemented FILD/FISTP, D8 comparison, FLDCW/FNSTCW, FLD1/FLDZ and FST/FSTP mem32 forms. Any x87 address-size or segment-override form stays on the interpreter path until it has a decoder-correct native emitter.
 
 ---
 
@@ -456,7 +456,7 @@ Both use LAHF/SAHF to preserve CMP flags across the ECX decrement.
 | Far control flow | 0x9A (CALL far), 0xEA (JMP far), 0xCB/0xCA (RETF) | Segment change + complex state |
 | Interrupts | 0xCC/0xCD/0xCE (INT), 0xCF (IRET) | Exception handling |
 | I/O ports | 0xE4-0xE7 (IN/OUT imm), 0xEC-0xEF (IN/OUT DX), 0x6C-0x6F (INS/OUTS) | Hardware I/O |
-| x87 Tier 2 | Transcendentals, FILD/FIST, FCOM, control, BCD, FST mem32 | Complex FPU state |
+| x87 unsupported forms | Transcendentals, BCD, FCMOV, unsupported environment forms, address-size and segment-override forms | Interpreter owns the exact state transition |
 | Flag manipulation | CLC/STC/CLD/STD/CLI/STI/CMC | Direct flag register writes (deferred) |
 | BCD arithmetic | DAA/DAS/AAA/AAS/AAM/AAD | Complex flag semantics |
 | Complex stack control | indirect CALL/JMP (0xFF /2../5), RET (0xC3/0xC2), LEAVE (0xC9), PUSH imm (0x68/0x6A), PUSHF/POPF (0x9C/0x9D) | Control-flow or flag semantics; RET address cache is infrastructure-only |
