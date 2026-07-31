@@ -31,6 +31,39 @@ type x86JITTestRig struct {
 	codeBM  []byte
 }
 
+// markWrittenX87SlotsOccupied makes the raw x87 backing values configured by
+// focused emitter tests architectural stack values as well. FPU.Reset marks
+// every slot empty; writing regs directly does not change FTW. The production
+// interpreter correctly faults on those empty slots, so native-emitter tests
+// that supply operands through regs must publish their occupancy explicitly.
+//
+// Most older focused tests predate tag-aware native lowering and initialise
+// only non-zero operands. Keep that setup concise while leaving deliberately
+// empty-stack tests empty: a non-zero backing value declares that the focused
+// test is configuring stack state, including zero-valued destination slots.
+func (r *x86JITTestRig) markWrittenX87SlotsOccupied() {
+	f := r.cpu.FPU
+	if f == nil {
+		return
+	}
+	nonZero := false
+	for _, value := range f.regs {
+		if value != 0 {
+			nonZero = true
+			break
+		}
+	}
+	if nonZero {
+		// Several pre-existing tests explicitly write a zero destination slot
+		// as well as their non-zero source. Their purpose is the native data
+		// movement, not an empty-slot fault, so publish the configured register
+		// file as a full architectural stack.
+		for i := range f.regs {
+			f.setTag(i, x87TagValid)
+		}
+	}
+}
+
 func newX86JITTestRig(t *testing.T) *x86JITTestRig {
 	bus := NewMachineBus()
 	adapter := NewX86BusAdapter(bus)
@@ -67,6 +100,7 @@ func enableNativeStackOpsForTest(t *testing.T) {
 // scans, compiles, and executes via JIT.
 func (r *x86JITTestRig) compileAndRun(t *testing.T, startPC uint32, code ...byte) {
 	t.Helper()
+	r.markWrittenX87SlotsOccupied()
 
 	// Write code to memory
 	pc := startPC

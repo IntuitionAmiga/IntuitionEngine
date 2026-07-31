@@ -3468,22 +3468,22 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 	case 0xD9:
 		if mod == 3 {
 			if modrm >= 0xC0 && modrm <= 0xC7 { // FLD ST(i)
-				return x86EmitFLD_STi(cb, rm)
+				return x86EmitFLD_STi(cb, ji, rm, instrIdx)
 			}
 			if modrm >= 0xC8 && modrm <= 0xCF { // FXCH ST(i)
-				return x86EmitFXCH(cb, rm)
+				return x86EmitFXCH(cb, ji, rm, instrIdx)
 			}
 			switch modrm {
 			case 0xE0: // FCHS
-				return x86EmitFCHS(cb)
+				return x86EmitFCHS(cb, ji, instrIdx)
 			case 0xE1: // FABS
-				return x86EmitFABS(cb)
+				return x86EmitFABS(cb, ji, instrIdx)
 			case 0xE4: // FTST
 				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 2, 0, false)
 			case 0xE8: // FLD1
-				return x86EmitFLDConst(cb, 0x3FF0000000000000) // 1.0
+				return x86EmitFLDConst(cb, ji, instrIdx, 0x3FF0000000000000) // 1.0
 			case 0xEE: // FLDZ
-				return x86EmitFLDConst(cb, 0)
+				return x86EmitFLDConst(cb, ji, instrIdx, 0)
 			}
 		} else {
 			switch regOp {
@@ -3503,10 +3503,7 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 	case 0xDD:
 		if mod == 3 {
 			if modrm >= 0xD8 && modrm <= 0xDF { // FSTP ST(i)
-				return x86EmitFSTP_STi(cb, rm)
-			}
-			if modrm >= 0xD0 && modrm <= 0xD7 { // FST ST(i)
-				return x86EmitFST_STi(cb, rm)
+				return x86EmitFSTP_STi(cb, ji, rm, instrIdx)
 			}
 		} else {
 			if regOp == 0 { // FLD mem64 (double-precision)
@@ -3554,7 +3551,10 @@ func x86FPUFormSupported(ji *X86JITInstr) bool {
 		return regOp == 0 || regOp == 2 || regOp == 3 || regOp == 5 || regOp == 7
 	case 0xDD:
 		if mod == 3 {
-			return (modrm >= 0xD0 && modrm <= 0xDF)
+			// The interpreter implements only /3 (DD D8-DF) in this
+			// register range. DD D0-D7 is the interpreter's /2 no-op
+			// family, not FST ST(i), so it must not acquire a native store.
+			return modrm >= 0xD8 && modrm <= 0xDF
 		}
 		return regOp == 0 || regOp == 2 || regOp == 3
 	}
@@ -3658,6 +3658,32 @@ func x86EmitFPUCheckTag(cb *CodeBuffer, physRegReg byte, badTag uint16, retPC ui
 
 	skipLabel := cb.Len()
 	patchRel32(cb, skipOff, skipLabel)
+}
+
+// x86EmitFPUCheckTagNot bails when the selected physical stack slot does not
+// carry wantTag. It is used for pushes, where the interpreter raises a stack
+// overflow before changing TOP when the next slot is occupied.
+func x86EmitFPUCheckTagNot(cb *CodeBuffer, physRegReg byte, wantTag uint16, retPC uint32, instrIdx int) {
+	cb.EmitBytes(0x51) // PUSH RCX
+	amd64MOV_reg_reg32(cb, amd64RCX, physRegReg)
+	emitREX(cb, false, amd64R11, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R11, amd64RAX), byte(fpuOffFTW))
+	amd64SHL_imm32(cb, amd64RCX, 1)
+	amd64SHR_CL32(cb, amd64R11)
+	cb.EmitBytes(0x59) // POP RCX
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, 3)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64R11, int32(wantTag))
+	bailOff := amd64Jcc_rel32(cb, amd64CondNE)
+	skipOff := amd64JMP_rel32(cb)
+
+	bailLabel := cb.Len()
+	patchRel32(cb, bailOff, bailLabel)
+	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
+	x86EmitRetPC(cb, retPC, uint32(instrIdx))
+	x86EmitLightweightEpilogue(cb)
+	x86EmitFullEpilogueEnd(cb)
+
+	patchRel32(cb, skipOff, cb.Len())
 }
 
 // x86EmitFPUBinaryOp emits FADD/FMUL/FSUB/FDIV ST(0), ST(i) using SSE2.
@@ -3872,10 +3898,11 @@ func x86EmitFSTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx 
 }
 
 // x86EmitFLDConst pushes a compile-time constant (FLD1/FLDZ).
-func x86EmitFLDConst(cb *CodeBuffer, bits uint64) bool {
+func x86EmitFLDConst(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, bits uint64) bool {
 	x86EmitFPUReadTOP(cb, amd64RCX)
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitFPUCheckTagNot(cb, amd64RCX, x87TagEmpty, ji.opcodePC, instrIdx)
 	x86EmitUpdateFSWTop(cb, amd64RCX)
 	x86EmitFTWMark(cb, false) // occupy new ST0
 	amd64SHL_imm32(cb, amd64RCX, 3)
@@ -3916,6 +3943,7 @@ func x86EmitFILD_mem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx in
 	x86EmitFPUReadTOP(cb, amd64RCX)
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitFPUCheckTagNot(cb, amd64RCX, x87TagEmpty, ji.opcodePC, instrIdx)
 	x86EmitUpdateFSWTop(cb, amd64RCX)
 	x86EmitFTWMark(cb, false) // occupy new ST0
 	amd64SHL_imm32(cb, amd64RCX, 3)
@@ -4146,7 +4174,7 @@ func x86FPUArithForm(regOp byte) (sseOp byte, reversed, ok bool) {
 }
 
 // x86EmitFLD_STi emits FLD ST(i) -- push ST(i) onto stack.
-func x86EmitFLD_STi(cb *CodeBuffer, stIdx byte) bool {
+func x86EmitFLD_STi(cb *CodeBuffer, ji *X86JITInstr, stIdx byte, instrIdx int) bool {
 	// RAX = FPUPtr (already loaded)
 	// Read TOP
 	emitREX(cb, false, amd64RCX, amd64RAX)
@@ -4158,6 +4186,7 @@ func x86EmitFLD_STi(cb *CodeBuffer, stIdx byte) bool {
 	amd64MOV_reg_reg32(cb, amd64RDX, amd64RCX)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RDX, int32(stIdx))
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 7)
+	x86EmitFPUCheckTag(cb, amd64RDX, x87TagEmpty, ji.opcodePC, instrIdx)
 
 	// Load ST(i) value: MOVSD XMM0, [RAX + RDX*8]
 	amd64SHL_imm32(cb, amd64RDX, 3)
@@ -4166,6 +4195,7 @@ func x86EmitFLD_STi(cb *CodeBuffer, stIdx byte) bool {
 	// newTOP = (TOP - 1) & 7
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1) // SUB ECX, 1
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7) // AND ECX, 7
+	x86EmitFPUCheckTagNot(cb, amd64RCX, x87TagEmpty, ji.opcodePC, instrIdx)
 
 	// Update FSW with new TOP
 	x86EmitUpdateFSWTop(cb, amd64RCX)
@@ -4179,12 +4209,13 @@ func x86EmitFLD_STi(cb *CodeBuffer, stIdx byte) bool {
 }
 
 // x86EmitFSTP_STi emits FSTP ST(i) -- copy ST(0) to ST(i), then pop.
-func x86EmitFSTP_STi(cb *CodeBuffer, stIdx byte) bool {
+func x86EmitFSTP_STi(cb *CodeBuffer, ji *X86JITInstr, stIdx byte, instrIdx int) bool {
 	// RAX = FPUPtr
 	emitREX(cb, false, amd64RCX, amd64RAX)
 	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64RCX, amd64RAX), byte(fpuOffFSW))
 	amd64SHR_imm32(cb, amd64RCX, 11)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitFPUCheckTag(cb, amd64RCX, x87TagEmpty, ji.opcodePC, instrIdx)
 
 	// Load ST(0): MOVSD XMM0, [RAX + TOP*8]
 	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
@@ -4195,6 +4226,7 @@ func x86EmitFSTP_STi(cb *CodeBuffer, stIdx byte) bool {
 	amd64MOV_reg_reg32(cb, amd64RDX, amd64RCX)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RDX, int32(stIdx))
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 7)
+	x86EmitFPUCheckTag(cb, amd64RDX, x87TagEmpty, ji.opcodePC, instrIdx)
 	amd64SHL_imm32(cb, amd64RDX, 3)
 
 	// Store to ST(i): mark the destination occupied (it may have been
@@ -4215,34 +4247,8 @@ func x86EmitFSTP_STi(cb *CodeBuffer, stIdx byte) bool {
 	return true
 }
 
-// x86EmitFST_STi emits FST ST(i) -- copy ST(0) to ST(i), no pop.
-func x86EmitFST_STi(cb *CodeBuffer, stIdx byte) bool {
-	emitREX(cb, false, amd64RCX, amd64RAX)
-	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64RCX, amd64RAX), byte(fpuOffFSW))
-	amd64SHR_imm32(cb, amd64RCX, 11)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
-
-	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
-	amd64SHL_imm32(cb, amd64R8, 3)
-	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
-
-	amd64MOV_reg_reg32(cb, amd64RDX, amd64RCX)
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64RDX, int32(stIdx))
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 7)
-	amd64SHL_imm32(cb, amd64RDX, 3)
-	emitMOVSD_SIB(cb, 0x11, 0, amd64RDX, amd64RAX)
-
-	// Mark the destination occupied (it may have been empty; the
-	// boundary renormalize only reclassifies occupied regs).
-	amd64MOV_reg_reg32(cb, amd64RCX, amd64RDX) // ECX = physSTi*8
-	amd64SHR_imm32(cb, amd64RCX, 3)            // ECX = physSTi
-	x86EmitFTWMark(cb, false)
-
-	return true
-}
-
 // x86EmitFXCH emits FXCH ST(i) -- swap ST(0) and ST(i).
-func x86EmitFXCH(cb *CodeBuffer, stIdx byte) bool {
+func x86EmitFXCH(cb *CodeBuffer, ji *X86JITInstr, stIdx byte, instrIdx int) bool {
 	// RAX = FPUPtr
 	emitREX(cb, false, amd64RCX, amd64RAX)
 	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64RCX, amd64RAX), byte(fpuOffFSW))
@@ -4251,12 +4257,14 @@ func x86EmitFXCH(cb *CodeBuffer, stIdx byte) bool {
 
 	// physST0 offset
 	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
+	x86EmitFPUCheckTag(cb, amd64R8, x87TagEmpty, ji.opcodePC, instrIdx)
 	amd64SHL_imm32(cb, amd64R8, 3)
 
 	// physSTi offset
 	amd64MOV_reg_reg32(cb, amd64RDX, amd64RCX)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RDX, int32(stIdx))
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 7)
+	x86EmitFPUCheckTag(cb, amd64RDX, x87TagEmpty, ji.opcodePC, instrIdx)
 	amd64SHL_imm32(cb, amd64RDX, 3)
 
 	// XMM0 = ST(0), XMM1 = ST(i)
@@ -4271,11 +4279,12 @@ func x86EmitFXCH(cb *CodeBuffer, stIdx byte) bool {
 }
 
 // x86EmitFCHS emits FCHS -- negate ST(0).
-func x86EmitFCHS(cb *CodeBuffer) bool {
+func x86EmitFCHS(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	emitREX(cb, false, amd64RCX, amd64RAX)
 	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64RCX, amd64RAX), byte(fpuOffFSW))
 	amd64SHR_imm32(cb, amd64RCX, 11)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitFPUCheckTag(cb, amd64RCX, x87TagEmpty, ji.opcodePC, instrIdx)
 
 	amd64SHL_imm32(cb, amd64RCX, 3)
 	// Load ST(0) into XMM0
@@ -4299,11 +4308,12 @@ func x86EmitFCHS(cb *CodeBuffer) bool {
 }
 
 // x86EmitFABS emits FABS -- absolute value of ST(0).
-func x86EmitFABS(cb *CodeBuffer) bool {
+func x86EmitFABS(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	emitREX(cb, false, amd64RCX, amd64RAX)
 	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64RCX, amd64RAX), byte(fpuOffFSW))
 	amd64SHR_imm32(cb, amd64RCX, 11)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitFPUCheckTag(cb, amd64RCX, x87TagEmpty, ji.opcodePC, instrIdx)
 
 	amd64SHL_imm32(cb, amd64RCX, 3)
 	cb.EmitBytes(0xF2, 0x0F, 0x10, modRM(0, 0, 4), sibByte(0, amd64RCX, amd64RAX))
@@ -4346,6 +4356,7 @@ func x86EmitFLD_mem64(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1) // TOP - 1
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7) // & 7
+	x86EmitFPUCheckTagNot(cb, amd64RCX, x87TagEmpty, ji.opcodePC, instrIdx)
 
 	x86EmitUpdateFSWTop(cb, amd64RCX)
 	x86EmitFTWMark(cb, false) // occupy new ST0
@@ -4383,6 +4394,7 @@ func x86EmitFLD_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitFPUCheckTagNot(cb, amd64RCX, x87TagEmpty, ji.opcodePC, instrIdx)
 	x86EmitUpdateFSWTop(cb, amd64RCX)
 	x86EmitFTWMark(cb, false) // occupy new ST0
 	amd64SHL_imm32(cb, amd64RCX, 3)

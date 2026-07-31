@@ -83,21 +83,15 @@ func TestX86JIT_FPU_FSTP_STi_NonZeroTop(t *testing.T) {
 	}
 }
 
-func TestX86JIT_FPU_FST_STi_NonZeroTop(t *testing.T) {
-	r := newX86JITTestRig(t)
-	r.cpu.FPU.Reset()
-	r.cpu.FPU.setTop(5)
-	r.cpu.FPU.regs[5] = 42.0 // ST(0)
-	r.cpu.FPU.regs[6] = 0.0  // ST(1)
-
-	// DD D1: FST ST(1)
-	r.compileAndRun(t, 0x1000, 0xDD, 0xD1)
-
-	if r.cpu.FPU.regs[6] != 42.0 {
-		t.Errorf("ST(1) after FST = %f, want 42.0", r.cpu.FPU.regs[6])
+func TestX86JIT_FPU_DDReg2IsNotNativeFST(t *testing.T) {
+	// This project's interpreter deliberately leaves DD /2 register forms as
+	// no-ops. A native FST ST(i) here would create a JIT-only guest ISA.
+	instrs := x86ScanBlock([]byte{0xDD, 0xD1, 0xF4}, 0)
+	if len(instrs) == 0 {
+		t.Fatal("x86ScanBlock returned no instruction")
 	}
-	if r.cpu.FPU.regs[5] != 42.0 {
-		t.Errorf("ST(0) after FST = %f, want 42.0 (no pop)", r.cpu.FPU.regs[5])
+	if x86FPUFormSupported(&instrs[0]) {
+		t.Fatal("DD D1 must remain interpreter-only: the interpreter has no FST ST(i) form")
 	}
 }
 

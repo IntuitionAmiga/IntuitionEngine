@@ -185,6 +185,55 @@ func TestX86JIT_X87MemoryBinaryEmptyStackMatchesInterpreter(t *testing.T) {
 	}
 }
 
+func TestX86JIT_X87DirectStackFaultsMatchInterpreter(t *testing.T) {
+	// These forms have native backing-slot operations. Their architectural
+	// operands are nevertheless governed by FTW, so each must resume through
+	// the interpreter before changing state when a slot is empty.
+	tests := []struct {
+		name string
+		code []byte
+	}{
+		{name: "FCHS", code: []byte{0xD9, 0xE0, 0xF4}},
+		{name: "FLD_ST0", code: []byte{0xD9, 0xC0, 0xF4}},
+		{name: "FXCH_ST1", code: []byte{0xD9, 0xE8, 0xD9, 0xC9, 0xF4}},
+		{name: "FSTP_ST1", code: []byte{0xD9, 0xE8, 0xDD, 0xD9, 0xF4}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jit := runX86JITProgram(t, 0x1000, tt.code...)
+			interp := runX86InterpreterProgram(t, 0x1000, tt.code...)
+			if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+				t.Fatalf("FSW = 0x%04X, want interpreter 0x%04X", got, want)
+			}
+			if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+				t.Fatalf("FTW = 0x%04X, want interpreter 0x%04X", got, want)
+			}
+			if got, want := jit.FPU.FIP, interp.FPU.FIP; got != want {
+				t.Fatalf("FIP = 0x%08X, want interpreter 0x%08X", got, want)
+			}
+		})
+	}
+}
+
+func TestX86JIT_X87DirectPushOverflowMatchesInterpreter(t *testing.T) {
+	// The ninth FLD1 has no empty destination slot. Direct lowering must not
+	// wrap TOP and overwrite the first value; the interpreter raises IE|SF and
+	// sets C1 for the stack overflow instead.
+	code := make([]byte, 0, 19)
+	for range 9 {
+		code = append(code, 0xD9, 0xE8)
+	}
+	code = append(code, 0xF4)
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+		t.Fatalf("FSW = 0x%04X, want interpreter 0x%04X", got, want)
+	}
+	if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+		t.Fatalf("FTW = 0x%04X, want interpreter 0x%04X", got, want)
+	}
+}
+
 func TestX86JIT_IDIVFallsBackToInterpreter(t *testing.T) {
 	cpu := runX86JITProgram(t, 0x1000,
 		0xB8, 0x9C, 0xFF, 0xFF, 0xFF, // MOV EAX,-100
