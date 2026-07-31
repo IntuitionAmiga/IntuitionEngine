@@ -13,6 +13,14 @@ const (
 	ie64MicroTLBVPNMask     uint64 = PTE_PPN_MASK
 )
 
+func ie64MicroTLBSet(vaddr uint64) uint64 {
+	return (vaddr >> MMU_PAGE_SHIFT) & uint64(jitCtxMicroTLBEntries/2-1)
+}
+
+func ie64MicroTLBIndex(set, way uint64) uint64 {
+	return way*(jitCtxMicroTLBEntries/2) + set
+}
+
 func ie64MicroTLBModeBits(cpu *CPU64) uint64 {
 	var mode uint64
 	if cpu != nil && cpu.supervisorMode {

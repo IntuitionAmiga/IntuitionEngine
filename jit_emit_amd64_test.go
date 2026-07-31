@@ -1557,13 +1557,32 @@ func TestAMD64_DTrans_UsesHelperExit(t *testing.T) {
 	}
 }
 
-func TestAMD64_DTrans_ExtendedOpsUseHelperExit(t *testing.T) {
+func TestAMD64_DTrans_ExtendedOpsRunNatively(t *testing.T) {
 	for _, op := range []byte{OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS} {
 		t.Run(string(rune(op)), func(t *testing.T) {
 			r := newJITTestRig(t)
-			r.compileAndRun(t, ie64Instr(op, 6, 0, 0, 2, 4, 0))
-			if r.ctx.NeedHelper != HELPER_DTRANS || r.ctx.HelperSize != uint32(op) {
-				t.Fatalf("helper = (%d, %#x), want DTRANS/%#x", r.ctx.NeedHelper, r.ctx.HelperSize, op)
+			r.cpu.FPU.setDPair(2, 4)
+			if op == OP_DABS {
+				r.cpu.FPU.setDPair(2, -4)
+			}
+			if op == OP_DSQRT {
+				r.cpu.FPU.setDPair(2, 9)
+			}
+			if op == OP_FCVTSD {
+				r.cpu.FPU.FPRegs[2] = math.Float32bits(1.25)
+			}
+			instr := ie64Instr(op, 6, 0, 0, 2, 0, 0)
+			ref := NewCPU64(NewMachineBus())
+			ref.FPU.FPRegs, ref.FPU.FPSR = r.cpu.FPU.FPRegs, r.cpu.FPU.FPSR
+			copy(ref.memory[PROG_START:], instr)
+			ref.PC = PROG_START
+			ref.StepOne()
+			r.compileAndRun(t, instr)
+			if r.ctx.NeedHelper != HELPER_NONE {
+				t.Fatalf("NeedHelper = %d, want native execution", r.ctx.NeedHelper)
+			}
+			if r.cpu.FPU.FPRegs != ref.FPU.FPRegs || r.cpu.FPU.FPSR != ref.FPU.FPSR {
+				t.Fatalf("native FP state regs=%#v FPSR=%#x, interpreter regs=%#v FPSR=%#x", r.cpu.FPU.FPRegs, r.cpu.FPU.FPSR, ref.FPU.FPRegs, ref.FPU.FPSR)
 			}
 		})
 	}

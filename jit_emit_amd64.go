@@ -2162,7 +2162,17 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 		emitDCVTIF_AMD64(cb, ji, instrPC, br, writtenSoFar)
 	case OP_DCVTFI:
 		emitDCVTFI_AMD64(cb, ji, instrPC, br, writtenSoFar)
-	case OP_DMOD, OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS:
+	case OP_DABS:
+		emitDAbsNegAMD64(cb, ji, instrPC, br, writtenSoFar, false)
+	case OP_DNEG:
+		emitDAbsNegAMD64(cb, ji, instrPC, br, writtenSoFar, true)
+	case OP_DSQRT:
+		emitDSQRT_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_FCVTSD:
+		emitFCVTSD_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_FCVTDS:
+		emitFCVTDS_AMD64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DMOD:
 		emitFPTransHelperExitAMD64(cb, ji, instrPC, HELPER_DTRANS, br, writtenSoFar)
 
 	// MMU/privilege opcodes: always bail to interpreter
@@ -5394,6 +5404,91 @@ func emitDMOV_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	}
 	emitLoadDPairBitsAMD64(cb, amd64RAX, ji.rs)
 	emitStoreDPairBitsAMD64(cb, amd64RAX, ji.rd)
+}
+
+// emitDAbsNegAMD64 implements the two bit-exact unary operations directly.
+// Their architectural definitions operate on the binary64 sign bit, including
+// signed zero and NaN payloads, so using integer masks avoids host FP NaN
+// canonicalisation and cannot create an exception flag.
+func emitDAbsNegAMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32, negate bool) {
+	if !isValidDPairReg(ji.rd) || !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	emitLoadDPairBitsAMD64(cb, amd64RAX, ji.rs)
+	if negate {
+		emitLoadImm64AMD64(cb, amd64RCX, uint64(1)<<63)
+		amd64ALU_reg_reg(cb, 0x31, amd64RAX, amd64RCX) // XOR RAX, RCX
+	} else {
+		emitLoadImm64AMD64(cb, amd64RCX, ^(uint64(1) << 63))
+		amd64ALU_reg_reg(cb, 0x21, amd64RAX, amd64RCX) // AND RAX, RCX
+	}
+	emitStoreDPairBitsAMD64(cb, amd64RAX, ji.rd)
+	if !ji.fpsrCCDead {
+		emitLoadDPairBitsAMD64(cb, amd64RAX, ji.rd)
+		emitSetFPCondCodes64AMD64(cb)
+	}
+}
+
+func emitDSQRTSticky64AMD64(cb *CodeBuffer) {
+	// RAX contains the source bits. Negative finite values raise IO; -0 and
+	// NaNs do not, exactly as IE64FPU.DSQRT specifies.
+	amd64MOV_reg_reg(cb, amd64RCX, amd64RAX)
+	amd64SHR_imm(cb, amd64RCX, 63)
+	amd64TEST_reg_reg(cb, amd64RCX, amd64RCX)
+	notNegative := amd64Jcc_rel32(cb, amd64CondE)
+	emitLoadImm64AMD64(cb, amd64RCX, 0x7FFFFFFFFFFFFFFF)
+	amd64MOV_reg_reg(cb, amd64R11, amd64RAX)
+	amd64ALU_reg_reg(cb, 0x21, amd64R11, amd64RCX)
+	amd64TEST_reg_reg(cb, amd64R11, amd64R11)
+	isZero := amd64Jcc_rel32(cb, amd64CondE)
+	emitLoadImm64AMD64(cb, amd64RCX, 0x7FF0000000000000)
+	amd64ALU_reg_reg(cb, 0x39, amd64R11, amd64RCX)
+	isNaN := amd64Jcc_rel32(cb, amd64CondA)
+	emitSetFPUExceptionAMD64(cb, IE64_FPU_EX_IO)
+	done := cb.Len()
+	patchRel32(cb, notNegative, done)
+	patchRel32(cb, isZero, done)
+	patchRel32(cb, isNaN, done)
+}
+
+func emitDSQRT_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rd) || !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	bailOffs := emitDPairNonFiniteBailAMD64(cb, ji, instrPC, br, writtenSoFar, ji.rs)
+	emitLoadDPairBitsAMD64(cb, amd64RAX, ji.rs)
+	emitDSQRTSticky64AMD64(cb)
+	amd64MOVQ_xmm_reg(cb, 0, amd64RAX)
+	amd64SQRTSD_rr(cb, 0, 0)
+	emitXMMToDPairAMD64(cb, 0, ji.rd, ji.fpsrCCDead)
+	patchFP64BailToInterpreterAMD64(cb, bailOffs, ji, instrPC, br, writtenSoFar)
+}
+
+func emitFCVTSD_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rd) || ji.rs > 15 {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	emitLoadFPRegAMD64(cb, amd64RAX, ji.rs)
+	amd64MOVD_xmm_reg(cb, 0, amd64RAX)
+	amd64CVTSS2SD_rr(cb, 0, 0)
+	emitXMMToDPairAMD64(cb, 0, ji.rd, ji.fpsrCCDead)
+}
+
+func emitFCVTDS_AMD64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if ji.rd > 15 || !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	bailOffs := emitDPairNonFiniteBailAMD64(cb, ji, instrPC, br, writtenSoFar, ji.rs)
+	emitDPairToXMMAMD64(cb, 0, ji.rs, amd64RAX)
+	amd64CVTSD2SS_rr(cb, 0, 0)
+	amd64MOVD_reg_xmm(cb, amd64RAX, 0)
+	emitStoreFPRegAMD64(cb, amd64RAX, ji.rd)
+	emitFPCCUpdate32AMD64(cb, ji)
+	patchFP64BailToInterpreterAMD64(cb, bailOffs, ji, instrPC, br, writtenSoFar)
 }
 
 func emitDPairZeroTestAMD64(cb *CodeBuffer, fpIdx, scratch byte) []int {

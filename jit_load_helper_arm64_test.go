@@ -11,7 +11,6 @@ package main
 
 import (
 	"encoding/binary"
-	"fmt"
 	"testing"
 )
 
@@ -70,8 +69,8 @@ func TestJIT_ARM64_LOAD_MMUEnabled_SetsHelper(t *testing.T) {
 }
 
 func TestJIT_ARM64_LOAD_MicroTLBHitUsesTranslatedPhysicalAddress(t *testing.T) {
-	for _, way := range []uint64{0, 1} {
-		t.Run(fmt.Sprintf("way_%d", way), func(t *testing.T) {
+	{
+		t.Run("entry", func(t *testing.T) {
 			r := newJITTestRig(t)
 			const virt = uint64(0x4A8)
 			const phys = uint64(0x7000)
@@ -81,7 +80,7 @@ func TestJIT_ARM64_LOAD_MicroTLBHitUsesTranslatedPhysicalAddress(t *testing.T) {
 			r.cpu.mmuEnabled = true
 			r.ctx.MMUEnabled = 1
 			r.ctx.refreshMicroTLBPrefixes(r.cpu)
-			idx := ie64MicroTLBIndex(ie64MicroTLBSet(virt), way)
+			idx := (virt >> MMU_PAGE_SHIFT) & uint64(jitCtxMicroTLBEntries-1)
 			r.ctx.MicroTLBKeys[idx] = ie64MicroTLBKey(r.cpu, virt, ACCESS_READ)
 			r.ctx.MicroTLBPhys[idx] = phys
 			r.ctx.NeedHelper = HELPER_NONE

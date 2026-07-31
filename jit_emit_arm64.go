@@ -947,7 +947,7 @@ func emitMMUMicroTLBProbeARM64(cb *CodeBuffer, prefixOff int32) int {
 	cb.Emit32(arm64LDR_imm(1, 31, 96/8))
 	cb.Emit32(arm64MOV(2, 0))
 	cb.Emit32(arm64LSR_imm(2, 2, MMU_PAGE_SHIFT))
-	cb.Emit32(arm64AND_imm(3, 2, 0, 2, 1)) // set = VPN & (sets - 1)
+	cb.Emit32(arm64AND_imm(3, 2, 0, 0, 1)) // set = VPN & (sets - 1)
 	cb.Emit32(arm64LDR_imm(4, 1, uint32(prefixOff/8)))
 	cb.Emit32(arm64ORR(2, 2, 4))
 	cb.Emit32(arm64LSL_imm(3, 3, 3)) // eight-byte entries
@@ -958,7 +958,7 @@ func emitMMUMicroTLBProbeARM64(cb *CodeBuffer, prefixOff int32) int {
 	hitWay0Off := cb.Len()
 	cb.Emit32(0) // B.EQ hit
 
-	cb.Emit32(arm64ADD_imm(3, 3, jitCtxMicroTLBSets*8))
+	cb.Emit32(arm64ADD_imm(3, 3, (jitCtxMicroTLBEntries/2)*8))
 	cb.Emit32(arm64ADD(4, 1, 3))
 	cb.Emit32(arm64LDR_imm(4, 4, uint32(jitCtxOffMicroTLBKeys/8)))
 	cb.Emit32(arm64CMP(2, 4))
@@ -1414,7 +1414,17 @@ func emitInstruction(cb *CodeBuffer, ji *JITInstr, blockStartPC uint64, isLast b
 	case OP_DCVTFI:
 		emitDCVTFI_ARM64(cb, ji, instrPC, br, writtenSoFar)
 
-	case OP_DMOD, OP_DABS, OP_DNEG, OP_DSQRT, OP_FCVTSD, OP_FCVTDS:
+	case OP_DABS:
+		emitDAbsNegARM64(cb, ji, instrPC, br, writtenSoFar, false)
+	case OP_DNEG:
+		emitDAbsNegARM64(cb, ji, instrPC, br, writtenSoFar, true)
+	case OP_DSQRT:
+		emitDSQRT_ARM64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_FCVTSD:
+		emitFCVTSD_ARM64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_FCVTDS:
+		emitFCVTDS_ARM64(cb, ji, instrPC, br, writtenSoFar)
+	case OP_DMOD:
 		emitFPTransHelperExitARM64(cb, ji, instrPC, HELPER_DTRANS, br, writtenSoFar)
 	// Still interpreted on both backends. Keep this list and the amd64 one in
 	// step: sdk/docs/IE64_JIT.md documents a single shared fallback table.
@@ -4700,8 +4710,8 @@ func emitLoadDPairBits(cb *CodeBuffer, dstReg byte, fpIdx byte) {
 // ===========================================================================
 //
 // The native set here is exactly the amd64 backend's: DMOV, DADD, DSUB, DMUL,
-// DDIV, DINT, DCMP, DCVTIF, DCVTFI. DMOD, DABS, DNEG, DSQRT, FCVTSD and FCVTDS
-// still bail on both backends, so the two fallback tables stay identical and
+// DDIV, DABS, DNEG, DSQRT, DINT, DCMP, DCVTIF, DCVTFI, FCVTSD and FCVTDS.
+// DMOD still uses the canonical helper path, so the two fallback tables stay identical and
 // sdk/docs/IE64_JIT.md can describe one rule rather than two.
 //
 // Every emitter below is deliberately shaped like its amd64 twin — same clause
@@ -4866,6 +4876,89 @@ func emitDMOV_ARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs,
 	// through untouched.
 	emitLoadDPairBits(cb, 0, ji.rs)
 	emitStoreDPairBits(cb, 0, ji.rd)
+}
+
+// emitDAbsNegARM64 implements the binary64 sign-bit transforms with integer
+// instructions. This preserves signed zero and every NaN payload exactly and
+// mirrors IE64FPU without creating host FP exceptions.
+func emitDAbsNegARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32, negate bool) {
+	if !isValidDPairReg(ji.rd) || !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	emitLoadDPairBits(cb, 0, ji.rs)
+	if negate {
+		emitLoadImm64(cb, 1, uint64(1)<<63)
+		cb.Emit32(arm64EOR(0, 0, 1))
+	} else {
+		emitLoadImm64(cb, 1, ^(uint64(1) << 63))
+		cb.Emit32(arm64AND(0, 0, 1))
+	}
+	emitStoreDPairBits(cb, 0, ji.rd)
+	if !ji.fpsrCCDead {
+		emitLoadDPairBits(cb, 0, ji.rd)
+		emitSetFPCondCodes64(cb)
+	}
+}
+
+func emitDSQRTSticky64ARM64(cb *CodeBuffer) {
+	// X0 contains source bits. Negative finite values raise IO; -0 and NaNs
+	// do not, matching IE64FPU.DSQRT.
+	cb.Emit32(arm64LSR_imm(1, 0, 63))
+	signClear := cb.Len()
+	cb.Emit32(0) // CBZ X1, done
+	emitLoadImm64(cb, 1, 0x7FFFFFFFFFFFFFFF)
+	cb.Emit32(arm64AND(4, 0, 1))
+	zero := cb.Len()
+	cb.Emit32(0) // CBZ X4, done
+	emitLoadImm64(cb, 1, 0x7FF0000000000000)
+	cb.Emit32(arm64CMP(4, 1))
+	nan := cb.Len()
+	cb.Emit32(0) // B.HI done
+	emitSetFPUExceptionARM64(cb, IE64_FPU_EX_IO)
+	done := cb.Len()
+	cb.PatchUint32(signClear, arm64CBZ(1, int32(done-signClear)))
+	cb.PatchUint32(zero, arm64CBZ(4, int32(done-zero)))
+	cb.PatchUint32(nan, arm64Bcond(arm64CondHI, int32(done-nan)))
+}
+
+func emitDSQRT_ARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rd) || !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	skips := emitDPairNonFiniteBailARM64(cb, ji.rs)
+	emitLoadDPairBits(cb, 0, ji.rs)
+	emitDSQRTSticky64ARM64(cb)
+	cb.Emit32(arm64FMOV_XtoD(0, 0))
+	cb.Emit32(arm64FSQRT_D(0, 0))
+	emitDRegToDPair(cb, 0, ji.rd, ji.fpsrCCDead)
+	patchFP64BailToInterpreterARM64(cb, skips, ji, instrPC, br, writtenSoFar)
+}
+
+func emitFCVTSD_ARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if !isValidDPairReg(ji.rd) || ji.rs > 15 {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	emitLoadFPReg(cb, 0, ji.rs)
+	cb.Emit32(arm64FMOV_WtoS(0, 0))
+	cb.Emit32(arm64FCVT_DfromS(0, 0))
+	emitDRegToDPair(cb, 0, ji.rd, ji.fpsrCCDead)
+}
+
+func emitFCVTDS_ARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32) {
+	if ji.rd > 15 || !isValidDPairReg(ji.rs) {
+		emitBailToInterpreter(cb, ji, instrPC, br, writtenSoFar)
+		return
+	}
+	skips := emitDPairNonFiniteBailARM64(cb, ji.rs)
+	emitDPairToDReg(cb, 0, ji.rs)
+	cb.Emit32(arm64FCVT_SfromD(0, 0))
+	cb.Emit32(arm64FMOV_StoW(0, 0))
+	emitStoreFPReg(cb, 0, ji.rd)
+	emitFPCondCodesARM64(cb, ji)
+	patchFP64BailToInterpreterARM64(cb, skips, ji, instrPC, br, writtenSoFar)
 }
 
 func emitDPBinaryARM64(cb *CodeBuffer, ji *JITInstr, instrPC uint64, br *blockRegs, writtenSoFar uint32, fpOp func(dd, dn, dm byte) uint32) {
