@@ -1,5 +1,5 @@
 1 REM ============================================================================
-2 REM ROTOZOOMER DEMO - HARDWARE BLITTER MODE7 IN BASIC
+2 REM ROTOZOOMER TUTORIAL - MODE7 BLITTER IN BASIC
 3 REM IE64 BASIC for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
 4 REM ============================================================================
 5 REM
@@ -7,28 +7,25 @@
 7 REM Target CPU:    IE64 (custom 64-bit RISC, running IE64 BASIC)
 8 REM Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 9 REM Audio Engine:  SID (MOS 6581/8580 - Commodore 64 sound chip)
-10 REM Prerequisites: Build IE64 BASIC with 'make basic'
+10 REM Prerequisites: Build the BASIC runtime with 'make basic'
 11 REM Run:           bin/IntuitionEngine -basic
 12 REM                Then type: LOAD "rotozoomer_basic.bas"
 13 REM                Then type: RUN
-14 REM Porting:       BASIC programmes are CPU-agnostic (run on IE64
-15 REM                interpreter). No porting needed.
+14 REM Porting:       This is BASIC source interpreted by the IE64 BASIC
+15 REM                runtime. The MMIO addresses are IntuitionEngine-specific.
 16 REM
 6 REM === WHAT THIS DEMO DOES ===
-7 REM This programme demonstrates the Mode7 hardware blitter to
-8 REM perform real-time affine texture mapping - the same technique
-9 REM the SNES used for its famous "Mode 7" rotating/scaling
-10 REM backgrounds in games like F-Zero and Mario Kart.
+7 REM This programme submits an affine texture mapping operation to the
+8 REM Mode7 blitter. The CPU supplies an origin and two texture-step vectors.
 11 REM
-12 REM A 256x256 texture is loaded from disk, then
-13 REM every frame the blitter rotates and zooms it across the full
-14 REM 640x480 display. SID music plays in the background.
+12 REM A 256 by 256 texture is loaded into allocated memory. Each frame,
+13 REM the blitter maps it to a 640 by 480 back buffer, which is copied to
+14 REM the configured framebuffer. SID playback is started separately.
 15 REM
 16 REM === WHY MODE7 HARDWARE ===
-17 REM Software rendering in BASIC would need to calculate UV
-18 REM coordinates for all 307,200 pixels per frame - far too slow
-19 REM for 60fps. The Mode7 blitter does this in hardware: we just
-20 REM supply 6 affine parameters and it handles every pixel.
+17 REM A software renderer would calculate a texture coordinate for each
+18 REM output pixel. Here the program writes the origin and four directional
+19 REM deltas, then the blitter performs the pixel loop.
 21 REM
 22 REM MEMORY:
 23 REM   MEMALLOC(1228800,4096) front buffer (640x480x4 = 1,228,800 bytes)
@@ -42,8 +39,8 @@
 31 REM     V = v0 + x*dVdX + y*dVdY
 32 REM   where (U,V) are texture coordinates in 16.16 fixed-point.
 33 REM   For pure rotation+zoom, the matrix is:
-34 REM     dUdX =  CA    dUdY = SA     (cosine/sine scaled by zoom)
-35 REM     dVdX =  SA    dVdY = CA
+34 REM     dUdX =  CA    dUdY = -SA    (cosine/sine scaled by zoom)
+35 REM     dVdX =  SA    dVdY =  CA
 36 REM   and (u0,v0) centres the rotation on the texture.
 37 REM
 38 REM (c) 2024-2026 Zayn Otley - GPLv3 or later
@@ -52,22 +49,21 @@
 100 REM ================================================================
 101 REM  HARDWARE INITIALISATION
 102 REM ================================================================
-103 REM  POKE32 &HF0000,1 enables the VideoChip (register 0 = enable).
-104 REM  POKE32 &HF0004,0 selects mode 0 (640x480 true colour).
-105 REM  Both must be set before any rendering is visible.
+103 REM  POKE32 &HF0000,1 enables the VideoChip.
+104 REM  POKE32 &HF0004,0 selects Mode 0, the 640 by 480 RGBA32 mode.
+105 REM  POKE32 &HF0084 selects FB as the framebuffer base.
 110 FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096):TB=MEMALLOC(262144,4096):SA=MEMALLOC(4096,4096)
 120 POKE32 &HF0004,0:POKE32 &HF0084,FB:POKE32 &HF0000,1
 
 200 REM ================================================================
 201 REM  SID MUSIC PLAYBACK
 202 REM ================================================================
-203 REM  BLOAD loads a binary file into MEMALLOC memory at address SA.
-204 REM  The SID player parses the file header
-206 REM  and drives the SID chip emulation in the background.
+203 REM  BLOAD copies a binary file into allocated memory at SA.
+204 REM  SID PLAY receives the address and explicit byte length below.
 207 REM
 208 REM  SID PLAY addr, length starts playback from memory.
-209 REM  3725 bytes is the size of the Yummy_Pizza.sid file.
-210 REM  SID STATUS returns 1 if playing, 0 if stopped.
+209 REM  3725 is the byte length passed for Yummy_Pizza.sid.
+210 REM  SID STATUS reports the current playback state.
 211 REM  POKE8 &HF0E18,15 sets SID master volume to maximum (0-15).
 230 BLOAD "sdk/examples/assets/music/Yummy_Pizza.sid", SA
 240 SID PLAY SA, 3725
@@ -87,9 +83,8 @@
 400 REM ================================================================
 401 REM  CONSTANTS AND ANIMATION STATE
 402 REM ================================================================
-403 REM  BB = back buffer address. Mode7 renders here, then we copy
-404 REM       to VRAM. This double-buffering prevents visible tearing
-405 REM       (the display never reads a half-rendered frame).
+403 REM  BB is the back-buffer address. Mode7 writes there before the result
+404 REM  is copied to FB, so the blitter never writes the display buffer.
 406 REM  FP = 65536 = 2^16, the fixed-point multiplier. Multiplying
 407 REM       a floating-point value by FP and taking INT() converts
 408 REM       it to 16.16 fixed-point format for the blitter hardware.
@@ -105,13 +100,10 @@
 600 REM ----------------------------------------------------------------
 601 REM  STEP 1: COMPUTE SCALE FACTOR
 602 REM ----------------------------------------------------------------
-603 REM  SC oscillates between 0.2 and 0.8 via:  SC = 0.5 + sin(SI)*0.3
-604 REM  The 0.5 baseline keeps the scale always positive (no flipping).
-605 REM  The 0.3 amplitude gives roughly a 4:1 zoom ratio between the
-606 REM  closest and furthest points (0.2 = 5x zoom, 0.8 = 1.25x zoom).
-607 REM  The clamp at 0.2 is a safety net - sin() should never push SC
-608 REM  below 0.2, but floating-point edge cases could cause division
-609 REM  by near-zero which would produce enormous deltas.
+603 REM  SC = 0.5 + SIN(SI) * 0.3, so the value is nominally 0.2 to 0.8.
+604 REM  CA and SA are divided by SC below. Smaller SC therefore makes the
+605 REM  texture coordinates advance more quickly across the output.
+606 REM  The clamp protects the division if a future change alters the range.
 610 SC=0.5+SIN(SI)*0.3: IF SC<0.2 THEN SC=0.2
 
 700 REM ----------------------------------------------------------------
@@ -136,9 +128,7 @@
 809 REM    dUdX =  DC    dUdY = -DS
 810 REM    dVdX =  DS    dVdY =  DC
 811 REM
-812 REM  INT() truncates toward zero, matching the blitter's internal
-813 REM  fixed-point truncation (the difference from floor() is at most
-814 REM  1 LSB for negative values - sub-pixel, visually imperceptible).
+812 REM  INT() produces the signed integer values written to the blitter.
 820 DC=INT(CA*FP): DS=INT(SA*FP)
 
 900 REM ----------------------------------------------------------------
@@ -196,9 +186,8 @@
 1108 REM  The BLIT MEMCOPY command takes a byte count, not a pixel count.
 1109 REM  640 * 480 * 4 = 1,228,800 bytes for a full RGBA32 framebuffer.
 1111 REM
-1112 REM  VSYNC waits for the vertical blanking interval before the next
-1113 REM  frame, locking the animation to the display refresh rate (60Hz)
-1114 REM  and preventing tearing during the copy.
+1112 REM  VSYNC waits for the vertical blanking interval before advancing the
+1113 REM  animation. It does not make the preceding copy atomic with display.
 1120 BLIT MEMCOPY BB, FB, 1228800
 1130 VSYNC
 
@@ -207,9 +196,8 @@
 1202 REM ----------------------------------------------------------------
 1203 REM  A  += 0.03 radians per frame - rotation speed.
 1204 REM  SI += 0.01 radians per frame - zoom oscillation speed.
-1205 REM  The 3:1 ratio means the texture completes three full rotations
-1206 REM  for every one full zoom cycle, creating non-repeating motion
-1207 REM  that keeps the visual interesting.
+1205 REM  The 3:1 increment ratio makes the rotation phase advance three times
+1206 REM  as quickly as the zoom phase.
 1208 REM
 1209 REM  A wraps at 2*PI (6.28318) to prevent unbounded growth of the
 1210 REM  floating-point value, which would eventually lose precision.

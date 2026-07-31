@@ -1,16 +1,21 @@
 /* ============================================================================
- * AROS ROTOZOOMER — C + Graphics API (WritePixelArray to screen)
+ * AROS ROTOZOOMER TUTORIAL: C and the graphics API
  * ============================================================================
- * Opens an Intuition CUSTOMSCREEN (640x480 RGBA32), renders via Mode7 blitter
- * into an OS-allocated back buffer, then uses WritePixelArray() from
- * cybergraphics.library to copy to the screen's RastPort.
+ * This program opens a 640 by 480 CUSTOMSCREEN, renders the affine mapping
+ * into AllocMem memory, then calls WritePixelArray to copy RGBA pixels to the
+ * screen RastPort.
  *
- * Build:
- *   AROS=../../../AROS/bin/ie-m68k/bin/ie-m68k/AROS/Developer
- *   ARCH=../../../AROS/arch/m68k-ie/include
- *   CC=../../../AROS/bin/ie-m68k/bin/linux-aarch64/tools/crosstools/m68k-aros-gcc
- *   $CC -O2 -m68020 -I$AROS/include -I$ARCH -L$AROS/lib \
- *       -o RotoAPIc rotozoomer_aros_api.c -lamiga -larossupport
+ * Shared affine model:
+ *   U = U0 + x*dU_col + y*dU_row
+ *   V = V0 + x*dV_col + y*dV_row
+ * `compute_frame` builds signed 16.16 values from the lookup tables.
+ * `render_mode7` starts the blitter and waits before the back buffer is read.
+ * This API variant then presents through WritePixelArray. The hardware variant
+ * uses a locked bitmap and an IE COPY blit instead.
+ *
+ * The texture loader requires exactly TEX_SIZE bytes. The back buffer keeps
+ * Mode7 writes outside the screen bitmap. WaitTOF follows presentation and
+ * is not an atomic display swap.
  * ============================================================================ */
 
 #include <proto/exec.h>

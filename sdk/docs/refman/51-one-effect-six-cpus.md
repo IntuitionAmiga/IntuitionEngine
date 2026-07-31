@@ -32,8 +32,9 @@ Every version must do these jobs:
 3. Start its chosen audio engine.
 4. Advance angle and scale state.
 5. Convert table values into six Mode 7 parameters.
-6. Start the blitter.
-7. Wait for completion and present the frame.
+6. Establish RGBA32 pixels and compatible COPY state.
+7. Start the blitter.
+8. Wait for completion and present the frame.
 
 That is the contract. A CPU chapter teaches how to execute instructions.
 This chapter teaches what remains the same after the instruction set
@@ -64,6 +65,8 @@ BLT_WIDTH       = 640
 BLT_HEIGHT      = 480
 BLT_SRC_STRIDE  = 1024
 BLT_DST_STRIDE  = 2560
+VIDEO_COLOR_MODE = 0
+BLT_FLAGS       = 0
 BLT_MODE7_U0    = computed U origin
 BLT_MODE7_V0    = computed V origin
 BLT_MODE7_DU... = computed deltas
@@ -73,6 +76,12 @@ BLT_CTRL        = 1
 The 6502 may reach those registers through an adapter. The Z80 may use
 its own mapped view. M68K and x86 may use absolute long addresses. The
 device is still the same VideoChip.
+
+The standalone versions begin from reset state, where the colour mode
+and blitter flags are already zero. The 6502 and Z80 sources also write
+those values explicitly so an earlier CLUT8 or raster-operation setting
+cannot leak into Mode 7. That explicit setup is the safer pattern when
+the effect is part of a larger programme.
 
 ## 51.4 Different Audio Choices
 
@@ -84,7 +93,7 @@ same machine.
 |-------------|--------------------|
 | IE64 | POKEY/SAP-style playback path. |
 | IE32 | AHX playback path. |
-| 6502 | SID-style path. |
+| 6502 | PSG/AY playback path. |
 | Z80 | SID-style path through the shared audio block. |
 | M68K | TED playback path. |
 | x86 | PSG playback path. |
@@ -100,10 +109,20 @@ When reading a port to another CPU, use this order:
 2. Find the initialisation: video mode, framebuffer base, audio start.
 3. Find the table lookups: angle, scale, sine, reciprocal.
 4. Find the six Mode 7 parameters.
-5. Find the presentation step.
+5. Find the blitter-completion wait and presentation step.
 6. Find the accumulator advance.
 
 Only after that should you study the CPU-specific tricks.
+
+The IE64, IE32, 6502, Z80, M68K, and x86 versions render into an
+off-screen buffer, wait for completion, wait for a VBlank edge, and
+change `VIDEO_FB_BASE`. This is different from copying a back buffer
+into the displayed framebuffer. The VBlank edge is a presentation
+point, not a guarantee that every loop sustains `60` frames per second.
+
+The 6502 and Z80 versions load their texture through the File I/O
+device. Their names are resolved beneath the guest File I/O root
+described in Chapter 35.
 
 ## 51.6 What The Comparison Proves
 

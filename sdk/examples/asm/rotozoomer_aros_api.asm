@@ -1,12 +1,22 @@
 ; ============================================================================
-; AROS ROTOZOOMER — ASM + Graphics API (WritePixelArray to screen)
+; AROS ROTOZOOMER TUTORIAL: 68020 assembly and the graphics API
 ; ============================================================================
-; Opens an Intuition CUSTOMSCREEN (640x480 RGBA32), renders via Mode7 blitter
-; into an OS-allocated back buffer, then uses WritePixelArray() from
-; cybergraphics.library to transfer to the screen's RastPort.
+; This program opens a 640 by 480 CUSTOMSCREEN, renders the affine mapping
+; into AllocMem memory, then calls cybergraphics.library WritePixelArray to
+; transfer RGBA pixels to the screen RastPort.
 ;
-; Build: vasmm68k_mot -Fhunk -m68020 -devpac -Isdk/include \
-;        -o RotoAPI sdk/examples/asm/rotozoomer_aros_api.asm
+; Shared rotozoomer model:
+;   U = U0 + x*dU_col + y*dU_row
+;   V = V0 + x*dV_col + y*dV_row
+; `compute_frame` produces the signed 16.16 origin and deltas. `render_mode7`
+; submits them to the IE blitter and waits for completion. `copy_to_screen`
+; is deliberately the API presentation path. Compare it with
+; rotozoomer_aros_hw.asm, which locks the bitmap and submits a COPY blit.
+;
+; The embedded texture is copied into separately allocated memory before the
+; frame loop. The loop therefore keeps both Mode7 output and source data out
+; of the screen bitmap. WaitTOF yields after presentation; it does not make
+; WritePixelArray an atomic display swap.
 ; ============================================================================
 
                 include "ie68.inc"
@@ -409,7 +419,7 @@ render_mode7:
                 rts
 
 ; ============================================================================
-; COPY TO SCREEN — WritePixelArray(back_buf → screen RastPort)
+; COPY TO SCREEN: WritePixelArray(back_buf to screen RastPort)
 ; ============================================================================
 ; WritePixelArray(src, srcx, srcy, srcmod, rp, destx, desty, width, height, format)
 ;                  A0   D0    D1    D2     A1   D3     D4     D5     D6      D7

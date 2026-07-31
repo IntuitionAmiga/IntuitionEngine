@@ -885,17 +885,19 @@ GATE 0, ON : REM play the note</code></pre>
           <p>One Mode 7 affine transform, written again and again. Six CPUs run identical maths down to the same VideoChip registers; IE64 BASIC and IEScript reach those registers from a higher level; EmuTOS and AROS drive them as guest operating systems. The picture is the same. The point is where it comes from. The IE64 build even scores it with a stereo SAP tune spread across two Atari POKEY chips at once.</p>
           <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-DEMO-ROTO" data-id="P52ripOFWJQ"><button type="button" class="lty-playbtn" aria-label="Play rotozoomer comparison demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
           <div class="tag-row" style="margin-top: 0.8rem">
-            <span class="tag">IE64 &middot; rotozoomer_ie64.ie64</span>
-            <span class="tag">IE32 &middot; rotozoomer.iex</span>
-            <span class="tag">M68K &middot; rotozoomer_68k.ie68</span>
-            <span class="tag">Z80 &middot; rotozoomer_z80.ie80</span>
-            <span class="tag">6502 &middot; rotozoomer_65.ie65</span>
-            <span class="tag">x86 &middot; rotozoomer_x86.ie86</span>
-            <span class="tag">BASIC &middot; rotozoomer_basic.bas</span>
-            <span class="tag">IEScript &middot; rotozoomer_ies.ies</span>
-            <span class="tag">EmuTOS GEM &middot; rotozoomer_gem.prg</span>
-            <span class="tag">AROS asm &middot; RotoAPI / RotoHW</span>
-            <span class="tag">AROS C &middot; RotoAPIc / RotoHWc</span>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_ie64.asm">IE64 &middot; rotozoomer_ie64.asm</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer.asm">IE32 &middot; rotozoomer.asm</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_68k.asm">M68K &middot; rotozoomer_68k.asm</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_z80.asm">Z80 &middot; rotozoomer_z80.asm</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_65.asm">6502 &middot; rotozoomer_65.asm</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_x86.asm">x86 &middot; rotozoomer_x86.asm</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/basic/rotozoomer_basic.bas">BASIC &middot; rotozoomer_basic.bas</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/scripts/rotozoomer_ies.ies">IEScript &middot; rotozoomer_ies.ies</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_gem.asm">EmuTOS GEM &middot; rotozoomer_gem.asm</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_aros_api.asm">AROS asm &middot; rotozoomer_aros_api.asm</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_aros_hw.asm">AROS asm &middot; rotozoomer_aros_hw.asm</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/c/rotozoomer_aros_api.c">AROS C &middot; rotozoomer_aros_api.c</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/c/rotozoomer_aros_hw.c">AROS C &middot; rotozoomer_aros_hw.c</a>
           </div>
         </article>
 
@@ -1209,7 +1211,7 @@ SOUND STOP</code></pre>
           <article class="card">
             <span class="kicker">Concurrency</span>
             <h3>Many CPUs at once</h3>
-            <p>A profile boots the machine into one instruction set, then any CPU can bring the others online as workers, up to nine at once across the six types, all running at the same time on the same bus. M68K, x86 and IE64 each run two worker instances; IE32, the 6502 and the Z80 run one each. There is no central bus arbiter and no interrupt controller: each CPU carries its own interrupt lines, and peripherals signal whichever CPU is active.</p>
+            <p>A profile boots the machine into one instruction set, then any CPU can bring the others online as workers, up to nine at once across the six types, all running at the same time on the same bus. M68K, x86 and IE64 each run two worker instances; IE32, the 6502 and the Z80 run one each. CPUs have their own interrupt lines, and each device uses its defined target and delivery path.</p>
             <p><a href="#coprocessors">Coprocessor model</a></p>
           </article>
           <article class="card">
@@ -1369,7 +1371,7 @@ SOUND STOP</code></pre>
               <tr>
                 <td>EmuTOS</td>
                 <td>M68K</td>
-                <td>Hardware-accelerated IE VideoChip driver; EmuTOS runs a 960 x 540 RGBA native mode (scaled to 1920 x 1080) with direct VRAM and blitter drawing.</td>
+                <td>Hardware-accelerated IE VideoChip driver; EmuTOS runs a 1920 x 1080 CLUT8 desktop with direct VRAM and blitter-backed drawing.</td>
                 <td>Keyboard, mouse, terminal, timer IRQs, PSG writes, GEMDOS mapping, Atari MIDI ACIA bridge.</td>
               </tr>
               <tr>
@@ -1392,11 +1394,11 @@ SOUND STOP</code></pre>
           <article class="card">
             <span class="kicker">EmuTOS</span>
             <h3>EmuTOS VideoChip driver</h3>
-            <p>EmuTOS gets a hardware-accelerated IE VideoChip driver through the IE target. The implementation runs a 960 x 540 RGBA native mode over direct VRAM (scaled to 1920 x 1080 for the desktop), uses the VideoChip blitter for accelerated drawing, reads keyboard and mouse MMIO, and drives timer IRQ level 5 and VBlank IRQ level 4.</p>
+            <p>EmuTOS gets a hardware-accelerated IE VideoChip driver through the IE target. The implementation runs a 1920 x 1080 CLUT8 desktop over direct VRAM and uses the VideoChip blitter for screen and VDI drawing. It reads keyboard and mouse MMIO, and drives timer IRQ level 5 and VBlank IRQ level 4.</p>
             <pre class="code-panel"><code>IE_VIDEO_CTRL  0x000F0000
 IE_VIDEO_MODE  0x000F0004
 IE_VRAM_BASE   0x00100000
-EmuTOS mode    960 x 540 RGBA, stride 3840
+EmuTOS mode    1920 x 1080 CLUT8, stride 1920
 IE_PSG_BASE    0x000F0C00</code></pre>
           </article>
           <article class="card">
@@ -1456,7 +1458,7 @@ Mode: 960 x 540 RGBA32, stride 3840</code></pre>
         <div class="section-head">
           <h2>CPUs can be devices for another CPU</h2>
           <p>Type <code>COSTART</code> at the BASIC prompt and a second processor wakes up and starts working for you, while your own program carries on. That worker is a real 6502, Z80, 68020, x86, IE32 or IE64, not a library call: one CPU hands work to another across the bus, waits on a ticket, and reads the answer back. It is the whole machine made literal: six processors on one board, the classic silicon beside the engine's own cores, each able to serve the others, in combinations no real computer ever shipped.</p>
-          <p>There is no central bus arbiter and no interrupt controller. Every CPU carries its own interrupt lines and peripherals signal whichever core is active, so the processors cooperate as equals over shared RAM and the same devices rather than through a master. Any CPU can bring the others online: M68K, x86 and IE64 each run two worker instances and IE32, the 6502 and the Z80 run one, for up to nine workers at once, all executing concurrently. A caller queues a request and polls or waits on a ticket; BASIC drives it through named commands, while assembly and C write the coprocessor MMIO block and mailbox rings directly.</p>
+          <p>There is no central bus arbiter. Every CPU carries its own interrupt lines, while devices use their defined targets and delivery paths. The processors cooperate over shared RAM and the same devices rather than through a master. Any CPU can bring the others online: M68K, x86 and IE64 each run two worker instances and IE32, the 6502 and the Z80 run one, for up to nine workers at once, all executing concurrently. A caller queues a request and polls or waits on a ticket; BASIC drives it through named commands, while assembly and C write the coprocessor MMIO block and mailbox rings directly.</p>
         </div>
         <div class="card">
           <h3>Request flow</h3>

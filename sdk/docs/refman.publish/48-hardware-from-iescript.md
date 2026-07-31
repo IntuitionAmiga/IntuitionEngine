@@ -19,6 +19,8 @@ The script begins by naming the registers it will write:
 ```ies
 local VIDEO_CTRL = 0xF0000
 local VIDEO_MODE = 0xF0004
+local VIDEO_COLOR_MODE = 0xF0080
+local VIDEO_FB_BASE = 0xF0084
 local BLT_CTRL = 0xF001C
 local BLT_OP = 0xF0020
 local BLT_SRC = 0xF0024
@@ -27,6 +29,7 @@ local BLT_WIDTH = 0xF002C
 local BLT_HEIGHT = 0xF0030
 local BLT_MODE7_U0 = 0xF0058
 local BLT_MODE7_DU_COL = 0xF0060
+local BLT_FLAGS = 0xF0488
 ```
 
 These are not script-only names. They are the same MMIO addresses from
@@ -68,7 +71,19 @@ same `MIDI_VOLUME` register used in Chapter 21.
 
 ## 48.4 Rendering A Frame
 
-The script version writes the Mode 7 registers directly:
+The script first establishes the pixel and blitter state. Value `0`
+selects RGBA32 pixels, and zero flags select the compatible COPY
+operation rather than inheriting CLUT8 or another raster operation:
+
+```ies
+video.write_reg(VIDEO_MODE, 0)
+video.write_reg(VIDEO_COLOR_MODE, 0)
+video.write_reg(VIDEO_FB_BASE, 0)
+video.write_reg(BLT_FLAGS, 0)
+video.write_reg(VIDEO_CTRL, 1)
+```
+
+It then writes the Mode 7 registers directly:
 
 ```ies
 mem.write32(0xF0020, 5)
@@ -102,6 +117,11 @@ end
 
 sys.wait_frames(1)
 ```
+
+The busy-bit loop protects the blitter registers and back buffer until
+the operation is complete. `sys.wait_frames(1)` yields until a later
+display frame. It does not make the preceding back-buffer copy into the
+displayed framebuffer atomic.
 
 For automated experiments, add a frame hash:
 

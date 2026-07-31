@@ -1,5 +1,5 @@
 ; ============================================================================
-; ROTOZOOMER DEMO - HARDWARE MODE7 AFFINE TEXTURE MAPPING
+; ROTOZOOMER TUTORIAL: M68020 AND THE MODE7 BLITTER
 ; M68020 Assembly for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
 ; ============================================================================
 ;
@@ -13,34 +13,23 @@
 ; Porting:       VideoChip/blitter MMIO is CPU-agnostic. See rotozoomer.asm (IE32),
 ;                rotozoomer_z80.asm (Z80), rotozoomer_65.asm (6502) for other ports.
 ;
-; SDK REFERENCE IMPLEMENTATION - HARDWARE-ACCELERATED TEXTURE ROTATION
-; This file is heavily commented to teach Mode7 blitter programming concepts.
+; This tutorial follows the common affine mapping and the M68020 register and
+; addressing forms used to submit it.
 ;
 ; === WHAT THIS DEMO DOES ===
-; Displays a 256x256 checkerboard texture that continuously rotates and zooms,
-; filling the entire 640x480 screen. The texture wraps infinitely in all
-; directions, creating the classic "rotozoomer" effect seen in countless
-; demoscene productions since the early 1990s.
+; Displays a 256 by 256 checkerboard through a 640 by 480 affine mapping. The
+; texture dimensions are powers of two, so the supplied masks wrap coordinates.
 ;
-; === WHY THE ROTOZOOMER MATTERS (HISTORICAL CONTEXT) ===
-; The rotozoomer (rotating + zooming texture mapper) became a demoscene
-; staple because it demonstrates real-time affine texture mapping -- the same
-; mathematical operation that powered SNES Mode 7 in games like F-Zero,
-; Super Mario Kart, and Pilotwings. On the SNES, Mode 7 was implemented in
-; dedicated silicon. On home computers like the Amiga and Atari ST, coders
-; had to compute the transformation entirely in software, making it a
-; benchmark for optimization skill.
-;
-; The Intuition Engine provides a hardware Mode7 blitter, allowing us to
-; achieve the effect with minimal CPU work: we compute just 6 parameters per
-; frame, and the blitter handles all 307,200 pixels (640x480).
+; === AFFINE WORK SPLIT ===
+; The CPU computes an origin and four directional deltas. Mode7 applies them
+; to the 307,200 output positions and writes the destination buffer.
 ;
 ; === KEY TECHNIQUES DEMONSTRATED ===
 ;
 ; 1. Mode7 hardware blitter for affine texture mapping
 ; 2. Pre-computed sine and reciprocal lookup tables
 ; 3. 8.8 fixed-point fractional animation accumulators
-; 4. Double buffering with BLIT COPY for tear-free display
+; 4. Alternating render buffers presented by changing VIDEO_FB_BASE at vblank
 ; 5. Two-phase vsync Synchronisation
 ; 6. Checkerboard texture generation via hardware BLIT FILL
 ; 7. TED music playback (Commodore Plus/4 sound chip)
@@ -48,7 +37,7 @@
 ; === ARCHITECTURE OVERVIEW ===
 ;
 ;   +---------------------------------------------------------------+
-;   |                    MAIN LOOP (60 FPS)                         |
+;   |                    MAIN LOOP                                  |
 ;   |                                                               |
 ;   |  +-------------+    +-------------+    +----------------+     |
 ;   |  | compute     |--->| render      |--->| blit to front  |     |
@@ -83,7 +72,7 @@
 ;     below back buffer. Avoids any overlap with display memory.
 ;   - Back buffer at $900000: Well above texture end (~$640000).
 ;     Mode7 renders here off-screen, then BLIT COPY transfers the
-;     completed frame to VRAM atomically -- preventing visible tearing.
+;     completed frame by changing VIDEO_FB_BASE during vblank.
 ;
 ; === AFFINE TRANSFORMATION MATH ===
 ;
@@ -234,7 +223,7 @@ start:
 ; The order of operations is deliberate:
 ;   1. compute_frame:      Calculate the 6 Mode7 parameters for this frame
 ;   2. render_mode7:       Trigger the blitter to render into the back buffer
-;   3. wait_vsync:         Synchronise to vertical blank (prevents tearing)
+;   3. wait_vsync:         Synchronise to the next vertical blank interval
 ;   4. present_frame:      Point the VideoChip at the completed buffer
 ;   5. swap_draw_buffer:   Select the other render buffer for next frame
 ;   6. advance_animation:  Update fractional accumulators for next frame

@@ -1,5 +1,5 @@
 ; ============================================================================
-; MODE7 BLITTER ROTOZOOMER WITH AHX MUSIC
+; ROTOZOOMER TUTORIAL: IE32 AND THE MODE7 BLITTER
 ; IE32 Assembly for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
 ; ============================================================================
 ;
@@ -14,16 +14,14 @@
 ;                rotozoomer_z80.asm, rotozoomer_65.asm, rotozoomer_x86.asm for
 ;                ports to other CPU cores.
 ;
-; REFERENCE IMPLEMENTATION FOR THE INTUITION ENGINE SDK
-; This file is heavily commented to teach demo programming concepts on the
-; IE32 custom CPU, with particular attention to IE32-specific idioms that
-; differ from conventional architectures.
+; This tutorial follows the common affine mapping and points out the IE32
+; instructions used to calculate and submit its fixed-point parameters.
 ;
 ; === WHAT THIS DEMO DOES ===
 ; 1. Generates a 256x256 checkerboard texture via 4 hardware blitter fills
 ; 2. Computes per-frame affine transformation parameters (rotation + zoom)
 ; 3. Delegates the full-screen affine warp to the Mode7 hardware blitter
-; 4. Double-buffers the result into VRAM for tear-free display
+; 4. Renders into alternating off-screen buffers and presents one at vblank
 ; 5. Plays AHX music (Amiga tracker format) through the audio subsystem
 ;
 ; === WHY MODE7 HARDWARE BLITTER ===
@@ -36,18 +34,12 @@
 ;       v = v0 + px*dv_col + py*dv_row
 ;       colour = texture[u & mask][v & mask]
 ;
-; At 640x480 = 307,200 pixels per frame, this is extremely expensive on
-; the CPU. The Mode7 hardware blitter (BLT_OP=5) accepts just 6 parameters
-; per frame -- the starting UV and the per-column/per-row UV deltas -- and
-; renders the entire screen in hardware. The CPU's job is reduced to
-; computing those 6 parameters from the current rotation angle and zoom
-; factor, which involves only a handful of multiplies per frame.
+; At 640 by 480 there are 307,200 output pixels. The Mode7 operation accepts
+; an origin and four directional deltas. The CPU computes those values from
+; the current animation state, and the blitter performs the sampling loop.
 ;
-; This is directly analogous to the SNES Mode7 coprocessor, which enabled
-; effects like the F-Zero and Mario Kart ground planes using the same
-; affine parameter approach. The key insight is the same: separate the
-; "what to render" (CPU computes parameters) from "how to render" (hardware
-; iterates pixels).
+; Keep the two jobs separate: calculate the transform in the CPU, then submit
+; it to the blitter.
 ;
 ; === THE MODE7 AFFINE MATRIX ===
 ;
@@ -106,7 +98,7 @@
 ; === ARCHITECTURE OVERVIEW ===
 ;
 ;   +-----------------------------------------------------------------+
-;   |                    MAIN LOOP (60 FPS)                           |
+;   |                    MAIN LOOP                                    |
 ;   |                                                                 |
 ;   |  +-------------+   +-------------+   +---------------+         |
 ;   |  | compute_    |-->| render_     |-->| blit_to_      |         |
@@ -117,7 +109,7 @@
 ;   |        v                                      v                 |
 ;   |  +-------------+                      +---------------+         |
 ;   |  | advance_    |<---------------------| wait_vsync    |         |
-;   |  | animation   |                      | (tear-free)   |         |
+;   |  | animation   |                      | (two-phase)   |         |
 ;   |  +-------------+                      +---------------+         |
 ;   +-----------------------------------------------------------------+
 ;
@@ -323,7 +315,7 @@ start:
 ;                        trigger a full-screen affine warp into the back
 ;                        buffer at 0x900000.
 ; 3. wait_vsync:         Synchronise with the vertical blank to prevent
-;                        visual tearing.
+;                        a completed buffer.
 ; 4. present_frame:      Point the VideoChip at the completed render buffer.
 ; 5. swap_draw_buffer:   Select the other render buffer for the next frame.
 ; 6. advance_animation:  Increment the angle and scale accumulators for
@@ -360,7 +352,7 @@ main_loop:
 ;                         rising edge of the next vblank.
 ;
 ; Together, these guarantee we synchronise to exactly one vblank boundary
-; per main loop iteration, giving a stable 60 FPS frame rate.
+; per main-loop iteration after the vblank edge.
 ;
 ; STATUS_VBLANK is bit 1 (value 2) of the VIDEO_STATUS register.
 ; ============================================================================

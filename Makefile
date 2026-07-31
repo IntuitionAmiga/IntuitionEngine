@@ -2197,7 +2197,7 @@ sdk-build: ie32asm ie64asm ie32to64 m68kto64 ie64dis
 			else SDK_FAILED=$$((SDK_FAILED+1)); fi; \
 		elif grep -ql 'ie68\.inc' "$$f" 2>/dev/null; then \
 			if command -v vasmm68k_mot >/dev/null 2>&1; then \
-				if grep -q '\-Ftos' "$$f" 2>/dev/null; then \
+				if [ "$$base" = "rotozoomer_gem" ] || grep -q '\-Ftos' "$$f" 2>/dev/null; then \
 					echo "  [M68K/TOS] $${base}.asm"; \
 					if (cd sdk/examples/asm && vasmm68k_mot -Ftos -m68020 -devpac -I ../../include -o $${base}.prg $${base}.asm); then \
 						SDK_BUILT=$$((SDK_BUILT+1)); \

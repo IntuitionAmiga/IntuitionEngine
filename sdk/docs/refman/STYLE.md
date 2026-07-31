@@ -28,6 +28,61 @@ documentation is wrong unless the code itself is being changed in the
 same pass and verified. Record the exact files checked in
 `verify/CLAIM_LEDGER.txt`.
 
+## Current Rotozoomer Source-Consistency Editorial Pass
+
+This pass audits every commit after `6e319b10` and the current tracked
+rotozoomer sources. Execute it in reader order over Chapters 47, 48, 50,
+and 51, then update the claim ledger. Finish with focused example and
+documentation checks, strict publication, and PDF generation.
+
+The commits from `688080ab` through `28b8e051` change IE64 JIT lowering,
+helper exits, WebAssembly coverage, and ARM64 MMU fast paths without
+changing the IE64 instruction set or guest-visible results. Those host
+execution details do not belong in the PRG. Do not add JIT helper,
+micro-TLB, native-emitter, host-architecture, fallback-policy, benchmark,
+or diagnostic-switch prose to reader-facing chapters.
+
+The current rotozoomer sources refine reader-visible programming rules
+that do belong in Part VII:
+
+- the affine rotation uses `duCol = cos`, `dvCol = sin`,
+  `duRow = -sin`, and `dvRow = cos`, with the scale applied consistently;
+- Mode 7 uses four-byte RGBA source and destination pixels in these
+  examples, so setup must establish `VIDEO_COLOR_MODE = 0` and neutral
+  `BLT_FLAGS = 0` where the source does so rather than inheriting stale
+  CLUT8 or raster-operation state;
+- rendering to a private back buffer keeps Mode 7 away from the displayed
+  framebuffer, but copying that buffer into the displayed framebuffer is
+  not an atomic presentation operation;
+- `VSYNC` or `sys.wait_frames(1)` after a framebuffer copy paces the next
+  loop iteration. It does not make the preceding copy atomic;
+- the IE64 and IE32 examples wait for the blitter, wait for the next
+  VBlank edge, then present by changing `VIDEO_FB_BASE` to a completed
+  render buffer;
+- a VBlank edge is a presentation point, not a promise that every frame
+  loop sustains `60` frames per second when its work exceeds one refresh
+  interval;
+- File I/O names in the 6502 and Z80 examples are resolved beneath the
+  guest File I/O root. Do not describe them as host working-directory
+  paths or turn their host launch commands into a reader workflow.
+
+Chapter 47 must call its method back-buffer rendering followed by a
+framebuffer copy, explain the non-atomic copy and the role of the later
+`VSYNC`, and retain the source-backed affine signs. Chapter 48 must show
+the colour-mode and blitter-state initialisation used by the script and
+state the same frame-wait limitation. Chapter 50 must describe the actual
+IE64 and IE32 presentation sequence, including blitter completion,
+VBlank, and `VIDEO_FB_BASE`. Chapter 51 must make RGBA32/COPY state and
+the presentation distinction part of the shared comparison contract,
+while mentioning the guest File I/O root only for the two versions that
+load their textures through that device.
+
+Adversarially verify these claims against `video_chip.go`, the current
+rotozoomer BASIC, IE Script, IE64, IE32, 6502, Z80, M68K, and x86
+sources, their focused tests, and the current public include constants.
+Record the exact evidence and the explicit no-PRG-change JIT conclusion
+in `verify/CLAIM_LEDGER.txt`.
+
 ## Current Shared Network Sockets Editorial Pass
 
 This pass integrates commit `de423204` and the matching tracked

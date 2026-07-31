@@ -27,8 +27,9 @@ The supplied BASIC demo `rotozoomer_basic.bas` uses this pattern:
 3. Compute angle and zoom each frame.
 4. Convert the values to `16.16` fixed point.
 5. Run `BLIT MODE7` into the back buffer.
-6. Run `BLIT MEMCOPY` to present the finished frame.
-7. `VSYNC`, advance the phases, and repeat.
+6. Run `BLIT MEMCOPY` to copy the finished frame into the configured
+   framebuffer.
+7. `VSYNC` before advancing the phases and repeating.
 
 ## 47.1 Mode 7 In One Listing
 
@@ -38,13 +39,13 @@ This small version uses a generated checker texture instead of a file.
 10 REM SMALL BASIC ROTOZOOMER
 20 FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096)
 30 TB=MEMALLOC(262144,4096):ST=1024:FP=65536
-40 POKE32 &H000F0004,0:POKE32 &H000F0080,0
+40 POKE32 &H000F0004,0:POKE32 &H000F0080,0:POKE32 &H000F0488,0
 50 POKE32 &H000F0084,FB:POKE32 &H000F0000,1
 60 BLIT FILL TB,128,128,&H003060A0,ST
 70 BLIT FILL TB+128*4,128,128,&H00A06030,ST
 80 BLIT FILL TB+128*ST,128,128,&H00A06030,ST
 90 BLIT FILL TB+128*ST+128*4,128,128,&H003060A0,ST
-100 A=0:Z=0
+100 A=0:Z=0:F=0
 110 SC=0.5+SIN(Z)*0.3:IF SC<0.2 THEN SC=0.2
 120 CA=COS(A)/SC:SA=SIN(A)/SC
 130 DC=INT(CA*FP):DS=INT(SA*FP)
@@ -55,11 +56,17 @@ This small version uses a generated checker texture instead of a file.
 180 VSYNC
 190 A=A+0.03:IF A>6.28318 THEN A=A-6.28318
 200 Z=Z+0.01:IF Z>6.28318 THEN Z=Z-6.28318
-210 GOTO 110
+210 F=F+1:IF F<240 THEN GOTO 110
+220 PRINT "FRAMES ";F
 ```
 
 Expected result: the checker texture rotates and zooms across the
-screen. The picture is rendered into `BB` first, then copied to `FB`.
+screen for `240` frames, then the programme prints `FRAMES 240`. The
+picture is rendered into `BB` first, then copied to `FB`.
+
+Line `40` selects direct framebuffer mode, RGBA32 pixels, and ordinary
+COPY blitter semantics. Setting all three explicitly prevents an older
+display or blitter experiment from changing this programme's result.
 
 ## 47.2 The Fixed-Point Step
 
@@ -102,7 +109,7 @@ dvRow =  cos(A) / scale
 The BASIC listing writes `0-DS` instead of `-DS` in the argument list.
 That is a safe spelling for a negative value in IE64 BASIC expressions.
 
-## 47.4 Double Buffering
+## 47.4 Back Buffer And Copy
 
 The Mode 7 draw goes to `BB`, not directly to the displayed framebuffer:
 
@@ -115,15 +122,22 @@ The Mode 7 draw goes to `BB`, not directly to the displayed framebuffer:
 The important number is `1228800`: `640 * 480 * 4`. `BLIT MEMCOPY` takes
 a byte count, not a pixel count.
 
-This is a simple back-buffer method. More advanced machine-code
-versions often present by changing `VIDEO_FB_BASE` at VBlank.
+The private back buffer prevents Mode 7 from writing directly into the
+displayed framebuffer. The following copy is still an ordinary blitter
+operation against the displayed framebuffer. It is not an atomic
+presentation step, and the later `VSYNC` does not make the preceding
+copy atomic. That wait paces the next loop iteration.
+
+The machine-code versions use a stronger presentation method. They
+render into alternating buffers, wait for the blitter and the next
+VBlank edge, then change `VIDEO_FB_BASE` to the completed buffer.
 
 ## 47.5 Music Beside Visuals
 
 The full BASIC demo starts SID playback before the frame loop. Once the
 player is running, the visual loop does not call it every frame:
 
-```basic
+```text
 SA=MEMALLOC(4096,4096)
 BLOAD "YUMMY.SID",SA
 SID PLAY SA,3725
@@ -141,6 +155,7 @@ parallel.
 | Line `110`, change `0.3` | Zoom depth. |
 | Line `190`, change `0.03` | Rotation speed. |
 | Line `200`, change `0.01` | Zoom pulse speed. |
+| Line `210`, change `240` | Number of frames. |
 | Lines `60` to `90` | Texture colours. |
 | Line `170`, copy less than `1228800` | Only part of the frame is presented. |
 

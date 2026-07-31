@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-24*
+*Last modified: 2026-07-31*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -627,12 +627,15 @@ shape and reuses its shared front end:
   and stack primitives and resumes. Generated code never calls back into Go.
 - **Instruction coverage.** An explicit allowlist (`wasmSupportedOpcode`)
   delimits the backend: the MMU-off integer core (data movement, ALU,
-  load/store, conditional branches, BRA/JMP/HALT, JSR/RTS/PUSH/POP/JSR_IND)
-  plus FP64 (DMOV/DLOAD/DSTORE, arithmetic, DABS/DNEG/DSQRT/DINT, DCMP and
-  the integer converts, with FPSR condition codes and sticky exception
-  flags replicated bit-exactly). A hot block is compiled up to its longest
-  supported prefix; anything else, including the FP64 transcendentals,
-  stays on the interpreter.
+  load/store, conditional branches, BRA/JMP/HALT, JSR/RTS/PUSH/POP/JSR_IND),
+  FP32 loads, stores and basic arithmetic, and FP64 loads, stores, arithmetic,
+  transforms, comparisons and conversions. The IE64 wasm JIT executes FP32
+  FMOD and transcendental operations, and FP64 DMOD and transcendental
+  operations, through helper exits that apply the processor FPU operation and
+  resume the compiled block. Direct
+  floating-point paths reproduce FPSR condition codes and sticky exception
+  flags. A hot block is compiled up to its longest supported prefix; other
+  instructions stay on the interpreter.
 - **Regions and residency.** Hot static BRA chains compile as one bounded wasm
   function. Forward edges and one structured back edge retain hot GPRs in
   `i64` locals and FP64 pairs in `f64` locals. Every external, helper, SMC and
@@ -788,9 +791,9 @@ Interrupt Delivery" section of this manual for the full model.
   dispatcher refreshes `ctx.MMUEnabled` before every `callNative` so the native
   guards are never stale.
 - **JIT MMU micro-TLB**: IE64 JIT MMU helpers use a four-entry read/write
-  micro-TLB for translated low-window RAM pages. AMD64 probes it for `LOAD` and
-  `STORE`; ARM64 probes it for `LOAD` only, retaining helper-mediated stores for
-  physical self-modifying-code invalidation. Helper dispatch fills the cache
+  micro-TLB for translated low-window RAM pages. AMD64 and ARM64 probe it for
+  `LOAD` and `STORE`; ARM64 store hits retain physical self-modifying-code
+  invalidation. Helper dispatch fills the cache
   only after a successful translation to dense RAM below `IO_REGION_START`; high
   physical backing and MMIO are not inserted. Native probes include the access
   type and CPU privilege/SUA/SKAC/SKEF mode bits in the key. `TLBFLUSH` clears
@@ -866,7 +869,7 @@ build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
 | `novulkan` | `-tags novulkan` | Voodoo uses the software backend and does not require the Vulkan SDK. Guest Voodoo registers remain mapped. |
 | `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
 | `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
-| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE64 uses a WebAssembly bytecode JIT for supported MMU-off integer and FP64 blocks, with interpreter fallback for unsupported instructions; the other CPU cores interpret. `IE64_WASM_JIT=0` disables the browser JIT. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
+| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE64 uses a WebAssembly bytecode JIT for supported MMU-off integer, FP32, and FP64 blocks, with interpreter fallback for unsupported instructions; the other CPU cores interpret. `IE64_WASM_JIT=0` disables the browser JIT. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
 
 Headless stubs should be treated as backend substitutes, not as a different
 machine model. A test can still write video or audio MMIO and inspect guest
@@ -881,8 +884,8 @@ backend choice; it does not change the guest audio devices or their MMIO
 contracts.
 
 Browser builds use an IE64 WebAssembly bytecode JIT for supported MMU-off
-integer and FP64 blocks, with interpreter fallback and `IE64_WASM_JIT=0` as the
-runtime disable switch. Browser FileIO and Bootstrap HostFS use in-memory
+integer, FP32, and FP64 blocks, with interpreter fallback and
+`IE64_WASM_JIT=0` as the runtime disable switch. Browser FileIO and Bootstrap HostFS use in-memory
 volumes seeded from web assets, with file contents fetched lazily on first
 read.
 

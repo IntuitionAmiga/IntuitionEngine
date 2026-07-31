@@ -1,21 +1,21 @@
 ; ============================================================================
-; GEM WINDOWED ROTOZOOMER - TOS .PRG Application for EmuTOS
-; M68020 Assembly for IntuitionEngine - GEM Application Programming
+; ROTOZOOMER TUTORIAL: GEM, AES/VDI, AND THE MODE7 BLITTER
+; M68020 TOS .PRG for EmuTOS
 ; ============================================================================
 ;
-; A proper TOS .PRG that opens a GEM window under EmuTOS and renders
-; a rotating, zooming checkerboard texture inside it using the IE
-; hardware Mode7 blitter.
+; This program creates a GEM window and maps an indexed 256 by 256 texture
+; into that window with Mode7. GEM owns the desktop framebuffer, so the render
+; path uses the current work rectangle and does not reconfigure VIDEO_MODE.
 ;
 ; Build:
 ;   vasmm68k_mot -Ftos -m68020 -devpac -Isdk/include \
-;     -o sdk/examples/asm/rotozoomer_gem.prg sdk/examples/asm/rotozoomer_gem.asm
+;     -o sdk/examples/prebuilt/rotozoomer_gem.prg sdk/examples/asm/rotozoomer_gem.asm
 ;
-; Run:
-;   mkdir -p /tmp/tos_drive
-;   cp sdk/examples/asm/rotozoomer_gem.prg /tmp/tos_drive/ROTOZOOM.PRG
-;   ./bin/IntuitionEngine -emutos -emutos-drive /tmp/tos_drive/
-;   (Navigate to drive U: in GEM desktop, double-click ROTOZOOM.PRG)
+; The affine model is shared with the other demos:
+;   U = U0 + x*dU_col + y*dU_row
+;   V = V0 + x*dV_col + y*dV_row
+; Here `render_window` adjusts the origin for the clipped work rectangle.
+; AES messages drive redraw, movement and closure; VDI supplies clipping.
 ;
 ; ============================================================================
 
@@ -88,7 +88,7 @@ SCALE_INC       equ 104             ; Zoom speed (8.8 fixed-point)
 ; TOS .PRG STARTUP (crt0)
 ; ============================================================================
 
-                text
+                section .text,code
 
 start:
                 ; --- Read basepage pointer from stack ---
@@ -167,14 +167,14 @@ gem_init:
                 lea     work_in(pc),a0
                 move.w  #1,(a0)                 ; device ID
                 move.w  #1,2(a0)                ; line type
-                move.w  #1,4(a0)                ; line color
+                move.w  #1,4(a0)                ; line colour
                 move.w  #1,6(a0)                ; marker type
-                move.w  #1,8(a0)                ; marker color
+                move.w  #1,8(a0)                ; marker colour
                 move.w  #1,10(a0)               ; font ID
-                move.w  #1,12(a0)               ; text color
+                move.w  #1,12(a0)               ; text colour
                 move.w  #1,14(a0)               ; fill interior
                 move.w  #1,16(a0)               ; fill style
-                move.w  #1,18(a0)               ; fill color
+                move.w  #1,18(a0)               ; fill colour
                 move.w  #2,20(a0)               ; use RC coordinate system
 
                 ; VDI contrl: opcode=100, ptsin=0, intin=11, sub=0
@@ -679,7 +679,7 @@ render_window:
                 ; the clipped x,y as d0,d1 which are screen coordinates.
                 ; The work area origin is cached by compute_frame, and u0/v0
                 ; are relative to screen (0,0), so the Mode7 blitter naturally
-                ; handles the offset — we just set the correct dst and dims.
+; handles the offset; this routine sets the destination and dimensions.
 
                 ; Set up Mode7 blitter
                 move.l  #BLT_OP_MODE7,BLT_OP
@@ -1009,7 +1009,7 @@ ahx_data_end:
 ; BSS - Uninitialised Data
 ; ============================================================================
 
-                bss
+                section .bss,bss
 
 ; Animation accumulators
 angle_accum:    ds.l    1

@@ -1,5 +1,5 @@
 ; ============================================================================
-; MODE 7 HARDWARE BLITTER ROTOZOOMER - x86 (32-bit) REFERENCE IMPLEMENTATION
+; ROTOZOOMER TUTORIAL: 32-BIT x86 AND THE MODE7 BLITTER
 ; NASM Syntax for IntuitionEngine - VideoChip 640x480 True Colour
 ; ============================================================================
 ;
@@ -14,28 +14,21 @@
 ;                rotozoomer.asm (IE32), rotozoomer_68k.asm (M68K) for other
 ;                32-bit approaches.
 ;
-; SDK TUTORIAL: HARDWARE-ACCELERATED AFFINE TEXTURE MAPPING
-; This file is heavily commented to teach Mode7 programming concepts on x86.
+; This tutorial follows the common affine mapping and the NASM x86 operations
+; used to calculate and submit its signed fixed-point parameters.
 ;
 ; === WHAT THIS DEMO DOES ===
 ; 1. Generates a 256x256 checkerboard texture via hardware blitter fills
-; 2. Performs real-time rotation and zoom of the texture using Mode7 hardware
-; 3. Double-buffers the output to prevent visual tearing
+; 2. Performs rotation and scaling through the Mode7 operation
+; 3. Alternates off-screen render buffers and presents one at vblank
 ; 4. Plays PSG (AY-3-8910) music through the audio subsystem
 ;
 ; === WHY MODE7 HARDWARE BLITTER (NOT SOFTWARE RENDERING) ===
 ; A rotozoomer must transform every pixel on screen through an affine matrix.
 ; At 640x480 resolution, that is 307,200 pixels per frame. A software
-; implementation would need per-pixel: texture coordinate calculation,
-; wrapping, texture fetch, and framebuffer write -- easily 10+ instructions
-; per pixel, totaling ~3 million instructions per frame.
-;
-; Instead, we delegate the ENTIRE affine transformation to the Mode7 hardware
-; blitter. The CPU computes just 6 parameters per frame (u0, v0, du_col,
-; dv_col, du_row, dv_row), then the blitter handles all 307,200 pixels in
-; hardware. This is analogous to how the SNES Mode7 chip enabled F-Zero and
-; Super Mario Kart -- the CPU sets up the transformation matrix, and
-; dedicated hardware rasterises the result.
+; implementation would need a coordinate calculation, wrapping, a fetch and a
+; write for every output pixel. This source instead calculates an origin and
+; four deltas, starts Mode7, and waits for the blitter to finish.
 ;
 ; === THE MODE7 AFFINE TRANSFORM ===
 ; Mode7 maps a 2D texture onto the screen using an affine transformation:
@@ -257,7 +250,7 @@ start:
 ; ============================================================================
 ; MAIN LOOP
 ; ============================================================================
-; Runs once per frame at 60 FPS (synchronised by wait_vsync).
+; Runs once after each vblank edge observed by wait_vsync.
 ;
 ; The frame pipeline:
 ;   1. compute_frame:     CPU work (~6 multiplies, ~20 shifts/adds)

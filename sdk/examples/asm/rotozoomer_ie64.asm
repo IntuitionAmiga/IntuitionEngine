@@ -1,5 +1,5 @@
 ; ============================================================================
-; HARDWARE-ACCELERATED ROTOZOOMER DEMO
+; ROTOZOOMER TUTORIAL: IE64 AND THE MODE7 BLITTER
 ; IE64 Assembly for IntuitionEngine - VideoChip Mode 0 (640x480x32)
 ; ============================================================================
 ;
@@ -13,30 +13,22 @@
 ; Porting:       VideoChip/blitter MMIO is CPU-agnostic. See rotozoomer.asm (IE32),
 ;                rotozoomer_68k.asm (M68K), rotozoomer_z80.asm (Z80) for other ports.
 ;
-; SDK REFERENCE IMPLEMENTATION - HARDWARE MODE7 BLITTER TUTORIAL
-; This file is heavily commented to teach Mode7 affine texture mapping,
-; fixed-point animation, and IE64-specific programming patterns.
+; This tutorial follows the common affine mapping, fixed-point animation, and
+; IE64 register-access path used by this implementation.
 ;
 ; === WHAT THIS DEMO DOES ===
-; Renders a full-screen (640x480) rotating and zooming texture pattern
-; using the Mode7 hardware blitter. The texture (loaded from a pre-converted
-; 256x256 BGRA raw image) tiles infinitely, creating the classic "rotozoomer"
-; effect seen in countless demoscene productions.
-; SAP music (Atari 8-bit POKEY format) plays in the background.
+; Renders a 640 by 480 affine mapping from a 256 by 256 texture. This source
+; starts SAP playback separately, computes an origin and four deltas, renders
+; to one off-screen buffer, then presents that completed buffer at vblank.
 ;
 ; === WHY MODE7 HARDWARE BLITTER (NOT SOFTWARE RENDERING) ===
 ; A 640x480 framebuffer is 307,200 pixels. Computing affine texture
 ; coordinates per-pixel in software would require two multiplies, two adds,
-; and a texture fetch for EACH pixel -- over 1.8 million arithmetic ops per
-; frame. Instead, we delegate the entire transformation to the Mode7 blitter
-; hardware: the CPU computes just 6 parameters (u0, v0, du_col, dv_col,
-; du_row, dv_row), and the blitter handles all 307,200 pixels in parallel.
+; and a texture fetch for each pixel. Instead, this source supplies the Mode7
+; origin and four deltas, then waits for the blitter to complete the operation.
 ;
-; This is directly analogous to the SNES Mode7 hardware (F-Zero, Super Mario
-; Kart, Pilotwings), where the PPU performed per-scanline affine transforms
-; on a single background layer. The key insight is the same: affine
-; transforms are defined by a 2x2 matrix plus an origin, so the hardware
-; only needs to perform incremental addition per pixel.
+; The useful distinction is between setup and sampling: the CPU writes an
+; affine matrix and origin, while the blitter performs the output-pixel loop.
 ;
 ; === THE AFFINE TRANSFORM (MATHEMATICAL FOUNDATION) ===
 ;
@@ -62,7 +54,7 @@
 ; === ARCHITECTURE OVERVIEW ===
 ;
 ;   +---------------------------------------------------------------------+
-;   |                     MAIN LOOP (~60 FPS)                             |
+;   |                     MAIN LOOP                                       |
 ;   |                                                                     |
 ;   |  +--------------+    +--------------+    +-----------------+        |
 ;   |  |  COMPUTE     |    |  RENDER      |    |  BLIT TO FRONT  |        |
@@ -281,7 +273,7 @@ start:
 ;   2. render_mode7:      Program the blitter with those parameters and
 ;                         trigger the Mode7 blit into the back buffer.
 ;   3. wait_vsync:        Wait for the next vertical blank interval to
-;                         prevent tearing and maintain consistent timing.
+;                         present a completed buffer at a vblank edge.
 ;   4. present_frame:     Point the VideoChip at the completed render buffer.
 ;   5. swap_draw_buffer:  Select the other render buffer for the next frame.
 ;   6. advance_animation: Increment the angle and scale accumulators for

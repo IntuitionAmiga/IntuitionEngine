@@ -1,12 +1,21 @@
 ; ============================================================================
-; AROS ROTOZOOMER — ASM + Hardware Direct (Blitter COPY to screen VRAM)
+; AROS ROTOZOOMER TUTORIAL: 68020 assembly and locked bitmap presentation
 ; ============================================================================
-; Opens an Intuition CUSTOMSCREEN (640x480 RGBA32), renders via Mode7 blitter
-; into an OS-allocated back buffer, then uses BLIT COPY to transfer directly
-; to the screen bitmap's VRAM (obtained via LockBitMapTagList).
+; This program opens a 640 by 480 CUSTOMSCREEN, renders the affine mapping
+; into AllocMem memory, then locks the screen bitmap and submits an IE COPY
+; blit to the returned base address.
 ;
-; Build: vasmm68k_mot -Fhunk -m68020 -devpac -Isdk/include \
-;        -o RotoHW sdk/examples/asm/rotozoomer_aros_hw.asm
+; Shared rotozoomer model:
+;   U = U0 + x*dU_col + y*dU_row
+;   V = V0 + x*dV_col + y*dV_row
+; `compute_frame` produces the signed 16.16 origin and deltas. `render_mode7`
+; submits them to the IE blitter and waits for completion. The presentation
+; difference is confined to `blit_to_screen`: it must hold the bitmap lock
+; until the COPY blit has finished, then unlock it.
+;
+; The embedded texture is copied into separately allocated memory before the
+; frame loop. The Mode7 destination is a back buffer, not the screen bitmap.
+; The VSYNC poll yields after the copy; it is not an atomic display swap.
 ; ============================================================================
 
                 include "ie68.inc"
@@ -254,7 +263,7 @@ start:
                 rts
 
 ; ============================================================================
-; LOAD TEXTURE — BLIT COPY embedded raw data into AllocMem'd texture buffer
+; LOAD TEXTURE: COPY embedded raw data into the AllocMem texture buffer
 ; ============================================================================
 load_texture:
                 move.l  #BLT_OP_COPY,BLT_OP
@@ -286,7 +295,7 @@ stop_music:
                 rts
 
 ; ============================================================================
-; COMPUTE FRAME — identical to bare-metal version
+; COMPUTE FRAME: same affine calculation as the non-AROS variant
 ; ============================================================================
 compute_frame:
                 movem.l d0-d7,-(sp)
@@ -369,7 +378,7 @@ compute_frame:
                 rts
 
 ; ============================================================================
-; RENDER MODE7 — texture_buf → back_buf via Mode7 blitter
+; RENDER MODE7: texture buffer to back buffer through Mode7
 ; ============================================================================
 render_mode7:
                 move.l  #BLT_OP_MODE7,BLT_OP
@@ -402,7 +411,7 @@ render_mode7:
                 rts
 
 ; ============================================================================
-; BLIT TO SCREEN — LockBitMap + BLIT COPY back_buf → screen VRAM + UnLock
+; BLIT TO SCREEN: lock bitmap, COPY back buffer, then unlock
 ; ============================================================================
 blit_to_screen:
                 ; Lock the screen bitmap
@@ -437,7 +446,7 @@ blit_to_screen:
                 rts
 
 ; ============================================================================
-; WAIT VSYNC — two-phase edge detection
+; WAIT VSYNC: two-phase edge detection
 ; ============================================================================
 wait_vsync:
 .wait_end:      move.l  VIDEO_STATUS,d0
@@ -464,7 +473,7 @@ advance_animation:
                 rts
 
 ; ============================================================================
-; CHECK IDCMP — returns d0=1 if ESC pressed, 0 otherwise
+; CHECK IDCMP: returns d0=1 for Escape, otherwise 0
 ; ============================================================================
 check_idcmp:
                 movem.l a1-a6,-(sp)
@@ -565,7 +574,7 @@ win_screen_val: dc.l    0                       ; patched at runtime
                 dc.l    WA_Activate,1
                 dc.l    TAG_DONE
 
-; LockBitMapTagList tags — ti_Data points to writable storage
+; LockBitMapTagList tags: ti_Data points to writable storage
 lbmi_tags:
                 dc.l    LBMI_BASEADDRESS
                 dc.l    screen_vram

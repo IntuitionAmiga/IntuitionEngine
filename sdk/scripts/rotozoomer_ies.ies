@@ -1,4 +1,26 @@
--- Standalone IEScript Mode7 rotozoomer.
+-- ROTOZOOMER TUTORIAL: IEScript submission of the Mode7 blitter.
+--
+-- This program stages a 256 by 256 texture in guest memory, renders it into
+-- a 640 by 480 back buffer, then copies that buffer to the framebuffer. The
+-- common affine mapping is evaluated by the blitter, not by this Lua loop:
+--
+--   U = U0 + x * dU_col + y * dU_row
+--   V = V0 + x * dV_col + y * dV_row
+--
+-- U0 and V0 are signed 16.16 values. `fixed` converts a Lua number to that
+-- representation. The four deltas form the rotation and scale matrix. The
+-- texture-width and texture-height registers receive 255, the wrap masks for
+-- this power-of-two texture, rather than the dimensions themselves.
+--
+-- `stage_assets` is host-side setup. It pauses the guest CPU while writing
+-- file contents into guest memory. `render_frame` is the guest-facing part:
+-- it writes the documented blitter registers, starts an operation, and polls
+-- BLT_CTRL until the busy bit clears before reusing the registers or buffer.
+--
+-- The copy operation makes the Mode7 destination a private back buffer. It
+-- does not make presentation atomic. `sys.wait_frames(1)` yields once after a
+-- completed copy. Set IE_ROTO_DISABLE_AUDIO to skip the optional MIDI setup,
+-- or IE_ROTO_MAX_FRAMES to stop after a chosen number of completed frames.
 
 local VIDEO_CTRL = 0xF0000
 local VIDEO_MODE = 0xF0004

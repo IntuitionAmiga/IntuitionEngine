@@ -1,6 +1,6 @@
 ; ============================================================================
-; MODE 7 HARDWARE BLITTER ROTOZOOMER - 6502 ASSEMBLY
-; Intuition Engine SDK Reference Implementation
+; ROTOZOOMER TUTORIAL: 6502 AND THE MODE7 BLITTER
+; IntuitionEngine SDK example
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -8,42 +8,28 @@
 ; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 ; Audio Engine:  SID (C64-style synthesis)
 ; Assembler:     ca65/ld65 (cc65 toolchain)
-; Build:         make ie65asm SRC=sdk/examples/asm/rotozoomer_65.asm
-; Run:           ./bin/IntuitionEngine -m6502 rotozoomer_65.ie65
+; Build:         make rotozoomer-65
+; Run:           go run . -file-root . -m6502 sdk/examples/prebuilt/rotozoomer_65.ie65
 ; Porting:       VideoChip/blitter MMIO is CPU-agnostic. Compare with
 ;                rotozoomer_z80.asm (Z80) for another 8-bit approach, or
 ;                rotozoomer.asm (IE32) for a 32-bit approach.
 ;
 ; === WHAT THIS DEMO DOES ===
 ;
-; A real-time rotozoomer effect: a 256x256 RGBA texture is loaded from disk and
-; and zoomed smoothly using the hardware Mode 7 affine texture mapper. The
-; CPU computes just 6 parameters per frame (u0, v0, du_col, dv_col,
-; du_row, dv_row), and the blitter handles all 307,200 pixels (640x480).
-; SID music plays in the background via the audio subsystem.
+; A 256 by 256 RGBA texture is loaded from disk. The 6502 computes a signed
+; 16.16 origin and four deltas, then Mode7 maps the texture to 640 by 480.
+; SID playback is started separately through the audio subsystem.
 ;
 ; === WHY MODE 7 HARDWARE BLITTER ===
 ;
-; The 6502 CPU runs at 1-2 MHz with no multiply instruction, no barrel
-; shifter, and only three 8-bit registers (A, X, Y). Software-rendering
-; a 640x480 rotozoomer at 60fps is impossible -- each pixel would need
-; two multiplies and two adds for the affine transform, totaling over
-; 1.2 million multiplies per frame. Even at one multiply per 100 cycles,
-; that would require 120 MHz -- roughly 100x what we have.
-;
-; The Mode 7 blitter solves this by accepting 6 parameters that define
-; the affine transformation matrix and rendering the entire frame in
-; hardware. The CPU's only job is computing those 6 values, which
-; involves a handful of 16x16 multiplies and 32-bit additions.
-;
-; This is the same principle behind the SNES Mode 7 (F-Zero, Mario Kart)
-; and the GBA affine backgrounds: the hardware does the per-pixel work,
-; the CPU just sets up the transform.
+; The 6502 has no multiply instruction, so `mul16_signed` supplies the
+; products needed by `compute_frame`. Mode7 then uses the resulting origin
+; and directional deltas to perform the output-pixel loop.
 ;
 ; === ARCHITECTURE OVERVIEW ===
 ;
 ;   ┌─────────────────────────────────────────────────────────────┐
-;   │                    MAIN LOOP (60 FPS)                       │
+;   │                    MAIN LOOP                                │
 ;   │                                                             │
 ;   │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
 ;   │  │  COMPUTE    │───>│   RENDER    │───>│  PRESENT    │     │
@@ -107,15 +93,17 @@
 ; === WHY DOUBLE BUFFERING ===
 ;
 ; The Mode 7 blitter writes 307,200 pixels to the destination buffer.
-; If we rendered directly to VRAM ($100000), the display would show
-; a partially-rendered frame (tearing). Instead, we render to the back
-; buffer ($600000), then BLIT COPY the completed frame to VRAM in one
-; shot between vsyncs.
+; This source alternates two render buffers and writes VIDEO_FB_BASE after a
+; vblank edge. The selected buffer has completed Mode7 rendering before it is
+; presented. The texture begins at $600000; it is not the back buffer.
 ;
 ; === BUILD AND RUN ===
 ;
-;   Build: make ie65asm SRC=assembler/rotozoomer_65.asm
-;   Run:   ./bin/IntuitionEngine -m6502 assembler/rotozoomer_65.ie65
+;   Build: make rotozoomer-65
+;   Run:   go run . -file-root . -m6502 sdk/examples/prebuilt/rotozoomer_65.ie65
+;
+; File I/O resolves this source's texture name beneath the guest file root.
+; Supplying `-file-root .` exposes sdk/examples/assets from the repository root.
 ;
 ; === DEPENDENCIES ===
 ;
@@ -220,8 +208,7 @@ SCALE_INC_HI     = >104          ; high byte = $00
 ;
 ; The `.segment "ZEROPAGE"` directive tells cc65 to allocate these
 ; variables starting at address $00. The `.res N` directive reserves
-; N bytes without initializing them (they start as whatever the
-; hardware provides, but we always write before we read).
+; N bytes without initialising them. The program writes each byte before use.
 ;
 ; Variable layout in zero page:
 ;   $00-$01 : angle_accum (16-bit fractional rotation accumulator)
@@ -283,6 +270,10 @@ draw_fb_hi:      .res 1          ; High address byte for the current render buff
     lda #0
     sta VIDEO_MODE
     STORE32 VIDEO_FB_BASE, VRAM_START
+    ; Mode7 source and destination pixels are four-byte RGBA values. Do not
+    ; inherit CLUT8 or a non-Copy raster operation from an earlier program.
+    STORE32 VIDEO_COLOR_MODE, 0
+    STORE32 BLT_FLAGS_0, 0
 
     ; --- Load texture from disk ---
     ; Loads a pre-rendered 256x256 RGBA texture from disk using the File I/O
@@ -321,7 +312,7 @@ draw_fb_hi:      .res 1          ; High address byte for the current render buff
     START_PSG_LOOP
 
     ; === MAIN LOOP ===
-    ; This runs forever at 60fps (synchronised by wait_vsync).
+; This runs until the process is stopped and waits for a vblank edge each time.
 loop:
     jsr compute_frame
     jsr render_mode7
@@ -335,8 +326,7 @@ loop:
 ; ============================================================================
 ; WAIT FOR VSYNC (two-phase edge detection)
 ; ============================================================================
-; Synchronises to the vertical blanking interval to prevent tearing
-; and ensure consistent 60fps timing.
+; Synchronises to the next vertical blanking interval before presentation.
 ;
 ; WHY TWO PHASES?
 ; A single "wait until vblank" could return immediately if we're already
@@ -1310,7 +1300,7 @@ loop:
 ; automatically. The ADC instruction adds the low byte; if it carries,
 ; the next ADC picks up that carry into the high byte. If the high
 ; byte overflows past $FF, the carry is simply lost. This gives us
-; free modulo-65536 behavior. Since our tables have 256 entries and
+; free modulo-65536 behaviour. Since the tables have 256 entries and
 ; the index is the high byte, this effectively wraps modulo 256
 ; (because the high byte wraps from $FF to $00 on overflow).
 ; No AND mask is needed.
@@ -1457,7 +1447,8 @@ recip_table:
 ; TEXTURE FILENAME - Null-terminated path for File I/O
 ; ============================================================================
 ; This string is read by the File I/O device via bus.Read8() to locate the
-; texture file on disk. The path is relative to the engine's working directory.
+; texture file on disk. It is relative to the guest File I/O root, not the
+; host process working directory.
 texture_filename:
     .byte "sdk/examples/assets/rotozoomtexture_6502.raw",0
 

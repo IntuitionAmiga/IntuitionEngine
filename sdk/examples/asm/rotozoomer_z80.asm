@@ -1,5 +1,5 @@
 ; ============================================================================
-; MODE7 HARDWARE BLITTER ROTOZOOMER - Z80 SDK REFERENCE IMPLEMENTATION
+; ROTOZOOMER TUTORIAL: Z80 AND THE MODE7 BLITTER
 ; Zilog Z80 Assembly for IntuitionEngine - VideoChip Mode (640x480x32bpp)
 ; ============================================================================
 ;
@@ -8,57 +8,35 @@
 ; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 ; Audio Engine:  SID (Commodore 64 sound chip)
 ; Assembler:     vasmz80_std (VASM Z80, standard syntax)
-; Build:         vasmz80_std -Fbin -o rotozoomer_z80.ie80 rotozoomer_z80.asm
-; Run:           ./bin/IntuitionEngine -z80 rotozoomer_z80.ie80
+; Build:         make showreel-z80
+; Run:           go run . -file-root . -z80 sdk/examples/prebuilt/rotozoomer_z80.ie80
 ; Porting:       VideoChip/blitter MMIO is CPU-agnostic. Compare with
 ;                rotozoomer_65.asm (6502) for another 8-bit approach, or
 ;                rotozoomer_68k.asm (M68K) for a 32-bit approach.
 ;
-; REFERENCE IMPLEMENTATION FOR DEMOSCENE TECHNIQUES ON AN 8-BIT CPU
-; This file is heavily commented to teach Mode7 blitter programming,
-; Z80-specific workarounds, and fixed-point math on constrained hardware.
+; This tutorial follows the common affine mapping, explains the Z80 MMIO window,
+; and keeps the fixed-point calculations in byte-addressable working memory.
 ;
 ; === WHAT THIS DEMO DOES ===
 ; 1. Loads a 256x256 RGBA texture from disk via File I/O
 ; 2. Computes a per-frame affine transformation matrix (rotation + zoom)
 ; 3. Delegates the full 640x480 pixel transform to the Mode7 hardware blitter
-; 4. Double-buffers through an off-screen back buffer to prevent tearing
+; 4. Alternates off-screen render buffers and presents one at vblank
 ; 5. Plays SID music through the 6502 audio subsystem in the background
 ;
 ; === WHY MODE7 HARDWARE BLITTER ===
 ; The "Mode7" blitter performs affine texture mapping: it reads a source
 ; texture and writes transformed pixels to a destination buffer, applying
-; rotation, scaling, and translation per-scanline. This is inspired by the
-; SNES Mode 7 chip, which enabled effects like the rotating floors in
-; Super Mario Kart and F-Zero.
+; rotation, scaling, and translation from the origin and directional deltas.
 ;
-; The critical insight is DELEGATION. A 4MHz Z80 running software pixel
-; loops could never transform 307,200 pixels (640x480) at 60fps. The CPU
-; would need to compute U/V texture coordinates per pixel, fetch texels,
-; and write RGBA values -- roughly 20 instructions per pixel minimum.
-; That is 6,144,000 instructions per frame, or 368,640,000 per second at
-; 60fps. A Z80 at 4MHz executes ~1,000,000 instructions/second. The CPU
-; is literally 368x too slow.
-;
-; Instead, the Z80 computes just 6 parameters per frame (U0, V0, dU/col,
-; dV/col, dU/row, dV/row) and hands them to the Mode7 blitter, which
-; processes all 307,200 pixels in hardware. The CPU does ~500 instructions
-; of math per frame. This is the fundamental pattern for 8-bit demoscene
-; programming: use the CPU for control, use hardware for throughput.
-;
-; === WHY A ROTOZOOMER (HISTORICAL CONTEXT) ===
-; The rotozoomer was a signature demoscene effect from the early 1990s.
-; It demonstrates mastery of affine texture mapping -- rotating and zooming
-; a texture in real-time. On the Amiga and Atari ST, this was typically
-; done in software with heavy inner-loop optimization. On the SNES, Mode 7
-; provided it in hardware. This demo recreates the effect using the
-; IntuitionEngine's blitter, showing how an 8-bit Z80 can drive visuals
-; that would normally require a 16-bit or 32-bit CPU.
+; A software implementation would iterate over all 307,200 output pixels.
+; This Z80 source instead computes the origin and four deltas, writes the MMIO
+; registers, and waits for the Mode7 operation to finish.
 ;
 ; === ARCHITECTURE OVERVIEW ===
 ;
 ;   +------------------------------------------------------------------+
-;   |                    MAIN LOOP (60 FPS)                            |
+;   |                    MAIN LOOP                                     |
 ;   |                                                                  |
 ;   |  +--------------+   +--------------+   +--------------+          |
 ;   |  | compute_frame|-->| render_mode7 |-->|present_frame |          |
@@ -101,10 +79,13 @@
 ; === BUILD AND RUN ===
 ;
 ;   Assemble:
-;     vasmz80_std -Fbin -I. -o assembler/rotozoomer_z80.ie80 assembler/rotozoomer_z80.asm
+;     make showreel-z80
 ;
 ;   Run:
-;     ./bin/IntuitionEngine -z80 assembler/rotozoomer_z80.ie80
+;     go run . -file-root . -z80 sdk/examples/prebuilt/rotozoomer_z80.ie80
+;
+; File I/O resolves this source's texture name beneath the guest file root.
+; Supplying `-file-root .` exposes sdk/examples/assets from the repository root.
 ;
 ; ============================================================================
 
@@ -124,9 +105,9 @@
 ; --- Double Buffer ---
 ; Mode7 renders to this off-screen buffer at 0x900000, NOT directly to VRAM.
 ; After rendering completes, we BLIT COPY the result to VRAM (0x100000).
-; This prevents tearing: the display always shows a complete frame, never
-; a partially-rendered one. Without double buffering, the top half of the
-; screen might show the new frame while the bottom half shows the old one.
+; The display base is changed only after Mode7 completes and a vblank edge is
+; observed. The two buffers prevent the next Mode7 operation overwriting the
+; selected display buffer.
 .set BACK_BUFFER_A,0x900000
 .set BACK_BUFFER_B,0xB00000
 .set BACK_BUFFER_A_HI,0x90
@@ -209,6 +190,10 @@ start:
     xor a
     ld (VIDEO_MODE),a
     STORE32 VIDEO_FB_BASE VRAM_START
+    ; Mode7 source and destination pixels are four-byte RGBA values. Do not
+    ; inherit CLUT8 or a non-Copy raster operation from an earlier program.
+    STORE32 VIDEO_COLOR_MODE 0
+    STORE32 BLT_FLAGS_0 0
 
     ; --- Load Texture from Disk ---
     ; Loads a pre-rendered 256x256 RGBA texture from disk using the File I/O
@@ -283,12 +268,12 @@ start:
 ; ============================================================================
 ; MAIN LOOP
 ; ============================================================================
-; This loop runs once per frame (60fps when vsync-locked).
-; The order of operations is critical for tear-free rendering:
+; This loop waits for a vblank edge before changing the display base.
+; The order of operations keeps rendering separate from presentation:
 ;
 ; 1. compute_frame:    CPU math -- derive 6 Mode7 parameters from angle/scale
 ; 2. render_mode7:     Program blitter with those params, trigger HW render
-; 3. WAIT_VBLANK:      Synchronise to vertical blank (prevents tearing)
+; 3. WAIT_VBLANK:      Synchronise to the next vertical blank interval
 ; 4. present_frame:    Point the VideoChip at the completed render buffer
 ; 5. swap_draw_buffer: Select the other render buffer
 ; 6. advance_animation: Increment accumulators for next frame's parameters
@@ -1413,7 +1398,8 @@ recip_table:
 ; TEXTURE FILENAME - Null-terminated path for File I/O
 ; ============================================================================
 ; This string is read by the File I/O device via bus.Read8() to locate the
-; texture file on disk. The path is relative to the engine's working directory.
+; texture file on disk. It is relative to the guest File I/O root, not the
+; host process working directory.
 texture_filename:
     .byte "sdk/examples/assets/rotozoomtexture_z80.raw",0
 

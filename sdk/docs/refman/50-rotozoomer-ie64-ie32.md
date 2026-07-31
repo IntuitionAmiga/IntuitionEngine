@@ -14,9 +14,10 @@ Copyright (c) 2026 Zayn Otley. All rights reserved.
 # Chapter 50 - The Rotozoomer In IE64 And IE32
 
 The IE64 and IE32 rotozoomers are the native versions of the BASIC
-effect. They still use VideoChip Mode 7. They still use a texture, a
-back buffer, a front buffer, VBlank, and audio playback. The difference
-is that the frame loop is now integer machine code.
+effect. They still use VideoChip Mode 7, a texture, alternating render
+buffers, VBlank, and audio playback. The difference is that the frame
+loop is now integer machine code and presents a completed buffer by
+changing `VIDEO_FB_BASE`.
 
 This chapter does not print full listings. It shows the pieces to look
 for when reading them.
@@ -54,6 +55,12 @@ store.l  r3, (VIDEO_CTRL)
 
 The exact instruction spelling differs between IE64 and IE32, but the
 register targets do not.
+
+These standalone images begin with reset VideoChip state. At reset,
+`VIDEO_COLOR_MODE` is `0`, and `BLT_FLAGS` is `0`, which means RGBA32
+pixels and compatible COPY behaviour. A larger programme that may
+inherit device state should write both zero values explicitly before
+its first Mode 7 operation.
 
 ## 50.3 Table Lookup
 
@@ -110,14 +117,21 @@ MMIO names. They tell you what the machine is doing.
 
 ## 50.6 Wait, Present, Advance
 
-The loop ends with three jobs:
+The loop ends with four jobs:
 
-1. Wait for VBlank or a safe presentation point.
-2. Present the completed buffer by copy or framebuffer-base update.
-3. Advance the angle and scale accumulators.
+1. Poll `BLT_CTRL` until Mode 7 has completed the render buffer.
+2. Wait for the next VBlank edge.
+3. Present the completed buffer by writing its address to
+   `VIDEO_FB_BASE`.
+4. Select the other render buffer and advance the angle and scale
+   accumulators.
 
 That is the same loop from Chapter 46, only with table arithmetic and a
 hardware Mode 7 draw in the middle.
+
+The VBlank edge gives the programme a safe point to change the display
+base. It does not promise `60` completed frames per second if rendering
+takes longer than one refresh interval.
 
 ## 50.7 IE64 Compared With IE32
 
