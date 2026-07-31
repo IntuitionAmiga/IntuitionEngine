@@ -6,7 +6,10 @@
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // ===========================================================================
 // x86-64 Register Mapping for x86 Guest JIT (Tier 1: Fixed Allocation)
@@ -66,28 +69,38 @@ var x86InvVisibleFlagsMaskI32 = -int32(x86VisibleFlagsMask) - 1
 
 const x86LoopBudget = 65535 // iterations before returning to Go
 
-// x86CurrentCS is the active compile state. Set during block compilation.
+// The amd64 emitter predates per-compilation state plumbing and several small
+// emission helpers still read this state directly. Compilation therefore owns
+// x86CompileMu for the whole emission transaction. The lock is deliberately
+// local to compilation: generated code never takes it. x86CompileBlockForCPU
+// and x86CompileRegionForCPU pass an immutable snapshot, so one CPU cannot
+// borrow another CPU's MMIO/code-page maps or visible-RAM ceiling.
+var x86CompileMu sync.Mutex
+
+// x86CurrentCS is the active compile state while x86CompileMu is held.
 var x86CurrentCS *x86CompileState
 
-// x86CompileIOBitmap and x86CompileCodeBitmap are set by the execution loop
-// before calling x86CompileBlock, allowing compile-time page safety checks.
+// These legacy variables support focused emitter tests that predate
+// x86CompileInput. Production compilation never reads or writes them.
 var x86CompileIOBitmap []byte
 var x86CompileCodeBitmap []byte
 
-// x86CompileMemCeiling is the guest-visible RAM ceiling (bytes) the span guard
-// must bound direct native accesses by. Set by the execution loop before each
-// compile to the x86 CPU's active visible RAM (which may be smaller than the
-// backing slice). Zero means "unset": x86CompileBlock falls back to
-// len(memory) so test and region compiles that never publish it keep working.
+// x86CompileMemCeiling is the legacy test seam for the span-guard bound. A
+// zero value means "unset" and falls back to len(memory). Production obtains
+// the ceiling from the CPU-owned x86CompileInput snapshot.
 var x86CompileMemCeiling uint32
 
 // x86ResolveMemCeiling picks the direct-access bound: the smaller of the
 // published visible ceiling and the backing length, clamped to the 32-bit
 // address space. A native access at or above this must bail to the interpreter.
 func x86ResolveMemCeiling(memory []byte) uint32 {
+	return x86ResolveMemCeilingWithInput(memory, x86CompileMemCeiling)
+}
+
+func x86ResolveMemCeilingWithInput(memory []byte, configuredCeiling uint32) uint32 {
 	ceil := uint64(len(memory))
-	if x86CompileMemCeiling != 0 && uint64(x86CompileMemCeiling) < ceil {
-		ceil = uint64(x86CompileMemCeiling)
+	if configuredCeiling != 0 && uint64(configuredCeiling) < ceil {
+		ceil = uint64(configuredCeiling)
 	}
 	if ceil > 0xFFFFFFFF {
 		ceil = 0xFFFFFFFF
@@ -100,6 +113,35 @@ func x86ResolveMemCeiling(memory []byte) uint32 {
 // correct under non-default allocations (Tier-2 regions remap or spill
 // guest registers); production never sets it.
 var x86CompileRegMapOverrideForTest *[8]byte
+
+// x86CompileInput is the immutable CPU-owned input to one compilation. Slice
+// headers are copied, not their backing storage: the CPU owns those bitmaps
+// and does not mutate them while it is compiling or executing a block.
+type x86CompileInput struct {
+	ioBitmap           []byte
+	codeBitmap         []byte
+	memCeiling         uint32
+	regMapOverrideTest *[8]byte
+}
+
+func newX86CompileInput(cpu *CPU_X86) x86CompileInput {
+	return x86CompileInput{
+		ioBitmap:   cpu.x86JitIOBitmap,
+		codeBitmap: cpu.x86JitCodeBM,
+		memCeiling: cpu.x86VisibleRAMCeiling(),
+	}
+}
+
+// x86LegacyCompileInput preserves the focused emitter-test seam. Production
+// callers must use newX86CompileInput and the ForCPU entry points below.
+func x86LegacyCompileInput() x86CompileInput {
+	return x86CompileInput{
+		ioBitmap:           x86CompileIOBitmap,
+		codeBitmap:         x86CompileCodeBitmap,
+		memCeiling:         x86CompileMemCeiling,
+		regMapOverrideTest: x86CompileRegMapOverrideForTest,
+	}
+}
 
 // x86OpSizePrefixIgnored reports opcodes whose operand size is fixed at
 // one byte, making a 0x66 prefix architecturally meaningless: the
@@ -5445,7 +5487,23 @@ func x86EmitChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32) x86Cha
 // x86CompileBlock compiles a slice of pre-decoded x86 instructions into native code.
 // Single-block Tier-2 promotion is retired; region-only Tier-2 (see
 // x86CompileRegion) is the sole per-block-regalloc promotion path.
+// x86CompileBlock is retained for focused emitter tests. CPU execution must
+// call x86CompileBlockForCPU so its compile-time safety inputs are explicit.
 func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, memory []byte) (*JITBlock, error) {
+	return x86CompileBlockWithInput(instrs, startPC, execMem, memory, x86LegacyCompileInput())
+}
+
+func x86CompileBlockForCPU(cpu *CPU_X86, instrs []X86JITInstr, startPC uint32, execMem *ExecMem) (*JITBlock, error) {
+	return x86CompileBlockWithInput(instrs, startPC, execMem, cpu.memory, newX86CompileInput(cpu))
+}
+
+func x86CompileBlockWithInput(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, memory []byte, input x86CompileInput) (*JITBlock, error) {
+	x86CompileMu.Lock()
+	defer x86CompileMu.Unlock()
+	return x86CompileBlockLocked(instrs, startPC, execMem, memory, input)
+}
+
+func x86CompileBlockLocked(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, memory []byte, input x86CompileInput) (*JITBlock, error) {
 	if len(instrs) == 0 {
 		return nil, fmt.Errorf("empty instruction list")
 	}
@@ -5454,14 +5512,14 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 	br := x86AnalyzeBlockRegs(instrs, memory, startPC)
 	cs := &x86CompileState{flagState: x86FlagsDead, tier: 0, dirtyMask: br.written}
 
-	cs.ioBitmap = x86CompileIOBitmap
-	cs.codeBitmap = x86CompileCodeBitmap
-	cs.memCeiling = x86ResolveMemCeiling(memory)
+	cs.ioBitmap = input.ioBitmap
+	cs.codeBitmap = input.codeBitmap
+	cs.memCeiling = x86ResolveMemCeilingWithInput(memory, input.memCeiling)
 	cs.host = x86Host
 
 	cs.regMap = x86DefaultRegMap()
-	if x86CompileRegMapOverrideForTest != nil {
-		cs.regMap = *x86CompileRegMapOverrideForTest
+	if input.regMapOverrideTest != nil {
+		cs.regMap = *input.regMapOverrideTest
 	}
 
 	// Run peephole optimizer for flag analysis (all tiers benefit). Limit the
@@ -5620,9 +5678,11 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 		}
 	}
 
-	// Set the current compile state for instruction emitters to use
+	// The helpers below use the transaction-local state while x86CompileMu is
+	// held. Preserve a direct-emitter test's state if compilation aborts.
+	previousCS := x86CurrentCS
 	x86CurrentCS = cs
-	defer func() { x86CurrentCS = nil }()
+	defer func() { x86CurrentCS = previousCS }()
 
 	// Emit prologue
 	x86EmitPrologue(cb, cs)
@@ -5637,8 +5697,9 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 
 	// Set up deferred bail collection
 	var deferredBails []x86DeferredBail
+	previousBails := x86CurrentBails
 	x86CurrentBails = &deferredBails
-	defer func() { x86CurrentBails = nil }()
+	defer func() { x86CurrentBails = previousBails }()
 
 	// Emit instructions
 	var chainExits []x86ChainExitInfo
@@ -5805,6 +5866,20 @@ done:
 // x86CompileRegion compiles a multi-block region as a single native unit.
 // Single prologue, internal blocks connected by native jumps, single epilogue.
 func x86CompileRegion(region *x86Region, execMem *ExecMem, memory []byte) (*JITBlock, error) {
+	return x86CompileRegionWithInput(region, execMem, memory, x86LegacyCompileInput())
+}
+
+func x86CompileRegionForCPU(cpu *CPU_X86, region *x86Region, execMem *ExecMem) (*JITBlock, error) {
+	return x86CompileRegionWithInput(region, execMem, cpu.memory, newX86CompileInput(cpu))
+}
+
+func x86CompileRegionWithInput(region *x86Region, execMem *ExecMem, memory []byte, input x86CompileInput) (*JITBlock, error) {
+	x86CompileMu.Lock()
+	defer x86CompileMu.Unlock()
+	return x86CompileRegionLocked(region, execMem, memory, input)
+}
+
+func x86CompileRegionLocked(region *x86Region, execMem *ExecMem, memory []byte, input x86CompileInput) (*JITBlock, error) {
 	if region == nil || len(region.blocks) < 2 {
 		return nil, fmt.Errorf("region too small")
 	}
@@ -5824,17 +5899,19 @@ func x86CompileRegion(region *x86Region, execMem *ExecMem, memory []byte) (*JITB
 		regMap:    x86Tier2RegAlloc(allInstrs, memory, region.entryPC),
 	}
 	cs.flagsNeeded = x86PeepholeFlags(allInstrs)
-	cs.ioBitmap = x86CompileIOBitmap
-	cs.codeBitmap = x86CompileCodeBitmap
-	cs.memCeiling = x86ResolveMemCeiling(memory)
+	cs.ioBitmap = input.ioBitmap
+	cs.codeBitmap = input.codeBitmap
+	cs.memCeiling = x86ResolveMemCeilingWithInput(memory, input.memCeiling)
 	cs.host = x86Host
 
+	previousCS := x86CurrentCS
 	x86CurrentCS = cs
-	defer func() { x86CurrentCS = nil }()
+	defer func() { x86CurrentCS = previousCS }()
 
 	var deferredBails []x86DeferredBail
+	previousBails := x86CurrentBails
 	x86CurrentBails = &deferredBails
-	defer func() { x86CurrentBails = nil }()
+	defer func() { x86CurrentBails = previousBails }()
 
 	// Emit prologue
 	x86EmitPrologue(cb, cs)

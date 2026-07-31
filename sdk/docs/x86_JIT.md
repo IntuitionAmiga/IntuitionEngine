@@ -10,6 +10,8 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 
 **Activation:** Set `cpu.x86JitEnabled = true` and call `cpu.X86ExecuteJIT()` or `cpu.x86JitExecute()`. The dispatch function `x86JitExecute()` routes to the JIT when enabled, otherwise to the interpreter.
 
+**Compilation ownership:** each CPU passes an immutable snapshot of its I/O-page map, code-page map and visible-RAM ceiling to block or region compilation. The amd64 emitter still has legacy helper seams that consume temporary compiler state, so compilation is serialised by a compiler-only mutex. Generated code and normal JIT dispatch never take that mutex. `TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs` covers the isolation and is suitable for `go test -race` where the local toolchain supports it.
+
 **Coverage:** 50+ instruction forms including MOV, ADD/SUB/AND/OR/XOR/CMP/TEST, INC/DEC, PUSH/POP r32, LEA, Jcc, JMP rel8/rel32, SHL/SHR/SAR/ROL/ROR, NOT/NEG, MUL/IMUL/DIV/IDIV, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP, LEAVE, PUSHF, XCHG, CBW/CDQ, REP MOVSB/MOVSD/STOSB/STOSD/CMPSB/SCASB, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. RET and CALL rel32 are block terminators handled by the Go dispatch loop (not JIT-compiled in production; RET's target is stack-dependent and CALL rel32 is rejected by both the single-block and region compilers). Segment-modifying instructions, far control flow, INT/IRET, and I/O port instructions fall back to the interpreter.
 
 ---
@@ -109,9 +111,13 @@ Offset  Type      Field               Description
 104     uint32    RTSCache0PC         MRU RET target cache entry 0 -- guest PC
 108     uint32    _pad1               alignment
 112     uintptr   RTSCache0Addr       MRU entry 0 -- chain entry address
-120     uint32    RTSCache1PC         MRU entry 1 -- guest PC
-124     uint32    _pad2               alignment
-128     uintptr   RTSCache1Addr       MRU entry 1 -- chain entry address
+120     uint64    RTSCache0RegMap     MRU entry 0 target register map
+128     uint32    RTSCache1PC         MRU entry 1 -- guest PC
+132     uint32    _pad2               alignment
+136     uintptr   RTSCache1Addr       MRU entry 1 -- chain entry address
+144     uint64    RTSCache1RegMap     MRU entry 1 target register map
+152     uint32    InvalAddr           exact self-modifying write address
+156     uint32    InvalSize           exact self-modifying write size
 ```
 
 ## Guest Register File

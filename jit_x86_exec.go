@@ -244,12 +244,9 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				continue
 			}
 
-			// Compile block (pass bitmaps for compile-time page checks)
-			x86CompileIOBitmap = cpu.x86JitIOBitmap
-			x86CompileCodeBitmap = cpu.x86JitCodeBM
-			x86CompileMemCeiling = cpu.x86VisibleRAMCeiling()
+			// Compile against this CPU's immutable safety-input snapshot.
 			var err error
-			block, err = x86CompileBlock(instrs, pc, execMem, cpu.memory)
+			block, err = x86CompileBlockForCPU(cpu, instrs, pc, execMem)
 			if err != nil {
 				// "no instructions compiled" means the first scanned instr
 				// fell through every emit case — equivalent to an
@@ -322,15 +319,12 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			if x86RegionPromotionEnabled && x86TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
 				block.lastPromoteAt = block.execCount
 				// Try multi-block region compilation first (only for 3+ block regions)
-				x86CompileIOBitmap = cpu.x86JitIOBitmap
-				x86CompileCodeBitmap = cpu.x86JitCodeBM
-				x86CompileMemCeiling = cpu.x86VisibleRAMCeiling()
 				if x86JITStatsOn {
 					x86JITStats.regionCandidates.Add(1)
 				}
 				region := x86FormRegion(pc, cpu.x86JitCache, cpu.memory)
 				if region != nil && x86TierController.ShouldPromoteRegion(len(region.blocks)) {
-					newBlock, err := x86CompileRegion(region, execMem, cpu.memory)
+					newBlock, err := x86CompileRegionForCPU(cpu, region, execMem)
 					if err == nil {
 						newBlock.execCount = block.execCount
 						cpu.x86JitCache.Put(newBlock)

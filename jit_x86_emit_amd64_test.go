@@ -12,6 +12,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"sync"
 	"testing"
 	"unsafe"
 )
@@ -119,6 +120,71 @@ func (r *x86JITTestRig) compileAndRun(t *testing.T, startPC uint32, code ...byte
 
 	// Update EIP from context
 	r.cpu.EIP = r.ctx.RetPC
+}
+
+// TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs proves the short
+// compilation lock protects the legacy emitter state while each compilation
+// still uses its own immutable MMIO map. Run this under -race as part of the
+// x86 JIT suite: before the transaction lock, concurrent compiles raced on
+// x86CurrentCS/x86CurrentBails and could emit the wrong safety path.
+func TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs(t *testing.T) {
+	const workers = 24
+
+	type job struct {
+		input x86CompileInput
+		mem   []byte
+		em    *ExecMem
+	}
+	jobs := make([]job, workers)
+	for i := range jobs {
+		jobs[i].mem = make([]byte, 0x4000)
+		// MOV moffs32, EAX at a page which is MMIO for alternating jobs.
+		copy(jobs[i].mem[0x1000:], []byte{0xA3, 0x00, 0x02, 0x00, 0x00, 0xF4})
+		jobs[i].input.memCeiling = uint32(len(jobs[i].mem))
+		jobs[i].input.ioBitmap = make([]byte, len(jobs[i].mem)>>8)
+		jobs[i].input.codeBitmap = make([]byte, len(jobs[i].input.ioBitmap))
+		if i&1 != 0 {
+			jobs[i].input.ioBitmap[2] = 1
+		}
+		var err error
+		jobs[i].em, err = AllocExecMem(4096)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(jobs[i].em.Free)
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	sizes := make(chan int, workers)
+	for i := range jobs {
+		j := &jobs[i]
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			instrs := x86ScanBlock(j.mem, 0x1000)
+			block, err := x86CompileBlockWithInput(instrs[:1], 0x1000, j.em, j.mem, j.input)
+			if err != nil {
+				errs <- err
+				return
+			}
+			sizes <- block.execSize
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(sizes)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	seen := map[int]bool{}
+	for size := range sizes {
+		seen[size] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("MMIO and RAM compile inputs produced one code shape: %v", seen)
+	}
 }
 
 // ===========================================================================
