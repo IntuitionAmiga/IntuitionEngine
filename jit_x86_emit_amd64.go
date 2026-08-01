@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sync"
 )
 
@@ -3422,6 +3423,14 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 		}
 
 	case 0xDB:
+		if mod == 3 {
+			switch modrm {
+			case 0xE2: // FNCLEX
+				return x86EmitFNCLEX(cb)
+			case 0xE3: // FNINIT
+				return x86EmitFNINIT(cb)
+			}
+		}
 		if mod != 3 {
 			switch regOp {
 			case 0: // FILD m32
@@ -3467,6 +3476,9 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 
 	case 0xD9:
 		if mod == 3 {
+			if modrm == 0xD0 { // FNOP
+				return true
+			}
 			if modrm >= 0xC0 && modrm <= 0xC7 { // FLD ST(i)
 				return x86EmitFLD_STi(cb, ji, rm, instrIdx)
 			}
@@ -3484,6 +3496,12 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 				return x86EmitFLDConst(cb, ji, instrIdx, 0x3FF0000000000000) // 1.0
 			case 0xEE: // FLDZ
 				return x86EmitFLDConst(cb, ji, instrIdx, 0)
+			case 0xE9, 0xEA, 0xEB, 0xEC, 0xED: // remaining x87 constants
+				return x86EmitFLDConst(cb, ji, instrIdx, math.Float64bits(x87ConstTable[modrm-0xE8]))
+			case 0xF6: // FDECSTP
+				return x86EmitFPUAdjustTop(cb, -1)
+			case 0xF7: // FINCSTP
+				return x86EmitFPUAdjustTop(cb, 1)
 			}
 		} else {
 			switch regOp {
@@ -3502,6 +3520,9 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 
 	case 0xDD:
 		if mod == 3 {
+			if regOp == 0 { // FFREE ST(i)
+				return x86EmitFFREE(cb, rm)
+			}
 			if modrm >= 0xD8 && modrm <= 0xDF { // FSTP ST(i)
 				return x86EmitFSTP_STi(cb, ji, rm, instrIdx)
 			}
@@ -3536,7 +3557,8 @@ func x86FPUFormSupported(ji *X86JITInstr) bool {
 	case 0xDA:
 		return mod != 3 && (regOp == 0 || regOp == 1 || regOp >= 4)
 	case 0xDB:
-		return mod != 3 && (regOp == 0 || regOp == 3)
+		return (mod == 3 && (modrm == 0xE2 || modrm == 0xE3)) ||
+			(mod != 3 && (regOp == 0 || regOp == 3))
 	case 0xDC:
 		return regOp == 0 || regOp == 1 || regOp >= 4
 	case 0xDE:
@@ -3546,7 +3568,8 @@ func x86FPUFormSupported(ji *X86JITInstr) bool {
 	case 0xD9:
 		if mod == 3 {
 			return (modrm >= 0xC0 && modrm <= 0xCF) || modrm == 0xE0 ||
-				modrm == 0xE1 || modrm == 0xE4 || modrm == 0xE8 || modrm == 0xEE
+				modrm == 0xE1 || modrm == 0xE4 || modrm == 0xD0 ||
+				(modrm >= 0xE8 && modrm <= 0xEE) || modrm == 0xF6 || modrm == 0xF7
 		}
 		return regOp == 0 || regOp == 2 || regOp == 3 || regOp == 5 || regOp == 7
 	case 0xDD:
@@ -3554,7 +3577,7 @@ func x86FPUFormSupported(ji *X86JITInstr) bool {
 			// The interpreter implements only /3 (DD D8-DF) in this
 			// register range. DD D0-D7 is the interpreter's /2 no-op
 			// family, not FST ST(i), so it must not acquire a native store.
-			return modrm >= 0xD8 && modrm <= 0xDF
+			return (modrm >= 0xC0 && modrm <= 0xC7) || (modrm >= 0xD8 && modrm <= 0xDF)
 		}
 		return regOp == 0 || regOp == 2 || regOp == 3
 	}
@@ -4007,6 +4030,71 @@ func x86EmitFLDConst(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, bits uint64)
 	// MOV [RAX + RCX], R8 (64-bit)
 	emitREX_SIB(cb, true, amd64R8, amd64RCX, amd64RAX)
 	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64RCX, amd64RAX))
+	return true
+}
+
+// x86EmitFPUAdjustTop emits FDECSTP/FINCSTP. These instructions rotate TOP
+// without inspecting or changing any tag, matching FPU_X87.setTop exactly.
+// RAX points at FPU_X87.
+func x86EmitFPUAdjustTop(cb *CodeBuffer, delta int32) bool {
+	x86EmitFPUReadTOP(cb, amd64RCX)
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, delta)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitUpdateFSWTop(cb, amd64RCX)
+	return true
+}
+
+// x86EmitFFREE marks ST(i)'s physical slot empty. FFREE has no underflow
+// condition and leaves TOP and the backing value unchanged.
+func x86EmitFFREE(cb *CodeBuffer, stIdx byte) bool {
+	x86EmitFPUReadTOP(cb, amd64RCX)
+	if stIdx != 0 {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, int32(stIdx))
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	}
+	x86EmitFTWMark(cb, true)
+	return true
+}
+
+// x86EmitFNCLEX mirrors the interpreter's FNCLEX: clear x87 exception and
+// busy bits while retaining TOP, condition codes and provenance.
+func x86EmitFNCLEX(cb *CodeBuffer) bool {
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R8, amd64RAX), byte(fpuOffFSW))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, 0x7F00)
+	cb.EmitBytes(0x66)
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R8, amd64RAX), byte(fpuOffFSW))
+	return true
+}
+
+// x86EmitFNINIT writes the same architectural reset state as FPU_X87.Reset.
+// captureOp precedes this emitter, as it does in the interpreter, then FNINIT
+// intentionally clears that newly captured provenance.
+func x86EmitFNINIT(cb *CodeBuffer) bool {
+	amd64MOV_reg_imm64(cb, amd64R8, 0)
+	for off := int32(fpuOffRegs); off < fpuOffRegs+64; off += 8 {
+		emitREX(cb, true, amd64R8, amd64RAX)
+		cb.EmitBytes(0x89, modRM(1, amd64R8, amd64RAX), byte(off))
+	}
+	// FCW=0x037F, FSW=0, FTW=0xFFFF. The remaining provenance fields are
+	// laid out contiguously and are all reset to zero.
+	amd64MOV_reg_imm32(cb, amd64R8, 0x037F)
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R8, amd64RAX), byte(fpuOffFCW))
+	amd64MOV_reg_imm32(cb, amd64R8, 0xFFFF)
+	cb.EmitBytes(0x66)
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R8, amd64RAX), byte(fpuOffFTW))
+	amd64MOV_reg_imm32(cb, amd64R8, 0)
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R8, amd64RAX), byte(fpuOffFIP))
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R8, amd64RAX), byte(fpuOffFCS))
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R8, amd64RAX), byte(fpuOffFDP))
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R8, amd64RAX), byte(fpuOffFDS))
 	return true
 }
 

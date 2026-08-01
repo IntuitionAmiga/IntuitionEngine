@@ -265,6 +265,87 @@ func TestX86JIT_X87DirectPushOverflowMatchesInterpreter(t *testing.T) {
 	}
 }
 
+func TestX86JIT_X87ExtendedRegisterFormsMatchInterpreter(t *testing.T) {
+	// These forms used to reject the whole block despite having no memory or
+	// host-floating-point dependency. Exercise their visible states separately:
+	// a later FNINIT must not hide an earlier constants or tag mismatch.
+	tests := []struct {
+		name string
+		code []byte
+	}{
+		{"constants_and_fnop", []byte{
+			0xD9, 0xD0, // FNOP
+			0xD9, 0xE9, // FLDL2T
+			0xD9, 0xEA, // FLDL2E
+			0xD9, 0xEB, // FLDPI
+			0xD9, 0xEC, // FLDLG2
+			0xD9, 0xED, // FLDLN2
+			0xD9, 0xEE, // FLDZ
+			0xF4,
+		}},
+		{"top_rotation_and_free", []byte{
+			0xD9, 0xE8, // FLD1
+			0xD9, 0xEE, // FLDZ
+			0xD9, 0xF6, // FDECSTP
+			0xD9, 0xF7, // FINCSTP
+			0xDD, 0xC1, // FFREE ST(1)
+			0xF4,
+		}},
+		{"clear_exceptions", []byte{
+			0xD9, 0xE8, // FLD1
+			0xD9, 0xEE, // FLDZ
+			0xD8, 0xF9, // FDIVR ST(0),ST(1): zero-divisor exception
+			0xDB, 0xE2, // FNCLEX
+			0xF4,
+		}},
+		{"reset", []byte{0xD9, 0xE8, 0xDB, 0xE3, 0xF4}}, // FLD1; FNINIT; HLT
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jit := runX86JITProgram(t, 0x1000, tt.code...)
+			interp := runX86InterpreterProgram(t, 0x1000, tt.code...)
+			assertX86JITFPUStateEqual(t, jit.FPU, interp.FPU)
+		})
+	}
+}
+
+func TestX86JIT_X87ExtendedRegisterFormsAreAdmitted(t *testing.T) {
+	forms := []struct {
+		name  string
+		bytes []byte
+	}{
+		{"FNOP", []byte{0xD9, 0xD0}},
+		{"FLDL2T", []byte{0xD9, 0xE9}},
+		{"FDECSTP", []byte{0xD9, 0xF6}},
+		{"FINCSTP", []byte{0xD9, 0xF7}},
+		{"FFREE", []byte{0xDD, 0xC0}},
+		{"FNCLEX", []byte{0xDB, 0xE2}},
+		{"FNINIT", []byte{0xDB, 0xE3}},
+	}
+	for _, tt := range forms {
+		t.Run(tt.name, func(t *testing.T) {
+			instrs := x86ScanBlock(append(tt.bytes, 0xF4), 0)
+			if len(instrs) == 0 || !x86FPUFormSupported(&instrs[0]) {
+				t.Fatal("x87 form was not admitted for direct lowering")
+			}
+		})
+	}
+}
+
+func assertX86JITFPUStateEqual(t *testing.T, got, want *FPU_X87) {
+	t.Helper()
+	if got.FCW != want.FCW || got.FSW != want.FSW || got.FTW != want.FTW ||
+		got.FIP != want.FIP || got.FCS != want.FCS || got.FDP != want.FDP ||
+		got.FDS != want.FDS || got.FOP != want.FOP {
+		t.Fatalf("FPU state = %+v, want %+v", *got, *want)
+	}
+	for i := range got.regs {
+		if got.regs[i] != want.regs[i] {
+			t.Fatalf("FPU physical register %d = %v, want %v", i, got.regs[i], want.regs[i])
+		}
+	}
+}
+
 func TestX86JIT_IDIVFallsBackToInterpreter(t *testing.T) {
 	cpu := runX86JITProgram(t, 0x1000,
 		0xB8, 0x9C, 0xFF, 0xFF, 0xFF, // MOV EAX,-100
