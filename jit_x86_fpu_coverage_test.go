@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"math"
 	"testing"
+	"unsafe"
 )
 
 func writeF32(r *x86JITTestRig, addr uint32, v float32) {
@@ -131,10 +132,129 @@ func TestX86JIT_FPUHelperUsesDecodedBytes(t *testing.T) {
 	}
 }
 
+func TestX86JIT_FPUHelperFormEmitsCanonicalExit(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.FPU.Reset()
+	r.cpu.EAX = 7
+	r.cpu.FPU.regs[0] = 1
+	r.cpu.FPU.setTag(0, x87TagValid)
+
+	const pc = uint32(0x1000)
+	// D9 F0 is F2XM1. It is interpreter-owned, but must still be a compiled
+	// x87 helper exit rather than a zero-length native prefix.
+	r.compileAndRun(t, pc,
+		0xD9, 0xF0, // F2XM1
+		0xB8, 1, 0, 0, 0, // unreachable MOV EAX,1
+	)
+	if r.ctx.ExitReason != x86JITExitFPUHelper || r.ctx.NeedIOFallback == 0 {
+		t.Fatalf("helper form exit = reason %d io %d, want canonical helper exit", r.ctx.ExitReason, r.ctx.NeedIOFallback)
+	}
+	payload, ok := x86FPUHelperPayloadFromContext(r.ctx)
+	if !ok {
+		t.Fatal("compiled F2XM1 did not publish a helper payload")
+	}
+	if got := r.ctx.RetCount; got != 0 {
+		t.Fatalf("helper exit retired %d native instructions, want 0", got)
+	}
+	if got := r.cpu.EAX; got != 7 {
+		t.Fatalf("instruction after helper changed EAX to %d, want 7", got)
+	}
+	r.cpu.x86RunFPUHelper(payload)
+	if got, want := r.cpu.FPU.regs[0], 1.0; got != want {
+		t.Fatalf("F2XM1 result = %v, want %v", got, want)
+	}
+}
+
+func TestX86JIT_FPUHelperPrefixFormsKeepDecodedBytes(t *testing.T) {
+	for _, code := range [][]byte{
+		{0x64, 0xD9, 0xF0}, // FS:F2XM1
+		{0x67, 0xD9, 0xF0}, // address-size F2XM1
+	} {
+		r := newX86JITTestRig(t)
+		r.cpu.FPU.Reset()
+		r.cpu.FPU.regs[0] = 1
+		r.cpu.FPU.setTag(0, x87TagValid)
+		r.compileAndRun(t, 0x1000, code...)
+		payload, ok := x86FPUHelperPayloadFromContext(r.ctx)
+		if !ok {
+			t.Fatalf("% X: no canonical helper payload", code)
+		}
+		if got, want := payload.Bytes[:len(code)], code; !bytes.Equal(got, want) {
+			t.Fatalf("% X: payload bytes = % X, want % X", code, got, want)
+		}
+		r.cpu.x86RunFPUHelper(payload)
+		if got, want := r.cpu.FPU.regs[0], 1.0; got != want {
+			t.Fatalf("% X: F2XM1 result = %v, want %v", code, got, want)
+		}
+	}
+}
+
+func TestX86JIT_FPUHelperPrefixFormsAreAdmittedByBlockCompiler(t *testing.T) {
+	// These forms are intentionally helper-owned, but must still enter a JIT
+	// block so their decoded prefix bytes survive an SMC boundary. This catches
+	// a liveness gate that would otherwise route them straight to CPU_X86.Step.
+	for _, code := range [][]byte{
+		{0x64, 0xD9, 0xF0, 0xF4}, // FS:F2XM1
+		{0x67, 0xD9, 0xF0, 0xF4}, // address-size F2XM1
+	} {
+		memory := make([]byte, 0x2000)
+		copy(memory[0x1000:], code)
+		length := x86InstrLength(memory, 0x1000)
+		instr := x86DecodeInstr(memory, 0x1000, uint16(length))
+		if !x86FlagAnalysisCanCompileInstruction(&instr) {
+			t.Fatalf("% X is not admitted to the x87 helper exit", code[:len(code)-1])
+		}
+
+		setup := func(cpu *CPU_X86) {
+			cpu.FPU.Reset()
+			cpu.FPU.regs[0] = 1
+			cpu.FPU.setTag(0, x87TagValid)
+		}
+		jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+		interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+		if got, want := jit.FPU.regs[0], interp.FPU.regs[0]; got != want {
+			t.Fatalf("% X: ST(0) = %v, want interpreter %v", code[:len(code)-1], got, want)
+		}
+		if got, want := jit.FPU.FIP, interp.FPU.FIP; got != want {
+			t.Fatalf("% X: FIP = %#x, want interpreter %#x", code[:len(code)-1], got, want)
+		}
+	}
+}
+
+func TestX86JIT_FPUHelperOwnedEscapeFamiliesEmitCanonicalExit(t *testing.T) {
+	// One representative from every remaining helper-owned escape family. The
+	// test runs the generated code, not merely the scanner, so a future emitter
+	// gap cannot silently shrink a compiled block back to a dispatcher Step.
+	forms := [][]byte{
+		{0xD9, 0xF0},                         // F2XM1
+		{0xD9, 0x25, 0x00, 0x50, 0x00, 0x00}, // FLDENV m28
+		{0xDB, 0x2D, 0x00, 0x50, 0x00, 0x00}, // FLD m80
+		{0xDD, 0x25, 0x00, 0x50, 0x00, 0x00}, // FRSTOR m94
+		{0xDE, 0xD9},                         // FCOMPP
+		{0xDF, 0x25, 0x00, 0x50, 0x00, 0x00}, // FBLD m80
+		{0xDF, 0x15, 0x00, 0x50, 0x00, 0x00}, // FIST m16
+		{0xDD, 0x3D, 0x00, 0x50, 0x00, 0x00}, // FNSTSW m16
+	}
+	for _, code := range forms {
+		r := newX86JITTestRig(t)
+		r.compileAndRun(t, 0x1000, code...)
+		if r.ctx.ExitReason != x86JITExitFPUHelper || r.ctx.NeedIOFallback == 0 {
+			t.Fatalf("% X: exit = reason %d io %d, want canonical helper exit", code, r.ctx.ExitReason, r.ctx.NeedIOFallback)
+		}
+		payload, ok := x86FPUHelperPayloadFromContext(r.ctx)
+		if !ok {
+			t.Fatalf("% X: no canonical helper payload", code)
+		}
+		if got, want := payload.Bytes[:len(code)], code; !bytes.Equal(got, want) {
+			t.Fatalf("% X: payload bytes = % X, want % X", code, got, want)
+		}
+	}
+}
+
 func TestX86JIT_FPUDynamicExitPublishesDecodedPayload(t *testing.T) {
 	r := newX86JITTestRig(t)
 	r.cpu.FPU.Reset()
-	r.cpu.FPU.FCW = 0x0B7F // RC=10: round down, handled by the helper
+	r.cpu.FPU.FCW = 0x077F // RC=01: round down, handled by the helper
 	r.cpu.FPU.setTop(6)
 	r.cpu.FPU.regs[6] = 2.9
 	r.cpu.FPU.setTag(6, x87TagValid)
@@ -167,6 +287,38 @@ func TestX86JIT_FPUDynamicExitPublishesDecodedPayload(t *testing.T) {
 	if got := int32(uint32(r.cpu.memory[0x5000]) | uint32(r.cpu.memory[0x5001])<<8 |
 		uint32(r.cpu.memory[0x5002])<<16 | uint32(r.cpu.memory[0x5003])<<24); got != 2 {
 		t.Fatalf("helper FISTP result = %d, want 2", got)
+	}
+}
+
+func TestX86JIT_FPUDirectMemoryBoundaryBailsWithDecodedPayload(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.FPU.Reset()
+	r.cpu.FPU.regs[0] = 1
+	r.cpu.FPU.setTag(0, x87TagValid)
+
+	// FADD dword [visible-RAM-3] straddles the ceiling. The first page is a
+	// compile-time-safe RAM page, so this also protects against accidentally
+	// eliding the x87 span guard before checking the complete operand.
+	addr := uint32(len(r.cpu.memory) - 3)
+	r.compileAndRun(t, 0x1000, d8Mem32(0, addr)...)
+	if got, want := r.ctx.ExitReason, x86JITExitFPUHelper; got != want {
+		t.Fatalf("exit reason = %d, want FPU helper %d", got, want)
+	}
+	if got := r.cpu.EIP; got != 0x1000 {
+		t.Fatalf("EIP = %#x, want 0x1000 for helper replay", got)
+	}
+	if got := r.cpu.FPU.regs[0]; got != 1 {
+		t.Fatalf("ST(0) = %v, want unchanged 1 before helper replay", got)
+	}
+	payload, ok := x86FPUHelperPayloadFromContext(r.ctx)
+	if !ok {
+		t.Fatal("boundary exit did not publish an x87 helper payload")
+	}
+	if got, want := payload.EA, addr; got != want {
+		t.Fatalf("payload EA = %#x, want %#x", got, want)
+	}
+	if got, want := payload.Width, uint32(4); got != want {
+		t.Fatalf("payload width = %d, want %d", got, want)
 	}
 }
 
@@ -532,6 +684,22 @@ func TestX86JIT_FPU_FILDS_mem16(t *testing.T) {
 	}
 }
 
+func TestX86JIT_FPU_FILDQ_mem64(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.FPU.Reset()
+	value := int64(-0x102030405)
+	for i := range 8 {
+		r.cpu.memory[0x5000+uint32(i)] = byte(uint64(value) >> (8 * i))
+	}
+
+	// DF 2D <addr>: FILD qword [addr]
+	r.compileAndRun(t, 0x1000, 0xDF, 0x2D, 0x00, 0x50, 0x00, 0x00)
+
+	if got, want := r.cpu.FPU.regs[7], float64(value); got != want {
+		t.Errorf("ST(0) = %f, want %f", got, want)
+	}
+}
+
 func TestX86JIT_FPU_FISTPL_Truncate(t *testing.T) {
 	r := newX86JITTestRig(t)
 	r.cpu.FPU.Reset()
@@ -564,6 +732,63 @@ func TestX86JIT_FPU_FISTPL_Nearest(t *testing.T) {
 		uint32(r.cpu.memory[0x5002])<<16 | uint32(r.cpu.memory[0x5003])<<24)
 	if got != 2 {
 		t.Errorf("m32 after FISTP(nearest) = %d, want 2 (round-half-even)", got)
+	}
+}
+
+func TestX86JIT_FPU_FISTL_NearestPreservesTop(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.FPU.Reset() // FCW default RC=00 nearest-even
+	r.cpu.FPU.setTop(6)
+	r.cpu.FPU.regs[6] = 2.5
+	r.cpu.FPU.setTag(6, x87TagValid)
+
+	// DB 15 <addr>: FIST dword [addr]
+	r.compileAndRun(t, 0x1000, 0xDB, 0x15, 0x00, 0x50, 0x00, 0x00)
+
+	got := int32(uint32(r.cpu.memory[0x5000]) | uint32(r.cpu.memory[0x5001])<<8 |
+		uint32(r.cpu.memory[0x5002])<<16 | uint32(r.cpu.memory[0x5003])<<24)
+	if got != 2 {
+		t.Errorf("m32 after FIST(nearest-even) = %d, want 2", got)
+	}
+	if top := r.cpu.FPU.top(); top != 6 {
+		t.Errorf("TOP after FIST = %d, want 6", top)
+	}
+}
+
+func TestX86JIT_FISTStores_CodePageInvalidate(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code []byte
+		size uint32
+	}{
+		{"FIST m32", []byte{0xDB, 0x10}, 4},
+		{"FISTP m32", []byte{0xDB, 0x18}, 4},
+		{"FISTP m64", []byte{0xDF, 0x38}, 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newX86JITTestRig(t)
+			r.cpu.FPU = NewFPU_X87()
+			r.ctx.FPUPtr = uintptr(unsafe.Pointer(r.cpu.FPU))
+			r.cpu.FPU.Reset()
+			r.cpu.FPU.setTop(6)
+			r.cpu.FPU.regs[6] = 42
+			r.cpu.FPU.setTag(6, x87TagValid)
+			r.cpu.EAX = 0x5000
+			r.codeBM[0x5000>>8] = 1
+			r.ctx.NeedInval = 0
+
+			r.compileAndRun(t, 0x1000, tc.code...)
+
+			if r.ctx.NeedInval == 0 {
+				t.Fatal("NeedInval = 0, want set after FIST store to code page")
+			}
+			if got, want := r.ctx.InvalAddr, uint32(0x5000); got != want {
+				t.Fatalf("InvalAddr = %#x, want %#x", got, want)
+			}
+			if got, want := r.ctx.InvalSize, tc.size; got != want {
+				t.Fatalf("InvalSize = %d, want %d", got, want)
+			}
+		})
 	}
 }
 

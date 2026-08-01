@@ -84,6 +84,11 @@ CHOCOLATE_DOOM_DIR ?= ../chocolate-doom
 IEDOOM_IE86 ?= build/iedoom.ie86
 IEDOOM_IE68 ?= build/iedoom.ie68
 IEDOOM_WAD ?= DOOM1.WAD
+IEDOOM_TIMED_IE86 ?= build/iedoom_timedemo.ie86
+IEDOOM_TIMED_SCRIPT ?= bench/measure_timedemo.ies
+# GNU timeout is available on the supported Linux amd64 acceptance host.
+# Other hosts may override this with their local watchdog command.
+IEDOOM_TIMED_WATCHDOG ?= timeout 300s
 
 # Detect number of CPU cores for parallel compilation
 NCORES := $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
@@ -357,7 +362,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare
+.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-iedoom-timedemo
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -379,10 +384,10 @@ test:
 # kernels must not disturb. No full headless sweep (standing rule).
 SIMD_TEST_REGEX ?= TestSIMD|TestSparseBacking|Characterisation|TestBlitColorExpand|TestVoodoo.*Golden|TestVoodooRasterizeRows|TestVoodooSIMDPathQualification|TestEmuTOS_DesktopGoldenFramebuffer|TestCLUT8Expand|TestScaleF32Span|TestClampF32Span
 
-# Keep every NVIDIA measurement, including warm-ups and focused tests, on the
-# discrete GPU when Switcheroo is available.  Ordinary hosts retain a portable
-# `env` launcher; CI or a controlled run can always override BENCH_LAUNCH.
-BENCH_LAUNCH ?= $(if $(shell command -v switcherooctl 2>/dev/null),switcherooctl launch -g 1,env)
+# Benchmarks run through the ordinary host environment by default. This keeps
+# the measurement contract portable and avoids GPU-selection tooling for the
+# CPU-bound JIT workloads; CI or a controlled run can override BENCH_LAUNCH.
+BENCH_LAUNCH ?= env
 
 # test-simd runs the gating set three ways: SIMD build with -race, the IE_SIMD=0
 # kill-switch (scalar kernels in a SIMD binary), and a GOEXPERIMENT=none build
@@ -614,6 +619,16 @@ x64-live-aros-demos: aros-ie-toolchain-assets rotozoom-textures
 
 iedoom: iedoom-ie86 iedoom-ie68
 	@echo "IEDoom guest images are ready: $(CHOCOLATE_DOOM_DIR)/$(IEDOOM_IE86) $(CHOCOLATE_DOOM_DIR)/$(IEDOOM_IE68)"
+
+# x86-iedoom-timedemo is the native x86 JIT acceptance workload. The guest
+# falls back from demo1.lmp to the DEMO1 lump in its IWAD, matching Vanilla
+# Doom's -timedemo behaviour. BENCH_LAUNCH keeps CPU-placement policy
+# caller-owned.
+x86-iedoom-timedemo:
+	@test -f "$(CHOCOLATE_DOOM_DIR)/$(IEDOOM_TIMED_IE86)" || { echo "Error: missing IEDoom timedemo image: $(CHOCOLATE_DOOM_DIR)/$(IEDOOM_TIMED_IE86)"; exit 1; }
+	@test -f "$(CHOCOLATE_DOOM_DIR)/$(IEDOOM_WAD)" || { echo "Error: missing IEDoom IWAD: $(CHOCOLATE_DOOM_DIR)/$(IEDOOM_WAD)"; exit 1; }
+	@test -f "$(IEDOOM_TIMED_SCRIPT)" || { echo "Error: missing IEDoom timedemo script: $(IEDOOM_TIMED_SCRIPT)"; exit 1; }
+	@$(BENCH_LAUNCH) $(IEDOOM_TIMED_WATCHDOG) env IE_NO_IPC=1 GOEXPERIMENT=$(BENCH_GOEXPERIMENT) $(GO) run . -file-root "$(CHOCOLATE_DOOM_DIR)" -script-owned-term -script "$(IEDOOM_TIMED_SCRIPT)" "$(CHOCOLATE_DOOM_DIR)/$(IEDOOM_TIMED_IE86)"
 
 iedoom-ie86:
 	@if [ ! -f "$(CHOCOLATE_DOOM_DIR)/src/iedoom_build.sh" ]; then \

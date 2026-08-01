@@ -158,7 +158,7 @@ func (r *x86JITTestRig) compileAndRun(t *testing.T, startPC uint32, code ...byte
 
 // TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs proves the short
 // compilation lock protects the legacy emitter state while each compilation
-// still uses its own immutable MMIO map. Run this under -race as part of the
+// still uses its own immutable code-page map. Run this under -race as part of the
 // x86 JIT suite: before the transaction lock, concurrent compiles raced on
 // x86CurrentCS/x86CurrentBails and could emit the wrong safety path.
 func TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs(t *testing.T) {
@@ -172,13 +172,16 @@ func TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs(t *testing.T) {
 	jobs := make([]job, workers)
 	for i := range jobs {
 		jobs[i].mem = make([]byte, 0x4000)
-		// MOV moffs32, EAX at a page which is MMIO for alternating jobs.
-		copy(jobs[i].mem[0x1000:], []byte{0xA3, 0x00, 0x02, 0x00, 0x00, 0xF4})
+		// MOV [disp32], EAX at a code page for alternating jobs. Every
+		// runtime address now has a mandatory span guard, so MMIO input no
+		// longer changes its code shape. The self-modification probe remains
+		// safely elidable from each compilation's immutable code-page snapshot.
+		copy(jobs[i].mem[0x1000:], []byte{0x89, 0x05, 0x00, 0x02, 0x00, 0x00, 0xF4})
 		jobs[i].input.memCeiling = uint32(len(jobs[i].mem))
 		jobs[i].input.ioBitmap = make([]byte, len(jobs[i].mem)>>8)
 		jobs[i].input.codeBitmap = make([]byte, len(jobs[i].input.ioBitmap))
 		if i&1 != 0 {
-			jobs[i].input.ioBitmap[2] = 1
+			jobs[i].input.codeBitmap[2] = 1
 		}
 		var err error
 		jobs[i].em, err = AllocExecMem(4096)
@@ -217,7 +220,7 @@ func TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs(t *testing.T) {
 		seen[size] = true
 	}
 	if len(seen) < 2 {
-		t.Fatalf("MMIO and RAM compile inputs produced one code shape: %v", seen)
+		t.Fatalf("code-page and non-code compile inputs produced one code shape: %v", seen)
 	}
 }
 
@@ -1768,17 +1771,25 @@ func TestX86JIT_FallbackBeforeMemoryDoubleShiftPreservesPriorFlags(t *testing.T)
 	r.cpu.EBX = 5
 	r.cpu.ESI = 0x2000
 
-	r.compileAndRun(t, 0x1000,
+	code := []byte{
 		0x01, 0xD0, // ADD EAX, EDX ; EAX=0, CF=1
-		0x0F, 0xAC, 0x16, 0x01, // SHRD dword ptr [ESI], EDX, 1; fallback boundary
-		0x29, 0xD3, // SUB EBX, EDX; must not shadow ADD before fallback
-	)
-
-	if r.cpu.EIP != 0x1002 {
-		t.Fatalf("EIP = %#x, want fallback boundary %#x", r.cpu.EIP, uint32(0x1002))
+		0x0F, 0xAC, 0x16, 0x01, // SHRD dword ptr [ESI], EDX, 1
+		0x29, 0xD3, // SUB EBX, EDX
+		0xF4,
 	}
-	if r.cpu.Flags&x86FlagCF == 0 {
-		t.Fatalf("CF cleared at fallback boundary, flags=%#x", r.cpu.Flags)
+	r.compileAndRun(t, 0x1000, code...)
+
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, func(cpu *CPU_X86) {
+		cpu.EAX = 0xFFFFFFFF
+		cpu.EDX = 1
+		cpu.EBX = 5
+		cpu.ESI = 0x2000
+	}, code...)
+	if got, want := r.cpu.Flags, interp.Flags; got != want {
+		t.Fatalf("flags = %#x, want interpreter %#x", got, want)
+	}
+	if got, want := r.cpu.EBX, interp.EBX; got != want {
+		t.Fatalf("EBX = %#x, want interpreter %#x", got, want)
 	}
 }
 
@@ -1893,6 +1904,105 @@ func TestX86JIT_NativeLEA_BaseOnly(t *testing.T) {
 	}
 }
 
+func TestX86JIT_AMD64CoverageManifest(t *testing.T) {
+	const pc = uint32(0x1000)
+	r := newX86JITTestRig(t)
+	for _, row := range x86JITCoverageManifest {
+		if row.amd64 != x86JITCoverageDirect && row.amd64 != x86JITCoverageFPUHelper {
+			t.Fatalf("%s: invalid amd64 coverage path %q", row.form, row.amd64)
+		}
+		if row.arm64 != x86JITCoverageUnavailable || row.wasm != x86JITCoverageUnavailable {
+			t.Fatalf("%s: unavailable x86 backends must not claim partial coverage", row.form)
+		}
+
+		for i := range r.cpu.memory[pc : pc+32] {
+			r.cpu.memory[pc+uint32(i)] = 0
+		}
+		copy(r.cpu.memory[pc:], row.sample)
+		length := x86InstrLength(r.cpu.memory, pc)
+		if length == 0 || int(length) > len(row.sample) {
+			t.Fatalf("%s: decoder length %d for % X", row.form, length, row.sample)
+		}
+		instr := x86DecodeInstr(r.cpu.memory, pc, uint16(length))
+		// CALL, RET and JMP take the compiler's terminal-chain route before
+		// ordinary instruction emission and intentionally are not part of the
+		// EFLAGS liveness prefix. Every other manifest row must enter through
+		// the ordinary admission table.
+		admitted := x86FlagAnalysisCanCompileInstruction(&instr) ||
+			x86IsBlockTerminator(instr.opcode)
+		if !admitted {
+			t.Fatalf("%s (% X): amd64 %s path is not admitted by the production scanner; proving test %s",
+				row.form, row.sample, row.amd64, row.test)
+		}
+
+		// Admission alone is insufficient: duplicate prefix gates and stale
+		// terminator handling have previously accepted an opcode only for the
+		// backend emitter to truncate it. Compile each representative through
+		// the production transaction and require one emitted guest instruction.
+		compileInstrs := []X86JITInstr{instr}
+		wantInstrs := 1
+		if row.amd64 == x86JITCoverageFPUHelper {
+			// A canonical helper exit emits native setup and a cold exit stub,
+			// but intentionally retires no instruction on the native side. The
+			// interpreter owns the single architectural retirement on resume.
+			wantInstrs = 0
+		}
+		if row.form == "Jcc" || row.form == "SETcc" || row.form == "CMOVcc" {
+			// Native conditional forms require a preceding flag producer; compile
+			// the minimal reachable pair rather than treating a deliberately
+			// context-sensitive standalone form as unreachable.
+			copy(r.cpu.memory[pc:], []byte{0x39, 0xC0}) // CMP EAX,EAX
+			copy(r.cpu.memory[pc+2:], row.sample)
+			cmp := x86DecodeInstr(r.cpu.memory, pc, uint16(x86InstrLength(r.cpu.memory, pc)))
+			instr = x86DecodeInstr(r.cpu.memory, pc+uint32(cmp.length), uint16(x86InstrLength(r.cpu.memory, pc+uint32(cmp.length))))
+			compileInstrs = []X86JITInstr{cmp, instr}
+			wantInstrs = 2
+		}
+		r.execMem.Reset()
+		block, err := x86CompileBlockWithInput(compileInstrs, pc, r.execMem, r.cpu.memory, newX86CompileInput(r.cpu))
+		if err != nil {
+			t.Fatalf("%s (% X): admitted amd64 %s path did not emit: %v", row.form, row.sample, row.amd64, err)
+		}
+		if block.instrCount != wantInstrs {
+			t.Fatalf("%s (% X): emitted instruction count %d, want %d", row.form, row.sample, block.instrCount, wantInstrs)
+		}
+		if block.execSize == 0 {
+			t.Fatalf("%s (% X): production compiler returned an empty native block", row.form, row.sample)
+		}
+	}
+}
+
+func TestX86JIT_AMD64DispatchInventoryIsComplete(t *testing.T) {
+	// The manifest's byte samples prove lowering. This companion guard walks
+	// the interpreter's actual dispatch tables so adding an implemented opcode
+	// requires an explicit amd64 direct, canonical-helper or fallback decision.
+	cpu := NewCPU_X86(nil)
+	for op, handler := range cpu.baseOps {
+		if handler == nil || op == 0x0F { // 0F delegates to extendedOps.
+			continue
+		}
+		path, ok := x86JITBaseOpcodeInventory[byte(op)]
+		if !ok {
+			t.Fatalf("base opcode %02X has an interpreter handler but no amd64 coverage decision", op)
+		}
+		if path != x86JITCoverageDirect && path != x86JITCoverageFPUHelper && path != x86JITCoverageFallback {
+			t.Fatalf("base opcode %02X has invalid amd64 coverage path %q", op, path)
+		}
+	}
+	for op, handler := range cpu.extendedOps {
+		if handler == nil {
+			continue
+		}
+		path, ok := x86JITExtendedOpcodeInventory[byte(op)]
+		if !ok {
+			t.Fatalf("extended opcode 0F %02X has an interpreter handler but no amd64 coverage decision", op)
+		}
+		if path != x86JITCoverageDirect && path != x86JITCoverageFPUHelper && path != x86JITCoverageFallback {
+			t.Fatalf("extended opcode 0F %02X has invalid amd64 coverage path %q", op, path)
+		}
+	}
+}
+
 // TestX86JIT_PUSH_MMIO_BailsToInterpreter verifies the native PUSH r32
 // emitter routes a stack slot on an MMIO page back to the interpreter
 // instead of writing directly to the backing memory shadow. The bail must
@@ -1911,6 +2021,76 @@ func TestX86JIT_PUSH_MMIO_BailsToInterpreter(t *testing.T) {
 	}
 	if r.cpu.EIP != 0x1000 {
 		t.Fatalf("EIP = %#x, want 0x1000 (bail retPC re-executes PUSH)", r.cpu.EIP)
+	}
+}
+
+func TestX86JIT_PUSHF_MMIO_BailsToInterpreter(t *testing.T) {
+	r := newX86JITTestRig(t)
+	// PUSHF writes to ESP-4 and must take the same pre-mutation MMIO bail as
+	// PUSH r32. The saved flags image is not permitted to touch the RAM shadow.
+	r.cpu.ESP = 0xF004
+	r.cpu.Flags = 0x245
+	r.compileAndRun(t, 0x1000, 0x9C)
+	if r.cpu.ESP != 0xF004 {
+		t.Fatalf("ESP = %#x, want unchanged 0xF004", r.cpu.ESP)
+	}
+	if r.cpu.EIP != 0x1000 {
+		t.Fatalf("EIP = %#x, want 0x1000 for interpreter replay", r.cpu.EIP)
+	}
+}
+
+func TestX86JIT_POPF_MMIO_BailsToInterpreter(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.ESP = 0xF000
+	r.cpu.Flags = 0x245
+	r.compileAndRun(t, 0x1000, 0x9D)
+	if r.cpu.ESP != 0xF000 {
+		t.Fatalf("ESP = %#x, want unchanged 0xF000", r.cpu.ESP)
+	}
+	if r.cpu.Flags != 0x245 {
+		t.Fatalf("Flags = %#x, want unchanged 0x245", r.cpu.Flags)
+	}
+	if r.cpu.EIP != 0x1000 {
+		t.Fatalf("EIP = %#x, want 0x1000 for interpreter replay", r.cpu.EIP)
+	}
+}
+
+func TestX86JIT_POPMemoryDestinationMMIOBailsBeforeESPCommit(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.ESP = 0x2000
+	r.cpu.memory[0x2000] = 0x44
+	r.cpu.memory[0x2001] = 0x33
+	r.cpu.memory[0x2002] = 0x22
+	r.cpu.memory[0x2003] = 0x11
+	// POP dword [0xF000], an MMIO destination in the rig. The old stack read
+	// may occur in a host scratch register, but ESP and guest memory must stay
+	// unchanged until the destination span is accepted.
+	r.compileAndRun(t, 0x1000, 0x8F, 0x05, 0x00, 0xF0, 0x00, 0x00)
+	if r.cpu.ESP != 0x2000 {
+		t.Fatalf("ESP = %#x, want unchanged 0x2000", r.cpu.ESP)
+	}
+	if r.cpu.EIP != 0x1000 {
+		t.Fatalf("EIP = %#x, want 0x1000 for interpreter replay", r.cpu.EIP)
+	}
+	if got := uint32(r.cpu.memory[0x2000]) | uint32(r.cpu.memory[0x2001])<<8 |
+		uint32(r.cpu.memory[0x2002])<<16 | uint32(r.cpu.memory[0x2003])<<24; got != 0x11223344 {
+		t.Fatalf("stack word = %#x, want unchanged 0x11223344", got)
+	}
+}
+
+func TestX86JIT_MOVMemoryBoundaryBailsBeforeMutation(t *testing.T) {
+	r := newX86JITTestRig(t)
+	memSize := uint32(len(r.cpu.memory))
+	r.cpu.EAX = 0x11223344
+	// MOV [MemSize-1],EAX crosses the visible-RAM boundary. The direct store
+	// must leave guest memory and EIP untouched for interpreter replay.
+	r.compileAndRun(t, 0x1000, 0x89, 0x05,
+		byte(memSize-1), byte((memSize-1)>>8), byte((memSize-1)>>16), byte((memSize-1)>>24))
+	if r.cpu.EIP != 0x1000 {
+		t.Fatalf("EIP = %#x, want 0x1000 for interpreter replay", r.cpu.EIP)
+	}
+	if got := r.cpu.memory[memSize-1]; got != 0 {
+		t.Fatalf("boundary byte = %#x, want unchanged zero", got)
 	}
 }
 
@@ -2021,6 +2201,26 @@ func TestX86JIT_PUSH_CodePage_Invalidates(t *testing.T) {
 		uint32(r.cpu.memory[0x10002])<<16 | uint32(r.cpu.memory[0x10003])<<24
 	if got != 0xABCD1234 {
 		t.Fatalf("stack word = %#x, want 0xABCD1234", got)
+	}
+}
+
+func TestX86JIT_IndirectCALL_CodePageBailsBeforeStackWrite(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.ESP = 0x10004 // CALL writes its return address at 0x10000.
+	r.cpu.EAX = 0x2000
+	r.codeBM[0x10000>>8] = 1
+	r.cpu.memory[0x10000] = 0xA5
+
+	r.compileAndRun(t, 0x1000, 0xFF, 0xD0) // CALL EAX
+
+	if got, want := r.cpu.ESP, uint32(0x10004); got != want {
+		t.Fatalf("ESP = %#x, want unchanged %#x", got, want)
+	}
+	if got, want := r.cpu.memory[0x10000], byte(0xA5); got != want {
+		t.Fatalf("code byte = %#x, want unchanged %#x", got, want)
+	}
+	if got, want := r.cpu.EIP, uint32(0x1000); got != want {
+		t.Fatalf("EIP = %#x, want %#x so Step replays CALL", got, want)
 	}
 }
 

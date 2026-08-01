@@ -30,7 +30,9 @@ while true do
         local window = now - started_ms
         print(string.format("[bench] gametic=%d target=%d window_ms=%d boot_ms=%d",
             g, TARGET, window, started_ms - t_boot))
-        sys.write_file("bench/last_result.txt",
+        print(string.format("[bench] IEDOOM_TIMEDEMO_COMPLETE gametic=%d target=%d", g, TARGET))
+        -- sys.write_file is relative to this checked-in script's directory.
+        sys.write_file("last_result.txt",
             string.format("mode=%s window_ms=%d boot_ms=%d tics=%d\n",
                 cpu.execution_mode(), window, started_ms - t_boot, TARGET - START_AT))
         break

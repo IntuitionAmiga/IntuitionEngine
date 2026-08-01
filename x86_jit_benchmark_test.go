@@ -10,16 +10,12 @@
 //   - Mixed:   Interleaved ALU, memory, and branches
 //   - String:  REP STOSB fill operation
 //
-// Reference results (i5-8365U, same-session 10s runs, with ERMS/BMI2/LZCNT):
-//
-//   ALU:    Interpreter 25.8 MIPS -> JIT 2,397 MIPS (93x)
-//   Memory: Interpreter 19.0 MIPS -> JIT 1,251 MIPS (66x)
-//   Mixed:  Interpreter 17.7 MIPS -> JIT 1,761 MIPS (99x)
-//   String: Interpreter 79.5us    -> JIT 0.92us      (86x)
-//
 // Usage:
 //
-//	go test -tags headless -run='^$' -bench 'BenchmarkX86JIT_' -benchtime 30s ./...
+//	GOEXPERIMENT=simd go test -tags headless -run='^$' -bench 'BenchmarkX86JIT_' -benchtime 30s .
+//
+// Keep raw before/after samples with the reviewed change. Host speedups are
+// not portable across CPU model, governor, Go version or JIT workload mix.
 
 //go:build amd64 && linux
 

@@ -4,8 +4,8 @@
 // non-rotozoomer workload to avoid workload-specific accidental parity)
 // through the interpreter and the force-native JIT for an identical
 // number of guest instructions, snapshotting register state at fixed
-// instruction-count checkpoints. Asserts SHA-256 byte-identical
-// canonical CPU register byte-image at every checkpoint.
+// instruction-count checkpoints. Asserts byte-identical canonical CPU and
+// x87 state plus guest-memory hashes at every checkpoint.
 //
 // Coverage limitation (documented):
 //   - The current bus has no video chip wired, so workloads that wait
@@ -22,15 +22,12 @@
 //     not wall-clock.
 //   - Identical loaded ROM bytes; identical bus/MMIO state.
 //   - Test runs under the headless build tag (no display backend).
-//   - Framebuffer and audio comparison are deliberately out of scope in
-//     this revision: the headless build does not wire a video chip into
-//     the bus by default, so the framebuffer is constant zeros on both
-//     sides (parity is trivially true and provides no signal). Audio
-//     output is wall-clock-driven and therefore excluded by design;
-//     audio register writes would need a write-log capture wired into
-//     audio_chip.go to be compared. Both extensions are tracked under
-//     the closure plan as future work; the register-file SHA still
-//     catches CPU-state divergence — the actual shadow-parity invariant.
+//   - The headless bus has no video chip, so display-device output is not a
+//     meaningful independent signal. The backing-memory hash still covers
+//     every ordinary guest framebuffer write; MMIO/video device hashing needs
+//     a deterministic video device fixture and remains separately scoped.
+//     Audio output is wall-clock-driven and remains outside this bounded CPU
+//     comparison.
 //
 // (c) 2024-2026 Zayn Otley - GPLv3 or later
 
@@ -42,6 +39,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -49,17 +47,12 @@ import (
 )
 
 // x86CanonicalStateHash returns a SHA-256 over the canonical guest
-// register byte image: GP regs in encoding order, segment regs in
-// encoding order, EIP, Flags. Cycles is intentionally excluded — it is
-// host-side accounting maintained at different granularity by the
-// interp and JIT (the JIT updates per block, the interp per
-// instruction) and is not part of guest-architectural state. Order is
-// fixed so any future register field must be appended (never inserted)
-// to keep historic snapshots reproducible.
-func x86CanonicalStateHash(cpu *CPU_X86) (regBytes [88]byte, sum [32]byte) {
-	// 8 * 4 = 32 (GP), 6 * 2 = 12 (seg), +4 EIP +4 Flags +8 cycles = 60.
-	// Round into a fixed 88-byte buffer for future expansion (28 bytes
-	// reserved tail, zero-filled).
+// register byte image: GP regs in encoding order, segment regs in encoding
+// order, EIP, Flags, cycles and complete x87 state. Order is fixed so any
+// future field must be appended (never inserted) to keep snapshots stable.
+func x86CanonicalStateHash(cpu *CPU_X86) (regBytes [160]byte, sum [32]byte) {
+	// GP/segment/EIP/Flags/cycles consume 60 bytes. The physical x87 register
+	// file follows, then its complete environment and provenance state.
 	binary.LittleEndian.PutUint32(regBytes[0:], cpu.EAX)
 	binary.LittleEndian.PutUint32(regBytes[4:], cpu.ECX)
 	binary.LittleEndian.PutUint32(regBytes[8:], cpu.EDX)
@@ -76,9 +69,27 @@ func x86CanonicalStateHash(cpu *CPU_X86) (regBytes [88]byte, sum [32]byte) {
 	binary.LittleEndian.PutUint16(regBytes[42:], cpu.GS)
 	binary.LittleEndian.PutUint32(regBytes[44:], cpu.EIP)
 	binary.LittleEndian.PutUint32(regBytes[48:], cpu.Flags)
-	// 52..88 reserved (Cycles excluded; see header).
+	binary.LittleEndian.PutUint64(regBytes[52:], cpu.Cycles)
+	if cpu.FPU != nil {
+		const fpuOff = 60
+		for i, value := range cpu.FPU.regs {
+			binary.LittleEndian.PutUint64(regBytes[fpuOff+i*8:], math.Float64bits(value))
+		}
+		binary.LittleEndian.PutUint16(regBytes[124:], cpu.FPU.FCW)
+		binary.LittleEndian.PutUint16(regBytes[126:], cpu.FPU.FSW)
+		binary.LittleEndian.PutUint16(regBytes[128:], cpu.FPU.FTW)
+		binary.LittleEndian.PutUint32(regBytes[130:], cpu.FPU.FIP)
+		binary.LittleEndian.PutUint16(regBytes[134:], cpu.FPU.FCS)
+		binary.LittleEndian.PutUint32(regBytes[136:], cpu.FPU.FDP)
+		binary.LittleEndian.PutUint16(regBytes[140:], cpu.FPU.FDS)
+		binary.LittleEndian.PutUint16(regBytes[142:], cpu.FPU.FOP)
+	}
 	sum = sha256.Sum256(regBytes[:])
 	return
+}
+
+func x86GuestMemoryHash(cpu *CPU_X86) [32]byte {
+	return sha256.Sum256(cpu.memory)
 }
 
 // x86ShadowSetup loads the named ROM into a fresh CPU configured for
@@ -170,6 +181,8 @@ func x86ShadowParityCheckpoints(t *testing.T, romPath string, windowInstrs int64
 
 		interpBytes, interpSum := x86CanonicalStateHash(interp)
 		jitBytes, jitSum := x86CanonicalStateHash(jit)
+		interpMemSum := x86GuestMemoryHash(interp)
+		jitMemSum := x86GuestMemoryHash(jit)
 
 		if interpSum != jitSum {
 			t.Errorf("checkpoint %d: register-state SHA mismatch", cp)
@@ -186,6 +199,12 @@ func x86ShadowParityCheckpoints(t *testing.T, romPath string, windowInstrs int64
 					break
 				}
 			}
+			return // first failing checkpoint wins
+		}
+		if interpMemSum != jitMemSum {
+			t.Errorf("checkpoint %d: guest-memory SHA mismatch", cp)
+			t.Errorf("  interp: %s", hex.EncodeToString(interpMemSum[:]))
+			t.Errorf("  jit:    %s", hex.EncodeToString(jitMemSum[:]))
 			return // first failing checkpoint wins
 		}
 		t.Logf("checkpoint %d ok: SHA=%s EIP=%08X Cycles=%d", cp, hex.EncodeToString(interpSum[:8]), jit.EIP, jit.Cycles)
@@ -214,5 +233,9 @@ func TestX86JIT_ShadowParity_IEDoomLinkedImage(t *testing.T) {
 	if _, err := os.Stat(rom); err != nil {
 		t.Skipf("IEDoom linked image not present: %v", err)
 	}
-	x86ShadowParityCheckpoints(t, rom, 1, 2_000)
+	// Keep IEDoom on the same four 50k-instruction checkpoint contract as the
+	// continuous demos. The linked image's early startup is intentionally
+	// included: it exercises the real loader, C runtime and Doom entry path
+	// before the external timedemo acceptance advances gametic.
+	x86ShadowParityCheckpoints(t, rom, 50_000, 4)
 }

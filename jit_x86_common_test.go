@@ -798,10 +798,10 @@ func TestX86NeedsFallback(t *testing.T) {
 		t.Error("empty block should need fallback")
 	}
 
-	// Segment register write needs fallback
+	// Segment register writes compile natively.
 	segWrite := X86JITInstr{opcode: 0x008E} // MOV Sreg, Ew
-	if !x86NeedsFallback([]X86JITInstr{segWrite}) {
-		t.Error("MOV Sreg should need fallback")
+	if x86NeedsFallback([]X86JITInstr{segWrite}) {
+		t.Error("MOV Sreg should compile natively")
 	}
 
 	// Far CALL needs fallback
@@ -820,12 +820,14 @@ func TestX86NeedsFallback(t *testing.T) {
 		name string
 		ji   X86JITInstr
 	}{
-		{"PUSH Ev", X86JITInstr{opcode: 0x00FF, hasModRM: true, modrm: 0x30}},
 		{"CALL Ev", X86JITInstr{opcode: 0x00FF, hasModRM: true, modrm: 0x10}},
 	} {
-		if !x86NeedsFallback([]X86JITInstr{tt.ji}) {
-			t.Errorf("%s should need fallback", tt.name)
+		if x86NeedsFallback([]X86JITInstr{tt.ji}) {
+			t.Errorf("%s should compile natively", tt.name)
 		}
+	}
+	if x86NeedsFallback([]X86JITInstr{{opcode: 0x00FF, hasModRM: true, modrm: 0x30}}) {
+		t.Error("PUSH Ev should compile natively")
 	}
 
 	// PUSH/POP r32 now compile natively (block start included) and must not
@@ -857,16 +859,15 @@ func TestX86NeedsFallback(t *testing.T) {
 		t.Error("INT should need fallback")
 	}
 
-	// LDS needs fallback
+	// LDS and LES compile natively.
 	lds := X86JITInstr{opcode: 0x00C5}
-	if !x86NeedsFallback([]X86JITInstr{lds}) {
-		t.Error("LDS should need fallback")
+	if x86NeedsFallback([]X86JITInstr{lds}) {
+		t.Error("LDS should compile natively")
 	}
 
-	// LES needs fallback
 	les := X86JITInstr{opcode: 0x00C4}
-	if !x86NeedsFallback([]X86JITInstr{les}) {
-		t.Error("LES should need fallback")
+	if x86NeedsFallback([]X86JITInstr{les}) {
+		t.Error("LES should compile natively")
 	}
 
 	// Normal ALU should not need fallback
@@ -900,16 +901,15 @@ func TestX86NeedsFallback(t *testing.T) {
 		t.Error("Jcc rel8 should not need fallback")
 	}
 
-	// PUSH segment reg needs fallback
+	// PUSH/POP segment registers compile natively.
 	pushES := X86JITInstr{opcode: 0x0006}
-	if !x86NeedsFallback([]X86JITInstr{pushES}) {
-		t.Error("PUSH ES should need fallback")
+	if x86NeedsFallback([]X86JITInstr{pushES}) {
+		t.Error("PUSH ES should compile natively")
 	}
 
-	// POP segment reg needs fallback
 	popES := X86JITInstr{opcode: 0x0007}
-	if !x86NeedsFallback([]X86JITInstr{popES}) {
-		t.Error("POP ES should need fallback")
+	if x86NeedsFallback([]X86JITInstr{popES}) {
+		t.Error("POP ES should compile natively")
 	}
 }
 
@@ -1269,13 +1269,12 @@ func TestX86FormRegion_RejectsPredecessorChainToExternalCall(t *testing.T) {
 	}
 }
 
-func TestX86FormRegion_RejectsEmbeddedInterpreterOnlyControl(t *testing.T) {
+func TestX86FormRegion_AllowsGuardedPUSHF(t *testing.T) {
 	mem := make([]byte, 0x11040)
 	start := uint32(0x10000)
 
-	// Block 0 contains PUSHF before its direct successor. Per-block
-	// production compilation stops before PUSHF, so region formation must
-	// not admit the same block and bypass that interpreter boundary.
+	// PUSHF is a guarded native stack write and reads saved EFLAGS, so region
+	// formation may retain it before a direct successor.
 	mem[start+0] = 0x9C // PUSHF
 	mem[start+1] = 0xEB // JMP rel8 to block 1
 	mem[start+2] = 0x0D
@@ -1285,8 +1284,8 @@ func TestX86FormRegion_RejectsEmbeddedInterpreterOnlyControl(t *testing.T) {
 	mem[block1+1] = 0xEB // JMP rel8 back to block 0
 	mem[block1+2] = 0xED
 
-	if region := x86FormRegion(start, NewCodeCache(), mem); region != nil {
-		t.Fatalf("x86FormRegion accepted interpreter-only block with %d blocks", len(region.blocks))
+	if region := x86FormRegion(start, NewCodeCache(), mem); region == nil {
+		t.Fatal("x86FormRegion rejected guarded PUSHF block")
 	}
 }
 
@@ -1301,5 +1300,36 @@ func TestBuildX86IOBitmap_LowRAMClean(t *testing.T) {
 		if page < uint32(len(bitmap)) && bitmap[page] != 0 {
 			t.Errorf("low RAM page 0x%X (addr 0x%X) should not be marked", page, addr)
 		}
+	}
+}
+
+func TestX86ScanBlockEndsAfterEarlyTerminatingREPString(t *testing.T) {
+	mem := make([]byte, 0x2000)
+	const pc = uint32(0x1000)
+	// REPE CMPSB may preserve ECX on mismatch. A following REP MOVSB must be
+	// dispatched in a separate block so it observes that exact live count.
+	copy(mem[pc:], []byte{0xF3, 0xA6, 0xF3, 0xA4})
+	instrs := x86ScanBlock(mem, pc)
+	if got := len(instrs); got != 1 {
+		t.Fatalf("scanned %d instructions, want boundary after REPE CMPSB", got)
+	}
+}
+
+func TestX86FormRegionStopsAfterEarlyTerminatingREPString(t *testing.T) {
+	mem := make([]byte, 0x3000)
+	const start = uint32(0x1000)
+	// Block 0 branches to block 1. Block 1 ends at REPE CMPSB; block 2 is a
+	// REP MOVSB that must remain outside the promoted region.
+	mem[start], mem[start+1] = 0xEB, 0x0E // JMP 0x1010
+	copy(mem[start+0x10:], []byte{0xF3, 0xA6, 0xF3, 0xA4})
+	region := x86FormRegion(start, NewCodeCache(), mem)
+	if region == nil {
+		t.Fatal("x86FormRegion rejected safe predecessor and REPE CMPSB blocks")
+	}
+	if got := len(region.blocks); got != 2 {
+		t.Fatalf("region has %d blocks, want 2 without following REP MOVSB", got)
+	}
+	if got := byte(region.blocks[1][0].opcode); got != 0xA6 {
+		t.Fatalf("final region opcode = %#x, want REPE CMPSB", got)
 	}
 }

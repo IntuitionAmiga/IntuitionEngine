@@ -12,7 +12,15 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 
 **Compilation ownership:** each CPU passes an immutable snapshot of its I/O-page map, code-page map and visible-RAM ceiling to block or region compilation. The amd64 emitter still has legacy helper seams that consume temporary compiler state, so compilation is serialised by a compiler-only mutex. Generated code and normal JIT dispatch never take that mutex. `TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs` covers the isolation and is suitable for `go test -race` where the local toolchain supports it.
 
-**Coverage:** 50+ instruction forms including byte and dword MOV, ADD/SUB/AND/OR/XOR/CMP/TEST, byte and dword INC/DEC, guarded Group 3 TEST/NOT/NEG/MUL/IMUL/DIV forms, immediate IMUL, guarded CALL rel32 and RET, PUSH/POP r32, PUSHA/POPA, LEA, XCHG, Jcc, JECXZ, JMP rel8/rel32, XLAT, SALC, WAIT, AAA/AAS/AAM/AAD, register dword and guarded memory count-one SHL/SHR/SAR/ROL/ROR forms, immediate SHLD/SHRD memory destinations, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP/LOOPE/LOOPNE, SAHF/LAHF, LEAVE, CBW/CDQ, unprefixed and REP MOVSB/MOVSD/STOSB/STOSD/CMPSB/SCASB, unprefixed MOVSW/STOSW/LODSB/LODSW/LODSD/CMPSW/SCASW, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. Segment-modifying instructions, far control flow, INT/IRET, I/O port instructions, PUSHF/POPF, signed division, and byte shifts with counts other than one fall back to the interpreter.
+**Coverage:** 50+ instruction forms including byte, word and dword MOV, `MOV` to and from segment selectors, segment PUSH/POP and LES/LDS pointer loads, ADD/SUB/AND/OR/XOR/CMP/TEST, byte and dword INC/DEC, DAA/DAS, guarded Group 3 TEST/NOT/NEG/MUL/IMUL/DIV/IDIV forms, immediate IMUL, guarded near CALL/RET/JMP forms including indirect dword targets, 16-bit and 32-bit register PUSH/POP and POP r/m, PUSHA/POPA, 16-bit and 32-bit PUSHF/POPF, CLI/STI, `ENTER imm16,imm8`, LEA, XCHG, Jcc, JECXZ, JMP rel8/rel32, interpreter-neutral LOCK and ignored operand-size prefixes on supported forms, BT/BTS/BTR/BTC and their immediate forms, XLAT, SALC, WAIT, AAA/AAS/AAM/AAD, register dword and guarded memory count-one SHL/SHR/SAR/ROL/ROR forms, byte `CL`-count-one shifts and rotates, immediate SHLD/SHRD memory destinations, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP/LOOPE/LOOPNE, SAHF/LAHF, LEAVE, CBW/CWDE/CWD/CDQ, unprefixed plus REP and REPNE MOVSB/MOVSW/MOVSD/STOSB/STOSW/STOSD/CMPSB/CMPSW/CMPSD/SCASB/SCASW/SCASD/LODSB/LODSW/LODSD, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. Far control flow, INT/IRET and I/O port instructions fall back to the interpreter.
+
+`jit_x86_coverage_manifest.go` is the checked opcode-family inventory. Its
+amd64 test verifies that every listed direct or canonical x87-helper form is
+admitted by the production scanner and emits through the production compiler.
+Its dispatch-inventory companion walks the interpreter's base and extended
+opcode tables, requiring an explicit amd64 direct, x87-helper or documented
+interpreter-fallback decision for every implemented handler. ARM64 and wasm
+are explicitly unavailable whole backends, not partial scalar substitutes.
 
 ---
 
@@ -244,7 +252,7 @@ Regions are only formed for 3+ block sequences. Single-block self-loops use the 
 
 ## EFLAGS State Tracking
 
-The x86-64 host's EFLAGS maps 1:1 to the x86 guest's flags (CF, PF, AF, ZF, SF, OF). After native ALU operations, host EFLAGS is already correct for the guest.
+The x86-64 host's EFLAGS maps 1:1 only for the x86 guest's condition bits CF, PF, AF, ZF, SF and OF. After native ALU operations, those bits are captured directly. Guest DF and IF remain in the JIT saved-flags slot and are published to `cpu.Flags` at the block exit; they are never installed in host RFLAGS. This preserves host ABI safety while allowing STD/CLD and CLI/STI to survive later native flag captures. CLI/STI end their native block so their IF update is published before the dispatcher observes the next instruction's interrupt state.
 
 Compile-time tracking via `x86FlagState`:
 
@@ -425,6 +433,10 @@ The x87 FPU is JIT-compiled using SSE2 scalar double instructions on the x86-64 
 | DD D8-DF | FSTP ST(i) | Copy + pop (increment TOP) |
 | DD /2 mem | FST mem64 | MOVSD to memory |
 | DD /3 mem | FSTP mem64 | MOVSD + pop |
+| DB /0, DF /0, DF /5 mem | FILD mem32, mem16, mem64 | Integer load, CVTSI2SD + push |
+| DB /2-/3 mem | FIST/FISTP mem32 | FCW-aware CVTSD2SI, helper on invalid or directional rounding |
+| DF /7 mem | FISTP mem64 | FCW-aware CVTSD2SI, helper on invalid or directional rounding |
+| DD E0-EF | FUCOM/FUCOMP ST(i) | UCOMISD condition mapping, optional pop |
 
 ### FPU State Management
 
@@ -432,13 +444,13 @@ TOP is read from FSW bits 13:11, updated via `x86EmitUpdateFSWTop()`. Physical r
 
 ### Interpreter Fallback
 
-All transcendentals (FSIN, FCOS, etc.), BCD, FCMOV and unsupported environment forms use the decoded x87 helper. The native context carries an explicit helper exit reason plus immutable instruction bytes, instruction PC, CS, escape, ModR/M, prefixes, resolved effective address, access width and effective segment. Both compile misses and dynamic native exits, including stack checks, FISTP rounding and x87 MMIO, resume from that payload rather than re-reading guest code after a JIT boundary. The current direct set also includes the implemented FILD/FISTP, D8 comparison, FLDCW/FNSTCW, FLD1/FLDZ and FST/FSTP mem32 forms. Address-size and segment-override forms likewise use the helper until a decoder-correct native emitter exists.
+Every implemented x87 form has a decoded helper exit. Transcendentals (FSIN, FCOS and similar), BCD, FCMOV, environment forms and prefix-sensitive memory forms take it directly; dynamic native exits cover stack checks, directional FIST/FISTP rounding, invalid conversion, x87 MMIO, cross-page operands and visible-RAM boundary failures. Direct x87 memory lowering uses the same pre-mutation span rule as integer lowering, but routes all guard failures through the decoded helper so its immutable operation payload survives the boundary. The native context carries an explicit helper exit reason plus immutable instruction bytes, instruction PC, CS, escape, ModR/M and prefixes. Direct memory exits also publish the resolved effective address, access width and effective segment before the helper runs. The interpreter consumes this payload rather than re-reading mutable guest code after a JIT boundary. The direct set includes the implemented 16-bit, 32-bit and 64-bit FILD forms, 32-bit FIST/FISTP, 64-bit FISTP, D8 comparison, FUCOM/FUCOMP, FLDCW/FNSTCW, FLD1/FLDZ and FST/FSTP mem32 forms. Address-size and segment-override forms use the helper until a decoder-correct native emitter exists.
 
 ---
 
 ## REP String Operations
 
-REP MOVSB/MOVSD/STOSB/STOSD are compiled as native counted loops with range-safety fast paths. REP CMPSB and REP SCASB (REPE/REPNE) are compiled with flag-preserving LAHF/SAHF for ZF-based termination.
+REP and REPNE MOVSB/MOVSW/MOVSD/STOSB/STOSW/STOSD are compiled as native counted loops with range-safety fast paths. REP and REPNE LODSB/LODSW/LODSD, CMPSB/CMPSW/CMPSD and SCASB/SCASW/SCASD are compiled with pre-mutation I/O range guards; comparison loops use flag-preserving LAHF/SAHF for ZF-based termination.
 
 ### Range-Safety Fast Path
 
@@ -461,14 +473,12 @@ Both use LAHF/SAHF to preserve CMP flags across the ECX decrement.
 
 | Category | Opcodes | Reason |
 |----------|---------|--------|
-| Segment register writes | 0x8E (MOV Sreg), PUSH/POP seg, LDS/LES/LFS/LGS/LSS | Segment state change |
 | Far control flow | 0x9A (CALL far), 0xEA (JMP far), 0xCB/0xCA (RETF) | Segment change + complex state |
 | Interrupts | 0xCC/0xCD/0xCE (INT), 0xCF (IRET) | Exception handling |
 | I/O ports | 0xE4-0xE7 (IN/OUT imm), 0xEC-0xEF (IN/OUT DX), 0x6C-0x6F (INS/OUTS) | Hardware I/O |
-| x87 unsupported forms | Transcendentals, BCD, FCMOV, unsupported environment forms, address-size and segment-override forms | Interpreter owns the exact state transition |
+| x87 helper forms | Transcendentals, BCD, FCMOV, environment forms, address-size and segment-override forms | Canonical decoded helper exit preserves the interpreter-owned transition |
 | Interrupt flags | CLI/STI | Interrupt-observation ordering |
-| BCD arithmetic | DAA/DAS | Complex flag semantics |
-| Complex stack control | indirect CALL/JMP (0xFF /2../5), PUSHF/POPF (0x9C/0x9D) | Control-flow or flag semantics |
+| Complex stack control | indirect CALL/JMP (0xFF /2../5) | Dynamic control-flow semantics |
 
 `CALL rel32` (0xE8), near `RET` (0xC3/0xC2), and immediate PUSH (0x68/0x6A)
 compile with pre-mutation span guards.
@@ -529,51 +539,42 @@ go test -tags headless -run='^$' -bench 'BenchmarkX86JIT_(ALU|Mixed)_JIT' -bench
 | Self-mod test | 1 | Write to code region, verify cache invalidation |
 | Benchmark correctness | 2 | ALU/CALL program equivalence |
 
+### Bounded Shadow Parity
+
+The amd64 shadow suite runs the canonical rotozoomer, ANTIC plasma and linked
+IEDoom image in four 50,000-instruction windows through both interpreter and
+JIT paths. Each checkpoint compares register and segment state, EIP, EFLAGS,
+cycles, all physical x87 registers, FCW/FSW/FTW, FIP/FCS/FDP/FDS/FOP, and a
+SHA-256 digest of guest backing memory. Headless tests do not create a video
+device, so device-specific framebuffer or audio hashes require a separate
+deterministic device fixture.
+
 ---
 
 ## Benchmark Results
 
-**Platform:** Intel Core i5-8365U @ 1.60GHz, Linux amd64, Go 1.24
+The checked benchmark harness is `x86_jit_benchmark_test.go`. Run it through
+the normal host environment with `GOEXPERIMENT=simd`, retain raw samples, and
+compare matched baseline and worktree runs. Host MIPS and speedups are not
+portable across CPU model, governor, Go version or workload mix.
 
-Same-session measurements (warm CPU, mains power, `benchtime 10s`):
-
-| Workload | Interpreter ns/op | JIT ns/op | Interpreter MIPS | JIT MIPS | Speedup |
-|----------|------------------|----------|-----------------|---------|---------|
-| **ALU** (10K-iteration register loop) | 3,487,308 | 37,558 | 25.8 | 2,397 | **93x** |
-| **Memory** (10K store/load loop) | 3,153,375 | 47,950 | 19.0 | 1,251 | **66x** |
-| **Mixed** (ALU + memory + shifts) | 5,081,658 | 51,125 | 17.7 | 1,761 | **99x** |
-| **String** (REP STOSB 10K bytes) | 79,538 | 920 | -- | -- | **86x** |
-
-ALU and Mixed benchmarks benefit most from self-loop native compilation which eliminates ~10,000 Go-native round-trips per benchmark run, replacing them with ~3 (at budget=4095). String benchmark benefits from ERMS hardware REP STOSB on proven-safe pages (native string instruction instead of JIT byte loop, 4.3x faster than pre-ERMS JIT loop).
+The latest reviewable matched samples are in
+`benchmarks/x86_jit_amd64_20260801/`. On the recorded Intel Xeon W-11955M,
+the ALU median was flat within noise and the memory median improved by 1.36
+per cent. This is evidence for the measured memory path only, not a general
+x86 JIT performance claim.
 
 ### Doom Timedemo (End-to-End Acceptance)
 
-Real-workload acceptance for the x86 JIT performance plan uses Chocolate Doom
-(`iedoom`) built for both x86 (`.ie86`) and M68020 (`.ie68`) from the same
-source revision, running the deterministic `DEMO1` timedemo (tics 0-350). The
-harness (`bench/measure_timedemo.ies`, M68K variant `bench/measure_timedemo_m68k.ies`)
-watches the guest `gametic` symbol and records wall time to reach tic 350.
-
-Measurement conditions: one pinned CPU (`taskset -c 0`), mains power, governor
-`performance`, two warm-ups then the median of five runs.
-
-| Image | DEMO1 tics 0-350 (median ms) |
-|-------|------------------------------|
-| `.ie86` (x86 JIT) | 17,187 |
-| `.ie68` (M68020 JIT) | 18,914 |
-
-The plan's acceptance gate requires `.ie86` to reach at least 90 per cent of
-`.ie68` throughput. At these medians `.ie86` runs at 18,914 / 17,187 = 110 per
-cent of the M68020 build (that is, faster), clearing the gate. The optimisations
-documented above (native byte-load MOV 0x8A, general LEA, moffs8 0xA0,
-memory-source MOVSX, guarded native `PUSH`/`POP` r32) took the x86 timedemo from
-roughly 59 s to about 17 s (~3.3x) on this host.
-
-The largest measured x86 cost before optimisation was interpreter-fallback
-register synchronisation (full `syncJITRegs` round-trips on every fallback
-instruction), identified with `X86_JIT_STATS=1` fallback-opcode profiling. The
-optimisation strategy was to convert the highest-frequency fallback opcodes to
-guarded native emitters, eliminating those round-trips.
+Real-workload acceptance uses the linked x86 `iedoom_timedemo.ie86` image and
+the deterministic `DEMO1` IWAD lump. `make x86-iedoom-timedemo` checks the
+image, IWAD and checked-in timedemo script before launch, then applies a host
+watchdog. The script observes the timed image's `gametic` through tic 350 and
+prints `IEDOOM_TIMEDEMO_COMPLETE`; a result is accepted only when that marker
+is observed. The current amd64 JIT record is 23,026 ms from tic 1 through
+tic 350 on the recorded Xeon W-11955M; see
+`benchmarks/x86_jit_amd64_20260801/iedoom_timedemo.md`. This is one host's
+completion record, not a portable speed claim.
 
 ---
 
@@ -600,7 +601,17 @@ When `HasLZCNT` is true, BSF uses TZCNT and BSR uses LZCNT for better throughput
 
 ### Hardware REP STOSB/MOVSB (ERMS)
 
-When `HasERMS` is true and the page range is proven safe (all pages non-I/O), REP STOSB and REP MOVSB use native hardware string instructions instead of JIT byte loops. The emitter saves the RSI memory base register to a stack slot, sets up host RDI/RSI/RCX for the native REP instruction, executes CLD + REP STOSB/MOVSB, restores RSI, and computes updated guest ESI/EDI from the post-REP host register values. Only used when guest DF=0 (checked at emitter entry; DF=1 bails to interpreter).
+When `HasERMS` is true and the page range is proven safe (all pages non-I/O), REP STOSB and REP MOVSB use native hardware string instructions instead of JIT byte loops. The emitter saves the RSI memory base register to a stack slot, sets up host RDI/RSI/RCX for the native REP instruction, executes CLD + REP STOSB/MOVSB, restores RSI, and computes updated guest ESI/EDI from the post-REP host register values. A generated runtime check reads the saved guest-EFLAGS slot, so an in-block `STD` or `CLD` is visible; DF=1 bails to the interpreter.
+
+### SIMD Boundary and Rejected Optimisation
+
+The amd64 emitter writes its SSE instructions directly into the native code
+buffer. `simd/archsimd` cannot write that buffer and is therefore not used for
+native x87 lowering. The remaining Go-side x87 helper work is one operation at
+a time and exposes stack, tag, rounding, exception and provenance state after
+each instruction; it is not a safe batch kernel. No x86-specific `archsimd`
+candidate is currently retained. `IE_SIMD=0` controls shared Go SIMD kernels,
+not the explicitly encoded SSE instructions in an already-supported amd64 JIT.
 
 ---
 
@@ -625,8 +636,17 @@ When `HasERMS` is true and the page range is proven safe (all pages non-I/O), RE
 - Runtime CPUID host feature detection (BMI1, BMI2, AVX2, LZCNT, ERMS, FSRM)
 - BMI2 SHLX/SHRX/SARX for non-flag-affecting shifts when flag output is dead
 - TZCNT/LZCNT for BSF/BSR with zero-input destination preservation
-- DF (Direction Flag) check on all REP string emitters (bail to interpreter if DF=1)
+- DF (Direction Flag) runtime check on all REP string emitters, reading the saved in-block guest flags so `STD`/`CLD` take effect immediately (bail to interpreter if DF=1)
 - Hardware REP STOSB/MOVSB on ERMS CPUs for proven-safe ranges (native string ops)
+
+### IEDoom Timedemo Acceptance
+
+`make x86-iedoom-timedemo` runs the linked x86 timedemo image through
+`BENCH_LAUNCH` with a host watchdog. It validates the timedemo image and IWAD
+first. The guest follows Vanilla Doom's behaviour: if `demo1.lmp` is absent,
+`-timedemo demo1` resolves the `DEMO1` lump from the IWAD. The target sets
+`IE_NO_IPC=1` so an already-running emulator cannot consume the workload via
+single-instance IPC.
 
 ### Deferred
 

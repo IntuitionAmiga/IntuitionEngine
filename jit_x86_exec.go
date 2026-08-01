@@ -218,6 +218,13 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				diagFallbackInstr++
 				continue
 			}
+			// Deterministic shadow windows compare architected state after an
+			// exact instruction count. Compile one instruction at a time in that
+			// test-only bounded mode so a native block can never retire across the
+			// requested checkpoint. Ordinary execution keeps full basic blocks.
+			if bounded {
+				instrs = instrs[:1]
+			}
 
 			if x86NeedsFallback(instrs) {
 				x86RecordFallbackOpcode(cpu.memory, pc)
@@ -413,7 +420,24 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		} else {
 			ctx.ChainBudget = 65536
 		}
+		// Shadow-parity windows require an exact instruction boundary. A native
+		// block is otherwise indivisible, so do not enter one that would cross
+		// the remaining budget: execute one canonical interpreter step instead
+		// and rescan. Normal JIT execution never takes this path.
+		if bounded && int64(block.instrCount) > cpu.x86InstrBudget {
+			cpu.syncJITRegsToNamed()
+			cpu.x86RenormalizeFPUBoundary()
+			cpu.Step()
+			cpu.syncJITRegsFromNamed()
+			instructionCount++
+			diagFallbackInstr++
+			if cpu.Halted || !cpu.Running() {
+				break
+			}
+			continue
+		}
 		ctx.ChainCount = 0
+		preECX, preESI, preEDI := cpu.jitRegs[1], cpu.jitRegs[6], cpu.jitRegs[7]
 		var jitT0 time.Time
 		if perfAcctOn {
 			jitT0 = time.Now()
@@ -432,6 +456,51 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			} else {
 				executed = uint64(block.instrCount)
 			}
+		}
+		// Native blocks do not call the Go interpreter handlers that normally
+		// charge CPU.Cycles. Publish the matching completed-prefix charge here.
+		// A deferred bail can retire only a prefix, so never use the whole block
+		// total unless the context says it completed that many instructions.
+		var nativeTicks uint64
+		if executed != 0 && len(block.x86CyclePrefix) != 0 {
+			completed := executed
+			if completed > uint64(len(block.x86CyclePrefix)) {
+				completed = uint64(len(block.x86CyclePrefix))
+			}
+			cpu.Cycles += block.x86CyclePrefix[completed-1]
+			if len(block.x86TickPrefix) >= int(completed) {
+				nativeTicks = block.x86TickPrefix[completed-1]
+			}
+		}
+		// REP string handlers charge one cycle per completed iteration. Native
+		// lowering admits only forward forms, so the resulting ESI or EDI delta
+		// is the exact count without extending the stable emitted context ABI.
+		// REP consumes ECX, so every following REP in the same straight-line
+		// block sees the remaining count. This covers consecutive admitted
+		// string forms rather than silently dropping all dynamic accounting when
+		// a block contains more than one. The first form's address delta also
+		// preserves early-stop CMPS/SCAS semantics.
+		remainingECX := preECX
+		for i, form := range block.x86DynamicCycles {
+			iterations := uint64(1)
+			if form.rep {
+				iterations = uint64(remainingECX)
+				if i == 0 && form.width != 0 {
+					before, after := preEDI, cpu.jitRegs[7]
+					if form.source {
+						before, after = preESI, cpu.jitRegs[6]
+					}
+					iterations = uint64(uint32(after-before) / form.width)
+				}
+				remainingECX = 0
+			}
+			cpu.Cycles += iterations
+			if iterations > 0 {
+				nativeTicks += iterations - 1
+			}
+		}
+		if nativeTicks != 0 {
+			cpu.bus.Tick(int(nativeTicks))
 		}
 
 		// Profile counters
@@ -486,6 +555,13 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				}
 				diagFallbackInstr++
 				executed++
+				// This path continues above the shared retirement accounting below.
+				// Publish the native prefix plus the helper instruction first so a
+				// bounded JIT run cannot execute past its requested instruction count.
+				instructionCount += executed
+				if perfAcctOn {
+					cpu.perfAcct.AddInstrs(executed)
+				}
 				cpu.syncJITRegsFromNamed()
 				if cpu.Halted || !cpu.Running() {
 					break

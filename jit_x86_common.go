@@ -144,6 +144,133 @@ type X86JITInstr struct {
 	grpOp    byte   // group sub-opcode from ModR/M reg field (for Grp1-5)
 }
 
+// x86JITCycleCost is the interpreter's architectural cycle charge for an
+// admitted non-string instruction. String instructions are deliberately kept
+// out of this static table: their charge is the number of iterations and is
+// published by their native lowering. A zero is meaningful for forms that the
+// interpreter leaves at its Step minimum without incrementing CPU.Cycles.
+func x86JITCycleCost(ji X86JITInstr) uint64 {
+	if ji.opcode >= 0xD8 && ji.opcode <= 0xDF {
+		return 1 // opFPU_escape
+	}
+	op := byte(ji.opcode)
+	if ji.opcode >= 0x0F00 {
+		switch {
+		case op >= 0x40 && op <= 0x4F, op >= 0x80 && op <= 0x8F,
+			op >= 0x90 && op <= 0x9F, op == 0xB6 || op == 0xB7 || op == 0xBE || op == 0xBF:
+			return 2
+		case op == 0xAF || op == 0xBC || op == 0xBD:
+			return 10
+		case op == 0xA3 || op == 0xAB || op == 0xB3 || op == 0xBB || op == 0xBA,
+			op == 0xA4 || op == 0xA5 || op == 0xAC || op == 0xAD:
+			return 3
+		case op >= 0xC8 && op <= 0xCF:
+			return 0 // BSWAP handler has no explicit CPU.Cycles charge.
+		}
+		return 0
+	}
+	switch {
+	case op <= 0x05 || op >= 0x08 && op <= 0x0D || op >= 0x10 && op <= 0x15 ||
+		op >= 0x18 && op <= 0x1D || op >= 0x20 && op <= 0x25 || op >= 0x28 && op <= 0x2D ||
+		op >= 0x30 && op <= 0x35 || op >= 0x38 && op <= 0x3D || op >= 0x80 && op <= 0x85 ||
+		op == 0xA8 || op == 0xA9:
+		return 2
+	case op >= 0x40 && op <= 0x5F || op == 0x06 || op == 0x07 || op == 0x0E ||
+		op == 0x16 || op == 0x17 || op == 0x1E || op == 0x1F || op == 0x68 || op == 0x6A ||
+		op >= 0x88 && op <= 0x8E || op >= 0x90 && op <= 0x9F || op >= 0xA0 && op <= 0xA3 ||
+		op >= 0xB0 && op <= 0xBF || op == 0xC6 || op == 0xC7 || op == 0xF5 || op >= 0xF8 && op <= 0xFD:
+		return 1
+	case op == 0x60 || op == 0x61:
+		return 5
+	case op == 0xAA || op == 0xAB || op == 0xAC || op == 0xAD || op == 0xA4 || op == 0xA5 || op == 0xA6 || op == 0xA7 || op == 0xAE || op == 0xAF:
+		return 0 // dynamic string forms are accounted by their lowering
+	case op == 0x27 || op == 0x2F || op == 0x37 || op == 0x3F:
+		return 4
+	case op == 0x69 || op == 0x6B || op == 0xF7:
+		return 10
+	case op == 0x8F || op == 0xFE || op == 0xFF || op == 0xC9:
+		return 2
+	case op == 0xC4 || op == 0xC5:
+		return 4
+	case op >= 0x70 && op <= 0x7F || op == 0xE9 || op == 0xEB:
+		return 2
+	case op == 0xE8:
+		return 3
+	case op == 0xC3:
+		return 2
+	case op == 0xC2:
+		return 3
+	case op == 0x86 || op == 0x87 || op >= 0x91 && op <= 0x97:
+		return 3
+	case op == 0xC0 || op == 0xC1 || op == 0xD2 || op == 0xD3 || op == 0xD4 || op == 0xD5:
+		return 3
+	case op == 0xD0 || op == 0xD1:
+		return 2
+	case op == 0xF6:
+		return 5
+	}
+	return 0
+}
+
+func x86JITCyclePrefix(instrs []X86JITInstr) []uint64 {
+	prefix := make([]uint64, len(instrs))
+	for i, ji := range instrs {
+		prefix[i] = x86JITCycleCost(ji)
+		if i != 0 {
+			prefix[i] += prefix[i-1]
+		}
+	}
+	return prefix
+}
+
+// x86JITTickPrefix mirrors CPU_X86.Step: instructions which make no explicit
+// CPU.Cycles charge still advance attached devices by their minimum one tick.
+func x86JITTickPrefix(instrs []X86JITInstr) []uint64 {
+	prefix := make([]uint64, len(instrs))
+	for i, ji := range instrs {
+		charge := x86JITCycleCost(ji)
+		if charge == 0 {
+			charge = 1
+		}
+		prefix[i] = charge
+		if i > 0 {
+			prefix[i] += prefix[i-1]
+		}
+	}
+	return prefix
+}
+
+type x86JITDynamicCycle struct {
+	width  uint32
+	source bool // MOVS, LODS and CMPS expose their count through ESI.
+	rep    bool
+}
+
+func x86JITDynamicCycles(instrs []X86JITInstr) []x86JITDynamicCycle {
+	var forms []x86JITDynamicCycle
+	for _, ji := range instrs {
+		width := uint32(4)
+		if ji.prefixes&x86PrefOpSize != 0 {
+			width = 2
+		}
+		rep := ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0
+		switch byte(ji.opcode) {
+		case 0xA4:
+			forms = append(forms, x86JITDynamicCycle{width: 1, source: true, rep: rep})
+		case 0xA5, 0xA6, 0xA7, 0xAC, 0xAD:
+			if byte(ji.opcode) == 0xA6 || byte(ji.opcode) == 0xAC {
+				width = 1
+			}
+			forms = append(forms, x86JITDynamicCycle{width: width, source: true, rep: rep})
+		case 0xAA, 0xAE:
+			forms = append(forms, x86JITDynamicCycle{width: 1, rep: rep})
+		case 0xAB, 0xAF:
+			forms = append(forms, x86JITDynamicCycle{width: width, rep: rep})
+		}
+	}
+	return forms
+}
+
 // x86FPUHelperPayload is the immutable decoded-operation ABI used when an
 // x87 form has no direct SSE lowering.  Bytes includes prefixes through the
 // final displacement or immediate, so the interpreter handler consumes the
@@ -186,7 +313,7 @@ func x86FPUHelperPayloadFromContext(ctx *X86JITContext) (x86FPUHelperPayload, bo
 		ctx.FPUHelperLength == 0 || ctx.FPUHelperLength > 15 {
 		return x86FPUHelperPayload{}, false
 	}
-	return x86FPUHelperPayload{
+	p := x86FPUHelperPayload{
 		InstrPC:  ctx.FPUHelperInstrPC,
 		CS:       ctx.FPUHelperCS,
 		Escape:   ctx.FPUHelperEscape,
@@ -197,7 +324,51 @@ func x86FPUHelperPayloadFromContext(ctx *X86JITContext) (x86FPUHelperPayload, bo
 		EA:       ctx.FPUHelperEA,
 		Width:    ctx.FPUHelperWidth,
 		Bytes:    ctx.FPUHelperBytes,
-	}, true
+	}
+	return p, true
+}
+
+func x86FPUHelperAccessWidthFromOpcode(opcode, modrm byte) uint32 {
+	if modrm>>6 == 3 {
+		return 0
+	}
+	regOp := (modrm >> 3) & 7
+	switch opcode {
+	case 0xD8, 0xDA:
+		return 4
+	case 0xDB:
+		if regOp == 5 || regOp == 7 { // m80 real
+			return 10
+		}
+		return 4
+	case 0xDC:
+		return 8
+	case 0xDD:
+		if regOp == 7 { // FNSTSW m16
+			return 2
+		}
+		if regOp == 4 || regOp == 6 { // FRSTOR/FNSAVE environment
+			return 94
+		}
+		return 8
+	case 0xDF:
+		if regOp == 4 || regOp == 6 { // packed BCD
+			return 10
+		}
+		if regOp == 5 || regOp == 7 { // m64 integer
+			return 8
+		}
+		return 2
+	case 0xD9:
+		if regOp == 4 || regOp == 6 { // FLDENV/FNSTENV
+			return 28
+		}
+		if regOp == 5 || regOp == 7 {
+			return 2
+		}
+		return 4
+	}
+	return 0
 }
 
 // x86RunFPUHelper resumes one decoded x87 operation through the canonical
@@ -684,6 +855,14 @@ func x86ScanBlock(memory []byte, startPC uint32) []X86JITInstr {
 		ji.pcOffset = pc - startPC
 		instrs = append(instrs, ji)
 
+		// REPE/REPNE CMPS and SCAS may leave ECX non-zero when their comparison
+		// condition stops the loop. End the native block here so a following
+		// string form observes that architecturally published count through a
+		// fresh dispatch, rather than requiring speculative per-form ECX replay.
+		if x86IsEarlyTerminatingREPString(ji) {
+			break
+		}
+
 		if x86IsBlockTerminator(ji.opcode) {
 			break
 		}
@@ -692,6 +871,17 @@ func x86ScanBlock(memory []byte, startPC uint32) []X86JITInstr {
 	}
 
 	return instrs
+}
+
+func x86IsEarlyTerminatingREPString(ji X86JITInstr) bool {
+	if ji.prefixes&(x86PrefRep|x86PrefRepNE) == 0 {
+		return false
+	}
+	switch byte(ji.opcode) {
+	case 0xA6, 0xA7, 0xAE, 0xAF: // CMPS*/SCAS*
+		return true
+	}
+	return false
 }
 
 // x86DecodeInstr pre-decodes an instruction at memory[pc] with the given length.
@@ -844,6 +1034,11 @@ func x86IsBlockTerminator(opcode uint16) bool {
 		return true
 	case 0xF4: // HLT
 		return true
+	case 0xFA, 0xFB: // CLI, STI
+		// IF changes must be published before the dispatcher examines the next
+		// instruction's interrupt state. The native emitter handles the flag
+		// update, then ends the block at this architectural observation point.
+		return true
 	case 0xFF: // Grp5 (indirect CALL/JMP/PUSH)
 		return true
 	}
@@ -877,10 +1072,6 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 	}
 
 	switch opcode {
-	// Segment register writes
-	case 0x8E: // MOV Sreg, Ew
-		return true
-
 	// Far control flow
 	case 0x9A: // CALL far
 		return true
@@ -893,22 +1084,6 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 	case 0xCC, 0xCD, 0xCE: // INT3, INT, INTO
 		return true
 	case 0xCF: // IRET
-		return true
-
-	// Load segment + pointer
-	case 0xC4: // LES
-		return true
-	case 0xC5: // LDS
-		return true
-
-	// PUSH/POP segment registers
-	case 0x06, 0x07: // PUSH/POP ES
-		return true
-	case 0x0E: // PUSH CS
-		return true
-	case 0x16, 0x17: // PUSH/POP SS
-		return true
-	case 0x1E, 0x1F: // PUSH/POP DS
 		return true
 
 	// I/O port instructions
@@ -934,10 +1109,6 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 	if opcode >= 0x0F00 {
 		op2 := byte(opcode)
 		switch op2 {
-		case 0xA0, 0xA1: // PUSH/POP FS
-			return true
-		case 0xA8, 0xA9: // PUSH/POP GS
-			return true
 		case 0xB2: // LSS
 			return true
 		case 0xB4: // LFS
@@ -958,9 +1129,9 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 // bounds (guest-visible RAM), page-crossing, MMIO, and self-modifying-code
 // invalidation, bailing to the interpreter otherwise.
 //
-// PUSHF and indirect forms remain on the interpreter. Near CALL, RET (with
-// or without an immediate stack adjustment), and immediate PUSH use guarded
-// native emitters.
+// Indirect far CALL/JMP forms remain on the interpreter. Near CALL, RET (with
+// or without an immediate stack adjustment), immediate PUSH and both 16-bit
+// and 32-bit PUSHF/POPF use guarded native emitters.
 //
 // x86StepInInterpreterDisabledForTest, when true, lets focused tests compile
 // these remaining ops through their native emitters without changing the
@@ -976,14 +1147,12 @@ func x86ShouldStepInInterpreter(ji X86JITInstr) bool {
 	}
 	op := byte(ji.opcode)
 	switch {
-	case op == 0x9C || op == 0x9D: // PUSHF/POPF
-		return true
 	// PUSH/POP r32 (0x50-0x5F) have native emitters (x86EmitPUSH_r32/
 	// x86EmitPOP_r32) and run mid-block already; letting a block start with
 	// them lets the prologue/epilogue compile instead of single-stepping.
 	case op == 0xFF:
 		sub := (ji.modrm >> 3) & 7
-		return ji.hasModRM && (sub == 2 || sub == 3 || sub == 4 || sub == 5)
+		return ji.hasModRM && (sub == 3 || sub == 5)
 	}
 	return false
 }
@@ -1341,6 +1510,13 @@ func x86FormRegion(hotPC uint32, cache *CodeCache, memory []byte) *x86Region {
 
 		// Find successor: look at last instruction
 		last := &instrs[len(instrs)-1]
+		// x86ScanBlock deliberately ends REPE/REPNE CMPS/SCAS at an
+		// architectural ECX observation point. Preserve that exact boundary
+		// when forming a promoted region: a following REP instruction must be
+		// redispatched with the compare's remaining count, not inlined here.
+		if x86IsEarlyTerminatingREPString(*last) {
+			break
+		}
 		if !x86IsBlockTerminator(last.opcode) {
 			// Fall-through to next instruction
 			nextPC := last.opcodePC + uint32(last.length)
@@ -1435,6 +1611,10 @@ func x86InstrReadsFlags(ji *X86JITInstr) bool {
 		return true
 	case op == 0x9C || op == 0x9F: // PUSHF, LAHF
 		return true
+	case op == 0xF5 || op == 0xF8 || op == 0xF9 || op == 0xFA || op == 0xFB || op == 0xFC || op == 0xFD:
+		// CMC/CLC/STC/CLI/STI/CLD/STD alter at most one guest bit and retain every
+		// other flag, so a preceding producer must publish its full result.
+		return true
 	case op >= 0x10 && op <= 0x15: // ADC
 		return true
 	case op >= 0x18 && op <= 0x1D: // SBB
@@ -1480,12 +1660,12 @@ func x86InstrWritesFlags(ji *X86JITInstr) bool {
 		return true // TEST AL/EAX
 	case op == 0xD4 || op == 0xD5:
 		return true // AAM/AAD
+	case op == 0x27 || op == 0x2F:
+		return true // DAA/DAS
 	case op == 0xA6 || op == 0xAE:
 		return true // CMPSB/SCASB
 	case op == 0xA7 || op == 0xAF:
 		return true // CMPSW/SCASW
-	case op == 0xF5 || op == 0xF8 || op == 0xF9:
-		return true // CMC/CLC/STC
 	case op == 0x37 || op == 0x3F:
 		return true // AAA/AAS
 	case op >= 0xC0 && op <= 0xC1:

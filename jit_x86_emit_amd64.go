@@ -56,17 +56,26 @@ const (
 	x86AMD64OffScratch     = 32 // [RSP+32]: temporary emitter scratch (8 bytes)
 )
 
-// x86VisibleFlagsMask is the EFLAGS subset that maps 1:1 to guest x86 Flags
-// for the slice-1 / slice-2 ISA cut: CF, PF, AF, ZF, SF, OF. Reserved and
-// system bits (TF, IF, DF, IOPL, NT, RF, VM, AC, VIF, VIP, ID) are
-// preserved unchanged on the guest side because slice 1 does not yet
-// emit instructions that modify them through native paths.
+// x86VisibleFlagsMask is the EFLAGS subset that maps safely to host RFLAGS:
+// CF, PF, AF, ZF, SF and OF. Guest-only control state is intentionally kept
+// out of this mask and published through x86JITPublishedFlagsMask instead.
 const x86VisibleFlagsMask = uint32(0x0000_08D5)
+
+// x86JITPublishedFlagsMask also contains the guest-only control bits that
+// native instructions can change.  They are deliberately excluded from
+// x86VisibleFlagsMask: that mask is copied to host RFLAGS for native Jcc and
+// arithmetic, whereas installing guest DF or IF in host RFLAGS would violate
+// the host ABI.  The saved slot and final guest publication nevertheless own
+// these bits, so STD/CLD and CLI/STI survive intervening native arithmetic and
+// are visible at the block boundary.
+const x86JITPublishedFlagsMask = x86VisibleFlagsMask | x86FlagDF | x86FlagIF
 
 // x86InvVisibleFlagsMaskI32 is ^x86VisibleFlagsMask reinterpreted as
 // int32 (necessary because amd64ALU_reg_imm32_32bit takes a signed imm
 // and the bitwise complement overflows int32 as an untyped constant).
 var x86InvVisibleFlagsMaskI32 = -int32(x86VisibleFlagsMask) - 1
+
+var x86InvJITPublishedFlagsMaskI32 = -int32(x86JITPublishedFlagsMask) - 1
 
 const x86LoopBudget = 65535 // iterations before returning to Go
 
@@ -144,16 +153,26 @@ func x86LegacyCompileInput() x86CompileInput {
 	}
 }
 
-// x86OpSizePrefixIgnored reports opcodes whose operand size is fixed at
-// one byte, making a 0x66 prefix architecturally meaningless: the
-// prefixed encoding must compile and behave exactly like the bare one.
+// x86OpSizePrefixIgnored reports interpreter-supported opcodes whose operand
+// size is fixed or unused. Their 0x66 encoding must compile identically to
+// the unprefixed form.
 func x86OpSizePrefixIgnored(op byte) bool {
 	switch op {
+	case 0x06, 0x07, 0x0E, 0x16, 0x17, 0x1E, 0x1F: // fixed-width segment PUSH/POP
+		return true
+	case 0x27, 0x2F, 0x37, 0x3F: // decimal and ASCII adjust
+		return true
 	case 0xA0, 0xA2: // MOV AL, moffs8 / MOV moffs8, AL
 		return true
 	case 0x88, 0x8A: // MOV r/m8, r8 / MOV r8, r/m8
 		return true
 	case 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7: // MOV r8, imm8
+		return true
+	case 0x90, 0x9B, 0x9E, 0x9F: // NOP, WAIT, SAHF, LAHF
+		return true
+	case 0xD4, 0xD5, 0xD6, 0xD7: // AAM, AAD, SALC, XLAT
+		return true
+	case 0xF5, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD: // flag manipulation
 		return true
 	}
 	return false
@@ -329,8 +348,23 @@ func x86EmitStoreGuestReg32(cb *CodeBuffer, guestReg byte, hostSrc byte) {
 // bytes from the pre-decoded instruction, plus displacement bytes from memory.
 // Returns false if the addressing mode is not supported.
 func x86EmitComputeEA(cb *CodeBuffer, ji *X86JITInstr, memory []byte, dstReg byte) bool {
+	return x86EmitComputeEAWithGuestOverride(cb, ji, memory, dstReg, 0xFF, 0)
+}
+
+// x86EmitComputeEAWithGuestOverride is x86EmitComputeEA with one guest
+// register substituted by an already-computed host value. It is used by POP
+// r/m32, whose architectural destination EA observes ESP after the stack
+// read, while guard bails must still retain the original ESP for replay.
+func x86EmitComputeEAWithGuestOverride(cb *CodeBuffer, ji *X86JITInstr, memory []byte, dstReg, overrideGuest, overrideHost byte) bool {
 	if !ji.hasModRM {
 		return false
+	}
+	loadGuest := func(dst, guest byte) {
+		if guest == overrideGuest {
+			amd64MOV_reg_reg32(cb, dst, overrideHost)
+			return
+		}
+		x86EmitLoadGuestReg32(cb, dst, guest)
 	}
 	modrm := ji.modrm
 	mod := modrm >> 6
@@ -367,12 +401,12 @@ func x86EmitComputeEA(cb *CodeBuffer, ji *X86JITInstr, memory []byte, dstReg byt
 			amd64MOV_reg_imm32(cb, dstReg, disp32)
 		} else {
 			// base register
-			x86EmitLoadGuestReg32(cb, dstReg, base)
+			loadGuest(dstReg, base)
 		}
 
 		// Add scaled index (index=4 means no index)
 		if index != 4 {
-			x86EmitLoadGuestReg32(cb, amd64R11, index)
+			loadGuest(amd64R11, index)
 			if scale > 0 {
 				amd64SHL_imm32(cb, amd64R11, scale)
 			}
@@ -401,7 +435,7 @@ func x86EmitComputeEA(cb *CodeBuffer, ji *X86JITInstr, memory []byte, dstReg byt
 		amd64MOV_reg_imm32(cb, dstReg, disp32)
 	} else {
 		// [reg], [reg+disp8], or [reg+disp32]
-		x86EmitLoadGuestReg32(cb, dstReg, rm)
+		loadGuest(dstReg, rm)
 
 		dispPC := modrmPC + 1
 		if mod == 1 {
@@ -561,14 +595,19 @@ func x86TryConstantEA(ji *X86JITInstr, memory []byte) (uint32, bool) {
 // x86EmitIOCheckMaybeElide emits an IO check only if the EA is not provably safe.
 // If constAddr is provided and the page is safe at compile time, skips the check.
 func x86EmitIOCheckMaybeElide(cb *CodeBuffer, addrReg byte, ji *X86JITInstr, memory []byte, instrIdx int) {
+	if ji.opcode >= 0xD8 && ji.opcode <= 0xDF {
+		// Direct x87 memory forms must retain their immutable helper payload
+		// for every guard failure, not only MMIO. CaptureMem has already
+		// published the matching EA, width and segment at each call site. This
+		// deliberately precedes constant-page elision: a constant first page
+		// does not prove that a multi-byte x87 operand stays within RAM or it.
+		x86EmitFPUSpanGuard(cb, addrReg, x86FPUHelperAccessWidth(ji), ji.opcodePC, instrIdx)
+		return
+	}
 	if addr, isConst := x86TryConstantEA(ji, memory); isConst {
 		if x86IsPageSafeAtCompileTime(addr) {
 			return // compile-time safe -- no runtime check needed
 		}
-	}
-	if ji.opcode >= 0xD8 && ji.opcode <= 0xDF {
-		x86EmitFPUHelperIOCheck(cb, addrReg, ji.opcodePC, instrIdx)
-		return
 	}
 	x86EmitIOCheck(cb, addrReg, ji.opcodePC, instrIdx)
 }
@@ -642,6 +681,42 @@ func x86EmitFPUHelperIOCheck(cb *CodeBuffer, addrReg byte, retPC uint32, instrCo
 			fpuPayload: cs.fpuHelperPayload, fpuWidth: cs.fpuHelperWidth, fpuSegment: cs.fpuHelperSegment,
 		})
 	}
+}
+
+// x86EmitFPUDeferredBailJcc records a canonical decoded-x87 helper exit for
+// a failed pre-mutation memory guard. addrReg must still hold the original
+// guest EA at the conditional branch.
+func x86EmitFPUDeferredBailJcc(cb *CodeBuffer, cond byte, addrReg byte, retPC uint32, instrCount int) {
+	jccOff := amd64Jcc_rel32(cb, cond)
+	if x86CurrentBails == nil || x86CurrentCS == nil {
+		return
+	}
+	cs := x86CurrentCS
+	*x86CurrentBails = append(*x86CurrentBails, x86DeferredBail{
+		jccOffset: jccOff, retPC: retPC, instrIdx: instrCount, kind: 2, addrReg: addrReg,
+		fpuPayload: cs.fpuHelperPayload, fpuWidth: cs.fpuHelperWidth, fpuSegment: cs.fpuHelperSegment,
+	})
+}
+
+// x86EmitFPUSpanGuard validates a direct x87 memory operand and routes every
+// failure through the canonical FPU helper. It is intentionally separate from
+// x86EmitSpanGuard because the latter's generic slow exit would lose the
+// decoded x87 payload required after an SMC boundary.
+func x86EmitFPUSpanGuard(cb *CodeBuffer, addrReg byte, size uint32, retPC uint32, instrCount int) {
+	if size == 0 || size > 256 {
+		panic("invalid x87 memory span")
+	}
+	memLen := uint32(0)
+	if x86CurrentCS != nil {
+		memLen = x86CurrentCS.memCeiling
+	}
+	amd64MOV_reg_reg32(cb, amd64R8, addrReg)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, 0xFF)
+	amd64CMP_reg_imm32(cb, amd64R8, int32(0x101-size))
+	x86EmitFPUDeferredBailJcc(cb, amd64CondAE, addrReg, retPC, instrCount)
+	amd64CMP_reg_imm32(cb, addrReg, int32(memLen-size+1))
+	x86EmitFPUDeferredBailJcc(cb, amd64CondAE, addrReg, retPC, instrCount)
+	x86EmitFPUHelperIOCheck(cb, addrReg, retPC, instrCount)
 }
 
 // x86EmitDeferredBailJcc records an interpreter bail taken when the immediately
@@ -730,9 +805,16 @@ func x86EmitDeferredBails(cb *CodeBuffer) {
 			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffInvalSize), bail.size)
 		} else {
 			x86EmitFPUHelperPayload(cb, bail.fpuPayload)
+			// x86EmitFPUCaptureMem published EA, width and segment while the
+			// effective-address register was still authoritative. Do not reload
+			// them from a deferred-bail scratch register here: a future guard
+			// implementation may reuse that register before this cold stub runs.
+			// The immutable context fields are the helper ABI's provenance source.
+			// A pre-mutation span/MMIO guard runs before x86EmitFPUCaptureMem,
+			// so FDP may still describe an older x87 operation. The branch reaches
+			// this stub with its decoded effective address register live; publish
+			// that value directly for immutable helper replay.
 			amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperEA), bail.addrReg)
-			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperWidth), bail.fpuWidth)
-			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperSegment), uint32(bail.fpuSegment))
 			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffExitReason), x86JITExitFPUHelper)
 			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
 		}
@@ -774,6 +856,20 @@ func x86EmitSelfModCheck(cb *CodeBuffer, addrReg byte, nextPC uint32, instrCount
 			jccOffset: jccOff, retPC: nextPC, instrIdx: instrCount, kind: 1, addrReg: addrReg, size: size,
 		})
 	}
+}
+
+// x86EmitCodePageWriteBail routes a prospective dynamic-control stack write
+// through the interpreter before mutation when it touches guest code. Unlike
+// an ordinary post-store SMC exit, an indirect CALL has a dynamic continuation
+// PC and therefore cannot safely use a static deferred-invalidation stub.
+func x86EmitCodePageWriteBail(cb *CodeBuffer, addrReg byte, retPC uint32, instrCount int) {
+	amd64MOV_reg_mem(cb, amd64RCX, x86AMD64RegCtx, int32(x86CtxOffCodePageBitmapPtr))
+	amd64MOV_reg_reg32(cb, amd64R11, addrReg)
+	amd64SHR_imm32(cb, amd64R11, 8)
+	emitREX_SIB(cb, false, 0, amd64R11, amd64RCX)
+	cb.EmitBytes(0xF6, modRM(0, 0, 4), sibByte(0, amd64R11, amd64RCX))
+	cb.EmitBytes(0x01)
+	x86EmitDeferredBailJcc(cb, amd64CondNE, retPC, instrCount)
 }
 
 // x86EmitMemLoad32 emits a 32-bit load from [memBase + addrReg] into dstReg.
@@ -856,7 +952,21 @@ const (
 func x86EmitCaptureFlagsArith(cb *CodeBuffer) {
 	cb.EmitBytes(0x9C) // PUSHFQ
 	amd64POP(cb, amd64RAX)
-	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+	x86EmitStoreCapturedFlags(cb)
+}
+
+// x86EmitStoreCapturedFlags writes a host-RFLAGS-derived flag image to the
+// saved guest slot while retaining the guest-only control bits.  Host RFLAGS
+// cannot carry guest DF or IF: setting either would affect the Go runtime or
+// host interrupt state.  Every native capture therefore takes arithmetic
+// status from RAX and DF/IF from the prior saved guest image.
+func x86EmitStoreCapturedFlags(cb *CodeBuffer) {
+	amd64MOV_reg_reg32(cb, amd64RDX, amd64RAX)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, ^int32(x86FlagDF|x86FlagIF))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RSP, int32(x86AMD64OffSavedEFlags))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, int32(x86FlagDF|x86FlagIF))
+	amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64RCX)
+	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RDX)
 }
 
 // x86EmitCaptureFlagsInc captures INC/DEC results while retaining the guest's
@@ -869,7 +979,7 @@ func x86EmitCaptureFlagsInc(cb *CodeBuffer) {
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^int32(x86FlagCF))
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, int32(x86FlagCF))
 	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RCX)
-	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+	x86EmitStoreCapturedFlags(cb)
 	amd64PUSH(cb, amd64RAX)
 	cb.EmitBytes(0x9D) // POPFQ
 }
@@ -885,7 +995,7 @@ func x86EmitCaptureFlagsMul(cb *CodeBuffer) {
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^preserveMask)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, preserveMask)
 	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RCX)
-	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+	x86EmitStoreCapturedFlags(cb)
 	amd64PUSH(cb, amd64RAX)
 	cb.EmitBytes(0x9D)
 }
@@ -901,7 +1011,7 @@ func x86EmitCaptureFlagsRotate(cb *CodeBuffer) {
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^preserveMask)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, preserveMask)
 	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RCX)
-	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+	x86EmitStoreCapturedFlags(cb)
 	amd64PUSH(cb, amd64RAX)
 	cb.EmitBytes(0x9D)
 }
@@ -927,7 +1037,7 @@ func x86EmitCaptureFlagsLogic(cb *CodeBuffer) {
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^afBit) // AND EAX, ~AF
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, afBit)  // AND ECX, AF
 	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RCX)  // OR EAX, ECX (preserve prior AF)
-	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+	x86EmitStoreCapturedFlags(cb)
 	// Restore host EFLAGS so the live-flag fast path (Jcc/SETcc/CMOVcc
 	// chained off this logic op) still sees the right ZF/SF/PF/CF/OF.
 	// AF in the restored state reflects the guest's prior value, which
@@ -947,7 +1057,7 @@ func x86EmitCaptureFlagsAAM(cb *CodeBuffer) {
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^preserveMask)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, preserveMask)
 	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RCX)
-	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+	x86EmitStoreCapturedFlags(cb)
 	amd64PUSH(cb, amd64RAX)
 	cb.EmitBytes(0x9D)
 }
@@ -964,26 +1074,26 @@ func x86EmitCaptureFlagsDoubleShift(cb *CodeBuffer) {
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^preserveMask)
 	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, preserveMask)
 	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RCX)
-	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+	x86EmitStoreCapturedFlags(cb)
 	amd64PUSH(cb, amd64RAX)
 	cb.EmitBytes(0x9D)
 }
 
 // x86EmitMergeFlagsToGuest writes the captured-EFLAGS stack slot into
-// guest cpu.Flags, preserving non-visible bits (system flags). Called at
+// guest cpu.Flags, preserving non-published system bits. Called at
 // the top of every block-exit path BEFORE any host ALU teardown that
 // would clobber EFLAGS or RAX/RCX/RDX. The merge sequence itself
 // clobbers host EFLAGS via AND/OR — that is fine because the merge
 // runs strictly after the last guest flag-consumer in the block.
 func x86EmitMergeFlagsToGuest(cb *CodeBuffer) {
-	// EAX = captured visible bits.
+	// EAX = captured guest-published bits.
 	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(x86AMD64OffSavedEFlags))
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, int32(x86VisibleFlagsMask)) // AND EAX, mask
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, int32(x86JITPublishedFlagsMask))
 	// RDX = &cpu.Flags; ECX = current Flags; ECX &= ~mask; ECX |= EAX; *Flags = ECX.
 	amd64MOV_reg_mem(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
 	amd64MOV_reg_mem32(cb, amd64RCX, amd64RDX, 0)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, x86InvVisibleFlagsMaskI32) // AND ECX, ~mask
-	amd64ALU_reg_reg32(cb, 0x09, amd64RCX, amd64RAX)                     // OR ECX, EAX
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, x86InvJITPublishedFlagsMaskI32)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RCX, amd64RAX) // OR ECX, EAX
 	amd64MOV_mem_reg32(cb, amd64RDX, 0, amd64RCX)
 }
 
@@ -1095,6 +1205,8 @@ func x86InstrFlagOpKind(opcode uint16, modrm byte) x86FlagOpKind {
 		return x86FlagOpLogic
 	case 0xD4, 0xD5: // AAM/AAD define SF/ZF/PF and preserve the other bits.
 		return x86FlagOpLogic
+	case 0x27, 0x2F: // DAA/DAS retain selected incoming status bits.
+		return x86FlagOpDoubleShift
 	// String-op compares with REP/REPE/REPNE prefix (CMPSB/CMPSD/SCASB/SCASD).
 	// Each iteration's CMP defines the visible flags arith-style.
 	case 0xA6, 0xA7, 0xAE, 0xAF:
@@ -1102,7 +1214,7 @@ func x86InstrFlagOpKind(opcode uint16, modrm byte) x86FlagOpKind {
 	// POPF / SAHF — direct manipulation, full host EFLAGS capture works.
 	case 0x9D, 0x9E:
 		return x86FlagOpManip
-	// CMC/CLC/STC/CLD/STD — direct flag bits.
+	// CMC/CLC/STC/CLD/STD alter one flag bit and retain the rest.
 	case 0xF5, 0xF8, 0xF9, 0xFC, 0xFD:
 		return x86FlagOpManip
 	// Grp1 r/m, imm — sub-op selects ADD(0)/OR(1)/ADC(2)/SBB(3)/AND(4)/SUB(5)/XOR(6)/CMP(7).
@@ -1166,20 +1278,30 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 	if ji == nil {
 		return false
 	}
+	// Every decoded x87 escape has an amd64 execution path. Direct forms neither
+	// consume nor produce guest EFLAGS; unsupported and non-flat forms emit the
+	// canonical captured helper exit. They must therefore remain inside the
+	// liveness walk so a prefixed x87 instruction cannot collapse a block to a
+	// dispatcher-only zero-length prefix.
+	if ji.opcode >= 0xD8 && ji.opcode <= 0xDF {
+		return ji.hasModRM
+	}
 	if ji.prefixes&x86PrefSeg != 0 || x86ShouldStepInInterpreter(*ji) {
 		return false
 	}
-	if ji.prefixes&(x86PrefAddrSize|x86PrefLock) != 0 {
+	if ji.prefixes&x86PrefAddrSize != 0 {
 		return false
 	}
 
 	opcode := ji.opcode
 	if opcode >= 0x0F00 {
 		op2 := byte(opcode)
-		if ji.prefixes&x86PrefOpSize != 0 {
+		if ji.prefixes&x86PrefOpSize != 0 && op2 != 0xA0 && op2 != 0xA1 && op2 != 0xA8 && op2 != 0xA9 {
 			return false
 		}
 		switch {
+		case op2 == 0xA0 || op2 == 0xA1 || op2 == 0xA8 || op2 == 0xA9:
+			return true
 		case op2 >= 0x80 && op2 <= 0x8F:
 			return true
 		case op2 == 0xB6 || op2 == 0xB7:
@@ -1187,6 +1309,8 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 		case op2 == 0xBE || op2 == 0xBF:
 			return ji.hasModRM
 		case op2 == 0xAF:
+			return ji.hasModRM
+		case op2 == 0xA3 || op2 == 0xAB || op2 == 0xB3 || op2 == 0xBB || op2 == 0xBA:
 			return ji.hasModRM
 		case op2 == 0xA4 || op2 == 0xAC:
 			return ji.hasModRM
@@ -1206,19 +1330,25 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 
 	op := byte(opcode)
 	if ji.prefixes&x86PrefOpSize != 0 && !x86OpSizePrefixIgnored(op) &&
-		(op < 0xB8 || op > 0xBF) && op != 0x89 && op != 0x8B && op != 0xA7 && op != 0xAF {
+		(op < 0xB8 || op > 0xBF) && (op < 0x50 || op > 0x5F) && op != 0x60 && op != 0x61 && op != 0x68 && op != 0x6A && op != 0x89 && op != 0x8B && op != 0x8C && op != 0x8E && op != 0x8F && op != 0x98 && op != 0x99 && op != 0xA1 && op != 0xA3 && op != 0xA5 && op != 0xA7 && op != 0xAB && op != 0xAF && op != 0xC4 && op != 0xC5 && op != 0xC9 && op != 0xF7 {
 		return false
 	}
 
 	switch {
+	case op == 0x06 || op == 0x0E || op == 0x16 || op == 0x1E:
+		return true
+	case op == 0x07 || op == 0x17 || op == 0x1F:
+		return true
+	case op == 0x9C || op == 0x9D: // PUSHF/POPF, 16-bit and 32-bit forms
+		return true
 	case op == 0x90:
-		return ji.prefixes&x86PrefOpSize == 0
+		return true
 	case op == 0x9E || op == 0x9F: // SAHF / LAHF
-		return ji.prefixes&x86PrefOpSize == 0
+		return true
 	case op == 0x9B: // WAIT is a state-neutral interpreter no-op
-		return ji.prefixes&x86PrefOpSize == 0
-	case op == 0xF5 || op == 0xF8 || op == 0xF9:
-		return ji.prefixes&x86PrefOpSize == 0
+		return true
+	case op == 0xF5 || op == 0xF8 || op == 0xF9 || op == 0xFA || op == 0xFB || op == 0xFC || op == 0xFD:
+		return true
 	case op >= 0xB8 && op <= 0xBF:
 		return true
 	case op == 0xA0 || op == 0xA1 || op == 0xA2 || op == 0xA3:
@@ -1226,6 +1356,12 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 	case op >= 0xB0 && op <= 0xB7:
 		return true
 	case op >= 0x40 && op <= 0x4F:
+		return true
+	case op >= 0x50 && op <= 0x5F: // PUSH/POP r32 and operand-size r16
+		return true
+	case op == 0x60 || op == 0x61: // PUSHA/POPA
+		return true
+	case op == 0x68 || op == 0x6A: // PUSH imm32/imm8
 		return true
 	case op == 0x00 || op == 0x01 || op == 0x02 || op == 0x03 ||
 		op == 0x08 || op == 0x09 || op == 0x0A || op == 0x0B ||
@@ -1238,10 +1374,13 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 		return ji.hasModRM
 	case op == 0x84:
 		return ji.hasModRM
-	case op == 0x86 || op == 0x87 || op == 0x88 || op == 0x89 || op == 0x8B:
+	case op == 0x86 || op == 0x87 || op == 0x88 || op == 0x89 || op == 0x8A || op == 0x8B:
 		return ji.hasModRM
 	case op == 0x8D:
-		return ji.hasModRM && ji.modrm>>6 == 1 && ji.modrm&7 != 4
+		// The emitter uses the shared effective-address calculator for every
+		// defined memory LEA form, including SIB, disp32 and no-base forms.
+		// LEA with mod=3 is undefined and remains interpreter-owned.
+		return ji.hasModRM && ji.modrm>>6 != 3
 	case op == 0x05 || op == 0x0D || op == 0x25 || op == 0x2D ||
 		op == 0x35 || op == 0x3D:
 		return true
@@ -1260,60 +1399,80 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 		return true
 	case op == 0x98 || op == 0x99:
 		return true
-	case op == 0xC0 || op == 0xD0 || op == 0xD3:
-		return ji.hasModRM && ji.modrm>>6 == 3
+	case op == 0xC0 || op == 0xD0 || op == 0xD2 || op == 0xD3:
+		return ji.hasModRM
 	case op == 0xC1:
 		return ji.hasModRM
 	case op == 0xD1:
 		return ji.hasModRM
 	case op == 0xF7:
-		return ji.hasModRM && ji.grpOp != 7
+		return ji.hasModRM && (ji.prefixes&x86PrefOpSize == 0 || ji.grpOp == 7)
 	case op == 0xF6:
-		return ji.hasModRM && ji.grpOp <= 6
+		return ji.hasModRM && ji.grpOp <= 7
 	case op == 0x85:
 		return ji.hasModRM
 	case op == 0xA8 || op == 0xA9:
 		return true
 	case op == 0x8C:
-		return ji.hasModRM && ji.modrm>>6 == 3 && ((ji.modrm>>3)&7) <= 5
+		return ji.hasModRM
+	case op == 0x8E:
+		return ji.hasModRM
 	case op == 0x8F:
-		return ji.hasModRM && ji.grpOp == 0 && ji.modrm>>6 == 3 && ji.prefixes&x86PrefOpSize == 0
+		return ji.hasModRM && ji.grpOp == 0
 	case op == 0xC6 || op == 0xC7:
 		return ji.hasModRM && ji.grpOp == 0
+	case op == 0xC8:
+		return ji.prefixes&x86PrefOpSize == 0
+	case op == 0xC4 || op == 0xC5:
+		return ji.hasModRM
 	case op == 0xFE:
 		return ji.hasModRM && ji.grpOp <= 1
 	case op == 0xFF:
-		return ji.hasModRM && (ji.grpOp <= 1 || ji.grpOp == 6) && ji.prefixes&x86PrefOpSize == 0
+		return ji.hasModRM && (ji.grpOp <= 2 || ji.grpOp == 4 || ji.grpOp == 6) && ji.prefixes&x86PrefOpSize == 0
 	case op >= 0xE0 && op <= 0xE2:
 		return true
 	case op == 0xE3: // JECXZ rel8 (address-size-prefixed JCXZ remains deferred)
 		return ji.prefixes&x86PrefAddrSize == 0
 	case op == 0xD7: // XLAT
-		return ji.prefixes&x86PrefOpSize == 0
+		return true
 	case op == 0xD6: // SALC
-		return ji.prefixes&x86PrefOpSize == 0
+		return true
 	case op == 0xD4: // AAM; base zero reaches the emitter's interpreter fallback.
-		return ji.prefixes&x86PrefOpSize == 0
+		return true
 	case op == 0xD5: // AAD
-		return ji.prefixes&x86PrefOpSize == 0
-	case op == 0xAC: // LODSB, unprefixed only
-		return ji.prefixes&(x86PrefRep|x86PrefRepNE|x86PrefOpSize) == 0
-	case op == 0xAD: // LODSW/LODSD, unprefixed only
-		return ji.prefixes&(x86PrefRep|x86PrefRepNE) == 0 && (ji.prefixes&^x86PrefOpSize) == 0
+		return true
+	case op == 0xAC: // LODSB, optionally REP/REPNE
+		return ji.prefixes&^(x86PrefRep|x86PrefRepNE) == 0
+	case op == 0xAD: // LODSW/LODSD, optionally REP/REPNE
+		return ji.prefixes&^(x86PrefRep|x86PrefRepNE|x86PrefOpSize) == 0
 	case op == 0x37 || op == 0x3F: // AAA/AAS
-		return ji.prefixes&x86PrefOpSize == 0
+		return true
+	case op == 0x27 || op == 0x2F: // DAA/DAS
+		return true
 	case op >= 0x70 && op <= 0x7F:
 		return true
 	case op == 0xA4 || op == 0xA5:
 		return ji.prefixes == 0 || ji.prefixes == x86PrefOpSize ||
-			(ji.prefixes&x86PrefRep != 0 && ji.prefixes&x86PrefOpSize == 0)
+			((ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0) &&
+				ji.prefixes&^(x86PrefRep|x86PrefRepNE|x86PrefOpSize) == 0)
 	case op == 0xAA || op == 0xAB:
 		return ji.prefixes == 0 || ji.prefixes == x86PrefOpSize ||
-			(ji.prefixes&x86PrefRep != 0 && ji.prefixes&x86PrefOpSize == 0)
+			((ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0) &&
+				ji.prefixes&^(x86PrefRep|x86PrefRepNE|x86PrefOpSize) == 0)
 	case op == 0xA6 || op == 0xAE:
-		return ji.prefixes == 0 || ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0
+		// CMPSB/SCASB ignore operand-size, while both repeat prefixes are
+		// directly lowered. Keep the admission rule in lock-step with the
+		// emitter: an unrelated prefix, including LOCK, remains deferred.
+		return ji.prefixes == 0 || ji.prefixes == x86PrefOpSize ||
+			ji.prefixes == x86PrefRep || ji.prefixes == x86PrefRepNE ||
+			ji.prefixes == x86PrefRep|x86PrefOpSize || ji.prefixes == x86PrefRepNE|x86PrefOpSize
 	case op == 0xA7 || op == 0xAF:
-		return ji.prefixes == x86PrefOpSize
+		// CMPSW/SCASW and CMPSD/SCASD share the generic repeat lowerer.
+		// Previously the liveness gate admitted only non-repeat word forms,
+		// silently leaving every newly implemented REP form unreachable.
+		return ji.prefixes == x86PrefOpSize || ji.prefixes == x86PrefRep ||
+			ji.prefixes == x86PrefRepNE || ji.prefixes == x86PrefRep|x86PrefOpSize ||
+			ji.prefixes == x86PrefRepNE|x86PrefOpSize
 	}
 
 	return false
@@ -1425,6 +1584,14 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 	if opcode >= 0x0F00 {
 		op2 := byte(opcode)
 		switch {
+		case op2 == 0xA0:
+			return x86EmitPUSH_Sw(cb, 4, ji, instrIdx)
+		case op2 == 0xA1:
+			return x86EmitPOP_Sw(cb, 4, ji, instrIdx)
+		case op2 == 0xA8:
+			return x86EmitPUSH_Sw(cb, 5, ji, instrIdx)
+		case op2 == 0xA9:
+			return x86EmitPOP_Sw(cb, 5, ji, instrIdx)
 		case op2 >= 0x80 && op2 <= 0x8F:
 			return x86EmitJcc_rel32(cb, ji, memory, startPC, cs, instrIdx)
 		case op2 == 0xB6:
@@ -1437,6 +1604,8 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 			return x86EmitMOVSX_Gv_Ew(cb, ji, memory, instrIdx)
 		case op2 == 0xAF:
 			return x86EmitIMUL_Gv_Ev(cb, ji, memory, cs, instrIdx)
+		case op2 == 0xA3 || op2 == 0xAB || op2 == 0xB3 || op2 == 0xBB || op2 == 0xBA:
+			return x86EmitBitTest(cb, ji, memory, op2, cs, instrIdx)
 		case op2 == 0xA4 || op2 == 0xAC:
 			if ji.prefixes&x86PrefOpSize != 0 {
 				return false
@@ -1469,11 +1638,25 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 
 	op := byte(opcode)
 	if ji.prefixes&x86PrefOpSize != 0 && !x86OpSizePrefixIgnored(op) &&
-		(op < 0xB8 || op > 0xBF) && op != 0x89 && op != 0x8B && op != 0xA7 && op != 0xAF {
+		(op < 0xB8 || op > 0xBF) && (op < 0x50 || op > 0x5F) && op != 0x60 && op != 0x61 && op != 0x68 && op != 0x6A && op != 0x89 && op != 0x8B && op != 0x8C && op != 0x8E && op != 0x8F && op != 0x98 && op != 0x99 && op != 0xA1 && op != 0xA3 && op != 0xA5 && op != 0xA7 && op != 0xAB && op != 0xAF && op != 0xC4 && op != 0xC5 && op != 0xC9 && op != 0xF7 {
 		return false
 	}
 
 	switch {
+	case op == 0x06:
+		return x86EmitPUSH_Sw(cb, 0, ji, instrIdx)
+	case op == 0x0E:
+		return x86EmitPUSH_Sw(cb, 1, ji, instrIdx)
+	case op == 0x16:
+		return x86EmitPUSH_Sw(cb, 2, ji, instrIdx)
+	case op == 0x1E:
+		return x86EmitPUSH_Sw(cb, 3, ji, instrIdx)
+	case op == 0x07:
+		return x86EmitPOP_Sw(cb, 0, ji, instrIdx)
+	case op == 0x17:
+		return x86EmitPOP_Sw(cb, 2, ji, instrIdx)
+	case op == 0x1F:
+		return x86EmitPOP_Sw(cb, 3, ji, instrIdx)
 	// NOP
 	case op == 0x90:
 		// No-op: nothing to emit
@@ -1600,7 +1783,7 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 	case op == 0x8A:
 		return x86EmitMOV_Gb_Eb(cb, ji, memory, instrIdx)
 
-	// MOV Gv, Ev (0x8B) -- reg-reg only for now
+	// MOV Gv, Ev (0x8B)
 	case op == 0x8B:
 		return x86EmitMOV_Gv_Ev(cb, ji, memory, instrIdx)
 
@@ -1660,6 +1843,8 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		return x86EmitGrp2_Eb_1(cb, ji, memory, 0xC0, cs, instrIdx)
 	case op == 0xD0:
 		return x86EmitGrp2_Eb_1(cb, ji, memory, 0xD0, cs, instrIdx)
+	case op == 0xD2:
+		return x86EmitGrp2_Eb_CL(cb, ji, memory, cs, instrIdx)
 	case op == 0xC1:
 		return x86EmitGrp2_Ev_Ib(cb, ji, memory, cs, instrIdx)
 	case op == 0xD1:
@@ -1718,16 +1903,22 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 
 	// MOV Ev,Sw (0x8C) -- read segment register
 	case op == 0x8C:
+		if ji.modrm>>6 != 3 {
+			return x86EmitMOV_Ev_SwMem(cb, ji, memory, instrIdx)
+		}
 		return x86EmitMOV_Ev_Sw(cb, ji)
+	case op == 0x8E:
+		return x86EmitMOV_Sw_Ev(cb, ji, memory, instrIdx)
 
-	// POP Ev (0x8F /0) -- register destination only. Memory destinations use
-	// the interpreter's post-pop effective-address rule and remain deferred.
+	// POP Ev (0x8F /0)
 	case op == 0x8F:
-		return x86EmitPOP_Ev_Reg(cb, ji, instrIdx)
+		return x86EmitPOP_Ev(cb, ji, memory, instrIdx)
 
 	// PUSHF (0x9C)
 	case op == 0x9C:
 		return x86EmitPUSHF(cb, ji, cs, instrIdx)
+	case op == 0x9D: // POPF
+		return x86EmitPOPF(cb, ji, cs, instrIdx)
 
 	// SAHF (0x9E) / LAHF (0x9F)
 	case op == 0x9E:
@@ -1742,6 +1933,8 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 	// LEAVE (0xC9)
 	case op == 0xC9:
 		return x86EmitLEAVE(cb, ji, instrIdx)
+	case op == 0xC8:
+		return x86EmitENTER(cb, ji, memory, instrIdx)
 
 	// XLAT (0xD7)
 	case op == 0xD7:
@@ -1758,6 +1951,10 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		return x86EmitAAAAS(cb, 1, cs)
 	case op == 0x3F:
 		return x86EmitAAAAS(cb, -1, cs)
+	case op == 0x27:
+		return x86EmitDAADAS(cb, false, cs)
+	case op == 0x2F:
+		return x86EmitDAADAS(cb, true, cs)
 
 	// LOOP/LOOPE/LOOPNE (0xE0-0xE2)
 	case op >= 0xE0 && op <= 0xE2:
@@ -1776,6 +1973,10 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 	// MOV Ev,Iv (0xC7)
 	case op == 0xC7:
 		return x86EmitMOV_Ev_Iv(cb, ji, memory, instrIdx)
+	case op == 0xC4:
+		return x86EmitLoadSegPointer(cb, ji, memory, 0, instrIdx) // LES
+	case op == 0xC5:
+		return x86EmitLoadSegPointer(cb, ji, memory, 3, instrIdx) // LDS
 
 	// Grp4 Eb (0xFE) -- INC/DEC byte
 	case op == 0xFE:
@@ -1792,7 +1993,7 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 
 	// MOVS/STOS string ops
 	case op == 0xA4: // MOVSB (single or REP)
-		if ji.prefixes&x86PrefRep != 0 {
+		if ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0 {
 			return x86EmitREP_MOVSB(cb, ji, instrIdx)
 		}
 		if ji.prefixes == 0 {
@@ -1800,11 +2001,12 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		}
 		return false
 	case op == 0xA5: // MOVSD (single or REP)
-		if ji.prefixes&x86PrefRep != 0 {
+		if ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0 {
+			width := uint32(4)
 			if ji.prefixes&x86PrefOpSize != 0 {
-				return false
+				width = 2
 			}
-			return x86EmitREP_MOVSD(cb, ji, instrIdx)
+			return x86EmitREP_MOVSD(cb, ji, instrIdx, width)
 		}
 		if ji.prefixes == 0 {
 			return x86EmitMOVS(cb, ji, 4, instrIdx)
@@ -1822,12 +2024,19 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		}
 		return false
 	case op == 0xA7: // CMPSW
+		if ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0 {
+			width := uint32(4)
+			if ji.prefixes&x86PrefOpSize != 0 {
+				width = 2
+			}
+			return x86EmitREP_CMPS(cb, ji, instrIdx, cs, width)
+		}
 		if ji.prefixes == x86PrefOpSize {
 			return x86EmitCMPSW(cb, ji, cs, instrIdx)
 		}
 		return false
 	case op == 0xAA: // STOSB (single or REP)
-		if ji.prefixes&x86PrefRep != 0 {
+		if ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0 {
 			return x86EmitREP_STOSB(cb, ji, instrIdx)
 		}
 		if ji.prefixes == 0 {
@@ -1835,11 +2044,12 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		}
 		return false
 	case op == 0xAB: // STOSD (single or REP)
-		if ji.prefixes&x86PrefRep != 0 {
+		if ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0 {
+			width := uint32(4)
 			if ji.prefixes&x86PrefOpSize != 0 {
-				return false
+				width = 2
 			}
-			return x86EmitREP_STOSD(cb, ji, instrIdx)
+			return x86EmitREP_STOSD(cb, ji, instrIdx, width)
 		}
 		if ji.prefixes == 0 {
 			return x86EmitSTOS(cb, ji, 4, instrIdx)
@@ -1850,7 +2060,7 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		return false
 	case op == 0xAC: // LODSB
 		if ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0 {
-			return false
+			return x86EmitREP_LODS(cb, ji, instrIdx, 1)
 		}
 		return x86EmitLODSB(cb, ji, instrIdx)
 	case op == 0xAD: // LODSD
@@ -1858,7 +2068,11 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 			return x86EmitLODSW(cb, ji, instrIdx)
 		}
 		if ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0 {
-			return false
+			width := uint32(4)
+			if ji.prefixes&x86PrefOpSize != 0 {
+				width = 2
+			}
+			return x86EmitREP_LODS(cb, ji, instrIdx, width)
 		}
 		return x86EmitLODSD(cb, ji, instrIdx)
 	case op == 0xAE: // SCASB (single or REPE/REPNE)
@@ -1870,6 +2084,13 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		}
 		return false
 	case op == 0xAF: // SCASW
+		if ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0 {
+			width := uint32(4)
+			if ji.prefixes&x86PrefOpSize != 0 {
+				width = 2
+			}
+			return x86EmitREP_SCAS(cb, ji, instrIdx, cs, width)
+		}
 		if ji.prefixes == x86PrefOpSize {
 			return x86EmitSCASW(cb, ji, cs, instrIdx)
 		}
@@ -1919,6 +2140,53 @@ func x86EmitLODSW(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64R11)
 	x86EmitStoreGuestReg32(cb, 0, amd64R8)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 2)
+	x86EmitStoreGuestReg32(cb, 6, amd64R10)
+	x86EmitRestoreGuestVisibleFlags(cb)
+	return true
+}
+
+// x86EmitREP_LODS emits REP/REPNE LODSB, LODSW and LODSD. The interpreter
+// treats both repeat prefixes identically for LODS: it consumes ECX elements
+// and retains the final element in AL, AX or EAX.
+func x86EmitREP_LODS(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, width uint32) bool {
+	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
+	x86EmitLoadGuestReg32(cb, amd64RCX, 1)
+	x86EmitLoadGuestReg32(cb, amd64R10, 6)
+	x86EmitLoadGuestReg32(cb, amd64RAX, 0) // retain high EAX bits for byte/word forms
+
+	emitREX(cb, false, amd64RCX, amd64RCX)
+	cb.EmitBytes(0x85, modRM(3, amd64RCX, amd64RCX))
+	done := amd64Jcc_rel32(cb, amd64CondE)
+	x86EmitRangePageCheck(cb, amd64R10, amd64RCX, int(width))
+	x86EmitDeferredBailJcc(cb, amd64CondNE, ji.opcodePC, instrIdx)
+
+	loop := cb.Len()
+	if width == 1 {
+		x86EmitMemLoad8(cb, amd64R8, amd64R10)
+	} else if width == 2 {
+		x86EmitMemLoad16(cb, amd64R8, amd64R10)
+	} else {
+		x86EmitMemLoad32(cb, amd64R8, amd64R10)
+	}
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(width))
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
+	loopJmp := amd64Jcc_rel32(cb, amd64CondNE)
+	patchRel32(cb, loopJmp, loop)
+
+	if width == 1 {
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, -256)
+		amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64R8)
+	} else if width == 2 {
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, -65536)
+		amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64R8)
+	} else {
+		amd64MOV_reg_reg32(cb, amd64RAX, amd64R8)
+	}
+	x86EmitStoreGuestReg32(cb, 0, amd64RAX)
+
+	doneLabel := cb.Len()
+	patchRel32(cb, done, doneLabel)
+	x86EmitStoreGuestReg32(cb, 1, amd64RCX)
 	x86EmitStoreGuestReg32(cb, 6, amd64R10)
 	x86EmitRestoreGuestVisibleFlags(cb)
 	return true
@@ -2133,11 +2401,24 @@ func x86EmitMOV_EAX_moffs32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, inst
 	}
 	addr := readLE32(memory, x86MoffsDispPC(ji))
 	amd64MOV_reg_imm32(cb, amd64R10, addr)
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
 	// Moffs addresses are absolute, but still need the same visible-RAM,
 	// page-crossing and MMIO safety boundary as every other direct access.
-	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
-	x86EmitMemLoad32(cb, amd64R8, amd64R10)
-	x86EmitStoreGuestReg32(cb, 0, amd64R8) // EAX
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
+	if width == 2 {
+		x86EmitMemLoad16(cb, amd64R8, amd64R10)
+		x86EmitLoadGuestReg32(cb, amd64R11, 0)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, -65536)
+		amd64ALU_reg_reg32(cb, 0x09, amd64R11, amd64R8)
+		x86EmitStoreGuestReg32(cb, 0, amd64R11)
+	} else {
+		x86EmitMemLoad32(cb, amd64R8, amd64R10)
+		x86EmitStoreGuestReg32(cb, 0, amd64R8) // EAX
+	}
+	x86EmitRestoreGuestVisibleFlags(cb)
 	return true
 }
 
@@ -2147,10 +2428,19 @@ func x86EmitMOV_moffs32_EAX(cb *CodeBuffer, ji *X86JITInstr, memory []byte, inst
 	}
 	addr := readLE32(memory, x86MoffsDispPC(ji))
 	amd64MOV_reg_imm32(cb, amd64R10, addr)
-	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64R8, 0) // EAX
-	x86EmitMemStore32(cb, amd64R10, amd64R8)
-	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
+	if width == 2 {
+		x86EmitMemStore16(cb, amd64R10, amd64R8)
+	} else {
+		x86EmitMemStore32(cb, amd64R10, amd64R8)
+	}
+	x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, width)
+	x86EmitRestoreGuestVisibleFlags(cb)
 	return true
 }
 
@@ -2230,7 +2520,7 @@ func x86EmitMOV_Eb_Gb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
-	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	x86EmitSpanGuard(cb, amd64R10, 1, ji.opcodePC, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64R8, srcGuestReg)
 	if srcHigh {
 		amd64SHR_imm32(cb, amd64R8, 8)
@@ -2268,7 +2558,7 @@ func x86EmitMOV_Gb_Eb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 			return false
 		}
-		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		x86EmitSpanGuard(cb, amd64R10, 1, ji.opcodePC, instrIdx)
 		x86EmitMemLoad8(cb, amd64R11, amd64R10) // zero-extended byte
 	}
 
@@ -2535,12 +2825,14 @@ func x86EmitMOV_Ev_Gv(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
-	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
-	x86EmitLoadGuestReg32(cb, amd64R8, srcReg)
 	width := uint32(4)
 	if ji.prefixes&x86PrefOpSize != 0 {
-		x86EmitMemStore16(cb, amd64R10, amd64R8)
 		width = 2
+	}
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
+	x86EmitLoadGuestReg32(cb, amd64R8, srcReg)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		x86EmitMemStore16(cb, amd64R10, amd64R8)
 	} else {
 		x86EmitMemStore32(cb, amd64R10, amd64R8)
 	}
@@ -2575,7 +2867,11 @@ func x86EmitMOV_Gv_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
-	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
 	if ji.prefixes&x86PrefOpSize != 0 {
 		x86EmitMemLoad16(cb, amd64R8, amd64R10)
 		x86EmitLoadGuestReg32(cb, amd64R11, dstReg)
@@ -2652,7 +2948,7 @@ func x86EmitALU_Ev_Gv(cb *CodeBuffer, ji *X86JITInstr, hostOpcode byte, cs *x86C
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
-	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
 
 	// Load memory value
 	x86EmitMemLoad32(cb, amd64R8, amd64R10)
@@ -2756,7 +3052,7 @@ func x86EmitALU_Gv_Ev(cb *CodeBuffer, ji *X86JITInstr, aluOp byte, cs *x86Compil
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
-	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
 	x86EmitMemLoad32(cb, amd64R11, amd64R10)
 	x86EmitLoadGuestReg32(cb, amd64R8, dstReg)
 	if aluOp == 2 || aluOp == 3 {
@@ -3080,6 +3376,73 @@ func x86EmitGrp2_Eb_1(cb *CodeBuffer, ji *X86JITInstr, memory []byte, nativeOp b
 	return true
 }
 
+// x86EmitGrp2_Eb_CL lowers the byte CL-count group when CL is exactly one.
+// CPU_X86 deliberately preserves its prior OF for multi-bit rotates whereas
+// the host leaves OF undefined, so other dynamic counts must replay through
+// the interpreter. Memory forms use the same pre-mutation span guard and SMC
+// exit as the count-one family.
+func x86EmitGrp2_Eb_CL(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86CompileState, instrIdx int) bool {
+	if !ji.hasModRM {
+		return false
+	}
+	shiftOp := ji.grpOp
+	if shiftOp == 6 { // SAL aliases SHL
+		shiftOp = 4
+	}
+	if shiftOp > 5 && shiftOp != 7 {
+		return false
+	}
+	isRotate := shiftOp <= 3
+	// Count zero leaves every flag unchanged and multi-bit rotates retain OF in
+	// this interpreter. Keep both contracts on the interpreter path until a
+	// dedicated conditional flag merge exists.
+	x86EmitLoadGuestReg32(cb, amd64RCX, 1)
+	amd64CMP_reg_imm32(cb, amd64RCX, 1)
+	x86EmitDeferredBailJcc(cb, amd64CondNE, ji.opcodePC, instrIdx)
+
+	if ji.modrm>>6 == 3 {
+		x86EmitLoadGuestByteReg(cb, amd64R11, ji.modrm&7)
+		x86EmitLoadGuestReg32(cb, amd64RCX, 1) // guest ECX supplies CL
+		if shiftOp == 2 || shiftOp == 3 {
+			x86EmitRestoreGuestCF(cb)
+		}
+		emitREX(cb, false, 0, amd64R11)
+		cb.EmitBytes(0xD2, modRM(3, shiftOp, amd64R11))
+		if isRotate {
+			x86EmitCaptureFlagsRotate(cb)
+			cs.flagState = x86FlagsLiveArith
+		} else {
+			x86EmitCaptureFlagsLogic(cb)
+			cs.flagState = x86FlagsLiveLogic
+		}
+		x86EmitStoreGuestByteReg(cb, ji.modrm&7, amd64R11)
+	} else {
+		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+			return false
+		}
+		x86EmitSpanGuard(cb, amd64R10, 1, ji.opcodePC, instrIdx)
+		x86EmitMemLoad8(cb, amd64R11, amd64R10)
+		x86EmitLoadGuestReg32(cb, amd64RCX, 1) // guest ECX supplies CL
+		if shiftOp == 2 || shiftOp == 3 {
+			x86EmitRestoreGuestCF(cb)
+		}
+		emitREX(cb, false, 0, amd64R11)
+		cb.EmitBytes(0xD2, modRM(3, shiftOp, amd64R11))
+		if isRotate {
+			x86EmitCaptureFlagsRotate(cb)
+			cs.flagState = x86FlagsLiveArith
+		} else {
+			x86EmitCaptureFlagsLogic(cb)
+			cs.flagState = x86FlagsLiveLogic
+		}
+		x86EmitMemStore8(cb, amd64R10, amd64R11)
+		x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 1)
+	}
+	cs.flagCaptureDone = true
+	x86EmitRestoreGuestVisibleFlags(cb)
+	return true
+}
+
 // x86EmitGrp2_Ev_Ib handles Grp2 Ev, Ib (0xC1) -- register mode only.
 // Sub-ops: 0=ROL, 1=ROR, 2=RCL, 3=RCR, 4=SHL, 5=SHR, 7=SAR
 // When BMI2 is available and flags output is dead, uses SHLX/SHRX/SARX
@@ -3339,10 +3702,8 @@ func x86EmitDoubleShift_Ev_Gv_CL(cb *CodeBuffer, ji *X86JITInstr, op2 byte, cs *
 // Grp3 Emitters (NOT/NEG/MUL/IMUL/DIV/IDIV/TEST)
 // ===========================================================================
 
-// x86EmitGrp3_Eb lowers byte Group 3 forms. IDIV stays interpreter-owned
-// until its signed overflow contract receives an explicit native guard.
 func x86EmitGrp3_Eb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86CompileState, instrIdx int) bool {
-	if !ji.hasModRM || ji.grpOp > 6 {
+	if !ji.hasModRM || ji.grpOp > 7 {
 		return false
 	}
 
@@ -3412,6 +3773,8 @@ func x86EmitGrp3_Eb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Compi
 			x86EmitRestoreGuestVisibleFlags(cb)
 			cs.flagState = x86FlagsLiveArith
 			return true
+		case 7: // IDIV Eb: AX / r/m8 -> AL quotient, AH remainder
+			return x86EmitIDIV_Eb(cb, amd64R11, ji, cs, instrIdx)
 		}
 	}
 
@@ -3481,8 +3844,83 @@ func x86EmitGrp3_Eb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Compi
 		x86EmitRestoreGuestVisibleFlags(cb)
 		cs.flagState = x86FlagsLiveArith
 		return true
+	case 7: // IDIV Eb: AX / r/m8 -> AL quotient, AH remainder
+		return x86EmitIDIV_Eb(cb, amd64R11, ji, cs, instrIdx)
 	}
 	return false
+}
+
+// x86EmitIDIV_Eb executes the project's byte IDIV contract without exposing
+// a host divide fault. A 16-bit signed dividend and 8-bit signed divisor fit
+// in a host 64-bit division; the post-division range check enforces the
+// architectural signed-byte quotient limit before AX is changed.
+func x86EmitIDIV_Eb(cb *CodeBuffer, divisor byte, ji *X86JITInstr, cs *x86CompileState, instrIdx int) bool {
+	emitREX(cb, false, divisor, divisor)
+	cb.EmitBytes(0x85, modRM(3, divisor, divisor))
+	x86EmitDeferredBailJcc(cb, amd64CondE, ji.opcodePC, instrIdx)
+	x86EmitLoadGuestReg32(cb, amd64RAX, 0)
+	amd64SHL_imm(cb, amd64RAX, 48)
+	amd64SAR_imm(cb, amd64RAX, 48)
+	amd64MOVSX_B(cb, divisor, divisor)
+	cb.EmitBytes(0x48, 0x99) // CQO
+	amd64IDIV(cb, divisor)
+	amd64MOVSX_B(cb, amd64R10, amd64RAX)
+	amd64ALU_reg_reg(cb, 0x39, amd64R10, amd64RAX)
+	x86EmitDeferredBailJcc(cb, amd64CondNE, ji.opcodePC, instrIdx)
+
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, 0xFF)
+	amd64SHL_imm32(cb, amd64RDX, 8)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 0xFF00)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RDX)
+	x86EmitLoadGuestReg32(cb, amd64R8, 0)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, -65536)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64RAX)
+	x86EmitStoreGuestReg32(cb, 0, amd64R8)
+	x86EmitRestoreGuestVisibleFlags(cb)
+	cs.flagState = x86FlagsDead
+	return true
+}
+
+// x86EmitIDIV_Ew is the operand-size form of signed division. It constructs
+// the interpreter's signed DX:AX dividend at host width, validates the signed
+// word quotient, then merges quotient and remainder into AX and DX.
+func x86EmitIDIV_Ew(cb *CodeBuffer, divisor byte, ji *X86JITInstr, cs *x86CompileState, instrIdx int) bool {
+	emitREX(cb, false, divisor, divisor)
+	cb.EmitBytes(0x85, modRM(3, divisor, divisor))
+	x86EmitDeferredBailJcc(cb, amd64CondE, ji.opcodePC, instrIdx)
+	x86EmitLoadGuestReg32(cb, amd64RAX, 0)
+	x86EmitLoadGuestReg32(cb, amd64RDX, 2)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, 0xFFFF)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 0xFFFF)
+	amd64SHL_imm(cb, amd64RDX, 16)
+	amd64ALU_reg_reg(cb, 0x09, amd64RAX, amd64RDX)
+	amd64SHL_imm(cb, amd64RAX, 32)
+	amd64SAR_imm(cb, amd64RAX, 32)
+	amd64MOVSX_W(cb, divisor, divisor)
+	cb.EmitBytes(0x48, 0x99) // CQO
+	amd64IDIV(cb, divisor)
+	amd64MOVSX_W(cb, amd64R10, amd64RAX)
+	amd64ALU_reg_reg(cb, 0x39, amd64R10, amd64RAX)
+	x86EmitDeferredBailJcc(cb, amd64CondNE, ji.opcodePC, instrIdx)
+
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, 0xFFFF)
+	amd64SHL_imm32(cb, amd64RDX, 16)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, -65536)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RDX)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, 0xFFFF)
+	x86EmitLoadGuestReg32(cb, amd64R8, 0)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, -65536)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64RAX)
+	x86EmitStoreGuestReg32(cb, 0, amd64R8)
+	x86EmitLoadGuestReg32(cb, amd64R8, 2)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, -65536)
+	amd64MOV_reg_reg32(cb, amd64R10, amd64RDX)
+	amd64SHR_imm32(cb, amd64R10, 16)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64R10)
+	x86EmitStoreGuestReg32(cb, 2, amd64R8)
+	x86EmitRestoreGuestVisibleFlags(cb)
+	cs.flagState = x86FlagsDead
+	return true
 }
 
 // x86EmitGrp3_Ev handles Grp3 Ev (0xF7). Safe memory forms validate their
@@ -3495,6 +3933,22 @@ func x86EmitGrp3_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Compi
 	subOp := (ji.modrm >> 3) & 7
 	rmReg := ji.modrm & 7
 	isMem := ji.modrm>>6 != 3
+	if ji.prefixes&x86PrefOpSize != 0 {
+		if subOp != 7 {
+			return false
+		}
+		if isMem {
+			if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+				return false
+			}
+			x86EmitSpanGuard(cb, amd64R10, 2, ji.opcodePC, instrIdx)
+			x86EmitMemLoad16(cb, amd64R8, amd64R10)
+		} else {
+			x86EmitLoadGuestReg32(cb, amd64R8, rmReg)
+			amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, 0xFFFF)
+		}
+		return x86EmitIDIV_Ew(cb, amd64R8, ji, cs, instrIdx)
+	}
 	if isMem {
 		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 			return false
@@ -3583,10 +4037,39 @@ func x86EmitGrp3_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Compi
 		return true
 
 	case 7: // IDIV Ev (signed)
-		// Native IDIV raises host SIGFPE for divide-by-zero and quotient
-		// overflow. Until the JIT has explicit fault guards, let the
-		// interpreter handle IDIV so guest #DE cannot terminate the VM.
-		return false
+		// Compute the quotient at host 64-bit width, then explicitly check that
+		// it fits the guest's signed 32-bit result. That avoids the host IDIV
+		// quotient-overflow trap. The sole host 64-bit overflow (-2^63 / -1)
+		// is guarded before the dividend is assembled.
+		emitREX(cb, false, amd64R8, amd64R8)
+		cb.EmitBytes(0x85, modRM(3, amd64R8, amd64R8)) // TEST divisor,divisor
+		x86EmitDeferredBailJcc(cb, amd64CondE, ji.opcodePC, instrIdx)
+		x86EmitLoadGuestReg32(cb, amd64RAX, 0)
+		x86EmitLoadGuestReg32(cb, amd64RDX, 2)
+		amd64CMP_reg_imm32(cb, amd64R8, -1)
+		notMinusOne := amd64Jcc_rel32(cb, amd64CondNE)
+		amd64CMP_reg_imm32(cb, amd64RDX, -2147483648)
+		notMinDividend := amd64Jcc_rel32(cb, amd64CondNE)
+		emitREX(cb, false, amd64RAX, amd64RAX)
+		cb.EmitBytes(0x85, modRM(3, amd64RAX, amd64RAX)) // TEST EAX,EAX
+		x86EmitDeferredBailJcc(cb, amd64CondE, ji.opcodePC, instrIdx)
+		patchRel32(cb, notMinusOne, cb.Len())
+		patchRel32(cb, notMinDividend, cb.Len())
+
+		amd64MOVSXD(cb, amd64R8, amd64R8)
+		amd64SHL_imm(cb, amd64RDX, 32)
+		amd64ALU_reg_reg(cb, 0x09, amd64RAX, amd64RDX) // RAX = signed EDX:EAX
+		cb.EmitBytes(0x48, 0x99)                       // CQO
+		emitREX(cb, true, 0, amd64R8)
+		cb.EmitBytes(0xF7, modRM(3, 7, amd64R8)) // IDIV R8
+		amd64MOVSXD(cb, amd64R10, amd64RAX)
+		amd64ALU_reg_reg(cb, 0x39, amd64R10, amd64RAX)
+		x86EmitDeferredBailJcc(cb, amd64CondNE, ji.opcodePC, instrIdx)
+		x86EmitStoreGuestReg32(cb, 0, amd64RAX)
+		x86EmitStoreGuestReg32(cb, 2, amd64RDX)
+		x86EmitRestoreGuestVisibleFlags(cb)
+		cs.flagState = x86FlagsDead
+		return true
 	}
 
 	return false
@@ -3693,18 +4176,22 @@ func x86EmitALU_AL_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Com
 
 func x86EmitPUSH_r32(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	guestReg := byte(ji.opcode) - 0x50
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
 	x86MarkDirty(4) // ESP modified
 
 	// Compute the target address (ESP-4) in R10 WITHOUT mutating ESP yet, so
 	// a guard bail can re-execute the whole PUSH in the interpreter with the
 	// guest ESP still intact.
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 4) // SUB R10d, 4
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, int32(width))
 
 	// Validate the full 4-byte span [ESP-4, ESP-1]: bail to the interpreter
 	// on out-of-RAM, wraparound, page-crossing, or MMIO before writing memory
 	// or committing ESP.
-	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
 
 	if guestReg == 4 {
 		amd64MOV_reg_reg32(cb, amd64R8, x86AMD64RegGuestESP) // PUSH ESP: original value
@@ -3712,9 +4199,12 @@ func x86EmitPUSH_r32(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 		x86EmitLoadGuestReg32(cb, amd64R8, guestReg)
 	}
 
-	// MOV [RSI + R10], R8d
-	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
-	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	if width == 2 {
+		x86EmitMemStore16(cb, amd64R10, amd64R8)
+	} else {
+		emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	}
 
 	// Commit ESP = R10.
 	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
@@ -3722,7 +4212,7 @@ func x86EmitPUSH_r32(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	// If the slot lives on a JIT-compiled code page, invalidate so stale
 	// native code is not executed. The write is already done and ESP
 	// committed, so the bail resumes at the next instruction.
-	x86EmitSelfModCheck(cb, amd64R10, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
+	x86EmitSelfModCheck(cb, amd64R10, ji.opcodePC+uint32(ji.length), instrIdx+1, width)
 
 	return true
 }
@@ -3730,18 +4220,27 @@ func x86EmitPUSH_r32(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 // x86EmitPUSHA writes the interpreter's eight dword stack image as one
 // pre-validated span. ESP is not published until every store has completed.
 func x86EmitPUSHA(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
+	span := width * 8
 	x86MarkDirty(4)
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 32)
-	x86EmitSpanGuard(cb, amd64R10, 32, ji.opcodePC, instrIdx)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, int32(span))
+	x86EmitSpanGuard(cb, amd64R10, span, ji.opcodePC, instrIdx)
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10) // new ESP
 	for _, reg := range [...]byte{7, 6, 5, 4, 3, 2, 1, 0} {
 		x86EmitLoadGuestReg32(cb, amd64R8, reg)
-		x86EmitMemStore32(cb, amd64R10, amd64R8)
-		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 4)
+		if width == 2 {
+			x86EmitMemStore16(cb, amd64R10, amd64R8)
+		} else {
+			x86EmitMemStore32(cb, amd64R10, amd64R8)
+		}
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(width))
 	}
 	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R11)
-	x86EmitSelfModCheck(cb, amd64R11, ji.opcodePC+uint32(ji.length), instrIdx+1, 32)
+	x86EmitSelfModCheck(cb, amd64R11, ji.opcodePC+uint32(ji.length), instrIdx+1, span)
 	x86EmitRestoreGuestVisibleFlags(cb)
 	return true
 }
@@ -3749,15 +4248,28 @@ func x86EmitPUSHA(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 // x86EmitPOPA restores the matching dword image, discarding the stored ESP
 // slot exactly as the interpreter does.
 func x86EmitPOPA(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
+	span := width * 8
 	x86MarkDirty(4)
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	x86EmitSpanGuard(cb, amd64R10, 32, ji.opcodePC, instrIdx)
+	x86EmitSpanGuard(cb, amd64R10, span, ji.opcodePC, instrIdx)
 	for _, reg := range [...]byte{7, 6, 5, 0xFF, 3, 2, 1, 0} {
 		if reg != 0xFF {
-			x86EmitMemLoad32(cb, amd64R8, amd64R10)
-			x86EmitStoreGuestReg32(cb, reg, amd64R8)
+			if width == 2 {
+				x86EmitMemLoad16(cb, amd64R8, amd64R10)
+				x86EmitLoadGuestReg32(cb, amd64RDX, reg)
+				amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, -65536)
+				amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R8)
+				x86EmitStoreGuestReg32(cb, reg, amd64RDX)
+			} else {
+				x86EmitMemLoad32(cb, amd64R8, amd64R10)
+				x86EmitStoreGuestReg32(cb, reg, amd64R8)
+			}
 		}
-		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 4)
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(width))
 	}
 	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
 	x86EmitRestoreGuestVisibleFlags(cb)
@@ -3766,6 +4278,10 @@ func x86EmitPOPA(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 func x86EmitPOP_r32(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	guestReg := byte(ji.opcode) - 0x58
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
 	x86MarkDirty(4) // ESP modified
 
 	// Target address = ESP in R10; ESP is not incremented until after the
@@ -3774,11 +4290,29 @@ func x86EmitPOP_r32(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 	// Validate the full 4-byte span [ESP, ESP+3] before loading or changing
 	// ESP: bail on out-of-RAM, wraparound, page-crossing, or MMIO.
-	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
 
-	// MOV R8d, [RSI + R10]
-	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
-	cb.EmitBytes(0x8B, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	if width == 2 {
+		x86EmitMemLoad16(cb, amd64R8, amd64R10)
+	} else {
+		emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x8B, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	}
+	if width == 2 {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 2)
+		if guestReg == 4 {
+			amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, -65536)
+			amd64ALU_reg_reg32(cb, 0x09, amd64R10, amd64R8)
+			amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+			return true
+		}
+		x86EmitLoadGuestReg32(cb, amd64RDX, guestReg)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, -65536)
+		amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R8)
+		x86EmitStoreGuestReg32(cb, guestReg, amd64RDX)
+		amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+		return true
+	}
 
 	// Store to guest register
 	x86EmitStoreGuestReg32(cb, guestReg, amd64R8)
@@ -3793,14 +4327,64 @@ func x86EmitPOP_r32(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	return true
 }
 
-func x86EmitPOP_Ev_Reg(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
-	if !ji.hasModRM || ji.grpOp != 0 || ji.modrm>>6 != 3 || ji.prefixes&x86PrefOpSize != 0 {
+func x86EmitPOP_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !ji.hasModRM || ji.grpOp != 0 {
 		return false
 	}
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
+	if ji.modrm>>6 != 3 {
+		// POP's destination EA uses ESP after the pop. Keep old ESP in R11 for
+		// the guarded stack read, derive new ESP in R10, then substitute R10
+		// only while calculating and guarding the memory destination.
+		x86MarkDirty(4)
+		amd64MOV_reg_reg32(cb, amd64R11, x86AMD64RegGuestESP)
+		x86EmitSpanGuard(cb, amd64R11, width, ji.opcodePC, instrIdx)
+		if width == 2 {
+			x86EmitMemLoad16(cb, amd64RDX, amd64R11)
+		} else {
+			x86EmitMemLoad32(cb, amd64RDX, amd64R11)
+		}
+		amd64MOV_reg_reg32(cb, amd64R10, amd64R11)
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(width))
+		if !x86EmitComputeEAWithGuestOverride(cb, ji, memory, amd64RAX, 4, amd64R10) {
+			return false
+		}
+		x86EmitSpanGuard(cb, amd64RAX, width, ji.opcodePC, instrIdx)
+		if width == 2 {
+			x86EmitMemStore16(cb, amd64RAX, amd64RDX)
+		} else {
+			x86EmitMemStore32(cb, amd64RAX, amd64RDX)
+		}
+		amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+		x86EmitSelfModCheck(cb, amd64RAX, ji.opcodePC+uint32(ji.length), instrIdx+1, width)
+		x86EmitRestoreGuestVisibleFlags(cb)
+		return true
+	}
+
 	dstReg := ji.modrm & 7
 	x86MarkDirty(4)
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
+	if width == 2 {
+		x86EmitMemLoad16(cb, amd64R8, amd64R10)
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 2)
+		if dstReg == 4 {
+			amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, -65536)
+			amd64ALU_reg_reg32(cb, 0x09, amd64R10, amd64R8)
+			amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+		} else {
+			x86EmitLoadGuestReg32(cb, amd64RDX, dstReg)
+			amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, -65536)
+			amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R8)
+			x86EmitStoreGuestReg32(cb, dstReg, amd64RDX)
+			amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+		}
+		x86EmitRestoreGuestVisibleFlags(cb)
+		return true
+	}
 	x86EmitMemLoad32(cb, amd64R8, amd64R10)
 	x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
 	if dstReg != 4 {
@@ -3810,20 +4394,89 @@ func x86EmitPOP_Ev_Reg(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	return true
 }
 
+// x86EmitCaptureGuestCF publishes only the carry result of BT-family
+// instructions. Those instructions leave every other guest flag unchanged.
+func x86EmitCaptureGuestCF(cb *CodeBuffer) {
+	amd64SETcc(cb, amd64CondB, amd64R11)
+	amd64MOVZX_B(cb, amd64R11, amd64R11)
+	amd64MOV_reg_mem32(cb, amd64R10, amd64RSP, int32(x86AMD64OffSavedEFlags))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, ^int32(x86FlagCF))
+	amd64ALU_reg_reg32(cb, 0x09, amd64R10, amd64R11)
+	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64R10)
+}
+
+// x86EmitBitTest lowers the interpreter's 32-bit BT/BTS/BTR/BTC forms. Its
+// memory model indexes within the addressed dword, matching CPU_X86's masked
+// bit-index implementation rather than the wider hardware bit-string rule.
+func x86EmitBitTest(cb *CodeBuffer, ji *X86JITInstr, memory []byte, op2 byte, cs *x86CompileState, instrIdx int) bool {
+	if !ji.hasModRM || ji.prefixes&x86PrefOpSize != 0 {
+		return false
+	}
+	regOp := (ji.modrm >> 3) & 7
+	if op2 == 0xBA && regOp < 4 {
+		return false
+	}
+	if ji.modrm>>6 == 3 {
+		x86EmitLoadGuestReg32(cb, amd64R8, ji.modrm&7)
+	} else {
+		if !x86EmitComputeEA(cb, ji, memory, amd64RAX) {
+			return false
+		}
+		x86EmitSpanGuard(cb, amd64RAX, 4, ji.opcodePC, instrIdx)
+		x86EmitMemLoad32(cb, amd64R8, amd64RAX)
+	}
+
+	mutates := op2 == 0xAB || op2 == 0xB3 || op2 == 0xBB || (op2 == 0xBA && regOp != 4)
+	if op2 == 0xBA {
+		immPC := ji.opcodePC + uint32(ji.length) - 1
+		emitREX(cb, false, 0, amd64R8)
+		cb.EmitBytes(0x0F, 0xBA, modRM(3, regOp, amd64R8), memory[immPC])
+	} else {
+		x86EmitLoadGuestReg32(cb, amd64R11, regOp)
+		emitREX(cb, false, amd64R11, amd64R8)
+		cb.EmitBytes(0x0F, op2, modRM(3, amd64R11, amd64R8))
+	}
+	x86EmitCaptureGuestCF(cb)
+
+	if mutates {
+		if ji.modrm>>6 == 3 {
+			x86EmitStoreGuestReg32(cb, ji.modrm&7, amd64R8)
+		} else {
+			x86EmitMemStore32(cb, amd64RAX, amd64R8)
+			x86EmitSelfModCheckMaybeElide(cb, amd64RAX, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
+		}
+	}
+	x86EmitRestoreGuestVisibleFlags(cb)
+	cs.flagState = x86FlagsLiveArith
+	cs.flagCaptureDone = true
+	return true
+}
+
 func x86EmitPUSH_imm32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
 	x86MarkDirty(4) // ESP modified
-	immPC := ji.opcodePC + uint32(ji.length) - 4
-	imm := uint32(memory[immPC]) | uint32(memory[immPC+1])<<8 | uint32(memory[immPC+2])<<16 | uint32(memory[immPC+3])<<24
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
+	immPC := ji.opcodePC + uint32(ji.length) - width
+	imm := uint32(memory[immPC]) | uint32(memory[immPC+1])<<8
+	if width == 4 {
+		imm |= uint32(memory[immPC+2])<<16 | uint32(memory[immPC+3])<<24
+	}
 
 	// Compute and validate the prospective stack slot before changing ESP.
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 4)
-	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, int32(width))
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
 	amd64MOV_reg_imm32(cb, amd64R8, imm)
-	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
-	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	if width == 2 {
+		x86EmitMemStore16(cb, amd64R10, amd64R8)
+	} else {
+		emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	}
 	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
-	x86EmitSelfModCheck(cb, amd64R10, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
+	x86EmitSelfModCheck(cb, amd64R10, ji.opcodePC+uint32(ji.length), instrIdx+1, width)
 
 	return true
 }
@@ -3832,15 +4485,23 @@ func x86EmitPUSH_imm8(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 	x86MarkDirty(4) // ESP modified
 	immPC := ji.opcodePC + uint32(ji.length) - 1
 	imm := uint32(int32(int8(memory[immPC]))) // sign-extend
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
 
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
-	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 4)
-	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, int32(width))
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
 	amd64MOV_reg_imm32(cb, amd64R8, imm)
-	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
-	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	if width == 2 {
+		x86EmitMemStore16(cb, amd64R10, amd64R8)
+	} else {
+		emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	}
 	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
-	x86EmitSelfModCheck(cb, amd64R10, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
+	x86EmitSelfModCheck(cb, amd64R10, ji.opcodePC+uint32(ji.length), instrIdx+1, width)
 
 	return true
 }
@@ -3858,7 +4519,7 @@ func x86EmitMOVZX_Gv_Eb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx
 		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 			return false
 		}
-		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		x86EmitSpanGuard(cb, amd64R10, 1, ji.opcodePC, instrIdx)
 		x86EmitMemLoad8(cb, amd64R8, amd64R10)
 		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
 		return true
@@ -3890,7 +4551,7 @@ func x86EmitMOVZX_Gv_Ew(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx
 		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 			return false
 		}
-		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		x86EmitSpanGuard(cb, amd64R10, 2, ji.opcodePC, instrIdx)
 		x86EmitMemLoad16(cb, amd64R8, amd64R10)
 		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
 		return true
@@ -4198,10 +4859,9 @@ func x86EmitGrp4_Eb(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Compi
 	return true
 }
 
-// x86EmitGrp5_Ev lowers the dword INC/DEC/PUSH subset of Group 5. The
-// remaining control-flow forms are deliberately intercepted before emission.
+// x86EmitGrp5_Ev lowers dword INC/DEC, near indirect CALL/JMP and PUSH.
 func x86EmitGrp5_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86CompileState, instrIdx int) bool {
-	if !ji.hasModRM || (ji.grpOp != 0 && ji.grpOp != 1 && ji.grpOp != 6) || ji.prefixes&x86PrefOpSize != 0 {
+	if !ji.hasModRM || (ji.grpOp != 0 && ji.grpOp != 1 && ji.grpOp != 2 && ji.grpOp != 4 && ji.grpOp != 6) || ji.prefixes&x86PrefOpSize != 0 {
 		return false
 	}
 
@@ -4236,6 +4896,34 @@ func x86EmitGrp5_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Compi
 		x86EmitRestoreGuestVisibleFlags(cb)
 		return true
 	}
+	if sub == 2 || sub == 4 { // near indirect CALL/JMP Ev
+		// Resolve the target before touching ESP. This preserves CALL [ESP]
+		// and leaves a guard bailout able to replay the original instruction.
+		if mod == 3 {
+			x86EmitLoadGuestReg32(cb, amd64RAX, rm)
+		} else {
+			if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+				return false
+			}
+			x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
+			x86EmitMemLoad32(cb, amd64RAX, amd64R10)
+		}
+		if sub == 2 {
+			x86MarkDirty(4)
+			amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
+			amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 4)
+			x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
+			x86EmitCodePageWriteBail(cb, amd64R10, ji.opcodePC, instrIdx)
+			amd64MOV_reg_imm32(cb, amd64R8, ji.opcodePC+uint32(ji.length))
+			x86EmitMemStore32(cb, amd64R10, amd64R8)
+			amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+		}
+		amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffRetPC), amd64RAX)
+		amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffRetCount), uint32(instrIdx+1))
+		x86EmitLightweightEpilogue(cb)
+		x86EmitFullEpilogueEnd(cb)
+		return true
+	}
 	if mod == 3 {
 		x86EmitLoadGuestReg32(cb, amd64R8, rm)
 		x86EmitRestoreGuestCF(cb)
@@ -4267,28 +4955,185 @@ func x86EmitGrp5_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86Compi
 // ===========================================================================
 
 func x86EmitMOV_Ev_Sw(cb *CodeBuffer, ji *X86JITInstr) bool {
-	if !ji.hasModRM || ji.modrm>>6 != 3 {
+	if !ji.hasModRM {
 		return false
 	}
 	segIdx := (ji.modrm >> 3) & 7
 	dstReg := ji.modrm & 7
-
-	if segIdx > 5 {
-		return false // invalid segment
+	if segIdx <= 5 {
+		amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffSegRegsPtr))
+		emitREX(cb, false, amd64R8, amd64RAX)
+		cb.EmitBytes(0x0F, 0xB7) // MOVZX r32, r/m16
+		if segIdx == 0 {
+			cb.EmitBytes(modRM(0, amd64R8, amd64RAX))
+		} else {
+			cb.EmitBytes(modRM(1, amd64R8, amd64RAX), byte(segIdx*2))
+		}
+	} else {
+		amd64XOR_reg_reg32(cb, amd64R8, amd64R8) // project getSeg returns zero
 	}
+	if ji.modrm>>6 == 3 {
+		// CPU_X86 always uses writeRM16 for register destinations, even
+		// without 0x66, so preserve the destination's upper half.
+		x86EmitLoadGuestReg32(cb, amd64R11, dstReg)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, -65536)
+		amd64ALU_reg_reg32(cb, 0x09, amd64R11, amd64R8)
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R11)
+		return true
+	}
+	return false // memory forms require the decoded EA and are handled below
+}
 
-	// Load from jitSegRegs[segIdx]
+func x86EmitMOV_Ev_SwMem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !ji.hasModRM || ji.modrm>>6 == 3 {
+		return false
+	}
+	segIdx := (ji.modrm >> 3) & 7
+	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
+	if segIdx <= 5 {
+		amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffSegRegsPtr))
+		emitREX(cb, false, amd64R8, amd64RAX)
+		cb.EmitBytes(0x0F, 0xB7)
+		if segIdx == 0 {
+			cb.EmitBytes(modRM(0, amd64R8, amd64RAX))
+		} else {
+			cb.EmitBytes(modRM(1, amd64R8, amd64RAX), byte(segIdx*2))
+		}
+	} else {
+		amd64XOR_reg_reg32(cb, amd64R8, amd64R8)
+	}
+	if width == 2 {
+		x86EmitMemStore16(cb, amd64R10, amd64R8)
+	} else {
+		x86EmitMemStore32(cb, amd64R10, amd64R8)
+	}
+	x86EmitSelfModCheck(cb, amd64R10, ji.opcodePC+uint32(ji.length), instrIdx+1, width)
+	x86EmitRestoreGuestVisibleFlags(cb)
+	return true
+}
+
+// x86EmitMOV_Sw_Ev mirrors the interpreter's selector assignment semantics.
+// Selectors are state only in this flat-memory model, and invalid indexes are
+// ignored by CPU_X86.setSeg.
+func x86EmitMOV_Sw_Ev(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if !ji.hasModRM {
+		return false
+	}
+	segIdx := (ji.modrm >> 3) & 7
+	if segIdx > 5 {
+		return true
+	}
+	if ji.modrm>>6 == 3 {
+		x86EmitLoadGuestReg32(cb, amd64R8, ji.modrm&7)
+	} else {
+		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+			return false
+		}
+		width := uint32(4)
+		if ji.prefixes&x86PrefOpSize != 0 {
+			width = 2
+		}
+		x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
+		if width == 2 {
+			x86EmitMemLoad16(cb, amd64R8, amd64R10)
+		} else {
+			x86EmitMemLoad32(cb, amd64R8, amd64R10)
+		}
+	}
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffSegRegsPtr))
-	// MOVZX R8d, WORD [RAX + segIdx*2]
+	cb.EmitBytes(0x66)
 	emitREX(cb, false, amd64R8, amd64RAX)
-	cb.EmitBytes(0x0F, 0xB7) // MOVZX r32, r/m16
-	if segIdx*2 == 0 {
+	cb.EmitBytes(0x89)
+	if segIdx == 0 {
 		cb.EmitBytes(modRM(0, amd64R8, amd64RAX))
 	} else {
 		cb.EmitBytes(modRM(1, amd64R8, amd64RAX), byte(segIdx*2))
 	}
+	x86EmitRestoreGuestVisibleFlags(cb)
+	return true
+}
 
-	x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+// x86EmitLoadSegPointer lowers LES/LDS. CPU_X86's flat model reads an offset
+// followed by a selector from the effective address and leaves flags intact.
+func x86EmitLoadSegPointer(cb *CodeBuffer, ji *X86JITInstr, memory []byte, segIdx byte, instrIdx int) bool {
+	if !ji.hasModRM {
+		return false
+	}
+	dstReg := (ji.modrm >> 3) & 7
+	if ji.modrm>>6 == 3 {
+		// CPU_X86 still treats mod=3 as an address held in the r/m register.
+		x86EmitLoadGuestReg32(cb, amd64R10, ji.modrm&7)
+	} else if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
+	x86EmitSpanGuard(cb, amd64R10, width+2, ji.opcodePC, instrIdx)
+	if width == 2 {
+		x86EmitMemLoad16(cb, amd64R8, amd64R10)
+		x86EmitLoadGuestReg32(cb, amd64R11, dstReg)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, -65536)
+		amd64ALU_reg_reg32(cb, 0x09, amd64R11, amd64R8)
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R11)
+	} else {
+		x86EmitMemLoad32(cb, amd64R8, amd64R10)
+		x86EmitStoreGuestReg32(cb, dstReg, amd64R8)
+	}
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(width))
+	x86EmitMemLoad16(cb, amd64R11, amd64R10)
+	amd64MOV_reg_mem(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffSegRegsPtr))
+	cb.EmitBytes(0x66)
+	emitREX(cb, false, amd64R11, amd64RDX)
+	cb.EmitBytes(0x89, modRM(1, amd64R11, amd64RDX), segIdx*2)
+	x86EmitRestoreGuestVisibleFlags(cb)
+	return true
+}
+
+func x86EmitPUSH_Sw(cb *CodeBuffer, segIdx byte, ji *X86JITInstr, instrIdx int) bool {
+	x86MarkDirty(4)
+	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 2)
+	x86EmitSpanGuard(cb, amd64R10, 2, ji.opcodePC, instrIdx)
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffSegRegsPtr))
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7)
+	if segIdx == 0 {
+		cb.EmitBytes(modRM(0, amd64R8, amd64RAX))
+	} else {
+		cb.EmitBytes(modRM(1, amd64R8, amd64RAX), segIdx*2)
+	}
+	x86EmitMemStore16(cb, amd64R10, amd64R8)
+	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+	x86EmitRestoreGuestVisibleFlags(cb)
+	return true
+}
+
+func x86EmitPOP_Sw(cb *CodeBuffer, segIdx byte, ji *X86JITInstr, instrIdx int) bool {
+	x86MarkDirty(4)
+	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
+	x86EmitSpanGuard(cb, amd64R10, 2, ji.opcodePC, instrIdx)
+	x86EmitMemLoad16(cb, amd64R8, amd64R10)
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 2)
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffSegRegsPtr))
+	cb.EmitBytes(0x66)
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x89)
+	if segIdx == 0 {
+		cb.EmitBytes(modRM(0, amd64R8, amd64RAX))
+	} else {
+		cb.EmitBytes(modRM(1, amd64R8, amd64RAX), segIdx*2)
+	}
+	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+	x86EmitRestoreGuestVisibleFlags(cb)
 	return true
 }
 
@@ -4297,19 +5142,127 @@ func x86EmitMOV_Ev_Sw(cb *CodeBuffer, ji *X86JITInstr) bool {
 // ===========================================================================
 
 func x86EmitPUSHF(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState, instrIdx int) bool {
-	// PUSHF reads cpu.Flags directly. It remains dispatcher-owned because a
-	// preceding native flag producer is not necessarily materialised there.
-	if instrIdx == 0 && cs.flagState == x86FlagsDead {
-		return false
+	_ = cs
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
 	}
 	x86MarkDirty(4)
+	// Compute and validate the prospective stack slot before observing or mutating guest state. This
+	// gives PUSHF the same visible-RAM, MMIO and page-crossing guarantees as
+	// every other native stack write.
+	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, int32(width))
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
+	// Match x86EmitMergeFlagsToGuest: native capture owns arithmetic status plus
+	// its guest-only IF/DF control bits. Reserved and remaining system bits in a PUSHF image retain
+	// the guest cpu.Flags value rather than leaking host RFLAGS bit 1.
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffSavedEFlags))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, int32(x86JITPublishedFlagsMask))
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
-	amd64MOV_reg_mem32(cb, amd64R8, amd64RAX, 0)
+	amd64MOV_reg_mem32(cb, amd64R11, amd64RAX, 0)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, x86InvJITPublishedFlagsMaskI32)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64R11)
+	if width == 2 {
+		x86EmitMemStore16(cb, amd64R10, amd64R8)
+	} else {
+		emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	}
+	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+	x86EmitSelfModCheck(cb, amd64R10, ji.opcodePC+uint32(ji.length), instrIdx+1, width)
+	x86EmitRestoreGuestVisibleFlags(cb)
+	return true
+}
+
+// x86EmitPOPF restores a 32-bit guest EFLAGS image from the guarded stack
+// read. Unlike ordinary native flag producers, POPF also writes cpu.Flags so
+// non-visible bits survive x86EmitMergeFlagsToGuest at the block exit.
+func x86EmitPOPF(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState, instrIdx int) bool {
+	width := uint32(4)
+	if ji.prefixes&x86PrefOpSize != 0 {
+		width = 2
+	}
+	x86MarkDirty(4)
+	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
+	x86EmitSpanGuard(cb, amd64R10, width, ji.opcodePC, instrIdx)
+	if width == 2 {
+		x86EmitMemLoad16(cb, amd64R8, amd64R10)
+		amd64MOV_reg_mem32(cb, amd64R11, amd64RSP, int32(x86AMD64OffSavedEFlags))
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, -65536)
+		amd64ALU_reg_reg32(cb, 0x09, amd64R11, amd64R8)
+		amd64MOV_reg_reg32(cb, amd64R8, amd64R11)
+	} else {
+		x86EmitMemLoad32(cb, amd64R8, amd64R10)
+	}
+
+	// Keep the stack-frame copy authoritative for native consumers and commit
+	// the complete image to cpu.Flags for final publication of non-visible bits.
+	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64R8)
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
+	amd64MOV_mem_reg32(cb, amd64RAX, 0, amd64R8)
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(width))
+	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+	x86EmitRestoreGuestVisibleFlags(cb)
+	cs.flagState = x86FlagsLiveArith
+	return true
+}
+
+// x86EmitENTER lowers the 32-bit ENTER imm16,imm8 frame setup. It validates
+// every source read and destination write as complete spans before publishing
+// EBP or ESP, so a guard exit can replay the original instruction safely.
+func x86EmitENTER(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	if ji.prefixes&x86PrefOpSize != 0 || ji.length < 4 {
+		return false
+	}
+	immPC := ji.opcodePC + uint32(ji.length) - 3
+	if immPC+3 > uint32(len(memory)) {
+		return false
+	}
+	size := int32(uint16(memory[immPC]) | uint16(memory[immPC+1])<<8)
+	level := uint32(memory[immPC+2] & 0x1F)
+	x86MarkDirty(4)
+	x86MarkDirty(5)
+
+	// Validate all stack writes [ESP-4*(level+1), ESP) first. The complete
+	// range is at most 128 bytes, within the span guard's single-page limit.
+	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, int32(4*(level+1)))
+	x86EmitSpanGuard(cb, amd64R10, 4*(level+1), ji.opcodePC, instrIdx)
+
+	// ENTER levels above zero read [EBP-4], [EBP-8], ... before each nested
+	// push. Validate the entire source range before the first stack write.
+	x86EmitLoadGuestReg32(cb, amd64R11, 5)
+	if level > 1 {
+		amd64MOV_reg_reg32(cb, amd64R8, amd64R11)
+		amd64ALU_reg_imm32_32bit(cb, 5, amd64R8, int32(4*(level-1)))
+		x86EmitSpanGuard(cb, amd64R8, 4*(level-1), ji.opcodePC, instrIdx)
+	}
+
+	// First push is the old EBP; its post-push address becomes framePtr.
 	amd64MOV_reg_reg32(cb, amd64R10, x86AMD64RegGuestESP)
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 4)
-	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
-	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	x86EmitLoadGuestReg32(cb, amd64R8, 5)
+	x86EmitMemStore32(cb, amd64R10, amd64R8)
+	amd64MOV_reg_reg32(cb, amd64RDX, amd64R10) // framePtr
+
+	// Unroll the bounded lexical-level copies in interpreter order.
+	for i := uint32(1); i < level; i++ {
+		amd64ALU_reg_imm32_32bit(cb, 5, amd64R11, 4)
+		x86EmitMemLoad32(cb, amd64R8, amd64R11)
+		amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 4)
+		x86EmitMemStore32(cb, amd64R10, amd64R8)
+	}
+	if level > 0 {
+		amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 4)
+		x86EmitMemStore32(cb, amd64R10, amd64RDX)
+	}
+	x86EmitStoreGuestReg32(cb, 5, amd64RDX)
 	amd64MOV_reg_reg32(cb, x86AMD64RegGuestESP, amd64R10)
+	if size != 0 {
+		amd64ALU_reg_imm32_32bit(cb, 5, x86AMD64RegGuestESP, size)
+	}
+	x86EmitRestoreGuestVisibleFlags(cb)
 	return true
 }
 
@@ -4318,6 +5271,25 @@ func x86EmitPUSHF(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState, instrIdx
 // ===========================================================================
 
 func x86EmitLEAVE(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
+	if ji.prefixes&x86PrefOpSize != 0 {
+		// SP := BP (low word only), then POP BP. Keep the upper halves of
+		// both registers exactly as setReg16/pop16 does in CPU_X86.
+		x86EmitLoadGuestReg32(cb, amd64R10, 4)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R10, -65536)
+		x86EmitLoadGuestReg32(cb, amd64R8, 5)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, 0xFFFF)
+		amd64ALU_reg_reg32(cb, 0x09, amd64R10, amd64R8)
+		x86EmitSpanGuard(cb, amd64R10, 2, ji.opcodePC, instrIdx)
+		x86EmitMemLoad16(cb, amd64R8, amd64R10)
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 2)
+		x86EmitLoadGuestReg32(cb, amd64RDX, 5)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, -65536)
+		amd64ALU_reg_reg32(cb, 0x09, amd64RDX, amd64R8)
+		x86EmitStoreGuestReg32(cb, 5, amd64RDX)
+		x86EmitStoreGuestReg32(cb, 4, amd64R10)
+		x86EmitRestoreGuestVisibleFlags(cb)
+		return true
+	}
 	// Validate [EBP, EBP+3] before either architectural register changes.
 	x86EmitLoadGuestReg32(cb, amd64R10, 5)
 	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
@@ -4347,7 +5319,7 @@ func x86EmitMOV_Eb_Ib(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 			return false
 		}
-		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		x86EmitSpanGuard(cb, amd64R10, 1, ji.opcodePC, instrIdx)
 		amd64MOV_reg_imm32(cb, amd64R8, uint32(imm))
 		x86EmitMemStore8(cb, amd64R10, amd64R8)
 		x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 1)
@@ -4399,7 +5371,7 @@ func x86EmitMOV_Ev_Iv(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx i
 		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 			return false
 		}
-		x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+		x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrIdx)
 		amd64MOV_reg_imm32(cb, amd64R8, imm)
 		x86EmitMemStore32(cb, amd64R10, amd64R8)
 		x86EmitSelfModCheckMaybeElide(cb, amd64R10, ji, memory, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
@@ -4753,6 +5725,68 @@ func x86EmitAAD(cb *CodeBuffer, ji *X86JITInstr, memory []byte, cs *x86CompileSt
 	return true
 }
 
+// x86EmitDAADAS implements the interpreter's decimal-adjust rules. Unlike
+// hardware documentation's undefined-status wording, CPU_X86 retains an
+// incoming CF/AF/OF bit unless its two adjustment conditions set CF or AF.
+// CaptureFlagsAAM therefore takes SF/ZF/PF from the adjusted byte while
+// retaining those three project-defined status bits from saved EFLAGS.
+func x86EmitDAADAS(cb *CodeBuffer, subtract bool, cs *x86CompileState) bool {
+	x86EmitLoadGuestReg32(cb, amd64R11, 0) // EAX, result byte lives in R11
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, 0xFF)
+
+	// if (AL&0x0F) > 9 || AF { AL +/-= 6; AF = 1 }
+	amd64MOV_reg_reg32(cb, amd64R8, amd64R11)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, 0x0F)
+	amd64CMP_reg_imm32(cb, amd64R8, 9)
+	lowAdjust := amd64Jcc_rel32(cb, amd64CondA)
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffSavedEFlags))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, int32(x86FlagAF))
+	emitREX(cb, false, amd64R8, amd64R8)
+	cb.EmitBytes(0x85, modRM(3, amd64R8, amd64R8))
+	lowDone := amd64Jcc_rel32(cb, amd64CondE)
+	patchRel32(cb, lowAdjust, cb.Len())
+	if subtract {
+		amd64ALU_reg_imm32_32bit(cb, 5, amd64R11, 6)
+	} else {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, 6)
+	}
+	x86EmitSetSavedFlags(cb, int32(x86FlagAF), true)
+	patchRel32(cb, lowDone, cb.Len())
+
+	// The second condition deliberately observes the first adjustment, exactly
+	// as CPU_X86.opDAA/opDAS does: if AL > 9Fh || initial CF, adjust by 60h.
+	amd64CMP_reg_imm32(cb, amd64R11, 0x9F)
+	highAdjust := amd64Jcc_rel32(cb, amd64CondA)
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffSavedEFlags))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, int32(x86FlagCF))
+	emitREX(cb, false, amd64R8, amd64R8)
+	cb.EmitBytes(0x85, modRM(3, amd64R8, amd64R8))
+	highDone := amd64Jcc_rel32(cb, amd64CondE)
+	patchRel32(cb, highAdjust, cb.Len())
+	if subtract {
+		amd64ALU_reg_imm32_32bit(cb, 5, amd64R11, 0x60)
+	} else {
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, 0x60)
+	}
+	x86EmitSetSavedFlags(cb, int32(x86FlagCF), true)
+	patchRel32(cb, highDone, cb.Len())
+
+	// Merge adjusted AL into EAX before testing the byte result. Test r11b so
+	// SF is the byte sign bit, not bit 31 of the scratch register.
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R11, 0xFF)
+	x86EmitLoadGuestReg32(cb, amd64R8, 0)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, -256)
+	amd64ALU_reg_reg32(cb, 0x09, amd64R8, amd64R11)
+	x86EmitStoreGuestReg32(cb, 0, amd64R8)
+	emitREX(cb, false, amd64R11, amd64R11)
+	cb.EmitBytes(0x84, modRM(3, amd64R11, amd64R11)) // TEST R11B,R11B
+	x86EmitCaptureFlagsAAM(cb)
+	x86EmitRestoreGuestVisibleFlags(cb)
+	cs.flagState = x86FlagsLiveLogic
+	cs.flagCaptureDone = true
+	return true
+}
+
 // x86EmitAAAAS matches the interpreter's decimal-adjust contract. Only CF and
 // AF change; SF, ZF, PF and OF retain their prior guest values.
 func x86EmitAAAAS(cb *CodeBuffer, ahDelta int32, cs *x86CompileState) bool {
@@ -4834,18 +5868,6 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 	mod := modrm >> 6
 	regOp := (modrm >> 3) & 7
 	rm := modrm & 7
-	// x86EmitComputeEA only implements 32-bit addressing. Never let an x87
-	// address-size override reach it: the interpreter owns that form until a
-	// decoder-correct 16-bit emitter exists.
-	if ji.prefixes&x86PrefAddrSize != 0 {
-		return false
-	}
-	if !x86FPUFormSupported(ji) {
-		return false
-	}
-
-	// Load FPU pointer
-	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 	payload, ok := x86FPUHelperPayloadFor(*ji, memory, 0)
 	if !ok {
 		return false
@@ -4870,6 +5892,18 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 		x86CurrentCS.fpuHelperSegment = previousSegment
 		x86CurrentCS.fpuHelperHasEA = previousHasEA
 	}()
+	// Every decoder-supported x87 escape has a canonical helper exit. Native
+	// lowering remains limited to flat 32-bit-address forms whose SSE behaviour
+	// matches the interpreter. Address-size and segment prefixes retain their
+	// decoder and effective-address semantics in the helper rather than silently
+	// ending the compiled prefix.
+	if ji.prefixes&(x86PrefAddrSize|x86PrefSeg) != 0 || !x86FPUFormSupported(ji) {
+		x86EmitFPUHelperExit(cb, ji.opcodePC, instrIdx)
+		return true
+	}
+
+	// Load FPU pointer.
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 	x86EmitFPUCaptureOp(cb, ji, memory)
 
 	switch escape {
@@ -4883,16 +5917,16 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 		if mod == 3 {
 			switch regOp {
 			case 2: // FCOM ST(i)
-				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 1, rm, false)
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 1, rm, false, false)
 			case 3: // FCOMP ST(i)
-				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 1, rm, true)
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 1, rm, true, false)
 			}
 		} else {
 			switch regOp {
 			case 2: // FCOM m32
-				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 0, 0, false)
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 0, 0, false, false)
 			case 3: // FCOMP m32
-				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 0, 0, true)
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 0, 0, true, false)
 			}
 		}
 
@@ -4915,9 +5949,11 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 		if mod != 3 {
 			switch regOp {
 			case 0: // FILD m32
-				return x86EmitFILD_mem(cb, ji, memory, instrIdx, false)
+				return x86EmitFILD_mem(cb, ji, memory, instrIdx, 32)
+			case 2: // FIST m32
+				return x86EmitFIST_mem32(cb, ji, memory, instrIdx, false)
 			case 3: // FISTP m32
-				return x86EmitFISTP_mem32(cb, ji, memory, instrIdx)
+				return x86EmitFIST_mem32(cb, ji, memory, instrIdx, true)
 			}
 		}
 
@@ -4951,8 +5987,16 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 			if modrm == 0xE0 { // FNSTSW AX
 				return x86EmitFNSTSW_AX(cb)
 			}
-		} else if regOp == 0 { // FILD m16
-			return x86EmitFILD_mem(cb, ji, memory, instrIdx, true)
+		} else {
+			if regOp == 0 { // FILD m16
+				return x86EmitFILD_mem(cb, ji, memory, instrIdx, 16)
+			}
+			if regOp == 5 { // FILD m64
+				return x86EmitFILD_mem(cb, ji, memory, instrIdx, 64)
+			}
+			if regOp == 7 { // FISTP m64
+				return x86EmitFISTP_mem64(cb, ji, memory, instrIdx)
+			}
 		}
 
 	case 0xD9:
@@ -4972,7 +6016,7 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 			case 0xE1: // FABS
 				return x86EmitFABS(cb, ji, instrIdx)
 			case 0xE4: // FTST
-				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 2, 0, false)
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 2, 0, false, false)
 			case 0xE8: // FLD1
 				return x86EmitFLDConst(cb, ji, instrIdx, 0x3FF0000000000000) // 1.0
 			case 0xEE: // FLDZ
@@ -5007,6 +6051,12 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 			if modrm >= 0xD8 && modrm <= 0xDF { // FSTP ST(i)
 				return x86EmitFSTP_STi(cb, ji, rm, instrIdx)
 			}
+			if regOp == 4 { // FUCOM ST(i)
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 1, rm, false, true)
+			}
+			if regOp == 5 { // FUCOMP ST(i)
+				return x86EmitFPUCompare(cb, ji, memory, instrIdx, 1, rm, true, true)
+			}
 		} else {
 			if regOp == 0 { // FLD mem64 (double-precision)
 				return x86EmitFLD_mem64(cb, ji, memory, instrIdx)
@@ -5032,9 +6082,14 @@ func x86EmitFPUHelperPayload(cb *CodeBuffer, p x86FPUHelperPayload) {
 	// CS is loaded from the live segment array by x86EmitFPUCaptureOp. Keep
 	// these bytes separate so the cold payload setup never overwrites it.
 	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperEscape), uint32(p.Escape)|uint32(p.ModRM)<<8|uint32(p.Prefixes)<<16|uint32(p.Length)<<24)
-	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperSegment), uint32(x86SegDS))
-	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperEA), 0)
-	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperWidth), 0)
+	if p.ModRM>>6 == 3 {
+		// Register forms have no memory provenance. Memory forms have already
+		// captured EA, width and segment while the effective-address register
+		// was live; do not overwrite that architectural state in this cold stub.
+		amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperSegment), uint32(x86SegDS))
+		amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperEA), 0)
+		amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperWidth), 0)
+	}
 	for off := 0; off < len(p.Bytes); off += 4 {
 		var word uint32
 		for i := 0; i < 4 && off+i < len(p.Bytes); i++ {
@@ -5044,26 +6099,17 @@ func x86EmitFPUHelperPayload(cb *CodeBuffer, p x86FPUHelperPayload) {
 	}
 }
 
+// x86EmitFPUHelperEAFromFDP refreshes the helper payload EA from the x87
+// provenance field captured before any direct-memory guard. Unlike the general
+// scratch registers, FDP remains architectural state until the helper runs.
+func x86EmitFPUHelperEAFromFDP(cb *CodeBuffer) {
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	amd64MOV_reg_mem32(cb, amd64R10, amd64RAX, fpuOffFDP)
+	amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperEA), amd64R10)
+}
+
 func x86FPUHelperAccessWidth(ji *X86JITInstr) uint32 {
-	if ji.modrm>>6 == 3 {
-		return 0
-	}
-	switch byte(ji.opcode) {
-	case 0xD8, 0xDA:
-		return 4
-	case 0xDB:
-		return 4
-	case 0xDC, 0xDD:
-		return 8
-	case 0xDF:
-		return 2
-	case 0xD9:
-		if (ji.modrm>>3)&7 == 5 || (ji.modrm>>3)&7 == 7 {
-			return 2
-		}
-		return 4
-	}
-	return 0
+	return x86FPUHelperAccessWidthFromOpcode(byte(ji.opcode), ji.modrm)
 }
 
 func x86EmitFPUHelperExit(cb *CodeBuffer, retPC uint32, instrIdx int) {
@@ -5071,8 +6117,9 @@ func x86EmitFPUHelperExit(cb *CodeBuffer, retPC uint32, instrIdx int) {
 		panic("x86 FPU helper exit without compile state")
 	}
 	x86EmitFPUHelperPayload(cb, x86CurrentCS.fpuHelperPayload)
-	// Memory provenance is published by x86EmitFPUCaptureMem while its EA
-	// register is live. Later x87 checks are free to reuse that scratch.
+	if x86CurrentCS.fpuHelperHasEA {
+		x86EmitFPUHelperEAFromFDP(cb)
+	}
 	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffExitReason), x86JITExitFPUHelper)
 	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
 	x86EmitRetPC(cb, retPC, uint32(instrIdx))
@@ -5082,7 +6129,8 @@ func x86EmitFPUHelperExit(cb *CodeBuffer, retPC uint32, instrIdx int) {
 
 // x86FPUFormSupported is the admission check for direct x87 lowering. It
 // deliberately runs before x86EmitFPUCaptureOp: an instruction that is about
-// to fall back must not leave provenance for an operation it did not retire.
+// to use the canonical helper must not leave direct-path provenance for an
+// operation it did not retire.
 func x86FPUFormSupported(ji *X86JITInstr) bool {
 	if !ji.hasModRM {
 		return false
@@ -5096,13 +6144,13 @@ func x86FPUFormSupported(ji *X86JITInstr) bool {
 		return mod != 3 && (regOp == 0 || regOp == 1 || regOp >= 4)
 	case 0xDB:
 		return (mod == 3 && (modrm == 0xE2 || modrm == 0xE3)) ||
-			(mod != 3 && (regOp == 0 || regOp == 3))
+			(mod != 3 && (regOp == 0 || regOp == 2 || regOp == 3))
 	case 0xDC:
 		return regOp == 0 || regOp == 1 || regOp >= 4
 	case 0xDE:
 		return mod == 3 && (regOp == 0 || regOp == 1 || regOp >= 4)
 	case 0xDF:
-		return modrm == 0xE0 || (mod != 3 && regOp == 0)
+		return modrm == 0xE0 || (mod != 3 && (regOp == 0 || regOp == 5 || regOp == 7))
 	case 0xD9:
 		if mod == 3 {
 			return (modrm >= 0xC0 && modrm <= 0xCF) || modrm == 0xE0 ||
@@ -5115,7 +6163,8 @@ func x86FPUFormSupported(ji *X86JITInstr) bool {
 			// The interpreter implements only /3 (DD D8-DF) in this
 			// register range. DD D0-D7 is the interpreter's /2 no-op
 			// family, not FST ST(i), so it must not acquire a native store.
-			return (modrm >= 0xC0 && modrm <= 0xC7) || (modrm >= 0xD8 && modrm <= 0xDF)
+			return (modrm >= 0xC0 && modrm <= 0xC7) || (modrm >= 0xD8 && modrm <= 0xDF) ||
+				(modrm >= 0xE0 && modrm <= 0xEF)
 		}
 		return regOp == 0 || regOp == 2 || regOp == 3
 	}
@@ -5479,8 +6528,8 @@ func x86EmitFPUArithMem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
-	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
-	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
+	// The interpreter's D9 /5 path uses x87MemAddrNoCapture: FLDCW records
+	// the operation provenance but deliberately preserves FDP/FDS.
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 
 	// RAX = FPUPtr (reload since IOCheck may have clobbered)
@@ -5640,9 +6689,9 @@ func x86EmitFNINIT(cb *CodeBuffer) bool {
 	return true
 }
 
-// x86EmitFILD_mem emits FILD word/dword [mem]: push the sign-extended
+// x86EmitFILD_mem emits FILD integer memory forms: push the sign-extended
 // integer converted to double.
-func x86EmitFILD_mem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int, is16 bool) bool {
+func x86EmitFILD_mem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int, width uint32) bool {
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
@@ -5651,18 +6700,23 @@ func x86EmitFILD_mem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx in
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 
-	if is16 {
+	switch width {
+	case 16:
 		// MOVSX R8, word [memBase + R10]
 		emitREX_SIB(cb, true, amd64R8, amd64R10, x86AMD64RegMemBase)
 		cb.EmitBytes(0x0F, 0xBF, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
-	} else {
+	case 32:
 		// MOV R8d, dword [memBase + R10]
 		emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
 		cb.EmitBytes(0x8B, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	case 64:
+		// MOV R8, qword [memBase + R10]
+		emitREX_SIB(cb, true, amd64R8, amd64R10, x86AMD64RegMemBase)
+		cb.EmitBytes(0x8B, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
 	}
-	// CVTSI2SD XMM0, R8d
+	// CVTSI2SD XMM0, R8{d,q}
 	cb.EmitBytes(0xF2)
-	emitREX(cb, false, 0, amd64R8)
+	emitREX(cb, width == 64, 0, amd64R8)
 	cb.EmitBytes(0x0F, 0x2A, modRM(3, 0, amd64R8))
 
 	// Push
@@ -5677,11 +6731,11 @@ func x86EmitFILD_mem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx in
 	return true
 }
 
-// x86EmitFISTP_mem32 emits FISTP dword [mem]. Rounding follows the
+// x86EmitFIST_mem32 emits FIST/FISTP dword memory stores. Rounding follows the
 // guest FCW rounding-control field: nearest-even and truncate are
 // emitted natively (the pair compilers generate); the rare up/down
 // modes bail to the interpreter.
-func x86EmitFISTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+func x86EmitFIST_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int, pop bool) bool {
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
@@ -5720,15 +6774,31 @@ func x86EmitFISTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx
 	emitREX(cb, false, amd64RDX, 0)
 	cb.EmitBytes(0x0F, 0x2C, modRM(3, amd64RDX, 0))
 
-	// Store result and pop
+	// Store result. FISTP additionally pops ST(0).
 	patchRel32(cb, storeJmp, cb.Len())
+	// CVTSD2SI/CVTTSD2SI return the x87 indefinite m32 value for invalid
+	// conversions, but do not update the emulated x87 exception state. Resume
+	// through the helper for that sentinel, including the valid MinInt32 value,
+	// which is a conservative cold-path false positive.
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RDX, math.MinInt32)
+	invalidJmp := amd64Jcc_rel32(cb, amd64CondE)
 	emitREX_SIB(cb, false, amd64RDX, amd64R10, x86AMD64RegMemBase)
 	cb.EmitBytes(0x89, modRM(0, amd64RDX, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
-	x86EmitFTWMark(cb, true) // free old ST0 (RCX = pre-pop TOP)
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
-	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
-	x86EmitUpdateFSWTop(cb, amd64RCX)
+	// Preserve the written EA across the x87 state update below. Its helpers
+	// use the general scratch registers, while the deferred SMC exit needs the
+	// exact original guest address.
+	amd64MOV_reg_reg32(cb, amd64RDX, amd64R10)
+	if pop {
+		x86EmitFTWMark(cb, true) // free old ST0 (RCX = pre-pop TOP)
+		amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+		x86EmitUpdateFSWTop(cb, amd64RCX)
+	}
+	x86EmitSelfModCheck(cb, amd64RDX, ji.opcodePC+uint32(ji.length), instrIdx+1, 4)
 	doneJmp := amd64JMP_rel32(cb)
+
+	patchRel32(cb, invalidJmp, cb.Len())
+	x86EmitFPUHelperExit(cb, ji.opcodePC, instrIdx)
 
 	// Bail: unsupported rounding mode -> interpreter
 	patchRel32(cb, bailJmp, cb.Len())
@@ -5738,10 +6808,63 @@ func x86EmitFISTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx
 	return true
 }
 
-// x86EmitFPUCompare emits the FCOM/FCOMP/FTST family: compare ST(0)
+func x86EmitFISTP_mem64(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bool {
+	// The m64 conversion has the same control-flow contract as m32. Keep it
+	// separate because its host conversion and store are 64-bit.
+	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
+		return false
+	}
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
+	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
+	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	x86EmitFPUReadTOP(cb, amd64RCX)
+	x86EmitFPUCheckTag(cb, amd64RCX, x87TagEmpty, ji.opcodePC, instrIdx)
+	amd64MOV_reg_reg32(cb, amd64R8, amd64RCX)
+	amd64SHL_imm32(cb, amd64R8, 3)
+	emitMOVSD_SIB(cb, 0x10, 0, amd64R8, amd64RAX)
+	emitREX(cb, false, amd64RDX, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64RDX, amd64RAX), byte(fpuOffFCW))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 0x0C00)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RDX, 0x0C00)
+	trunc := amd64Jcc_rel32(cb, amd64CondE)
+	amd64ALU_reg_imm32_32bit(cb, 7, amd64RDX, 0)
+	bail := amd64Jcc_rel32(cb, amd64CondNE)
+	cb.EmitBytes(0xF2)
+	emitREX(cb, true, amd64RDX, 0)
+	cb.EmitBytes(0x0F, 0x2D, modRM(3, amd64RDX, 0))
+	store := amd64JMP_rel32(cb)
+	patchRel32(cb, trunc, cb.Len())
+	cb.EmitBytes(0xF2)
+	emitREX(cb, true, amd64RDX, 0)
+	cb.EmitBytes(0x0F, 0x2C, modRM(3, amd64RDX, 0))
+	patchRel32(cb, store, cb.Len())
+	amd64MOV_reg_imm64(cb, amd64R11, uint64(1)<<63)
+	amd64ALU_reg_reg(cb, 0x39, amd64RDX, amd64R11)
+	invalid := amd64Jcc_rel32(cb, amd64CondE)
+	emitREX_SIB(cb, true, amd64RDX, amd64R10, x86AMD64RegMemBase)
+	cb.EmitBytes(0x89, modRM(0, amd64RDX, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	amd64MOV_reg_reg32(cb, amd64RDX, amd64R10)
+	x86EmitFTWMark(cb, true)
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RCX, 1)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
+	x86EmitUpdateFSWTop(cb, amd64RCX)
+	x86EmitSelfModCheck(cb, amd64RDX, ji.opcodePC+uint32(ji.length), instrIdx+1, 8)
+	done := amd64JMP_rel32(cb)
+	patchRel32(cb, invalid, cb.Len())
+	x86EmitFPUHelperExit(cb, ji.opcodePC, instrIdx)
+	patchRel32(cb, bail, cb.Len())
+	x86EmitFPUHelperExit(cb, ji.opcodePC, instrIdx)
+	patchRel32(cb, done, cb.Len())
+	return true
+}
+
+// x86EmitFPUCompare emits the FCOM/FCOMP/FUCOM/FUCOMP/FTST family: compare ST(0)
 // against a comparand and set C0/C2/C3 in the FSW the way UCOMISD sets
-// CF/PF/ZF. src selects the comparand: 0 = m32, 1 = ST(i), 2 = +0.0.
-func x86EmitFPUCompare(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int, src byte, stIdx byte, pop bool) bool {
+// CF/PF/ZF. src selects the comparand: 0 = m32, 1 = ST(i), 2 = +0.0. quiet
+// distinguishes FUCOM from FCOM: NaN FCOMs use the helper so its emulated IE
+// update remains exact, while FUCOM keeps the native unordered result.
+func x86EmitFPUCompare(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int, src byte, stIdx byte, pop, quiet bool) bool {
 	switch src {
 	case 0: // m32
 		if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
@@ -5777,6 +6900,13 @@ func x86EmitFPUCompare(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx 
 
 	// UCOMISD XMM0, XMM1: CF/PF/ZF <- <, unordered, ==
 	cb.EmitBytes(0x66, 0x0F, 0x2E, modRM(3, 0, 1))
+	var unorderedJmp int
+	if !quiet {
+		// UCOMISD is intentionally non-signalling on the host. Its unordered
+		// result identifies the narrow case where FCOM must resume through the
+		// interpreter to publish IE and the exact project x87 status.
+		unorderedJmp = amd64Jcc_rel32(cb, amd64CondP)
+	}
 
 	// Capture all three conditions BEFORE any flag-modifying ALU work:
 	// the shifts and ORs below overwrite the UCOMISD flags.
@@ -5816,6 +6946,12 @@ func x86EmitFPUCompare(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx 
 		amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 7)
 		x86EmitUpdateFSWTop(cb, amd64RCX)
 	}
+	if !quiet {
+		doneJmp := amd64JMP_rel32(cb)
+		patchRel32(cb, unorderedJmp, cb.Len())
+		x86EmitFPUHelperExit(cb, ji.opcodePC, instrIdx)
+		patchRel32(cb, doneJmp, cb.Len())
+	}
 	return true
 }
 
@@ -5842,8 +6978,7 @@ func x86EmitFLDCW(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) 
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
-	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
-	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
+	// D9 /5 uses x87MemAddrNoCapture in the interpreter, preserving FDP/FDS.
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 
@@ -5861,8 +6996,7 @@ func x86EmitFNSTCW(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int)
 	if !x86EmitComputeEA(cb, ji, memory, amd64R10) {
 		return false
 	}
-	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
-	x86EmitFPUCaptureMem(cb, ji, memory, amd64R10)
+	// D9 /7 likewise preserves the previous memory provenance.
 	x86EmitIOCheckMaybeElide(cb, amd64R10, ji, memory, instrIdx)
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
 
@@ -6345,8 +7479,8 @@ func x86EmitREP_MOVSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	return true
 }
 
-// x86EmitREP_MOVSD emits a native loop for REP MOVSD (dword copy ESI->EDI, ECX times).
-func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
+// x86EmitREP_MOVSD emits a native loop for REP MOVSW/MOVSD (ESI to EDI, ECX times).
+func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, width uint32) bool {
 	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64RCX, 1)
 	x86EmitLoadGuestReg32(cb, amd64R8, 6)
@@ -6356,12 +7490,12 @@ func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	cb.EmitBytes(0x85, modRM(3, amd64RCX, amd64RCX))
 	doneJmp := amd64Jcc_rel32(cb, amd64CondE)
 
-	// Range-safety: save src, check pages for 4-byte stride
+	// Range-safety: save src, check every byte of the requested element span.
 	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffScratch), amd64R8)
-	x86EmitRangePageCheck(cb, amd64R8, amd64RCX, 4)
+	x86EmitRangePageCheck(cb, amd64R8, amd64RCX, int(width))
 	slowJmpSrc := amd64Jcc_rel32(cb, amd64CondNE)
 	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
-	x86EmitRangePageCheck(cb, amd64R10, amd64RCX, 4)
+	x86EmitRangePageCheck(cb, amd64R10, amd64RCX, int(width))
 	slowJmpDst := amd64Jcc_rel32(cb, amd64CondNE)
 	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
 
@@ -6369,10 +7503,15 @@ func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
 	amd64MOV_reg_reg32(cb, amd64RDX, amd64R10)
 	fastLoopLabel := cb.Len()
-	x86EmitMemLoad32(cb, amd64RAX, amd64R11)
-	x86EmitMemStore32(cb, amd64RDX, amd64RAX)
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, 4)
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64RDX, 4)
+	if width == 2 {
+		x86EmitMemLoad16(cb, amd64RAX, amd64R11)
+		x86EmitMemStore16(cb, amd64RDX, amd64RAX)
+	} else {
+		x86EmitMemLoad32(cb, amd64RAX, amd64R11)
+		x86EmitMemStore32(cb, amd64RDX, amd64RAX)
+	}
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, int32(width))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RDX, int32(width))
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 	fastLoopJmp := amd64Jcc_rel32(cb, amd64CondNE)
 	patchRel32(cb, fastLoopJmp, fastLoopLabel)
@@ -6387,11 +7526,19 @@ func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
 	slowLoopLabel := cb.Len()
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
-	x86EmitMemLoad32(cb, amd64RAX, amd64R11)
+	if width == 2 {
+		x86EmitMemLoad16(cb, amd64RAX, amd64R11)
+	} else {
+		x86EmitMemLoad32(cb, amd64RAX, amd64R11)
+	}
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	x86EmitMemStore32(cb, amd64R11, amd64RAX)
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64R8, 4)
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 4)
+	if width == 2 {
+		x86EmitMemStore16(cb, amd64R11, amd64RAX)
+	} else {
+		x86EmitMemStore32(cb, amd64R11, amd64RAX)
+	}
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R8, int32(width))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(width))
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 	slowLoopJmp := amd64Jcc_rel32(cb, amd64CondNE)
 	patchRel32(cb, slowLoopJmp, slowLoopLabel)
@@ -6406,14 +7553,15 @@ func x86EmitREP_MOVSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	return true
 }
 
-// x86EmitDFCheck emits a runtime check of the guest Direction Flag (DF, bit 10 of Flags).
+// x86EmitDFCheck emits a runtime check of the saved guest Direction Flag (DF,
+// bit 10). The saved flags slot is authoritative within a compiled block, so
+// in-block STD and CLD are visible to following REP string operations.
 // If DF=1, returns false (bails to interpreter). If DF=0, continues.
 // Returns the JNZ offset for patching if the caller wants to handle the bail inline,
 // or -1 if the check is skipped.
 func x86EmitDFCheck(cb *CodeBuffer, retPC uint32, instrIdx int) {
-	// Load guest Flags from context
-	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
-	amd64MOV_reg_mem32(cb, amd64RAX, amd64RAX, 0) // EAX = *FlagsPtr
+	// Load the authoritative in-block guest flags.
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(x86AMD64OffSavedEFlags))
 
 	// TEST EAX, (1 << 10) = 0x400 (DF bit)
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, 0) // dummy to not affect actual value
@@ -6609,8 +7757,8 @@ func x86EmitREP_STOSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	return true
 }
 
-// x86EmitREP_STOSD emits a native loop for REP STOSD (fill EDI with EAX, ECX times).
-func x86EmitREP_STOSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
+// x86EmitREP_STOSD emits a native loop for REP STOSW/STOSD (fill EDI from EAX, ECX times).
+func x86EmitREP_STOSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, width uint32) bool {
 	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
 	x86EmitLoadGuestReg32(cb, amd64RCX, 1)
 	x86EmitLoadGuestReg32(cb, amd64R10, 7)
@@ -6620,15 +7768,19 @@ func x86EmitREP_STOSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	cb.EmitBytes(0x85, modRM(3, amd64RCX, amd64RCX))
 	doneJmp := amd64Jcc_rel32(cb, amd64CondE)
 
-	// Range-safety for 4-byte stride
-	x86EmitRangePageCheck(cb, amd64R10, amd64RCX, 4)
+	// Range-safety for the complete element span.
+	x86EmitRangePageCheck(cb, amd64R10, amd64RCX, int(width))
 	slowJmp := amd64Jcc_rel32(cb, amd64CondNE)
 
 	// Fast path
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
 	fastLoopLabel := cb.Len()
-	x86EmitMemStore32(cb, amd64R11, amd64RAX)
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, 4)
+	if width == 2 {
+		x86EmitMemStore16(cb, amd64R11, amd64RAX)
+	} else {
+		x86EmitMemStore32(cb, amd64R11, amd64RAX)
+	}
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R11, int32(width))
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 	fastLoopJmp := amd64Jcc_rel32(cb, amd64CondNE)
 	patchRel32(cb, fastLoopJmp, fastLoopLabel)
@@ -6640,8 +7792,12 @@ func x86EmitREP_STOSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 	patchRel32(cb, slowJmp, slowLabel)
 	slowLoopLabel := cb.Len()
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	x86EmitMemStore32(cb, amd64R11, amd64RAX)
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 4)
+	if width == 2 {
+		x86EmitMemStore16(cb, amd64R11, amd64RAX)
+	} else {
+		x86EmitMemStore32(cb, amd64R11, amd64RAX)
+	}
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(width))
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 	slowLoopJmp := amd64Jcc_rel32(cb, amd64CondNE)
 	patchRel32(cb, slowLoopJmp, slowLoopLabel)
@@ -6661,6 +7817,12 @@ func x86EmitREP_STOSD(cb *CodeBuffer, ji *X86JITInstr, instrIdx int) bool {
 
 // x86EmitREP_CMPSB emits REPE/REPNE CMPSB: compare ESI vs EDI bytes, ECX times.
 func x86EmitREP_CMPSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86CompileState) bool {
+	return x86EmitREP_CMPS(cb, ji, instrIdx, cs, 1)
+}
+
+// x86EmitREP_CMPS emits forward REPE/REPNE CMPSB/CMPSW. The saved guest
+// EFLAGS slot makes an in-block STD visible to the direction check above.
+func x86EmitREP_CMPS(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86CompileState, width uint32) bool {
 	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
 	isRepNE := ji.prefixes&x86PrefRepNE != 0
 
@@ -6672,17 +7834,45 @@ func x86EmitREP_CMPSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86Comp
 	cb.EmitBytes(0x85, modRM(3, amd64RCX, amd64RCX))
 	doneJmp := amd64Jcc_rel32(cb, amd64CondE)
 
+	// Both complete ranges must avoid MMIO before raw memory reads begin.
+	// The page scanner clobbers R8, so preserve the source offset first.
+	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffScratch), amd64R8)
+	x86EmitRangePageCheck(cb, amd64R8, amd64RCX, int(width))
+	x86EmitDeferredBailJcc(cb, amd64CondNE, ji.opcodePC, instrIdx)
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
+	x86EmitRangePageCheck(cb, amd64R10, amd64RCX, int(width))
+	x86EmitDeferredBailJcc(cb, amd64CondNE, ji.opcodePC, instrIdx)
+	amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
+
 	loopLabel := cb.Len()
 
-	// Load [ESI] and [EDI], compare
+	// Load [ESI] and [EDI], compare.
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R8)
-	x86EmitMemLoad8(cb, amd64RAX, amd64R11) // AL = [ESI]
+	if width == 1 {
+		x86EmitMemLoad8(cb, amd64RAX, amd64R11) // AL = [ESI]
+	} else if width == 2 {
+		x86EmitMemLoad16(cb, amd64RAX, amd64R11) // AX = [ESI]
+	} else {
+		x86EmitMemLoad32(cb, amd64RAX, amd64R11) // EAX = [ESI]
+	}
 
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	x86EmitMemLoad8(cb, amd64RDX, amd64R11) // DL = [EDI]
+	if width == 1 {
+		x86EmitMemLoad8(cb, amd64RDX, amd64R11) // DL = [EDI]
+	} else if width == 2 {
+		x86EmitMemLoad16(cb, amd64RDX, amd64R11) // DX = [EDI]
+	} else {
+		x86EmitMemLoad32(cb, amd64RDX, amd64R11) // EDX = [EDI]
+	}
 
-	// CMP AL, DL — sets the comparison flags REPE/REPNE will branch on.
-	cb.EmitBytes(0x38, modRM(3, amd64RDX, amd64RAX)) // CMP AL, DL
+	// CMP AL/AX, DL/DX sets the comparison flags REPE/REPNE branch on.
+	if width == 1 {
+		cb.EmitBytes(0x38, modRM(3, amd64RDX, amd64RAX)) // CMP AL, DL
+	} else if width == 2 {
+		cb.EmitBytes(0x66, 0x39, modRM(3, amd64RDX, amd64RAX)) // CMP AX, DX
+	} else {
+		cb.EmitBytes(0x39, modRM(3, amd64RDX, amd64RAX)) // CMP EAX, EDX
+	}
 
 	// LAHF immediately to capture the comparison flags before any host
 	// arithmetic clobbers them. The INC ESI/EDI and DEC ECX below modify
@@ -6690,9 +7880,10 @@ func x86EmitREP_CMPSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86Comp
 	// would test those instead of the CMP and exit after one iteration.
 	cb.EmitBytes(0x9F) // LAHF
 
-	// ESI++, EDI++, ECX-- (clobber EFLAGS — fine, captured value sits in AH).
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64R8, 1)
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 1)
+	// Advance source, destination and count. This clobbers EFLAGS, but the
+	// comparison result is captured in AH.
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R8, int32(width))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(width))
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 
 	// Check termination: ECX == 0 → done
@@ -6735,32 +7926,66 @@ func x86EmitREP_CMPSB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86Comp
 
 // x86EmitREP_SCASB emits REPE/REPNE SCASB: scan EDI for AL match, ECX times.
 func x86EmitREP_SCASB(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86CompileState) bool {
+	return x86EmitREP_SCAS(cb, ji, instrIdx, cs, 1)
+}
+
+// x86EmitREP_SCAS emits forward REPE/REPNE SCASB/SCASW.
+func x86EmitREP_SCAS(cb *CodeBuffer, ji *X86JITInstr, instrIdx int, cs *x86CompileState, width uint32) bool {
 	x86EmitDFCheck(cb, ji.opcodePC, instrIdx)
 	isRepNE := ji.prefixes&x86PrefRepNE != 0
 
 	x86EmitLoadGuestReg32(cb, amd64RCX, 1) // count
 	x86EmitLoadGuestReg32(cb, amd64R10, 7) // EDI
-	x86EmitLoadGuestReg32(cb, amd64RAX, 0) // AL (search byte)
+	if width == 1 {
+		x86EmitLoadGuestReg32(cb, amd64RAX, 0) // AL search value; LAHF preserves it
+	} else {
+		// LAHF stores comparison flags in AH after every iteration, so EAX
+		// cannot retain a SCASW or SCASD search value across the loop.
+		x86EmitLoadGuestReg32(cb, amd64R8, 0)
+	}
 
 	emitREX(cb, false, amd64RCX, amd64RCX)
 	cb.EmitBytes(0x85, modRM(3, amd64RCX, amd64RCX))
 	doneJmp := amd64Jcc_rel32(cb, amd64CondE)
+	if width != 1 {
+		amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffScratch), amd64R8)
+	}
+	x86EmitRangePageCheck(cb, amd64R10, amd64RCX, int(width))
+	x86EmitDeferredBailJcc(cb, amd64CondNE, ji.opcodePC, instrIdx)
+	if width != 1 {
+		amd64MOV_reg_mem32(cb, amd64R8, amd64RSP, int32(x86AMD64OffScratch))
+	}
 
 	loopLabel := cb.Len()
 
-	// Load [EDI], compare with AL
+	// Load [EDI], compare with AL/AX.
 	amd64MOV_reg_reg32(cb, amd64R11, amd64R10)
-	x86EmitMemLoad8(cb, amd64RDX, amd64R11) // DL = [EDI]
+	if width == 1 {
+		x86EmitMemLoad8(cb, amd64RDX, amd64R11) // DL = [EDI]
+	} else if width == 2 {
+		x86EmitMemLoad16(cb, amd64RDX, amd64R11) // DX = [EDI]
+	} else {
+		x86EmitMemLoad32(cb, amd64RDX, amd64R11) // EDX = [EDI]
+	}
 
-	// CMP AL, DL — sets the comparison flags REPE/REPNE will branch on.
-	cb.EmitBytes(0x38, modRM(3, amd64RDX, amd64RAX))
+	// CMP AL/AX, DL/DX sets the comparison flags REPE/REPNE branch on.
+	if width == 1 {
+		cb.EmitBytes(0x38, modRM(3, amd64RDX, amd64RAX))
+	} else if width == 2 {
+		cb.EmitBytes(0x66)
+		emitREX(cb, false, amd64R8, amd64RDX)
+		cb.EmitBytes(0x39, modRM(3, amd64R8, amd64RDX)) // CMP R8W, DX
+	} else {
+		emitREX(cb, false, amd64R8, amd64RDX)
+		cb.EmitBytes(0x39, modRM(3, amd64R8, amd64RDX)) // CMP R8D, EDX
+	}
 
 	// LAHF immediately to capture the comparison flags before any host
 	// arithmetic clobbers them. Same fix as REP_CMPSB.
 	cb.EmitBytes(0x9F) // LAHF
 
-	// EDI++, ECX-- (clobber EFLAGS — fine, captured value sits in AH).
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 1)
+	// Advance destination and count. Comparison flags remain in AH.
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, int32(width))
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64RCX, 1)
 
 	emitREX(cb, false, amd64RCX, amd64RCX)
@@ -7078,35 +8303,32 @@ func x86EmitLAHF(cb *CodeBuffer, cs *x86CompileState) bool {
 
 func x86EmitFlagManip(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) bool {
 	op := byte(ji.opcode)
-	// CLI/STI have interrupt-observation ordering beyond the ordinary block
-	// boundary and remain interpreter-owned. The other forms are simple flag
-	// updates with no memory or control-flow side effects.
-	if op == 0xFA || op == 0xFB {
+	// CLI/STI end the block (see x86IsBlockTerminator), so their saved-slot
+	// update is merged before the dispatcher next observes pending interrupts.
+	// All forms here are otherwise simple flag updates with no memory effects.
+	if op != 0xF5 && op != 0xF8 && op != 0xF9 && op != 0xFA && op != 0xFB && op != 0xFC && op != 0xFD {
 		return false
 	}
-	if op != 0xF5 && op != 0xF8 && op != 0xF9 && op != 0xFC && op != 0xFD {
-		return false
-	}
-	amd64MOV_reg_mem(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
-	amd64MOV_reg_mem32(cb, amd64RAX, amd64RDX, 0)
+	// The saved slot is authoritative during native execution. cpu.Flags is
+	// only merged at the epilogue, so reading FlagsPtr here would discard any
+	// preceding native producer that has not yet returned to Go.
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, int32(x86AMD64OffSavedEFlags))
 	switch op {
 	case 0xF8: // CLC
 		amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^int32(x86FlagCF))
-		cb.EmitBytes(0xF8)
 	case 0xF9: // STC
 		amd64ALU_reg_imm32_32bit(cb, 1, amd64RAX, int32(x86FlagCF))
-		cb.EmitBytes(0xF9)
 	case 0xF5: // CMC
 		amd64ALU_reg_imm32_32bit(cb, 6, amd64RAX, int32(x86FlagCF))
-		cb.EmitBytes(0xF5)
+	case 0xFA: // CLI
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^int32(x86FlagIF))
+	case 0xFB: // STI
+		amd64ALU_reg_imm32_32bit(cb, 1, amd64RAX, int32(x86FlagIF))
 	case 0xFC: // CLD
 		amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^int32(x86FlagDF))
-		cb.EmitBytes(0xFC)
 	case 0xFD: // STD
 		amd64ALU_reg_imm32_32bit(cb, 1, amd64RAX, int32(x86FlagDF))
-		cb.EmitBytes(0xFD)
 	}
-	amd64MOV_mem_reg32(cb, amd64RDX, 0, amd64RAX)
 	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
 	cs.flagState = x86FlagsLiveArith
 	cs.flagCaptureDone = true
@@ -7134,16 +8356,29 @@ func x86EmitXCHG_EAX_r32(cb *CodeBuffer, ji *X86JITInstr) bool {
 func x86EmitSignExtend(cb *CodeBuffer, ji *X86JITInstr) bool {
 	op := byte(ji.opcode)
 
-	if op == 0x98 { // CWDE (sign-extend AX to EAX)
+	if op == 0x98 {
 		x86EmitLoadGuestReg32(cb, amd64RAX, 0)
+		if ji.prefixes&x86PrefOpSize != 0 { // CBW: sign-extend AL into AX
+			cb.EmitBytes(0x66, 0x98)
+			x86EmitStoreGuestReg32(cb, 0, amd64RAX)
+			return true
+		}
+		// CWDE: sign-extend AX to EAX.
 		// MOVSX EAX, AX: 0F BF C0
 		cb.EmitBytes(0x0F, 0xBF, 0xC0)
 		x86EmitStoreGuestReg32(cb, 0, amd64RAX)
 		return true
 	}
 
-	if op == 0x99 { // CDQ (sign-extend EAX to EDX:EAX)
+	if op == 0x99 {
 		x86EmitLoadGuestReg32(cb, amd64RAX, 0)
+		if ji.prefixes&x86PrefOpSize != 0 { // CWD: sign-extend AX into DX:AX
+			x86EmitLoadGuestReg32(cb, amd64RDX, 2)
+			cb.EmitBytes(0x66, 0x99)
+			x86EmitStoreGuestReg32(cb, 2, amd64RDX)
+			return true
+		}
+		// CDQ: sign-extend EAX to EDX:EAX.
 		// CDQ: 99
 		cb.EmitBytes(0x99)
 		// EDX = sign extension of EAX
@@ -7252,8 +8487,10 @@ func x86EmitCALLPushReturn(cb *CodeBuffer, ji *X86JITInstr, targetPC uint32, ins
 	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 4)
 	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrCount-1)
 	amd64MOV_reg_imm32(cb, amd64R8, ji.opcodePC+uint32(ji.length))
-	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
-	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	// Use the canonical guest-memory store encoder. The CALL stack write is
+	// architecturally ordinary guest RAM, so it must use the same REX/SIB
+	// convention as every other native dword store.
+	x86EmitMemStore32(cb, amd64R10, amd64R8)
 	amd64MOV_reg_reg32(cb, espHost, amd64R10)
 	// The call transfer has not occurred at a stack-write SMC exit, so resume
 	// at the callee after invalidating the stale compiled page.
@@ -7621,13 +8858,25 @@ func x86CompileBlockLocked(instrs []X86JITInstr, startPC uint32, execMem *ExecMe
 		}
 		// Decide shadowability based on producer kind and downstream.
 		switch kind {
-		case x86FlagOpArith, x86FlagOpManip:
+		case x86FlagOpArith:
 			// Arith needs a downstream arith/manip overwrite; logic
 			// preserves AF and is not sufficient.
 			if downstream == shadowArith {
 				cs.flagShadowed[i] = true
 			}
 			downstream = shadowArith
+		case x86FlagOpManip:
+			// POPF and SAHF replace their documented visible fields. CMC,
+			// CLC, STC, CLD and STD replace only one bit and therefore cannot
+			// make an earlier producer's capture redundant.
+			if ji.opcode == 0x9D || ji.opcode == 0x9E {
+				if downstream == shadowArith {
+					cs.flagShadowed[i] = true
+				}
+				downstream = shadowArith
+			} else {
+				downstream = shadowNone
+			}
 		case x86FlagOpLogic:
 			// Logic shadowable by either kind (both overwrite the 5
 			// bits logic writes; AF is preserved through both anyway).
@@ -7698,17 +8947,17 @@ func x86CompileBlockLocked(instrs []X86JITInstr, startPC uint32, execMem *ExecMe
 	lastPC := startPC
 	for i := range instrs {
 		ji := &instrs[i]
+		helperOnlyX87 := ji.opcode >= 0xD8 && ji.opcode <= 0xDF &&
+			(ji.prefixes&(x86PrefAddrSize|x86PrefSeg) != 0 || !x86FPUFormSupported(ji))
 
 		// Segment-override prefix (FS/GS/DS/ES/CS/SS) bails to interp.
 		// The current native emitters compute effective addresses as
 		// flat offsets and do not add a segment base; running a
 		// prefixed instr through them would produce different memory
-		// addresses than the interpreter (which honors prefixSeg via
-		// readSegBase). End the block here so the dispatcher steps the
-		// prefixed instr via cpu.Step(), which correctly applies the
-		// segment base. Slice 3+ may add native segment-base support
-		// for FS:/GS: TLS-style access.
-		if ji.prefixes&x86PrefSeg != 0 {
+		// addresses than the interpreter (which honours prefixSeg via
+		// readSegBase). x87 is the exception: it emits a canonical helper
+		// exit, so the interpreter consumes its immutable prefixed bytes.
+		if ji.prefixes&x86PrefSeg != 0 && (ji.opcode < 0xD8 || ji.opcode > 0xDF) {
 			break
 		}
 
@@ -7746,6 +8995,11 @@ func x86CompileBlockLocked(instrs []X86JITInstr, startPC uint32, execMem *ExecMe
 
 		if !x86EmitInstruction(cb, ji, memory, startPC, cs, instrCount) {
 			break
+		}
+		// A helper-owned x87 form has already emitted its complete cold exit.
+		// Do not append unreachable instructions or count them as native work.
+		if helperOnlyX87 {
+			goto done
 		}
 		// Eager-capture the host EFLAGS state immediately after any
 		// flag-modifying guest instruction. The capture stack slot is
@@ -7836,14 +9090,17 @@ done:
 	}
 
 	return &JITBlock{
-		startPC:    uint64(startPC),
-		endPC:      uint64(lastPC),
-		instrCount: instrCount,
-		execAddr:   addr,
-		execSize:   len(code),
-		chainEntry: chainEntry,
-		chainSlots: slots,
-		regMap:     cs.regMap,
+		startPC:          uint64(startPC),
+		endPC:            uint64(lastPC),
+		instrCount:       instrCount,
+		x86CyclePrefix:   x86JITCyclePrefix(instrs[:instrCount]),
+		x86TickPrefix:    x86JITTickPrefix(instrs[:instrCount]),
+		x86DynamicCycles: x86JITDynamicCycles(instrs[:instrCount]),
+		execAddr:         addr,
+		execSize:         len(code),
+		chainEntry:       chainEntry,
+		chainSlots:       slots,
+		regMap:           cs.regMap,
 	}, nil
 }
 
@@ -8063,14 +9320,17 @@ emitBlocks:
 	endPC := lastInstr.opcodePC + uint32(lastInstr.length)
 
 	return &JITBlock{
-		startPC:    uint64(region.entryPC),
-		endPC:      uint64(endPC),
-		instrCount: totalInstrCount,
-		execAddr:   addr,
-		execSize:   len(code),
-		chainEntry: addr + uintptr(chainEntryOff),
-		regMap:     cs.regMap,
-		tier:       2,
+		startPC:          uint64(region.entryPC),
+		endPC:            uint64(endPC),
+		instrCount:       totalInstrCount,
+		x86CyclePrefix:   x86JITCyclePrefix(allInstrs[:totalInstrCount]),
+		x86TickPrefix:    x86JITTickPrefix(allInstrs[:totalInstrCount]),
+		x86DynamicCycles: x86JITDynamicCycles(allInstrs[:totalInstrCount]),
+		execAddr:         addr,
+		execSize:         len(code),
+		chainEntry:       addr + uintptr(chainEntryOff),
+		regMap:           cs.regMap,
+		tier:             2,
 	}, nil
 }
 
