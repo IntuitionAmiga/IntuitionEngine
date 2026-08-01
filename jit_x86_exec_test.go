@@ -7,6 +7,7 @@
 package main
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -182,6 +183,36 @@ func TestX86JIT_X87MemoryBinaryEmptyStackMatchesInterpreter(t *testing.T) {
 	}
 	if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
 		t.Fatalf("FTW = 0x%04X, want interpreter 0x%04X", got, want)
+	}
+}
+
+func TestX86JIT_X87ZeroDivisorFallsBackBeforeNativeMutation(t *testing.T) {
+	// A direct SSE division must leave a zero divisor to the interpreter before
+	// native mutation, so the interpreter owns the coupled x87 result, status
+	// and tag updates rather than host MXCSR.
+	tests := []struct {
+		name string
+		code []byte
+	}{
+		// FLD1; FLDZ; FDIVR ST(0),ST(1): 1 / 0 = +Inf, so OE|ZE.
+		{name: "infinity_and_zero_divisor", code: []byte{0xD9, 0xE8, 0xD9, 0xEE, 0xD8, 0xF9, 0xF4}},
+		// FLDZ; FLDZ; FDIVR ST(0),ST(1): 0 / 0 = NaN, so IE|ZE.
+		{name: "nan_and_zero_divisor", code: []byte{0xD9, 0xEE, 0xD9, 0xEE, 0xD8, 0xF9, 0xF4}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jit := runX86JITProgram(t, 0x1000, tt.code...)
+			interp := runX86InterpreterProgram(t, 0x1000, tt.code...)
+			if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+				t.Fatalf("FSW = 0x%04X, want interpreter 0x%04X", got, want)
+			}
+			if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+				t.Fatalf("FTW = 0x%04X, want interpreter 0x%04X (ST(0) = %v, want %v)", got, want, jit.FPU.ST(0), interp.FPU.ST(0))
+			}
+			if got, want := jit.FPU.ST(0), interp.FPU.ST(0); got != want && !(math.IsNaN(got) && math.IsNaN(want)) {
+				t.Fatalf("ST(0) = %v, want interpreter %v", got, want)
+			}
+		})
 	}
 }
 

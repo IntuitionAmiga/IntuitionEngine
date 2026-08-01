@@ -3785,6 +3785,18 @@ func x86EmitFPUBinaryOpEx(cb *CodeBuffer, ji *X86JITInstr, stIdx byte, sseOp byt
 	emitMOVSD_SIB(cb, 0x10, 0, dstOff, amd64RAX)
 	emitMOVSD_SIB(cb, 0x10, 1, srcOff, amd64RAX)
 
+	// The host SSE status word is not the guest x87 status word.  A zero
+	// divisor needs the interpreter's combined result, exception and tag
+	// handling, so exit before native state changes. For the reversed forms the
+	// destination is the mathematical denominator (src op dst).
+	if sseOp == 0x5E { // DIVSD
+		denomXMM := byte(1)
+		if reversed {
+			denomXMM = 0
+		}
+		x86EmitFPUDivideByZeroBail(cb, denomXMM, ji.opcodePC, instrIdx)
+	}
+
 	if reversed {
 		// dst = src op dst: compute in XMM1, store XMM1.
 		cb.EmitBytes(0xF2, 0x0F, sseOp, modRM(3, 1, 0))
@@ -3795,6 +3807,16 @@ func x86EmitFPUBinaryOpEx(cb *CodeBuffer, ji *X86JITInstr, stIdx byte, sseOp byt
 		emitMOVSD_SIB(cb, 0x11, 0, dstOff, amd64RAX)
 	}
 
+	// x87CheckBinaryExceptions records NaN as IE and infinity as OE. SSE2
+	// deliberately leaves those conditions in MXCSR, so test the result and
+	// update the guest FSW explicitly before any following x87 instruction can
+	// observe it.
+	resultXMM := byte(0)
+	if reversed {
+		resultXMM = 1
+	}
+	x86EmitFPUBinaryResultExceptions(cb, resultXMM)
+
 	if pop {
 		x86EmitFTWMark(cb, true) // free old ST0 (RCX = pre-pop TOP)
 		// TOP = (TOP + 1) & 7
@@ -3803,6 +3825,80 @@ func x86EmitFPUBinaryOpEx(cb *CodeBuffer, ji *X86JITInstr, stIdx byte, sseOp byt
 		x86EmitUpdateFSWTop(cb, amd64RCX)
 	}
 	return true
+}
+
+// x86EmitFPUSetException mirrors FPU_X87.setException.  The x87 exception
+// mask lives in FCW: an unmasked exception additionally sets ES in FSW.
+// RAX points at FPU_X87; R8 is clobbered.
+func x86EmitFPUSetException(cb *CodeBuffer, mask uint16) {
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R8, amd64RAX), byte(fpuOffFCW))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, int32(mask))
+	// TEST R8D,R8D
+	emitREX(cb, false, amd64R8, amd64R8)
+	cb.EmitBytes(0x85, modRM(3, amd64R8, amd64R8))
+	masked := amd64Jcc_rel32(cb, amd64CondNE)
+
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R8, amd64RAX), byte(fpuOffFSW))
+	amd64ALU_reg_imm32_32bit(cb, 1, amd64R8, int32(mask|x87FSW_ES))
+	done := amd64JMP_rel32(cb)
+
+	patchRel32(cb, masked, cb.Len())
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x0F, 0xB7, modRM(1, amd64R8, amd64RAX), byte(fpuOffFSW))
+	amd64ALU_reg_imm32_32bit(cb, 1, amd64R8, int32(mask))
+
+	patchRel32(cb, done, cb.Len())
+	cb.EmitBytes(0x66)
+	emitREX(cb, false, amd64R8, amd64RAX)
+	cb.EmitBytes(0x89, modRM(1, amd64R8, amd64RAX), byte(fpuOffFSW))
+}
+
+// x86EmitFPUDivideByZeroBail resumes in the interpreter before a finite zero
+// divisor reaches SSE. UCOMISD marks NaNs unordered with ZF set, so PF must
+// be rejected before testing equality.
+func x86EmitFPUDivideByZeroBail(cb *CodeBuffer, denomXMM byte, retPC uint32, instrIdx int) {
+	// XORPD XMM2,XMM2; UCOMISD denom,+0
+	cb.EmitBytes(0x66, 0x0F, 0x57, modRM(3, 2, 2))
+	cb.EmitBytes(0x66, 0x0F, 0x2E, modRM(3, denomXMM, 2))
+	unordered := amd64Jcc_rel32(cb, amd64CondP)
+	notZero := amd64Jcc_rel32(cb, amd64CondNE)
+	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
+	x86EmitRetPC(cb, retPC, uint32(instrIdx))
+	x86EmitLightweightEpilogue(cb)
+	x86EmitFullEpilogueEnd(cb)
+	patchRel32(cb, unordered, cb.Len())
+	patchRel32(cb, notZero, cb.Len())
+}
+
+// x86EmitFPUBinaryResultExceptions mirrors x87CheckBinaryExceptions for the
+// result of a direct SSE2 binary operation.  It does not classify denormals:
+// the interpreter helper deliberately records only NaN and infinity here.
+func x86EmitFPUBinaryResultExceptions(cb *CodeBuffer, resultXMM byte) {
+	// UCOMISD result,result has PF=1 exactly for NaN.
+	cb.EmitBytes(0x66, 0x0F, 0x2E, modRM(3, resultXMM, resultXMM))
+	nan := amd64Jcc_rel32(cb, amd64CondP)
+
+	// MOVQ R11,result; abs(result) == +Inf identifies either signed infinity.
+	// 0F 7E moves into an XMM register, while 0F D6 is the GPR-memory form.
+	cb.EmitBytes(0x66)
+	emitREX(cb, true, resultXMM, amd64R11)
+	cb.EmitBytes(0x0F, 0xD6, modRM(3, resultXMM, amd64R11))
+	amd64MOV_reg_imm64(cb, amd64R8, 0x7FFFFFFFFFFFFFFF)
+	emitREX(cb, true, amd64R8, amd64R11)
+	cb.EmitBytes(0x21, modRM(3, amd64R8, amd64R11)) // AND R11,R8
+	amd64MOV_reg_imm64(cb, amd64R8, 0x7FF0000000000000)
+	emitREX(cb, true, amd64R8, amd64R11)
+	cb.EmitBytes(0x39, modRM(3, amd64R8, amd64R11)) // CMP R11,R8
+	notInf := amd64Jcc_rel32(cb, amd64CondNE)
+	x86EmitFPUSetException(cb, x87FSW_OE)
+	done := amd64JMP_rel32(cb)
+
+	patchRel32(cb, nan, cb.Len())
+	x86EmitFPUSetException(cb, x87FSW_IE)
+	patchRel32(cb, notInf, cb.Len())
+	patchRel32(cb, done, cb.Len())
 }
 
 // Memory-operand source kinds for x86EmitFPUArithMem.
