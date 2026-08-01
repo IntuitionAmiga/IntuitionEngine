@@ -132,6 +132,33 @@ func TestX86JIT_SAHFLAHFMatchesInterpreter(t *testing.T) {
 	}
 }
 
+func TestX86JIT_SAHFLAHFUsesInBlockFlags(t *testing.T) {
+	t.Run("lahf", func(t *testing.T) {
+		// ADD produces ZF in the saved JIT state. LAHF must observe it before
+		// the block epilogue materialises cpu.Flags.
+		code := []byte{0xB8, 0xFF, 0x00, 0x00, 0x00, 0x04, 0x01, 0x9F, 0xF4}
+		jit := runX86JITProgram(t, 0x1000, code...)
+		interp := runX86InterpreterProgram(t, 0x1000, code...)
+		if got, want := jit.EAX, interp.EAX; got != want {
+			t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+
+	t.Run("sahf", func(t *testing.T) {
+		// SAHF replaces only the low byte. OF must retain its prior guest value.
+		code := []byte{0xB8, 0x00, 0x01, 0x00, 0x00, 0x9E, 0xF4}
+		setup := func(cpu *CPU_X86) { cpu.Flags = x86FlagOF | 0x2 }
+		jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+		interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+}
+
 func TestX86JIT_FlagManipMatchesInterpreter(t *testing.T) {
 	// STC; CMC; STD; CLD; HLT leaves CF and DF clear without touching the
 	// remaining EFLAGS bits.
@@ -140,6 +167,693 @@ func TestX86JIT_FlagManipMatchesInterpreter(t *testing.T) {
 	interp := runX86InterpreterProgram(t, 0x1000, code...)
 	if got, want := jit.Flags, interp.Flags; got != want {
 		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_Grp4ByteIncDecMatchesInterpreter(t *testing.T) {
+	t.Run("register", func(t *testing.T) {
+		// STC; INC AL; DEC AH. Both forms preserve CF while publishing the
+		// byte-sized arithmetic flags and result.
+		code := []byte{0xB8, 0xFF, 0xFF, 0x00, 0x00, 0xF9, 0xFE, 0xC0, 0xFE, 0xCC, 0xF4}
+		jit := runX86JITProgram(t, 0x1000, code...)
+		interp := runX86InterpreterProgram(t, 0x1000, code...)
+		if got, want := jit.EAX, interp.EAX; got != want {
+			t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+
+	t.Run("memory", func(t *testing.T) {
+		const data = uint32(0x3000)
+		code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xF9, 0xFE, 0x03, 0xFE, 0x0B, 0xF4}
+		setup := func(cpu *CPU_X86) { cpu.memory[data] = 0xFF }
+		jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+		interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+		if got, want := jit.memory[data], interp.memory[data]; got != want {
+			t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data, got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+}
+
+func TestX86JIT_Grp5DwordIncDecMatchesInterpreter(t *testing.T) {
+	t.Run("register", func(t *testing.T) {
+		code := []byte{0xB8, 0xFF, 0xFF, 0xFF, 0xFF, 0xF9, 0xFF, 0xC0, 0xFF, 0xC8, 0xF4}
+		jit := runX86JITProgram(t, 0x1000, code...)
+		interp := runX86InterpreterProgram(t, 0x1000, code...)
+		if got, want := jit.EAX, interp.EAX; got != want {
+			t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+
+	t.Run("memory", func(t *testing.T) {
+		const data = uint32(0x3000)
+		code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xF9, 0xFF, 0x03, 0xFF, 0x0B, 0xF4}
+		setup := func(cpu *CPU_X86) {
+			cpu.memory[data] = 0xFF
+			cpu.memory[data+1] = 0xFF
+			cpu.memory[data+2] = 0xFF
+			cpu.memory[data+3] = 0xFF
+		}
+		jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+		interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+		for i := uint32(0); i < 4; i++ {
+			if got, want := jit.memory[data+i], interp.memory[data+i]; got != want {
+				t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data+i, got, want)
+			}
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+}
+
+func TestX86JIT_MOVALMoffs8MatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xB8, 0x00, 0xCC, 0xBB, 0xAA, 0xA0, 0x00, 0x30, 0x00, 0x00, 0xF4} // MOV AL,[0x3000]
+	setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x42 }
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	if got, want := jit.EAX, interp.EAX; got != want {
+		t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_DoubleShiftMemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xB9, 0x01, 0x00, 0x00, 0x00, 0x0F, 0xA4, 0x0B, 0x01, 0xF4} // SHLD dword [EBX],ECX,1
+	setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x81 }
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	for i := uint32(0); i < 4; i++ {
+		if got, want := jit.memory[data+i], interp.memory[data+i]; got != want {
+			t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data+i, got, want)
+		}
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_IMULMemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xB8, 0x07, 0x00, 0x00, 0x00, 0xF9, 0x0F, 0xAF, 0x03, 0xF4} // IMUL EAX,[EBX]
+	setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x06 }
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	if got, want := jit.EAX, interp.EAX; got != want {
+		t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_POPRM32RegisterMatchesInterpreter(t *testing.T) {
+	code := []byte{0xBC, 0x00, 0x40, 0x00, 0x00, 0x68, 0x78, 0x56, 0x34, 0x12, 0x8F, 0xC0, 0xF4} // POP EAX
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	if got, want := jit.EAX, interp.EAX; got != want {
+		t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.ESP, interp.ESP; got != want {
+		t.Fatalf("ESP = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_DwordShiftImmMemoryCountOneMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xC1, 0x23, 0x01, 0xF4} // SHL dword [EBX],1
+	setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x81 }
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	for i := uint32(0); i < 4; i++ {
+		if got, want := jit.memory[data+i], interp.memory[data+i]; got != want {
+			t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data+i, got, want)
+		}
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_TESTDwordMemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xB8, 0x00, 0x00, 0x00, 0x80, 0x85, 0x03, 0x74, 0x06, 0xB9, 0x00, 0x00, 0x00, 0x00, 0xF4, 0xB9, 0x01, 0x00, 0x00, 0x00, 0xF4}
+	setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x7F }
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	if got, want := jit.ECX, interp.ECX; got != want {
+		t.Fatalf("ECX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_TESTByteMemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xB8, 0x80, 0x00, 0x00, 0x00, 0x84, 0x03, 0x74, 0x06, 0xB9, 0x00, 0x00, 0x00, 0x00, 0xF4, 0xB9, 0x01, 0x00, 0x00, 0x00, 0xF4}
+	setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x7F }
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	if got, want := jit.ECX, interp.ECX; got != want {
+		t.Fatalf("ECX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_MOVSXByteMemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0x0F, 0xBE, 0x03, 0xF4} // MOVSX EAX,byte [EBX]
+	setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x80 }
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	if got, want := jit.EAX, interp.EAX; got != want {
+		t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_BSFMemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0x0F, 0xBC, 0x03, 0xF4} // BSF EAX,[EBX]
+	setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x20 }
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	if got, want := jit.EAX, interp.EAX; got != want {
+		t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_CMOVccMemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x31, 0xC9, 0x85, 0xC9, 0x0F, 0x44, 0x03, 0xF4} // CMOVZ EAX,[EBX]
+	setup := func(cpu *CPU_X86) {
+		cpu.memory[data], cpu.memory[data+1], cpu.memory[data+2], cpu.memory[data+3] = 0x78, 0x56, 0x34, 0x12
+	}
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	if got, want := jit.EAX, interp.EAX; got != want {
+		t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_SETccMemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0x31, 0xC0, 0x85, 0xC0, 0x0F, 0x94, 0x03, 0xF4} // SETZ byte [EBX]
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	if got, want := jit.memory[data], interp.memory[data]; got != want {
+		t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data, got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_DwordShiftMemoryCountOneMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xF9, 0xD1, 0x23, 0xF4} // SHL dword [EBX],1
+	setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x81 }
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	for i := uint32(0); i < 4; i++ {
+		if got, want := jit.memory[data+i], interp.memory[data+i]; got != want {
+			t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data+i, got, want)
+		}
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_Grp1DwordImm8MemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	// STC; SBB dword [EBX],-1; CMP dword [EBX],-1; HLT.
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xF9, 0x83, 0x1B, 0xFF, 0x83, 0x3B, 0xFF, 0xF4}
+	setup := func(cpu *CPU_X86) {
+		cpu.memory[data], cpu.memory[data+1], cpu.memory[data+2], cpu.memory[data+3] = 0xFF, 0xFF, 0xFF, 0x7F
+	}
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	for i := uint32(0); i < 4; i++ {
+		if got, want := jit.memory[data+i], interp.memory[data+i]; got != want {
+			t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data+i, got, want)
+		}
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_Grp1DwordImmMemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	// STC; ADC dword [EBX],1; CMP dword [EBX],0x80000001; HLT.
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xF9, 0x81, 0x13, 0x01, 0x00, 0x00, 0x00, 0x81, 0x3B, 0x01, 0x00, 0x00, 0x80, 0xF4}
+	setup := func(cpu *CPU_X86) {
+		cpu.memory[data], cpu.memory[data+1], cpu.memory[data+2], cpu.memory[data+3] = 0xFF, 0xFF, 0xFF, 0x7F
+	}
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	for i := uint32(0); i < 4; i++ {
+		if got, want := jit.memory[data+i], interp.memory[data+i]; got != want {
+			t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data+i, got, want)
+		}
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_Grp1ByteMemoryMatchesInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	// STC; ADC byte [EBX],1; CMP byte [EBX],0x81; HLT.
+	code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xF9, 0x80, 0x13, 0x01, 0x80, 0x3B, 0x81, 0xF4}
+	setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x7F }
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	if got, want := jit.memory[data], interp.memory[data]; got != want {
+		t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data, got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_JccRel32MatchesInterpreter(t *testing.T) {
+	code := []byte{
+		0x31, 0xC0, // XOR EAX,EAX
+		0x85, 0xC0, // TEST EAX,EAX
+		0x0F, 0x84, 0x06, 0x00, 0x00, 0x00, // JZ restored
+		0xBB, 0x00, 0x00, 0x00, 0x00, // MOV EBX,0
+		0xF4,
+		0xBB, 0x01, 0x00, 0x00, 0x00, // restored: MOV EBX,1
+		0xF4,
+	}
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	if got, want := jit.EBX, interp.EBX; got != want {
+		t.Fatalf("EBX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_Grp5PushRM32MatchesInterpreter(t *testing.T) {
+	t.Run("register", func(t *testing.T) {
+		code := []byte{0xBC, 0x00, 0x40, 0x00, 0x00, 0xB8, 0x78, 0x56, 0x34, 0x12, 0xFF, 0xF0, 0x5B, 0xF4} // PUSH EAX; POP EBX
+		jit := runX86JITProgram(t, 0x1000, code...)
+		interp := runX86InterpreterProgram(t, 0x1000, code...)
+		if got, want := jit.EBX, interp.EBX; got != want {
+			t.Fatalf("EBX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.ESP, interp.ESP; got != want {
+			t.Fatalf("ESP = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+	t.Run("memory", func(t *testing.T) {
+		const data = uint32(0x3000)
+		code := []byte{0xBC, 0x00, 0x40, 0x00, 0x00, 0xBB, 0x00, 0x30, 0x00, 0x00, 0xFF, 0x33, 0x59, 0xF4} // PUSH [EBX]; POP ECX
+		setup := func(cpu *CPU_X86) {
+			cpu.memory[data], cpu.memory[data+1], cpu.memory[data+2], cpu.memory[data+3] = 0xEF, 0xBE, 0xAD, 0xDE
+		}
+		jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+		interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+		if got, want := jit.ECX, interp.ECX; got != want {
+			t.Fatalf("ECX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.ESP, interp.ESP; got != want {
+			t.Fatalf("ESP = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+}
+
+func TestX86JIT_Grp3ByteSafeFormsMatchInterpreter(t *testing.T) {
+	t.Run("register", func(t *testing.T) {
+		// TEST AL,imm; NOT AL; NEG AH exercises all byte slots and the
+		// saved-flags restore required after a non-flag-writing merge.
+		code := []byte{0xB8, 0xF0, 0xFF, 0x00, 0x00, 0xF6, 0xC0, 0xF0, 0xF6, 0xD0, 0xF6, 0xDC, 0xF4}
+		jit := runX86JITProgram(t, 0x1000, code...)
+		interp := runX86InterpreterProgram(t, 0x1000, code...)
+		if got, want := jit.EAX, interp.EAX; got != want {
+			t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+
+	t.Run("memory", func(t *testing.T) {
+		const data = uint32(0x3000)
+		code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xF6, 0x13, 0xF6, 0x1B, 0xF4}
+		setup := func(cpu *CPU_X86) { cpu.memory[data] = 1 }
+		jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+		interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+		if got, want := jit.memory[data], interp.memory[data]; got != want {
+			t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data, got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+}
+
+func TestX86JIT_Grp3DwordMemoryFormsMatchInterpreter(t *testing.T) {
+	const data = uint32(0x3000)
+	// TEST [EBX],imm; NOT [EBX]; NEG [EBX]. The initial TEST proves the
+	// memory read form; the remaining operations prove guarded writes and SMC
+	// bookkeeping after flags have been captured.
+	code := []byte{
+		0xBB, 0x00, 0x30, 0x00, 0x00,
+		0xF7, 0x03, 0x01, 0x00, 0x00, 0x00,
+		0xF7, 0x13,
+		0xF7, 0x1B,
+		0xF4,
+	}
+	setup := func(cpu *CPU_X86) {
+		cpu.memory[data] = 1
+	}
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	for i := uint32(0); i < 4; i++ {
+		if got, want := jit.memory[data+i], interp.memory[data+i]; got != want {
+			t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data+i, got, want)
+		}
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_Grp3DwordDivMatchesInterpreter(t *testing.T) {
+	// EDX:EAX / EBX = 10 / 3. The native path is entered only after zero and
+	// quotient-overflow guards, so this also exercises the successful guard path.
+	code := []byte{
+		0xB8, 0x0A, 0x00, 0x00, 0x00,
+		0xBA, 0x00, 0x00, 0x00, 0x00,
+		0xBB, 0x03, 0x00, 0x00, 0x00,
+		0xF7, 0xF3,
+		0xF4,
+	}
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	if got, want := jit.EAX, interp.EAX; got != want {
+		t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.EDX, interp.EDX; got != want {
+		t.Fatalf("EDX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_Grp3ByteMulMatchesInterpreter(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code []byte
+	}{
+		{"mul", []byte{0xB8, 0x02, 0x00, 0xCD, 0xAB, 0xBB, 0x03, 0x00, 0x00, 0x00, 0xF6, 0xE3, 0xF4}},
+		{"imul", []byte{0xB8, 0xFE, 0x00, 0x34, 0x12, 0xBB, 0x03, 0x00, 0x00, 0x00, 0xF6, 0xEB, 0xF4}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jit := runX86JITProgram(t, 0x1000, tc.code...)
+			interp := runX86InterpreterProgram(t, 0x1000, tc.code...)
+			if got, want := jit.EAX, interp.EAX; got != want {
+				t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+			}
+			if got, want := jit.Flags, interp.Flags; got != want {
+				t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+			}
+		})
+	}
+}
+
+func TestX86JIT_Grp3ByteDivMatchesInterpreter(t *testing.T) {
+	// AX / BL = 10 / 3, preserving EAX's upper 16 bits.
+	code := []byte{
+		0xB8, 0x0A, 0x00, 0xCD, 0xAB,
+		0xBB, 0x03, 0x00, 0x00, 0x00,
+		0xF6, 0xF3,
+		0xF4,
+	}
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	if got, want := jit.EAX, interp.EAX; got != want {
+		t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_ByteALUFormsMatchInterpreter(t *testing.T) {
+	t.Run("register", func(t *testing.T) {
+		// Gbyte,Ebyte forms cover every directly lowered byte ALU operation.
+		code := []byte{
+			0xB8, 0xFE, 0x00, 0x00, 0x00,
+			0xBB, 0x03, 0x00, 0x00, 0x00,
+			0xF9,
+			0x02, 0xC3, 0x12, 0xC3, 0x1A, 0xC3,
+			0x0A, 0xC3, 0x22, 0xC3, 0x2A, 0xC3,
+			0x32, 0xC3, 0x3A, 0xC3,
+			0xF4,
+		}
+		jit := runX86JITProgram(t, 0x1000, code...)
+		interp := runX86InterpreterProgram(t, 0x1000, code...)
+		if got, want := jit.EAX, interp.EAX; got != want {
+			t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+
+	t.Run("memory", func(t *testing.T) {
+		const data = uint32(0x3000)
+		// Ebyte,Gbyte forms exercise guarded byte reads and writes.
+		code := []byte{
+			0xBB, 0x00, 0x30, 0x00, 0x00,
+			0xB9, 0x03, 0x00, 0x00, 0x00,
+			0xF9,
+			0x00, 0x0B, 0x10, 0x0B, 0x18, 0x0B,
+			0x08, 0x0B, 0x20, 0x0B, 0x28, 0x0B,
+			0x30, 0x0B, 0x38, 0x0B,
+			0xF4,
+		}
+		setup := func(cpu *CPU_X86) { cpu.memory[data] = 0xFE }
+		jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+		interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+		if got, want := jit.memory[data], interp.memory[data]; got != want {
+			t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data, got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+}
+
+func TestX86JIT_ImmediateIMULMatchesInterpreter(t *testing.T) {
+	t.Run("register", func(t *testing.T) {
+		// IMUL EAX, EBX, -2
+		code := []byte{0xBB, 0x07, 0x00, 0x00, 0x00, 0x6B, 0xC3, 0xFE, 0xF4}
+		jit := runX86JITProgram(t, 0x1000, code...)
+		interp := runX86InterpreterProgram(t, 0x1000, code...)
+		if got, want := jit.EAX, interp.EAX; got != want {
+			t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+
+	t.Run("memory", func(t *testing.T) {
+		const data = uint32(0x3000)
+		// IMUL EAX, dword [EBX], 4
+		code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0x6B, 0x03, 0x04, 0xF4}
+		setup := func(cpu *CPU_X86) { cpu.memory[data] = 5 }
+		jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+		interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+		if got, want := jit.EAX, interp.EAX; got != want {
+			t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+}
+
+func TestX86JIT_XCHGMemoryAndByteFormsMatchInterpreter(t *testing.T) {
+	t.Run("byte-register", func(t *testing.T) {
+		// XCHG AH, BL preserves every other byte of EAX and EBX.
+		code := []byte{0xB8, 0x11, 0x22, 0x33, 0x44, 0xBB, 0x66, 0x77, 0x88, 0x99, 0x86, 0xE3, 0xF4}
+		jit := runX86JITProgram(t, 0x1000, code...)
+		interp := runX86InterpreterProgram(t, 0x1000, code...)
+		if got, want := jit.EAX, interp.EAX; got != want {
+			t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.EBX, interp.EBX; got != want {
+			t.Fatalf("EBX = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+
+	t.Run("memory-dword", func(t *testing.T) {
+		const data = uint32(0x3000)
+		code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xB9, 0x44, 0x33, 0x22, 0x11, 0x87, 0x0B, 0xF4}
+		setup := func(cpu *CPU_X86) { cpu.memory[data] = 0xAA }
+		jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+		interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+		if got, want := jit.ECX, interp.ECX; got != want {
+			t.Fatalf("ECX = 0x%08X, want 0x%08X", got, want)
+		}
+		for i := uint32(0); i < 4; i++ {
+			if got, want := jit.memory[data+i], interp.memory[data+i]; got != want {
+				t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data+i, got, want)
+			}
+		}
+	})
+}
+
+func TestX86JIT_LOOPEAndLOOPNEMatchInterpreter(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		code []byte
+	}{
+		{
+			"loope",
+			[]byte{
+				0xB9, 0x01, 0x00, 0x00, 0x00, // MOV ECX,1
+				0x31, 0xC0, // XOR EAX,EAX (ZF=1)
+				0xE1, 0x07, // LOOPE target
+				0xBB, 0x01, 0x00, 0x00, 0x00,
+				0xEB, 0x05,
+				0xBB, 0x02, 0x00, 0x00, 0x00,
+				0xF4,
+			},
+		},
+		{
+			"loopne",
+			[]byte{
+				0xB9, 0x01, 0x00, 0x00, 0x00, // MOV ECX,1
+				0xB8, 0x01, 0x00, 0x00, 0x00,
+				0x0B, 0xC0, // OR EAX,EAX (ZF=0)
+				0xE0, 0x07, // LOOPNE target
+				0xBB, 0x01, 0x00, 0x00, 0x00,
+				0xEB, 0x05,
+				0xBB, 0x02, 0x00, 0x00, 0x00,
+				0xF4,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			jit := runX86JITProgram(t, 0x1000, tc.code...)
+			interp := runX86InterpreterProgram(t, 0x1000, tc.code...)
+			if got, want := jit.EBX, interp.EBX; got != want {
+				t.Fatalf("EBX = 0x%08X, want 0x%08X", got, want)
+			}
+			if got, want := jit.ECX, interp.ECX; got != want {
+				t.Fatalf("ECX = 0x%08X, want 0x%08X", got, want)
+			}
+			if got, want := jit.Flags, interp.Flags; got != want {
+				t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+			}
+		})
+	}
+}
+
+func TestX86JIT_ByteShiftRotateCountOneMatchesInterpreter(t *testing.T) {
+	t.Run("register", func(t *testing.T) {
+		// STC; RCL AL,1; C0 ROR AH,1. This covers the carry-consuming
+		// rotate and the immediate-count-one path.
+		code := []byte{0xB8, 0x81, 0x80, 0x00, 0x00, 0xF9, 0xD0, 0xD0, 0xC0, 0xCC, 0x01, 0xF4}
+		jit := runX86JITProgram(t, 0x1000, code...)
+		interp := runX86InterpreterProgram(t, 0x1000, code...)
+		if got, want := jit.EAX, interp.EAX; got != want {
+			t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+
+	t.Run("memory", func(t *testing.T) {
+		const data = uint32(0x3000)
+		code := []byte{0xBB, 0x00, 0x30, 0x00, 0x00, 0xD0, 0x23, 0xF4} // SHL byte [EBX],1
+		setup := func(cpu *CPU_X86) { cpu.memory[data] = 0x81 }
+		jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+		interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+		if got, want := jit.memory[data], interp.memory[data]; got != want {
+			t.Fatalf("memory[%#x] = 0x%02X, want 0x%02X", data, got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+		}
+	})
+}
+
+func TestX86JIT_PUSHA_POPAMatchesInterpreter(t *testing.T) {
+	code := []byte{0x60, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x61, 0xF4}
+	setup := func(cpu *CPU_X86) {
+		cpu.EAX, cpu.ECX, cpu.EDX, cpu.EBX = 0x11223344, 0x55667788, 0x99AABBCC, 0xDDEEFF00
+		cpu.ESP, cpu.EBP, cpu.ESI, cpu.EDI = 0x4000, 0x10203040, 0x50607080, 0x90A0B0C0
+	}
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, code...)
+	for _, pair := range []struct{ got, want uint32 }{
+		{jit.EAX, interp.EAX}, {jit.ECX, interp.ECX}, {jit.EDX, interp.EDX}, {jit.EBX, interp.EBX},
+		{jit.ESP, interp.ESP}, {jit.EBP, interp.EBP}, {jit.ESI, interp.ESI}, {jit.EDI, interp.EDI},
+	} {
+		if pair.got != pair.want {
+			t.Fatalf("register = 0x%08X, want 0x%08X", pair.got, pair.want)
+		}
+	}
+}
+
+func TestX86JIT_RETImm16MatchesInterpreter(t *testing.T) {
+	// PUSH argument; CALL function; RET 4 discards the argument before the
+	// caller resumes at MOV EBX, 1; HLT.
+	code := []byte{
+		0xBC, 0x00, 0x40, 0x00, 0x00, // MOV ESP, 0x4000
+		0x68, 0x34, 0x12, 0x00, 0x00, // PUSH 0x1234
+		0xE8, 0x06, 0x00, 0x00, 0x00, // CALL function
+		0xBB, 0x01, 0x00, 0x00, 0x00, // MOV EBX, 1
+		0xF4,             // HLT
+		0xC2, 0x04, 0x00, // function: RET 4
+	}
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	for _, pair := range []struct {
+		name      string
+		got, want uint32
+	}{
+		{"EAX", jit.EAX, interp.EAX}, {"EBX", jit.EBX, interp.EBX}, {"ESP", jit.ESP, interp.ESP},
+		{"EIP", jit.EIP, interp.EIP}, {"Flags", jit.Flags, interp.Flags},
+	} {
+		if pair.got != pair.want {
+			t.Fatalf("%s = 0x%08X, want 0x%08X", pair.name, pair.got, pair.want)
+		}
 	}
 }
 

@@ -822,6 +822,9 @@ func x86OpcodeHasModRM(opcode uint16) bool {
 
 // x86IsBlockTerminator returns true if the opcode ends a basic block.
 func x86IsBlockTerminator(opcode uint16) bool {
+	if opcode >= 0x0F80 && opcode <= 0x0F8F { // Jcc rel32
+		return true
+	}
 	switch opcode {
 	case 0xC3, 0xCB: // RET, RETF
 		return true
@@ -955,8 +958,9 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 // bounds (guest-visible RAM), page-crossing, MMIO, and self-modifying-code
 // invalidation, bailing to the interpreter otherwise.
 //
-// RET imm16, LEAVE, PUSH-imm/PUSHF and indirect forms remain on the
-// interpreter. Near CALL and plain RET use guarded native terminal emitters.
+// PUSHF and indirect forms remain on the interpreter. Near CALL, RET (with
+// or without an immediate stack adjustment), and immediate PUSH use guarded
+// native emitters.
 //
 // x86StepInInterpreterDisabledForTest, when true, lets focused tests compile
 // these remaining ops through their native emitters without changing the
@@ -972,20 +976,14 @@ func x86ShouldStepInInterpreter(ji X86JITInstr) bool {
 	}
 	op := byte(ji.opcode)
 	switch {
-	case op == 0xC2: // RET imm16
-		return true
-	case op == 0xC9: // LEAVE
+	case op == 0x9C || op == 0x9D: // PUSHF/POPF
 		return true
 	// PUSH/POP r32 (0x50-0x5F) have native emitters (x86EmitPUSH_r32/
 	// x86EmitPOP_r32) and run mid-block already; letting a block start with
 	// them lets the prologue/epilogue compile instead of single-stepping.
-	case op == 0x68 || op == 0x6A: // PUSH imm32/imm8
-		return true
-	case op == 0x9C || op == 0x9D: // PUSHF/POPF
-		return true
 	case op == 0xFF:
 		sub := (ji.modrm >> 3) & 7
-		return ji.hasModRM && (sub == 2 || sub == 3 || sub == 4 || sub == 5 || sub == 6)
+		return ji.hasModRM && (sub == 2 || sub == 3 || sub == 4 || sub == 5)
 	}
 	return false
 }

@@ -820,9 +820,6 @@ func TestX86NeedsFallback(t *testing.T) {
 		name string
 		ji   X86JITInstr
 	}{
-		{"LEAVE", X86JITInstr{opcode: 0x00C9}},
-		{"PUSH imm32", X86JITInstr{opcode: 0x0068}},
-		{"PUSH imm8", X86JITInstr{opcode: 0x006A}},
 		{"PUSH Ev", X86JITInstr{opcode: 0x00FF, hasModRM: true, modrm: 0x30}},
 		{"CALL Ev", X86JITInstr{opcode: 0x00FF, hasModRM: true, modrm: 0x10}},
 	} {

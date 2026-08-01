@@ -160,7 +160,7 @@ func TestX86EmitGrp1_Eb_Ib_HighByteCapturesPreMerge(t *testing.T) {
 		hasModRM: true,
 		modrm:    0xC4,
 	}
-	if !x86EmitGrp1_Eb_Ib(cb, ji, memory, cs) {
+	if !x86EmitGrp1_Eb_Ib(cb, ji, memory, cs, 0) {
 		t.Fatal("x86EmitGrp1_Eb_Ib(ADD AH,1) returned false")
 	}
 	out := cb.Bytes()
@@ -196,7 +196,7 @@ func TestX86EmitGrp1_Eb_Ib_HighByteSBBRestoresCF(t *testing.T) {
 			hasModRM: true,
 			modrm:    0xDF,
 		}
-		x86EmitGrp1_Eb_Ib(cb, ji, memory, cs)
+		x86EmitGrp1_Eb_Ib(cb, ji, memory, cs, 0)
 	})
 	btSeq := btCFRestoreSequence()
 	if !bytes.Contains(out, btSeq) {

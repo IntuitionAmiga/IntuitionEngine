@@ -12,7 +12,7 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 
 **Compilation ownership:** each CPU passes an immutable snapshot of its I/O-page map, code-page map and visible-RAM ceiling to block or region compilation. The amd64 emitter still has legacy helper seams that consume temporary compiler state, so compilation is serialised by a compiler-only mutex. Generated code and normal JIT dispatch never take that mutex. `TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs` covers the isolation and is suitable for `go test -race` where the local toolchain supports it.
 
-**Coverage:** 50+ instruction forms including MOV, ADD/SUB/AND/OR/XOR/CMP/TEST, INC/DEC, guarded CALL rel32 and RET, PUSH/POP r32, LEA, Jcc, JMP rel8/rel32, SHL/SHR/SAR/ROL/ROR, NOT/NEG, MUL/IMUL/DIV/IDIV, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP, SAHF/LAHF, LEAVE, PUSHF, XCHG, CBW/CDQ, REP MOVSB/MOVSD/STOSB/STOSD/CMPSB/SCASB, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. Segment-modifying instructions, far control flow, INT/IRET, and I/O port instructions fall back to the interpreter.
+**Coverage:** 50+ instruction forms including byte and dword MOV, ADD/SUB/AND/OR/XOR/CMP/TEST, byte and dword INC/DEC, guarded Group 3 TEST/NOT/NEG/MUL/IMUL/DIV forms, immediate IMUL, guarded CALL rel32 and RET, PUSH/POP r32, PUSHA/POPA, LEA, XCHG, Jcc, JMP rel8/rel32, register dword and guarded memory count-one SHL/SHR/SAR/ROL/ROR forms, immediate SHLD/SHRD memory destinations, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP/LOOPE/LOOPNE, SAHF/LAHF, LEAVE, PUSHF, CBW/CDQ, REP MOVSB/MOVSD/STOSB/STOSD/CMPSB/SCASB, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. Segment-modifying instructions, far control flow, INT/IRET, I/O port instructions, signed division, and byte shifts with counts other than one fall back to the interpreter.
 
 ---
 
@@ -468,14 +468,15 @@ Both use LAHF/SAHF to preserve CMP flags across the ECX decrement.
 | x87 unsupported forms | Transcendentals, BCD, FCMOV, unsupported environment forms, address-size and segment-override forms | Interpreter owns the exact state transition |
 | Interrupt flags | CLI/STI | Interrupt-observation ordering |
 | BCD arithmetic | DAA/DAS/AAA/AAS/AAM/AAD | Complex flag semantics |
-| Complex stack control | indirect CALL/JMP (0xFF /2../5), RET imm16 (0xC2), LEAVE (0xC9), PUSH imm (0x68/0x6A), PUSHF/POPF (0x9C/0x9D) | Control-flow or flag semantics |
+| Complex stack control | indirect CALL/JMP (0xFF /2../5), PUSHF/POPF (0x9C/0x9D) | Control-flow or flag semantics |
 
-`CALL rel32` (0xE8) and plain `RET` (0xC3) compile as guarded terminal blocks.
+`CALL rel32` (0xE8), near `RET` (0xC3/0xC2), and immediate PUSH (0x68/0x6A)
+compile with pre-mutation span guards.
 Regions intentionally do not cross a CALL edge, because they cannot model the
 callee return path as a linear region. Indirect `CALL`/`JMP` (0xFF with ModR/M
 reg field 2-5) always falls back.
 
-`PUSH r32` and `POP r32` (0x50-0x5F) are **not** in this table: they compile
+`PUSH r32` and `POP r32` (0x50-0x5F), plus `PUSH r/m32` (0xFF /6), are **not** in this table: they compile
 natively behind the span guard (see [Native Span Guard](#native-span-guard-stack-and-word-accesses)),
 bailing to the interpreter only when the runtime access span is cross-page,
 out of active RAM, or on an I/O page. `MOVSX Gv,Ew` with a memory source is
@@ -631,7 +632,6 @@ When `HasERMS` is true and the page range is proven safe (all pages non-I/O), RE
 
 - ARM64 backend
 - AVX2 bulk memory for REP STOS/MOVS (VMOVDQU 32-byte loops)
-- Native RET chaining via RTS cache (infrastructure exists in X86JITContext, not yet consumed by native code)
 - Jcc two-way chain slots (taken + not-taken for inter-block conditional branches)
 - Loop memory-check hoisting for linear base+stride patterns
 - Superblock/trace compilation beyond basic region formation
