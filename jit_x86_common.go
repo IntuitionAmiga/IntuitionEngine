@@ -1480,6 +1480,14 @@ func x86InstrWritesFlags(ji *X86JITInstr) bool {
 		return true // TEST AL/EAX
 	case op == 0xD4 || op == 0xD5:
 		return true // AAM/AAD
+	case op == 0xA6 || op == 0xAE:
+		return true // CMPSB/SCASB
+	case op == 0xA7 || op == 0xAF:
+		return true // CMPSW/SCASW
+	case op == 0xF5 || op == 0xF8 || op == 0xF9:
+		return true // CMC/CLC/STC
+	case op == 0x37 || op == 0x3F:
+		return true // AAA/AAS
 	case op >= 0xC0 && op <= 0xC1:
 		return true // Grp2 shifts
 	case op >= 0xD0 && op <= 0xD3:
