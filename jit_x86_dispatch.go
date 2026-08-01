@@ -6,21 +6,19 @@
 
 package main
 
-// x86JitExecute runs the native x86 JIT. Phase 8 of the JIT-unification plan
-// retired the interpreter dispatch gate after shadow-parity confirmed the
-// general JIT path runs real x86 binaries byte-equivalent to the interpreter.
-// There is no per-block runtime fallback: any path that cannot be JIT-emitted
-// (initialization failure, scan/compile error) surfaces as a panic so the gap
-// is fixed at its source.
+// x86JitExecute runs the native x86 JIT. Decoder-admitted forms that have no
+// native lowering return through the bounded interpreter path, including the
+// decoded x87 helper protocol. Compile errors other than the documented
+// no-instruction admission miss remain JIT bugs and surface immediately.
 //
 // The one exception is host-CPU capability: the x86 emitter uses LAHF/SAHF in
 // its REP/Jcc flag plumbing, which a few early x86-64 parts lack in 64-bit
 // mode. When x86JitAvailable is false the whole backend falls back to the
 // interpreter loop rather than emitting an illegal instruction (SIGILL).
 //
-// Single-instruction bail-and-resume into cpu.Step() (used by MMIO writes
-// and the rare unsupported-opcode bail) is part of the JIT↔host-device
-// protocol, not an interpreter fallback. It is preserved.
+// Single-instruction bail-and-resume is part of the JIT and host-device
+// protocol. x87 bails use their immutable decoded payload; other forms use
+// the ordinary interpreter path.
 func (cpu *CPU_X86) x86JitExecute() {
 	if !x86JitAvailable {
 		cpu.x86RunInterpreter()

@@ -15,33 +15,45 @@ import (
 // X86JITContext is passed to every JIT-compiled x86 block as its sole argument.
 // On ARM64 it arrives in X0; on x86-64 in RDI.
 type X86JITContext struct {
-	JITRegsPtr        uintptr // 0:   &cpu.jitRegs[0]
-	MemPtr            uintptr // 8:   &cpu.memory[0]
-	MemSize           uint32  // 16:  len(memory)
-	_pad0             uint32  // 20:  alignment padding
-	FlagsPtr          uintptr // 24:  &cpu.Flags
-	EIPPtr            uintptr // 32:  &cpu.EIP
-	CpuPtr            uintptr // 40:  &cpu
-	NeedInval         uint32  // 48:  self-modification detected
-	NeedIOFallback    uint32  // 52:  I/O bail flag
-	RetPC             uint32  // 56:  next EIP after block
-	RetCount          uint32  // 60:  instructions retired
-	CodePageBitmapPtr uintptr // 64:  &codePageBitmap[0]
-	IOBitmapPtr       uintptr // 72:  &x86IOBitmap[0] (256-byte page granularity)
-	FPUPtr            uintptr // 80:  unsafe.Pointer(cpu.FPU) -- FPU_X87 struct, not Go pointer field
-	SegRegsPtr        uintptr // 88:  &cpu.jitSegRegs[0] (ES,CS,SS,DS,FS,GS)
-	ChainBudget       uint32  // 96:  blocks remaining before mandatory Go return
-	ChainCount        uint32  // 100: accumulated instruction count across chain
-	RTSCache0PC       uint32  // 104: MRU RET target cache entry 0 - guest PC
-	_pad1             uint32  // 108: alignment
-	RTSCache0Addr     uintptr // 112: MRU entry 0 - chain entry address
-	RTSCache0RegMap   uint64  // 120: MRU entry 0 - target block's regMap (8 bytes packed as uint64)
-	RTSCache1PC       uint32  // 128: MRU entry 1 - guest PC
-	_pad2             uint32  // 132: alignment
-	RTSCache1Addr     uintptr // 136: MRU entry 1 - chain entry address
-	RTSCache1RegMap   uint64  // 144: MRU entry 1 - target block's regMap
-	InvalAddr         uint32  // 152: self-modifying write address
-	InvalSize         uint32  // 156: self-modifying write size in bytes
+	JITRegsPtr        uintptr  // 0:   &cpu.jitRegs[0]
+	MemPtr            uintptr  // 8:   &cpu.memory[0]
+	MemSize           uint32   // 16:  len(memory)
+	_pad0             uint32   // 20:  alignment padding
+	FlagsPtr          uintptr  // 24:  &cpu.Flags
+	EIPPtr            uintptr  // 32:  &cpu.EIP
+	CpuPtr            uintptr  // 40:  &cpu
+	NeedInval         uint32   // 48:  self-modification detected
+	NeedIOFallback    uint32   // 52:  I/O bail flag
+	RetPC             uint32   // 56:  next EIP after block
+	RetCount          uint32   // 60:  instructions retired
+	CodePageBitmapPtr uintptr  // 64:  &codePageBitmap[0]
+	IOBitmapPtr       uintptr  // 72:  &x86IOBitmap[0] (256-byte page granularity)
+	FPUPtr            uintptr  // 80:  unsafe.Pointer(cpu.FPU) -- FPU_X87 struct, not Go pointer field
+	SegRegsPtr        uintptr  // 88:  &cpu.jitSegRegs[0] (ES,CS,SS,DS,FS,GS)
+	ChainBudget       uint32   // 96:  blocks remaining before mandatory Go return
+	ChainCount        uint32   // 100: accumulated instruction count across chain
+	RTSCache0PC       uint32   // 104: MRU RET target cache entry 0 - guest PC
+	_pad1             uint32   // 108: alignment
+	RTSCache0Addr     uintptr  // 112: MRU entry 0 - chain entry address
+	RTSCache0RegMap   uint64   // 120: MRU entry 0 - target block's regMap (8 bytes packed as uint64)
+	RTSCache1PC       uint32   // 128: MRU entry 1 - guest PC
+	_pad2             uint32   // 132: alignment
+	RTSCache1Addr     uintptr  // 136: MRU entry 1 - chain entry address
+	RTSCache1RegMap   uint64   // 144: MRU entry 1 - target block's regMap
+	InvalAddr         uint32   // 152: self-modifying write address
+	InvalSize         uint32   // 156: self-modifying write size in bytes
+	ExitReason        uint32   // 160: native slow-path discriminator
+	FPUHelperInstrPC  uint32   // 164: immutable x87 helper instruction PC
+	FPUHelperCS       uint16   // 168: CS captured with the instruction
+	FPUHelperEscape   byte     // 170: x87 escape opcode (D8-DF)
+	FPUHelperModRM    byte     // 171: decoded ModR/M
+	FPUHelperPrefixes byte     // 172: decoder prefix flags
+	FPUHelperLength   byte     // 173: instruction byte length
+	FPUHelperSegment  byte     // 174: resolved effective-address segment
+	_pad3             byte     // 175: alignment padding
+	FPUHelperEA       uint32   // 176: resolved flat effective address
+	FPUHelperWidth    uint32   // 180: memory access width, zero for register forms
+	FPUHelperBytes    [15]byte // 184: immutable prefixes, opcode and operands
 }
 
 // X86JITContext field offsets (must match struct layout above)
@@ -70,6 +82,22 @@ const (
 	x86CtxOffRTSCache1RegMap   = 144
 	x86CtxOffInvalAddr         = 152
 	x86CtxOffInvalSize         = 156
+	x86CtxOffExitReason        = 160
+	x86CtxOffFPUHelperInstrPC  = 164
+	x86CtxOffFPUHelperCS       = 168
+	x86CtxOffFPUHelperEscape   = 170
+	x86CtxOffFPUHelperModRM    = 171
+	x86CtxOffFPUHelperPrefixes = 172
+	x86CtxOffFPUHelperLength   = 173
+	x86CtxOffFPUHelperSegment  = 174
+	x86CtxOffFPUHelperEA       = 176
+	x86CtxOffFPUHelperWidth    = 180
+	x86CtxOffFPUHelperBytes    = 184
+)
+
+const (
+	x86JITExitNone uint32 = iota
+	x86JITExitFPUHelper
 )
 
 // x86JitAvailable is set to true at init time on platforms that support x86 JIT.
@@ -129,6 +157,9 @@ type x86FPUHelperPayload struct {
 	ModRM    byte
 	Prefixes byte
 	Length   uint8
+	Segment  byte
+	EA       uint32
+	Width    uint32
 	Bytes    [15]byte
 }
 
@@ -147,6 +178,26 @@ func x86FPUHelperPayloadFor(ji X86JITInstr, memory []byte, cs uint16) (x86FPUHel
 	}
 	copy(p.Bytes[:], memory[ji.opcodePC:ji.opcodePC+uint32(ji.length)])
 	return p, true
+}
+
+func x86FPUHelperPayloadFromContext(ctx *X86JITContext) (x86FPUHelperPayload, bool) {
+	if ctx == nil || ctx.ExitReason != x86JITExitFPUHelper ||
+		ctx.FPUHelperEscape < 0xD8 || ctx.FPUHelperEscape > 0xDF ||
+		ctx.FPUHelperLength == 0 || ctx.FPUHelperLength > 15 {
+		return x86FPUHelperPayload{}, false
+	}
+	return x86FPUHelperPayload{
+		InstrPC:  ctx.FPUHelperInstrPC,
+		CS:       ctx.FPUHelperCS,
+		Escape:   ctx.FPUHelperEscape,
+		ModRM:    ctx.FPUHelperModRM,
+		Prefixes: ctx.FPUHelperPrefixes,
+		Length:   ctx.FPUHelperLength,
+		Segment:  ctx.FPUHelperSegment,
+		EA:       ctx.FPUHelperEA,
+		Width:    ctx.FPUHelperWidth,
+		Bytes:    ctx.FPUHelperBytes,
+	}, true
 }
 
 // x86RunFPUHelper resumes one decoded x87 operation through the canonical
@@ -904,9 +955,8 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 // bounds (guest-visible RAM), page-crossing, MMIO, and self-modifying-code
 // invalidation, bailing to the interpreter otherwise.
 //
-// The remaining stack/control ops below stay on the interpreter to keep
-// CALL/RET return-address and frame semantics and the PUSH-imm/PUSHF/indirect
-// paths on the canonical path, not for lack of memory-safety handling.
+// RET imm16, LEAVE, PUSH-imm/PUSHF and indirect forms remain on the
+// interpreter. Near CALL and plain RET use guarded native terminal emitters.
 //
 // x86StepInInterpreterDisabledForTest, when true, lets focused tests compile
 // these remaining ops through their native emitters without changing the
@@ -922,7 +972,7 @@ func x86ShouldStepInInterpreter(ji X86JITInstr) bool {
 	}
 	op := byte(ji.opcode)
 	switch {
-	case op == 0xE8 || op == 0xC3 || op == 0xC2: // CALL rel, RET, RET imm16
+	case op == 0xC2: // RET imm16
 		return true
 	case op == 0xC9: // LEAVE
 		return true

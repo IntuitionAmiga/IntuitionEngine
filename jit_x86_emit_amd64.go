@@ -247,6 +247,14 @@ type x86CompileState struct {
 	// the compile loop. Patched bidirectionally by x86PatchCompatibleChainsTo
 	// once the target block is in the cache.
 	chainExits *[]x86ChainExitInfo
+
+	// fpuHelper* is compile-time-only metadata for a potential x87 slow exit.
+	// It is emitted in the cold exit stub, never on a successful x87 path.
+	fpuHelperPayload x86FPUHelperPayload
+	fpuHelperAddrReg byte
+	fpuHelperWidth   uint32
+	fpuHelperSegment byte
+	fpuHelperHasEA   bool
 }
 
 // x86DefaultRegMap returns the Tier 1 fixed register mapping.
@@ -519,12 +527,15 @@ func readLE32Signed(memory []byte, pc uint32) int32 {
 
 // x86DeferredBail records a deferred bail site to be resolved at end of block.
 type x86DeferredBail struct {
-	jccOffset int    // offset of the Jcc rel32 displacement in CodeBuffer
-	retPC     uint32 // guest PC to return to
-	instrIdx  int    // instruction count at bail point
-	kind      byte   // 0 = IO bail, 1 = self-mod bail
-	addrReg   byte   // self-mod write address register
-	size      uint32 // self-mod write size in bytes
+	jccOffset  int    // offset of the Jcc rel32 displacement in CodeBuffer
+	retPC      uint32 // guest PC to return to
+	instrIdx   int    // instruction count at bail point
+	kind       byte   // 0 = IO bail, 1 = self-mod bail, 2 = x87 helper bail
+	addrReg    byte   // memory address register for self-mod and x87 helper bails
+	size       uint32 // self-mod write size in bytes
+	fpuPayload x86FPUHelperPayload
+	fpuWidth   uint32
+	fpuSegment byte
 }
 
 // x86TryConstantEA returns (address, true) if the instruction's EA is a compile-time
@@ -554,6 +565,10 @@ func x86EmitIOCheckMaybeElide(cb *CodeBuffer, addrReg byte, ji *X86JITInstr, mem
 		if x86IsPageSafeAtCompileTime(addr) {
 			return // compile-time safe -- no runtime check needed
 		}
+	}
+	if ji.opcode >= 0xD8 && ji.opcode <= 0xDF {
+		x86EmitFPUHelperIOCheck(cb, addrReg, ji.opcodePC, instrIdx)
+		return
 	}
 	x86EmitIOCheck(cb, addrReg, ji.opcodePC, instrIdx)
 }
@@ -610,6 +625,23 @@ func x86EmitIOCheck(cb *CodeBuffer, addrReg byte, retPC uint32, instrCount int) 
 		})
 	}
 	// Fast path continues inline (no jump-over needed)
+}
+
+// x86EmitFPUHelperIOCheck is the memory slow path for a directly lowered x87
+// form. Its deferred stub owns the decoder payload and resumes the exact
+// operation without fetching guest code again.
+func x86EmitFPUHelperIOCheck(cb *CodeBuffer, addrReg byte, retPC uint32, instrCount int) {
+	jccOff, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapMMIO, x86AMD64RegIOBM, addrReg, amd64RCX, amd64RCX, true)
+	if !ok {
+		panic("x86 I/O bitmap probe unavailable")
+	}
+	if x86CurrentBails != nil {
+		cs := x86CurrentCS
+		*x86CurrentBails = append(*x86CurrentBails, x86DeferredBail{
+			jccOffset: jccOff, retPC: retPC, instrIdx: instrCount, kind: 2, addrReg: addrReg,
+			fpuPayload: cs.fpuHelperPayload, fpuWidth: cs.fpuHelperWidth, fpuSegment: cs.fpuHelperSegment,
+		})
+	}
 }
 
 // x86EmitDeferredBailJcc records an interpreter bail taken when the immediately
@@ -692,10 +724,17 @@ func x86EmitDeferredBails(cb *CodeBuffer) {
 		// Set the appropriate flag
 		if bail.kind == 0 {
 			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
-		} else {
+		} else if bail.kind == 1 {
 			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedInval), 1)
 			amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffInvalAddr), bail.addrReg)
 			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffInvalSize), bail.size)
+		} else {
+			x86EmitFPUHelperPayload(cb, bail.fpuPayload)
+			amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperEA), bail.addrReg)
+			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperWidth), bail.fpuWidth)
+			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperSegment), uint32(bail.fpuSegment))
+			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffExitReason), x86JITExitFPUHelper)
+			amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
 		}
 
 		// JMP to shared exit
@@ -1097,6 +1136,8 @@ func x86FlagAnalysisCanCompileInstruction(ji *X86JITInstr) bool {
 
 	switch {
 	case op == 0x90:
+		return ji.prefixes&x86PrefOpSize == 0
+	case op == 0x9E || op == 0x9F: // SAHF / LAHF
 		return ji.prefixes&x86PrefOpSize == 0
 	case op >= 0xB8 && op <= 0xBF:
 		return true
@@ -1509,8 +1550,10 @@ func x86EmitInstruction(cb *CodeBuffer, ji *X86JITInstr, memory []byte, startPC 
 		return x86EmitPUSHF(cb, ji, cs, instrIdx)
 
 	// SAHF (0x9E) / LAHF (0x9F)
-	case op == 0x9E || op == 0x9F:
-		return false // TODO
+	case op == 0x9E:
+		return x86EmitSAHF(cb)
+	case op == 0x9F:
+		return x86EmitLAHF(cb)
 
 	// LEAVE (0xC9)
 	case op == 0xC9:
@@ -3389,6 +3432,30 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 
 	// Load FPU pointer
 	amd64MOV_reg_mem(cb, amd64RAX, x86AMD64RegCtx, int32(x86CtxOffFPUPtr))
+	payload, ok := x86FPUHelperPayloadFor(*ji, memory, 0)
+	if !ok {
+		return false
+	}
+	if x86CurrentCS == nil {
+		return false
+	}
+	previousPayload := x86CurrentCS.fpuHelperPayload
+	previousAddrReg := x86CurrentCS.fpuHelperAddrReg
+	previousWidth := x86CurrentCS.fpuHelperWidth
+	previousSegment := x86CurrentCS.fpuHelperSegment
+	previousHasEA := x86CurrentCS.fpuHelperHasEA
+	x86CurrentCS.fpuHelperPayload = payload
+	x86CurrentCS.fpuHelperAddrReg = 0
+	x86CurrentCS.fpuHelperWidth = 0
+	x86CurrentCS.fpuHelperSegment = x86SegDS
+	x86CurrentCS.fpuHelperHasEA = false
+	defer func() {
+		x86CurrentCS.fpuHelperPayload = previousPayload
+		x86CurrentCS.fpuHelperAddrReg = previousAddrReg
+		x86CurrentCS.fpuHelperWidth = previousWidth
+		x86CurrentCS.fpuHelperSegment = previousSegment
+		x86CurrentCS.fpuHelperHasEA = previousHasEA
+	}()
 	x86EmitFPUCaptureOp(cb, ji, memory)
 
 	switch escape {
@@ -3542,6 +3609,66 @@ func x86EmitFPU(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx int) bo
 	return false
 }
 
+// x86EmitFPUHelperPayload writes the decoder-owned portion of the canonical
+// helper ABI in a cold x87 exit stub. Successful native x87 instructions do
+// not pay for payload publication; the stub runs only after captureOp has
+// published the matching live CS and provenance.
+func x86EmitFPUHelperPayload(cb *CodeBuffer, p x86FPUHelperPayload) {
+	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperInstrPC), p.InstrPC)
+	// CS is loaded from the live segment array by x86EmitFPUCaptureOp. Keep
+	// these bytes separate so the cold payload setup never overwrites it.
+	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperEscape), uint32(p.Escape)|uint32(p.ModRM)<<8|uint32(p.Prefixes)<<16|uint32(p.Length)<<24)
+	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperSegment), uint32(x86SegDS))
+	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperEA), 0)
+	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperWidth), 0)
+	for off := 0; off < len(p.Bytes); off += 4 {
+		var word uint32
+		for i := 0; i < 4 && off+i < len(p.Bytes); i++ {
+			word |= uint32(p.Bytes[off+i]) << (8 * i)
+		}
+		amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperBytes+off), word)
+	}
+}
+
+func x86FPUHelperAccessWidth(ji *X86JITInstr) uint32 {
+	if ji.modrm>>6 == 3 {
+		return 0
+	}
+	switch byte(ji.opcode) {
+	case 0xD8, 0xDA:
+		return 4
+	case 0xDB:
+		return 4
+	case 0xDC, 0xDD:
+		return 8
+	case 0xDF:
+		return 2
+	case 0xD9:
+		if (ji.modrm>>3)&7 == 5 || (ji.modrm>>3)&7 == 7 {
+			return 2
+		}
+		return 4
+	}
+	return 0
+}
+
+func x86EmitFPUHelperExit(cb *CodeBuffer, retPC uint32, instrIdx int) {
+	if x86CurrentCS == nil {
+		panic("x86 FPU helper exit without compile state")
+	}
+	x86EmitFPUHelperPayload(cb, x86CurrentCS.fpuHelperPayload)
+	if x86CurrentCS.fpuHelperHasEA {
+		amd64MOV_mem_reg32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperEA), x86CurrentCS.fpuHelperAddrReg)
+		amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperWidth), x86CurrentCS.fpuHelperWidth)
+		amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffFPUHelperSegment), uint32(x86CurrentCS.fpuHelperSegment))
+	}
+	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffExitReason), x86JITExitFPUHelper)
+	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
+	x86EmitRetPC(cb, retPC, uint32(instrIdx))
+	x86EmitLightweightEpilogue(cb)
+	x86EmitFullEpilogueEnd(cb)
+}
+
 // x86FPUFormSupported is the admission check for direct x87 lowering. It
 // deliberately runs before x86EmitFPUCaptureOp: an instruction that is about
 // to fall back must not leave provenance for an operation it did not retire.
@@ -3602,6 +3729,10 @@ func x86EmitFPUCaptureOp(cb *CodeBuffer, ji *X86JITInstr, memory []byte) {
 	amd64MOV_reg_mem(cb, amd64R10, x86AMD64RegCtx, int32(x86CtxOffSegRegsPtr))
 	cb.EmitBytes(0x45, 0x0F, 0xB7, 0x52, byte(x86SegCS*2)) // MOVZX R10D,[R10+CS*2]
 	cb.EmitBytes(0x66, 0x44, 0x89, 0x50, byte(fpuOffFCS))  // MOV [RAX+FCS],R10W
+	cb.EmitBytes(0x66)
+	emitREX(cb, false, amd64R10, x86AMD64RegCtx)
+	cb.EmitBytes(0x89, modRM(2, amd64R10, x86AMD64RegCtx))
+	cb.Emit32(uint32(x86CtxOffFPUHelperCS))
 
 	// FOP is the project's compact escape/ModR/M representation, not the
 	// host instruction encoding.
@@ -3614,7 +3745,7 @@ func x86EmitFPUCaptureOp(cb *CodeBuffer, ji *X86JITInstr, memory []byte) {
 func x86EmitFPUCaptureMem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, addrReg byte) {
 	amd64MOV_mem_reg32(cb, amd64RAX, fpuOffFDP, addrReg)
 
-	seg := x86SegDS
+	seg := byte(x86SegDS)
 	mod, rm := ji.modrm>>6, ji.modrm&7
 	// [ESP]/[EBP] and SIB forms based on ESP/EBP default to SS. A disp32-only
 	// form remains DS. Segment overrides are rejected before direct emission.
@@ -3633,6 +3764,12 @@ func x86EmitFPUCaptureMem(cb *CodeBuffer, ji *X86JITInstr, memory []byte, addrRe
 	amd64MOV_reg_mem(cb, amd64R11, x86AMD64RegCtx, int32(x86CtxOffSegRegsPtr))
 	cb.EmitBytes(0x45, 0x0F, 0xB7, 0x5B, byte(seg*2))     // MOVZX R11D,[R11+seg*2]
 	cb.EmitBytes(0x66, 0x44, 0x89, 0x58, byte(fpuOffFDS)) // MOV [RAX+FDS],R11W
+	if x86CurrentCS != nil {
+		x86CurrentCS.fpuHelperAddrReg = addrReg
+		x86CurrentCS.fpuHelperWidth = x86FPUHelperAccessWidth(ji)
+		x86CurrentCS.fpuHelperSegment = seg
+		x86CurrentCS.fpuHelperHasEA = true
+	}
 }
 
 // x86EmitFPUReadTOP emits code to read the FPU TOP field into the given register.
@@ -3674,10 +3811,7 @@ func x86EmitFPUCheckTag(cb *CodeBuffer, physRegReg byte, badTag uint16, retPC ui
 	bailLabel := cb.Len()
 	patchRel32(cb, bailOff, bailLabel)
 	// Bail to interpreter
-	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
-	x86EmitRetPC(cb, retPC, uint32(instrIdx))
-	x86EmitLightweightEpilogue(cb)
-	x86EmitFullEpilogueEnd(cb)
+	x86EmitFPUHelperExit(cb, retPC, instrIdx)
 
 	skipLabel := cb.Len()
 	patchRel32(cb, skipOff, skipLabel)
@@ -3701,10 +3835,7 @@ func x86EmitFPUCheckTagNot(cb *CodeBuffer, physRegReg byte, wantTag uint16, retP
 
 	bailLabel := cb.Len()
 	patchRel32(cb, bailOff, bailLabel)
-	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
-	x86EmitRetPC(cb, retPC, uint32(instrIdx))
-	x86EmitLightweightEpilogue(cb)
-	x86EmitFullEpilogueEnd(cb)
+	x86EmitFPUHelperExit(cb, retPC, instrIdx)
 
 	patchRel32(cb, skipOff, cb.Len())
 }
@@ -3887,10 +4018,7 @@ func x86EmitFPUDivideByZeroBail(cb *CodeBuffer, denomXMM byte, retPC uint32, ins
 	cb.EmitBytes(0x66, 0x0F, 0x2E, modRM(3, denomXMM, 2))
 	unordered := amd64Jcc_rel32(cb, amd64CondP)
 	notZero := amd64Jcc_rel32(cb, amd64CondNE)
-	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
-	x86EmitRetPC(cb, retPC, uint32(instrIdx))
-	x86EmitLightweightEpilogue(cb)
-	x86EmitFullEpilogueEnd(cb)
+	x86EmitFPUHelperExit(cb, retPC, instrIdx)
 	patchRel32(cb, unordered, cb.Len())
 	patchRel32(cb, notZero, cb.Len())
 }
@@ -4190,10 +4318,7 @@ func x86EmitFISTP_mem32(cb *CodeBuffer, ji *X86JITInstr, memory []byte, instrIdx
 
 	// Bail: unsupported rounding mode -> interpreter
 	patchRel32(cb, bailJmp, cb.Len())
-	amd64MOV_mem_imm32(cb, x86AMD64RegCtx, int32(x86CtxOffNeedIOFallback), 1)
-	x86EmitRetPC(cb, ji.opcodePC, uint32(instrIdx))
-	x86EmitLightweightEpilogue(cb)
-	x86EmitFullEpilogueEnd(cb)
+	x86EmitFPUHelperExit(cb, ji.opcodePC, instrIdx)
 
 	patchRel32(cb, doneJmp, cb.Len())
 	return true
@@ -5478,11 +5603,74 @@ func x86EmitLEA(cb *CodeBuffer, ji *X86JITInstr, memory []byte) bool {
 // Flag Manipulation Emitters
 // ===========================================================================
 
+// x86EmitSAHF mirrors the interpreter's intentionally simple contract: AH
+// replaces the low byte of guest Flags. Host SAHF restores the visible subset
+// for an immediately following native flag consumer; the compile loop then
+// captures it into the normal guest-flags boundary slot.
+func x86EmitSAHF(cb *CodeBuffer) bool {
+	x86EmitLoadGuestReg32(cb, amd64RAX, 0)
+	amd64MOV_reg_mem(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RDX, 0)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, ^int32(0xFF))
+	amd64MOV_reg_reg32(cb, amd64R8, amd64RAX)
+	amd64SHR_imm32(cb, amd64R8, 8)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64R8, 0xFF)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RCX, amd64R8)
+	amd64MOV_mem_reg32(cb, amd64RDX, 0, amd64RCX)
+	cb.EmitBytes(0x9E) // SAHF
+	return true
+}
+
+// x86EmitLAHF copies the current guest Flags low byte into guest AH. It does
+// not change guest flags, so the saved-flags slot remains authoritative after
+// the scratch arithmetic used to merge AH into EAX.
+func x86EmitLAHF(cb *CodeBuffer) bool {
+	x86EmitLoadGuestReg32(cb, amd64RAX, 0)
+	amd64MOV_reg_mem(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
+	amd64MOV_reg_mem32(cb, amd64RCX, amd64RDX, 0)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^int32(0xFF00))
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RCX, 0xFF)
+	amd64SHL_imm32(cb, amd64RCX, 8)
+	amd64ALU_reg_reg32(cb, 0x09, amd64RAX, amd64RCX)
+	x86EmitStoreGuestReg32(cb, 0, amd64RAX)
+	return true
+}
+
 func x86EmitFlagManip(cb *CodeBuffer, ji *X86JITInstr, cs *x86CompileState) bool {
-	// These modify guest Flags directly, not via ALU
-	// For now, fall back to interpreter for complex flag ops
-	// TODO: implement in Tier 2
-	return false
+	op := byte(ji.opcode)
+	// CLI/STI have interrupt-observation ordering beyond the ordinary block
+	// boundary and remain interpreter-owned. The other forms are simple flag
+	// updates with no memory or control-flow side effects.
+	if op == 0xFA || op == 0xFB {
+		return false
+	}
+	if op != 0xF5 && op != 0xF8 && op != 0xF9 && op != 0xFC && op != 0xFD {
+		return false
+	}
+	amd64MOV_reg_mem(cb, amd64RDX, x86AMD64RegCtx, int32(x86CtxOffFlagsPtr))
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RDX, 0)
+	switch op {
+	case 0xF8: // CLC
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^int32(x86FlagCF))
+		cb.EmitBytes(0xF8)
+	case 0xF9: // STC
+		amd64ALU_reg_imm32_32bit(cb, 1, amd64RAX, int32(x86FlagCF))
+		cb.EmitBytes(0xF9)
+	case 0xF5: // CMC
+		amd64ALU_reg_imm32_32bit(cb, 6, amd64RAX, int32(x86FlagCF))
+		cb.EmitBytes(0xF5)
+	case 0xFC: // CLD
+		amd64ALU_reg_imm32_32bit(cb, 4, amd64RAX, ^int32(x86FlagDF))
+		cb.EmitBytes(0xFC)
+	case 0xFD: // STD
+		amd64ALU_reg_imm32_32bit(cb, 1, amd64RAX, int32(x86FlagDF))
+		cb.EmitBytes(0xFD)
+	}
+	amd64MOV_mem_reg32(cb, amd64RDX, 0, amd64RAX)
+	amd64MOV_mem_reg32(cb, amd64RSP, int32(x86AMD64OffSavedEFlags), amd64RAX)
+	cs.flagState = x86FlagsLiveArith
+	cs.flagCaptureDone = true
+	return true
 }
 
 // ===========================================================================
@@ -5614,6 +5802,24 @@ func x86CmpReg64Mem(cb *CodeBuffer, reg, base byte, disp int32) {
 	emitMemOp(cb, true, 0x3B, reg, base, disp)
 }
 
+// x86EmitCALLPushReturn emits the guarded stack write for CALL rel32. The
+// write must validate before changing ESP so an interpreter bail can retry
+// the original instruction with intact guest state.
+func x86EmitCALLPushReturn(cb *CodeBuffer, ji *X86JITInstr, targetPC uint32, instrCount int) {
+	x86MarkDirty(4)
+	espHost, _ := x86GuestRegToHost(4)
+	amd64MOV_reg_reg32(cb, amd64R10, espHost)
+	amd64ALU_reg_imm32_32bit(cb, 5, amd64R10, 4)
+	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, instrCount-1)
+	amd64MOV_reg_imm32(cb, amd64R8, ji.opcodePC+uint32(ji.length))
+	emitREX_SIB(cb, false, amd64R8, amd64R10, x86AMD64RegMemBase)
+	cb.EmitBytes(0x89, modRM(0, amd64R8, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
+	amd64MOV_reg_reg32(cb, espHost, amd64R10)
+	// The call transfer has not occurred at a stack-write SMC exit, so resume
+	// at the callee after invalidating the stale compiled page.
+	x86EmitSelfModCheck(cb, amd64R10, targetPC, instrCount, 4)
+}
+
 // x86EmitRET emits a native RET (0xC3) terminator with a 2-entry RTS
 // inline cache. On hit, the block transfers directly to the cached
 // caller's chainEntry via an indirect JMP; on miss it falls back to the
@@ -5629,11 +5835,12 @@ func x86CmpReg64Mem(cb *CodeBuffer, reg, base byte, disp int32) {
 // the byte after the CALL) and JMPs to it on hit. Without the cache, RET
 // always falls through to the dispatcher and pays the Go round-trip per
 // return.
-func x86EmitRET(cb *CodeBuffer, instrCount uint32) {
+func x86EmitRET(cb *CodeBuffer, ji *X86JITInstr, instrCount uint32) {
 	// Pop return address: R11d = [memBase + ESP]; ESP += 4.
 	espHost, _ := x86GuestRegToHost(4)
 	x86MarkDirty(4)
 	amd64MOV_reg_reg32(cb, amd64R10, espHost)
+	x86EmitSpanGuard(cb, amd64R10, 4, ji.opcodePC, int(instrCount)-1)
 	emitREX_SIB(cb, false, amd64R11, amd64R10, x86AMD64RegMemBase)
 	cb.EmitBytes(0x8B, modRM(0, amd64R11, 4), sibByte(0, amd64R10, x86AMD64RegMemBase))
 	amd64ALU_reg_imm32_32bit(cb, 0, espHost, 4) // ADD ESP, 4
@@ -5863,7 +6070,7 @@ func x86CompileBlockLocked(instrs []X86JITInstr, startPC uint32, execMem *ExecMe
 	// instructions and anything after them run in the interpreter and must not
 	// shadow flags produced before the fallback boundary.
 	flagInstrs := x86FlagAnalysisCompiledPrefix(instrs)
-	flagsNeeded := x86PeepholeFlags(flagInstrs)
+	flagsNeeded := x86EFLAGSLiveness(flagInstrs)
 	cs.flagsNeeded = make([]bool, len(instrs))
 	copy(cs.flagsNeeded, flagsNeeded)
 
@@ -6058,16 +6265,21 @@ func x86CompileBlockLocked(instrs []X86JITInstr, startPC uint32, execMem *ExecMe
 			break
 		}
 
-		// Remaining stack/control instructions (CALL/RET/LEAVE/PUSH-imm/PUSHF/
-		// indirect; PUSH/POP r32 are handled natively): stop before the
-		// instruction so the dispatcher runs it through the interpreter,
-		// keeping frame and return-address semantics on the canonical path.
+		// Remaining stack/control instructions (RET imm16, LEAVE, PUSH-imm,
+		// PUSHF and indirect forms) stop before the instruction so the
+		// dispatcher runs it through the interpreter. Near CALL and RET have
+		// guarded native terminal emitters below.
 		if x86ShouldStepInInterpreter(*ji) {
 			break
 		}
 
 		// Check if this is a block terminator that can use a chain exit
 		if x86IsBlockTerminator(ji.opcode) && ji.opcode != 0x00F4 { // Not HLT
+			if byte(ji.opcode) == 0xC3 {
+				instrCount++
+				x86EmitRET(cb, ji, uint32(instrCount))
+				goto done
+			}
 			// For CALL rel32 (0xE8) and JMP rel32 (0xE9) / JMP rel8 (0xEB),
 			// compute the target PC and emit a chain exit
 			targetPC, hasTarget := x86ResolveTerminatorTarget(ji, memory, startPC)
@@ -6077,17 +6289,7 @@ func x86CompileBlockLocked(instrs []X86JITInstr, startPC uint32, execMem *ExecMe
 
 				// For CALL, we need to push the return address first
 				if byte(ji.opcode) == 0xE8 {
-					x86MarkDirty(4) // ESP modified by CALL
-					retAddr := ji.opcodePC + uint32(ji.length)
-					// ESP -= 4 (use dynamic mapping)
-					espHost, _ := x86GuestRegToHost(4)
-					amd64ALU_reg_imm32_32bit(cb, 5, espHost, 4)
-					// Write return address to [memory + ESP]
-					amd64MOV_reg_reg32(cb, amd64R8, espHost)
-					// Mask address
-					// MOV DWORD [RSI + R8], retAddr
-					emitMemOpSIB(cb, false, 0xC7, 0, x86AMD64RegMemBase, amd64R8, 0)
-					cb.Emit32(retAddr)
+					x86EmitCALLPushReturn(cb, ji, targetPC, instrCount)
 				}
 
 				info := x86EmitChainExit(cb, targetPC, uint32(instrCount))
@@ -6234,7 +6436,7 @@ func x86CompileRegionLocked(region *x86Region, execMem *ExecMem, memory []byte, 
 		dirtyMask: br.written,
 		regMap:    x86Tier2RegAlloc(allInstrs, memory, region.entryPC),
 	}
-	cs.flagsNeeded = x86PeepholeFlags(allInstrs)
+	cs.flagsNeeded = x86EFLAGSLiveness(allInstrs)
 	cs.ioBitmap = input.ioBitmap
 	cs.codeBitmap = input.codeBitmap
 	cs.memCeiling = x86ResolveMemCeilingWithInput(memory, input.memCeiling)
@@ -6298,7 +6500,7 @@ emitBlocks:
 				if !lastEmitted {
 					totalInstrCount++
 				}
-				x86EmitRET(cb, uint32(totalInstrCount))
+				x86EmitRET(cb, last, uint32(totalInstrCount))
 				terminated = true
 				break emitBlocks
 			}
@@ -6318,13 +6520,7 @@ emitBlocks:
 							totalInstrCount++
 						}
 						if byte(last.opcode) == 0xE8 {
-							x86MarkDirty(4)
-							retAddr := last.opcodePC + uint32(last.length)
-							espHost, _ := x86GuestRegToHost(4)
-							amd64ALU_reg_imm32_32bit(cb, 5, espHost, 4)
-							amd64MOV_reg_reg32(cb, amd64R8, espHost)
-							emitMemOpSIB(cb, false, 0xC7, 0, x86AMD64RegMemBase, amd64R8, 0)
-							cb.Emit32(retAddr)
+							x86EmitCALLPushReturn(cb, last, targetPC, totalInstrCount)
 						}
 						// Internal jump: emit native JMP to target block label
 						if _, isBackEdge := region.backEdges[bi]; isBackEdge {

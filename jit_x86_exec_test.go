@@ -15,6 +15,10 @@ import (
 // runX86JITProgram loads x86 machine code at startPC, sets EIP, runs the JIT
 // execution loop with a timeout, and returns the CPU for result inspection.
 func runX86JITProgram(t *testing.T, startPC uint32, code ...byte) *CPU_X86 {
+	return runX86JITProgramWithSetup(t, startPC, nil, code...)
+}
+
+func runX86JITProgramWithSetup(t *testing.T, startPC uint32, setup func(*CPU_X86), code ...byte) *CPU_X86 {
 	t.Helper()
 
 	if !x86JitAvailable {
@@ -34,6 +38,9 @@ func runX86JITProgram(t *testing.T, startPC uint32, code ...byte) *CPU_X86 {
 	// Write code to memory
 	for i, b := range code {
 		cpu.memory[startPC+uint32(i)] = b
+	}
+	if setup != nil {
+		setup(cpu)
 	}
 
 	// Run with timeout
@@ -58,6 +65,10 @@ func runX86JITProgram(t *testing.T, startPC uint32, code ...byte) *CPU_X86 {
 
 // runX86InterpreterProgram runs the same code through the interpreter.
 func runX86InterpreterProgram(t *testing.T, startPC uint32, code ...byte) *CPU_X86 {
+	return runX86InterpreterProgramWithSetup(t, startPC, nil, code...)
+}
+
+func runX86InterpreterProgramWithSetup(t *testing.T, startPC uint32, setup func(*CPU_X86), code ...byte) *CPU_X86 {
 	t.Helper()
 
 	bus := NewMachineBus()
@@ -68,6 +79,9 @@ func runX86InterpreterProgram(t *testing.T, startPC uint32, code ...byte) *CPU_X
 
 	for i, b := range code {
 		cpu.memory[startPC+uint32(i)] = b
+	}
+	if setup != nil {
+		setup(cpu)
 	}
 
 	cpu.running.Store(true)
@@ -101,6 +115,56 @@ func TestX86JIT_Exec_HLT(t *testing.T) {
 	cpu := runX86JITProgram(t, 0x1000, 0xF4)
 	if !cpu.Halted {
 		t.Error("CPU should be halted after HLT")
+	}
+}
+
+func TestX86JIT_SAHFLAHFMatchesInterpreter(t *testing.T) {
+	// MOV EAX,0x0000D500; SAHF; LAHF; HLT. AH is both the SAHF source and
+	// LAHF destination, exercising the precise low-byte Flags contract.
+	code := []byte{0xB8, 0x00, 0xD5, 0x00, 0x00, 0x9E, 0x9F, 0xF4}
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	if got, want := jit.EAX, interp.EAX; got != want {
+		t.Fatalf("EAX = 0x%08X, want 0x%08X", got, want)
+	}
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_FlagManipMatchesInterpreter(t *testing.T) {
+	// STC; CMC; STD; CLD; HLT leaves CF and DF clear without touching the
+	// remaining EFLAGS bits.
+	code := []byte{0xF9, 0xF5, 0xFD, 0xFC, 0xF4}
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	if got, want := jit.Flags, interp.Flags; got != want {
+		t.Fatalf("Flags = 0x%08X, want 0x%08X", got, want)
+	}
+}
+
+func TestX86JIT_X87DynamicHelperExitMatchesInterpreter(t *testing.T) {
+	const pc = uint32(0x1000)
+	code := []byte{0xDB, 0x1D, 0x00, 0x20, 0x00, 0x00, 0xF4} // FISTP dword [0x2000]; HLT
+	setup := func(cpu *CPU_X86) {
+		cpu.FPU.FCW = 0x0B7F // RC=10 round down, an intentional native helper exit
+		cpu.FPU.setTop(6)
+		cpu.FPU.regs[6] = 2.9
+		cpu.FPU.setTag(6, x87TagValid)
+	}
+	jit := runX86JITProgramWithSetup(t, pc, setup, code...)
+	interp := runX86InterpreterProgramWithSetup(t, pc, setup, code...)
+	for _, cpu := range []*CPU_X86{jit, interp} {
+		if got := int32(uint32(cpu.memory[0x2000]) | uint32(cpu.memory[0x2001])<<8 |
+			uint32(cpu.memory[0x2002])<<16 | uint32(cpu.memory[0x2003])<<24); got != 2 {
+			t.Fatalf("FISTP result = %d, want 2", got)
+		}
+	}
+	if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+		t.Fatalf("FSW = 0x%04X, want 0x%04X", got, want)
+	}
+	if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+		t.Fatalf("FTW = 0x%04X, want 0x%04X", got, want)
 	}
 }
 

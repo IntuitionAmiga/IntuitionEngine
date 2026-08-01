@@ -45,6 +45,12 @@ func TestX86JITContext_FieldOffsets(t *testing.T) {
 		{"RTSCache1RegMap", uintptr(unsafe.Pointer(&ctx.RTSCache1RegMap)) - base, x86CtxOffRTSCache1RegMap},
 		{"InvalAddr", uintptr(unsafe.Pointer(&ctx.InvalAddr)) - base, x86CtxOffInvalAddr},
 		{"InvalSize", uintptr(unsafe.Pointer(&ctx.InvalSize)) - base, x86CtxOffInvalSize},
+		{"ExitReason", uintptr(unsafe.Pointer(&ctx.ExitReason)) - base, x86CtxOffExitReason},
+		{"FPUHelperInstrPC", uintptr(unsafe.Pointer(&ctx.FPUHelperInstrPC)) - base, x86CtxOffFPUHelperInstrPC},
+		{"FPUHelperCS", uintptr(unsafe.Pointer(&ctx.FPUHelperCS)) - base, x86CtxOffFPUHelperCS},
+		{"FPUHelperEA", uintptr(unsafe.Pointer(&ctx.FPUHelperEA)) - base, x86CtxOffFPUHelperEA},
+		{"FPUHelperWidth", uintptr(unsafe.Pointer(&ctx.FPUHelperWidth)) - base, x86CtxOffFPUHelperWidth},
+		{"FPUHelperBytes", uintptr(unsafe.Pointer(&ctx.FPUHelperBytes)) - base, x86CtxOffFPUHelperBytes},
 	}
 
 	for _, tt := range tests {
@@ -804,18 +810,16 @@ func TestX86NeedsFallback(t *testing.T) {
 		t.Error("far CALL should need fallback")
 	}
 
-	// Near CALL needs fallback during linked-C bring-up so CALL/RET stack
-	// semantics stay on the canonical interpreter path.
+	// Near CALL and plain RET use guarded native terminal emitters.
 	nearCall := X86JITInstr{opcode: 0x00E8}
-	if !x86NeedsFallback([]X86JITInstr{nearCall}) {
-		t.Error("near CALL should need fallback")
+	if x86NeedsFallback([]X86JITInstr{nearCall}) {
+		t.Error("near CALL should compile natively")
 	}
 
 	for _, tt := range []struct {
 		name string
 		ji   X86JITInstr
 	}{
-		{"RET", X86JITInstr{opcode: 0x00C3}},
 		{"LEAVE", X86JITInstr{opcode: 0x00C9}},
 		{"PUSH imm32", X86JITInstr{opcode: 0x0068}},
 		{"PUSH imm8", X86JITInstr{opcode: 0x006A}},
@@ -839,6 +843,9 @@ func TestX86NeedsFallback(t *testing.T) {
 		if x86NeedsFallback([]X86JITInstr{tt.ji}) {
 			t.Errorf("%s should not need fallback", tt.name)
 		}
+	}
+	if x86NeedsFallback([]X86JITInstr{{opcode: 0x00C3}}) {
+		t.Error("plain RET should compile natively")
 	}
 
 	// IRET needs fallback

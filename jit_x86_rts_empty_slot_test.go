@@ -31,7 +31,7 @@ import (
 // R10,R10 bytes appear.
 func TestX86EmitRET_EmptySlotGuardPresent(t *testing.T) {
 	cb := &CodeBuffer{}
-	x86EmitRET(cb, 1)
+	x86EmitRET(cb, &X86JITInstr{opcode: 0xC3, opcodePC: 0x1000, length: 1}, 1)
 	out := cb.Bytes()
 
 	// REX.W=0, REX.R=1 (R10 as dst high bit), REX.B=1 (R10 as src high

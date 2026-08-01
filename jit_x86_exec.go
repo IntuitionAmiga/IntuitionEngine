@@ -396,6 +396,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// Execute native code block -- jitRegs is already canonical, no sync needed
 		ctx.NeedInval = 0
 		ctx.NeedIOFallback = 0
+		ctx.ExitReason = x86JITExitNone
 		ctx.InvalAddr = 0
 		ctx.InvalSize = 0
 		// In bounded mode (deterministic-step harness), force the native
@@ -470,6 +471,27 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// MMIO byte write directly or fall back to the full interpreter.
 		if ctx.NeedIOFallback != 0 {
 			ctx.NeedIOFallback = 0
+			if payload, ok := x86FPUHelperPayloadFromContext(ctx); ok {
+				ctx.ExitReason = x86JITExitNone
+				recordBlockDeopt(&cpu.deoptStats, block, DeoptUnsupported)
+				cpu.syncJITRegsToNamed()
+				var stepT0 time.Time
+				if perfAcctOn {
+					stepT0 = time.Now()
+				}
+				cpu.x86RenormalizeFPUBoundary()
+				cpu.x86RunFPUHelper(payload)
+				if perfAcctOn {
+					cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
+				}
+				diagFallbackInstr++
+				executed++
+				cpu.syncJITRegsFromNamed()
+				if cpu.Halted || !cpu.Running() {
+					break
+				}
+				continue
+			}
 			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
 			block.ioBails++ // profile counter for promotion decisions
 			if fastCount, ok := cpu.tryFastMMIOWriteFallbackJIT(); ok {

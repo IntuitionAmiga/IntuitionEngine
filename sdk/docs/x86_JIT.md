@@ -12,7 +12,7 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 
 **Compilation ownership:** each CPU passes an immutable snapshot of its I/O-page map, code-page map and visible-RAM ceiling to block or region compilation. The amd64 emitter still has legacy helper seams that consume temporary compiler state, so compilation is serialised by a compiler-only mutex. Generated code and normal JIT dispatch never take that mutex. `TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs` covers the isolation and is suitable for `go test -race` where the local toolchain supports it.
 
-**Coverage:** 50+ instruction forms including MOV, ADD/SUB/AND/OR/XOR/CMP/TEST, INC/DEC, PUSH/POP r32, LEA, Jcc, JMP rel8/rel32, SHL/SHR/SAR/ROL/ROR, NOT/NEG, MUL/IMUL/DIV/IDIV, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP, LEAVE, PUSHF, XCHG, CBW/CDQ, REP MOVSB/MOVSD/STOSB/STOSD/CMPSB/SCASB, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. RET and CALL rel32 are block terminators handled by the Go dispatch loop (not JIT-compiled in production; RET's target is stack-dependent and CALL rel32 is rejected by both the single-block and region compilers). Segment-modifying instructions, far control flow, INT/IRET, and I/O port instructions fall back to the interpreter.
+**Coverage:** 50+ instruction forms including MOV, ADD/SUB/AND/OR/XOR/CMP/TEST, INC/DEC, guarded CALL rel32 and RET, PUSH/POP r32, LEA, Jcc, JMP rel8/rel32, SHL/SHR/SAR/ROL/ROR, NOT/NEG, MUL/IMUL/DIV/IDIV, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP, SAHF/LAHF, LEAVE, PUSHF, XCHG, CBW/CDQ, REP MOVSB/MOVSD/STOSB/STOSD/CMPSB/SCASB, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. Segment-modifying instructions, far control flow, INT/IRET, and I/O port instructions fall back to the interpreter.
 
 ---
 
@@ -119,6 +119,14 @@ Offset  Type      Field               Description
 144     uint64    RTSCache1RegMap     MRU entry 1 target register map
 152     uint32    InvalAddr           exact self-modifying write address
 156     uint32    InvalSize           exact self-modifying write size
+160     uint32    ExitReason          native slow-path discriminator
+164     uint32    FPUHelperInstrPC    immutable x87 helper instruction PC
+168     uint16    FPUHelperCS          x87 helper code segment
+170     byte[4]   FPU helper decode    escape, ModR/M, prefixes and length
+174     byte      FPUHelperSegment     resolved memory segment
+176     uint32    FPUHelperEA          resolved flat effective address
+180     uint32    FPUHelperWidth       x87 memory access width
+184     byte[15]  FPUHelperBytes       immutable instruction snapshot
 ```
 
 ## Guest Register File
@@ -266,7 +274,7 @@ A no-op label within the compiled block. Mapped guest registers stay live in hos
 
 ### Chain Exit
 
-Emitted at block terminators with statically-known targets (JMP rel8/rel32). `CALL rel32` (0xE8) is **not** chained in production: both the single-block compiler and region formation stop at it (see [Fallback Rules](#fallback-rules)), so it exits to the Go dispatch loop. The compiler retains dormant native CALL-push/chain code for a future policy change.
+Emitted at block terminators with statically-known targets (JMP rel8/rel32 and CALL rel32). CALL validates its return-address stack span before changing ESP, writes the return PC, performs range-scoped SMC detection, then uses the ordinary chain exit to the callee.
 
 1. Accumulate instruction count into `ChainCount`
 2. Decrement `ChainBudget`; if exhausted -> unchained exit
@@ -281,9 +289,9 @@ Chains are only patched when `source.regMap == target.regMap`. This prevents sta
 
 Stores only dirty mapped registers back to `jitRegs[]` (selective lightweight epilogue), writes `RetPC`/`RetCount` to the context, then full callee-saved restore + RET to return to Go.
 
-### RET Address Cache (Infrastructure Only)
+### RET Address Cache
 
-A 2-entry MRU cache (`RTSCache0PC/Addr`, `RTSCache1PC/Addr`) is maintained in the X86JITContext. The Go loop populates the cache before each `callNative()` call (shift entry 0 -> 1, write new -> 0) and clears it on cache invalidation. **No native code path currently consumes this cache.** RET (0xC3) is a block terminator with a stack-dependent target; `x86ResolveTerminatorTarget` returns false for RET, so it is handled by the Go dispatch loop via interpreter fallback. The cache infrastructure exists for future native RET chaining (matching the M68K JIT's RTS inline cache pattern).
+A 2-entry MRU cache (`RTSCache0PC/Addr`, `RTSCache1PC/Addr`) is maintained in the X86JITContext. The Go loop populates the cache before each `callNative()` call (shift entry 0 -> 1, write new -> 0) and clears it on cache invalidation. Native RET validates its stack read before changing ESP, then probes this cache. A hit chains to the caller continuation; a miss returns the popped PC to the dispatcher.
 
 ---
 
@@ -343,7 +351,7 @@ Historical note: older x86 JIT notes described masking effective addresses to a 
 ### Native Span Guard (Stack and Word Accesses)
 
 Native emitters that touch a multi-byte span at a runtime-computed address
-(`PUSH r32`, `POP r32`, `MOVSX Gv,Ew` with a memory source) validate the whole
+(`PUSH r32`, `POP r32`, `CALL rel32`, `RET`, `MOVSX Gv,Ew` with a memory source) validate the whole
 access span before performing any load, store or architectural state change.
 `x86EmitSpanGuard(cb, firstReg, size, retPC, instrCount)` emits, in order:
 
@@ -424,7 +432,7 @@ TOP is read from FSW bits 13:11, updated via `x86EmitUpdateFSWTop()`. Physical r
 
 ### Interpreter Fallback
 
-All transcendentals (FSIN, FCOS, etc.), BCD, FCMOV and unsupported environment forms use the decoded x87 helper. It runs the existing interpreter operation from an immutable copy of its prefixes, escape byte, ModR/M and trailing bytes, rather than re-reading guest code after a JIT boundary. The current direct set also includes the implemented FILD/FISTP, D8 comparison, FLDCW/FNSTCW, FLD1/FLDZ and FST/FSTP mem32 forms. Address-size and segment-override forms likewise use the helper until a decoder-correct native emitter exists.
+All transcendentals (FSIN, FCOS, etc.), BCD, FCMOV and unsupported environment forms use the decoded x87 helper. The native context carries an explicit helper exit reason plus immutable instruction bytes, instruction PC, CS, escape, ModR/M, prefixes, resolved effective address, access width and effective segment. Both compile misses and dynamic native exits, including stack checks, FISTP rounding and x87 MMIO, resume from that payload rather than re-reading guest code after a JIT boundary. The current direct set also includes the implemented FILD/FISTP, D8 comparison, FLDCW/FNSTCW, FLD1/FLDZ and FST/FSTP mem32 forms. Address-size and segment-override forms likewise use the helper until a decoder-correct native emitter exists.
 
 ---
 
@@ -458,18 +466,14 @@ Both use LAHF/SAHF to preserve CMP flags across the ECX decrement.
 | Interrupts | 0xCC/0xCD/0xCE (INT), 0xCF (IRET) | Exception handling |
 | I/O ports | 0xE4-0xE7 (IN/OUT imm), 0xEC-0xEF (IN/OUT DX), 0x6C-0x6F (INS/OUTS) | Hardware I/O |
 | x87 unsupported forms | Transcendentals, BCD, FCMOV, unsupported environment forms, address-size and segment-override forms | Interpreter owns the exact state transition |
-| Flag manipulation | CLC/STC/CLD/STD/CLI/STI/CMC | Direct flag register writes (deferred) |
+| Interrupt flags | CLI/STI | Interrupt-observation ordering |
 | BCD arithmetic | DAA/DAS/AAA/AAS/AAM/AAD | Complex flag semantics |
-| Complex stack control | indirect CALL/JMP (0xFF /2../5), RET (0xC3/0xC2), LEAVE (0xC9), PUSH imm (0x68/0x6A), PUSHF/POPF (0x9C/0x9D) | Control-flow or flag semantics; RET address cache is infrastructure-only |
+| Complex stack control | indirect CALL/JMP (0xFF /2../5), RET imm16 (0xC2), LEAVE (0xC9), PUSH imm (0x68/0x6A), PUSHF/POPF (0x9C/0x9D) | Control-flow or flag semantics |
 
-`CALL rel32` (0xE8) falls back to the interpreter in production on both tiers.
-`x86ShouldStepInInterpreter` returns true for it, so the single-block compiler
-(`x86CompileBlock`) ends the block before the `CALL`, and `x86FormRegion` both
-rejects any block containing such an instruction and explicitly rejects a final
-0xE8 (returns `nil`). The compiler still contains dormant native return-address
-push and chain-exit code for `CALL rel32`; it is unreachable unless the
-region-formation policy is changed to admit it. Indirect `CALL`/`JMP` (0xFF with
-ModR/M reg field 2-5) always falls back.
+`CALL rel32` (0xE8) and plain `RET` (0xC3) compile as guarded terminal blocks.
+Regions intentionally do not cross a CALL edge, because they cannot model the
+callee return path as a linear region. Indirect `CALL`/`JMP` (0xFF with ModR/M
+reg field 2-5) always falls back.
 
 `PUSH r32` and `POP r32` (0x50-0x5F) are **not** in this table: they compile
 natively behind the span guard (see [Native Span Guard](#native-span-guard-stack-and-word-accesses)),

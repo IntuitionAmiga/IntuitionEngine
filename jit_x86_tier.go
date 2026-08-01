@@ -2,9 +2,7 @@
 //
 // Holds x86TierController, the package-level singleton bound to x86's
 // reference RegPressureProfile. Build tag matches jit_x86_exec.go (the
-// sole consumer) so the symbol is defined on every platform that
-// compiles the exec loop — amd64 (linux/windows/darwin) plus arm64
-// linux/windows/darwin.
+// sole consumer) so the symbol is defined on the native amd64 x86 JIT hosts.
 
 //go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
 

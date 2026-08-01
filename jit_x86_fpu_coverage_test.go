@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bytes"
 	"math"
 	"testing"
 )
@@ -127,6 +128,45 @@ func TestX86JIT_FPUHelperUsesDecodedBytes(t *testing.T) {
 	}
 	if r.cpu.jitDecodedFPU != nil {
 		t.Fatal("decoded helper payload was not cleared")
+	}
+}
+
+func TestX86JIT_FPUDynamicExitPublishesDecodedPayload(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.FPU.Reset()
+	r.cpu.FPU.FCW = 0x0B7F // RC=10: round down, handled by the helper
+	r.cpu.FPU.setTop(6)
+	r.cpu.FPU.regs[6] = 2.9
+	r.cpu.FPU.setTag(6, x87TagValid)
+
+	const pc = uint32(0x1000)
+	// DB 1D <addr>: FISTP dword [addr]. The native lowering reaches its
+	// FCW-dependent exit after publishing the resolved EA and decoded bytes.
+	r.compileAndRun(t, pc, 0xDB, 0x1D, 0x00, 0x50, 0x00, 0x00)
+	payload, ok := x86FPUHelperPayloadFromContext(r.ctx)
+	if !ok {
+		t.Fatal("FISTP dynamic exit did not publish an x87 helper payload")
+	}
+	if got, want := payload.InstrPC, pc; got != want {
+		t.Fatalf("payload PC = 0x%X, want 0x%X", got, want)
+	}
+	if got, want := payload.EA, uint32(0x5000); got != want {
+		t.Fatalf("payload EA = 0x%X, want 0x%X", got, want)
+	}
+	if got, want := payload.Width, uint32(4); got != want {
+		t.Fatalf("payload width = %d, want %d", got, want)
+	}
+	if got, want := payload.Bytes[:6], []byte{0xDB, 0x1D, 0x00, 0x50, 0x00, 0x00}; !bytes.Equal(got, want) {
+		t.Fatalf("payload bytes = % X, want % X", got, want)
+	}
+
+	// A code write after the native exit must not change the helper operation.
+	r.cpu.memory[pc] = 0xD9
+	r.cpu.memory[pc+1] = 0xD0 // FNOP in mutable guest backing
+	r.cpu.x86RunFPUHelper(payload)
+	if got := int32(uint32(r.cpu.memory[0x5000]) | uint32(r.cpu.memory[0x5001])<<8 |
+		uint32(r.cpu.memory[0x5002])<<16 | uint32(r.cpu.memory[0x5003])<<24); got != 2 {
+		t.Fatalf("helper FISTP result = %d, want 2", got)
 	}
 }
 

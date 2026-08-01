@@ -114,7 +114,7 @@ func TestX86EmitRET_FlagMaskSequence(t *testing.T) {
 	defer func() { x86CurrentCS = prevCS }()
 
 	cb := &CodeBuffer{}
-	x86EmitRET(cb, 1)
+	x86EmitRET(cb, &X86JITInstr{opcode: 0xC3, opcodePC: 0x1000, length: 1}, 1)
 	emitted := cb.Bytes()
 
 	// amd64ALU_reg_imm32_32bit emits the standard 0x81-form for imm32

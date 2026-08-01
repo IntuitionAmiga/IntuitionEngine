@@ -840,14 +840,17 @@ and experimental multi-block region formation.
 
 Memory accesses at runtime-computed addresses go through a page-safety and I/O
 bitmap check on the fast path. Native stack and word emitters (`PUSH`/`POP` r32,
-memory-source `MOVSX Gv,Ew`) validate their whole access span against the
+near `CALL`/plain `RET`, memory-source `MOVSX Gv,Ew`) validate their whole access span against the
 guest-visible RAM ceiling (`ProfileMemoryCap()`, not the backing slice length)
 before any load, store or `ESP` change, and bail to the interpreter on
 cross-page, out-of-bounds or I/O spans. Instructions with far control-flow,
 interrupt, port-I/O or complex-flag semantics stay on the interpreter.
 Unsupported x87 forms, including segmented and address-size memory forms, use
 a CPU-local decoded helper snapshot so the canonical interpreter handler does
-not re-read mutable guest instruction bytes.
+not re-read mutable guest instruction bytes. Dynamic amd64 x87 exits use the
+same context ABI, which carries the instruction bytes, PC, CS, decoded fields,
+resolved effective address, access width and segment before control returns to
+the interpreter.
 
 Runtime switches are `X86_JIT_CHAINS` (default on), `X86_JIT_REGIONS` (default
 off), `X86_JIT_RTS` (default off), `X86_JIT_STATS` (profiling, default off), the
