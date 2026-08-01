@@ -1094,6 +1094,58 @@ func TestX86JIT_MOV_moffs32_EAX(t *testing.T) {
 	}
 }
 
+func TestX86JIT_XLATMMIOBailsBeforeEAXWrite(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.EBX = 0xF000 // translateIO page in the rig's MMIO bitmap
+	r.cpu.EAX = 0xAABBCC00
+
+	r.compileAndRun(t, 0x1000, 0xD7) // XLAT
+	if r.cpu.EAX != 0xAABBCC00 || r.cpu.EIP != 0x1000 {
+		t.Fatalf("XLAT MMIO bail corrupted state: EAX=%#x EIP=%#x", r.cpu.EAX, r.cpu.EIP)
+	}
+}
+
+// Moffs forms use an absolute guest address, not a ModR/M EA. They must still
+// take the guarded native-memory path, otherwise a bad immediate can directly
+// read or write host backing memory rather than returning to the interpreter.
+func TestX86JIT_MoffsMemorySafetyBails(t *testing.T) {
+	t.Run("dword_cross_page_load", func(t *testing.T) {
+		r := newX86JITTestRig(t)
+		r.cpu.EAX = 0x11223344
+		r.compileAndRun(t, 0x1000, 0xA1, 0xFF, 0xEF, 0x00, 0x00) // MOV EAX,[0xEFFF]
+		if r.cpu.EAX != 0x11223344 || r.cpu.EIP != 0x1000 {
+			t.Fatalf("cross-page A1 did not bail cleanly: EAX=%#x EIP=%#x", r.cpu.EAX, r.cpu.EIP)
+		}
+	})
+
+	t.Run("dword_cross_page_store", func(t *testing.T) {
+		r := newX86JITTestRig(t)
+		r.cpu.EAX = 0x55667788
+		r.cpu.memory[0xEFFF] = 0xA5
+		r.compileAndRun(t, 0x1000, 0xA3, 0xFF, 0xEF, 0x00, 0x00) // MOV [0xEFFF],EAX
+		if r.cpu.memory[0xEFFF] != 0xA5 || r.cpu.EIP != 0x1000 {
+			t.Fatalf("cross-page A3 did not bail before the store: mem=%#x EIP=%#x", r.cpu.memory[0xEFFF], r.cpu.EIP)
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		code []byte
+	}{
+		{"byte_load_mmio", []byte{0xA0, 0x00, 0xF0, 0x00, 0x00}},
+		{"byte_store_mmio", []byte{0xA2, 0x00, 0xF0, 0x00, 0x00}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newX86JITTestRig(t)
+			r.cpu.EAX = 0xAABBCC7F
+			r.compileAndRun(t, 0x1000, tc.code...)
+			if r.cpu.EAX != 0xAABBCC7F || r.cpu.EIP != 0x1000 {
+				t.Fatalf("moffs byte MMIO access did not bail cleanly: EAX=%#x EIP=%#x", r.cpu.EAX, r.cpu.EIP)
+			}
+		})
+	}
+}
+
 func TestX86JIT_MOV_moffs8_AL_Prefixed(t *testing.T) {
 	r := newX86JITTestRig(t)
 	addr := uint32(0x3000)

@@ -12,7 +12,7 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 
 **Compilation ownership:** each CPU passes an immutable snapshot of its I/O-page map, code-page map and visible-RAM ceiling to block or region compilation. The amd64 emitter still has legacy helper seams that consume temporary compiler state, so compilation is serialised by a compiler-only mutex. Generated code and normal JIT dispatch never take that mutex. `TestX86JIT_ConcurrentCompilationUsesIndependentCPUInputs` covers the isolation and is suitable for `go test -race` where the local toolchain supports it.
 
-**Coverage:** 50+ instruction forms including byte and dword MOV, ADD/SUB/AND/OR/XOR/CMP/TEST, byte and dword INC/DEC, guarded Group 3 TEST/NOT/NEG/MUL/IMUL/DIV forms, immediate IMUL, guarded CALL rel32 and RET, PUSH/POP r32, PUSHA/POPA, LEA, XCHG, Jcc, JMP rel8/rel32, register dword and guarded memory count-one SHL/SHR/SAR/ROL/ROR forms, immediate SHLD/SHRD memory destinations, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP/LOOPE/LOOPNE, SAHF/LAHF, LEAVE, PUSHF, CBW/CDQ, REP MOVSB/MOVSD/STOSB/STOSD/CMPSB/SCASB, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. Segment-modifying instructions, far control flow, INT/IRET, I/O port instructions, signed division, and byte shifts with counts other than one fall back to the interpreter.
+**Coverage:** 50+ instruction forms including byte and dword MOV, ADD/SUB/AND/OR/XOR/CMP/TEST, byte and dword INC/DEC, guarded Group 3 TEST/NOT/NEG/MUL/IMUL/DIV forms, immediate IMUL, guarded CALL rel32 and RET, PUSH/POP r32, PUSHA/POPA, LEA, XCHG, Jcc, JECXZ, JMP rel8/rel32, XLAT, SALC, WAIT, AAM/AAD, register dword and guarded memory count-one SHL/SHR/SAR/ROL/ROR forms, immediate SHLD/SHRD memory destinations, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP/LOOPE/LOOPNE, SAHF/LAHF, LEAVE, CBW/CDQ, REP MOVSB/MOVSD/STOSB/STOSD/CMPSB/SCASB, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. Segment-modifying instructions, far control flow, INT/IRET, I/O port instructions, PUSHF/POPF, signed division, and byte shifts with counts other than one fall back to the interpreter.
 
 ---
 
@@ -467,7 +467,7 @@ Both use LAHF/SAHF to preserve CMP flags across the ECX decrement.
 | I/O ports | 0xE4-0xE7 (IN/OUT imm), 0xEC-0xEF (IN/OUT DX), 0x6C-0x6F (INS/OUTS) | Hardware I/O |
 | x87 unsupported forms | Transcendentals, BCD, FCMOV, unsupported environment forms, address-size and segment-override forms | Interpreter owns the exact state transition |
 | Interrupt flags | CLI/STI | Interrupt-observation ordering |
-| BCD arithmetic | DAA/DAS/AAA/AAS/AAM/AAD | Complex flag semantics |
+| BCD arithmetic | DAA/DAS/AAA/AAS | Complex flag semantics |
 | Complex stack control | indirect CALL/JMP (0xFF /2../5), PUSHF/POPF (0x9C/0x9D) | Control-flow or flag semantics |
 
 `CALL rel32` (0xE8), near `RET` (0xC3/0xC2), and immediate PUSH (0x68/0x6A)
