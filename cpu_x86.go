@@ -112,6 +112,12 @@ type CPU_X86 struct {
 	x86JitIOBitmap []byte // I/O page bitmap (256-byte granularity)
 	x86JitCodeBM   []byte // code page bitmap for self-mod detection
 
+	// jitDecodedFPU is an immutable instruction snapshot supplied by the x86
+	// JIT helper exit.  It is deliberately consulted by fetchRead only while
+	// the helper is executing: an x87 helper must not decode bytes that guest
+	// self-modifying code may have changed after the block was compiled.
+	jitDecodedFPU *x86FPUHelperPayload
+
 	// Perf accounting for Metric 2 (real-workload acceptance gate).
 	// Counters increment only when IE_PERF_ACCT=1 at process start;
 	// otherwise the AddJit/AddInterp helpers fast-fall to no-op.
@@ -799,6 +805,12 @@ func (c *CPU_X86) fetch32() uint32 {
 }
 
 func (c *CPU_X86) fetchRead(addr uint32) byte {
+	if p := c.jitDecodedFPU; p != nil && addr >= p.InstrPC {
+		off := addr - p.InstrPC
+		if off < uint32(p.Length) {
+			return p.Bytes[off]
+		}
+	}
 	if b, ok := c.bus.(interface {
 		fetchRead(uint32) byte
 	}); ok {

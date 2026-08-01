@@ -116,6 +116,53 @@ type X86JITInstr struct {
 	grpOp    byte   // group sub-opcode from ModR/M reg field (for Grp1-5)
 }
 
+// x86FPUHelperPayload is the immutable decoded-operation ABI used when an
+// x87 form has no direct SSE lowering.  Bytes includes prefixes through the
+// final displacement or immediate, so the interpreter handler consumes the
+// exact instruction the JIT scanner admitted rather than re-reading mutable
+// guest code.  The interpreter remains the semantic owner of transcendentals,
+// environment and packed forms.
+type x86FPUHelperPayload struct {
+	InstrPC  uint32
+	CS       uint16
+	Escape   byte
+	ModRM    byte
+	Prefixes byte
+	Length   uint8
+	Bytes    [15]byte
+}
+
+func x86FPUHelperPayloadFor(ji X86JITInstr, memory []byte, cs uint16) (x86FPUHelperPayload, bool) {
+	if ji.opcode < 0xD8 || ji.opcode > 0xDF || ji.length == 0 || ji.length > 15 ||
+		ji.opcodePC+uint32(ji.length) > uint32(len(memory)) {
+		return x86FPUHelperPayload{}, false
+	}
+	p := x86FPUHelperPayload{
+		InstrPC:  ji.opcodePC,
+		CS:       cs,
+		Escape:   byte(ji.opcode),
+		ModRM:    ji.modrm,
+		Prefixes: ji.prefixes,
+		Length:   uint8(ji.length),
+	}
+	copy(p.Bytes[:], memory[ji.opcodePC:ji.opcodePC+uint32(ji.length)])
+	return p, true
+}
+
+// x86RunFPUHelper resumes one decoded x87 operation through the canonical
+// interpreter implementation.  The temporary fetch overlay is CPU-local and
+// is cleared before return, including on future early-return paths.
+func (cpu *CPU_X86) x86RunFPUHelper(p x86FPUHelperPayload) int {
+	if p.Escape < 0xD8 || p.Escape > 0xDF || p.Length == 0 {
+		return 0
+	}
+	cpu.EIP = p.InstrPC
+	cpu.CS = p.CS
+	cpu.jitDecodedFPU = &p
+	defer func() { cpu.jitDecodedFPU = nil }()
+	return cpu.Step()
+}
+
 // Prefix flag bits packed into X86JITInstr.prefixes
 const (
 	x86PrefSeg      = 0x01 // segment override present
@@ -761,7 +808,11 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 	// Phase-8 surfaces as a "no instructions compiled" panic. Route to
 	// single-instruction Step bail instead so the fast-path stays correct
 	// without growing per-segment native-emit support.
-	if instrs[0].prefixes&x86PrefSeg != 0 {
+	// Segmented x87 memory forms have a canonical decoded helper path.  Keep
+	// them out of the flat native emitter, but let compilation reach its
+	// zero-prefix helper exit so the captured bytes retain the segment prefix.
+	if instrs[0].prefixes&x86PrefSeg != 0 &&
+		(instrs[0].opcode < 0xD8 || instrs[0].opcode > 0xDF) {
 		return true
 	}
 

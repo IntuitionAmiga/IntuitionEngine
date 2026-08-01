@@ -62,6 +62,7 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
               [Update profile counters (chainHits, unchainedExits)]
               [NeedInval? -> invalidate cache + clear bitmaps + clear RTS cache]
               [NeedIOFallback? -> sync + cpu.Step() + sync]
+              [unsupported x87? -> decoded x87 helper + sync]
                         |
               [Sync jitRegs -> named regs (once at exit)]
 ```
@@ -412,7 +413,7 @@ The x87 FPU is JIT-compiled using SSE2 scalar double instructions on the x86-64 
 | D9 E1 | FABS | ANDPD with abs mask |
 | D9 /0 mem | FLD mem32 | MOVSS + CVTSS2SD + push |
 | DD /0 mem | FLD mem64 | MOVSD from memory + push |
-| DD D0-D7 | FST ST(i) | Copy ST(0) to ST(i) |
+| DD C0-C7 | FFREE ST(i) | Mark the physical x87 slot empty |
 | DD D8-DF | FSTP ST(i) | Copy + pop (increment TOP) |
 | DD /2 mem | FST mem64 | MOVSD to memory |
 | DD /3 mem | FSTP mem64 | MOVSD + pop |
@@ -423,7 +424,7 @@ TOP is read from FSW bits 13:11, updated via `x86EmitUpdateFSWTop()`. Physical r
 
 ### Interpreter Fallback
 
-All transcendentals (FSIN, FCOS, etc.), BCD, FCMOV and unsupported environment forms fall back to the interpreter. The current direct set also includes the implemented FILD/FISTP, D8 comparison, FLDCW/FNSTCW, FLD1/FLDZ and FST/FSTP mem32 forms. Any x87 address-size or segment-override form stays on the interpreter path until it has a decoder-correct native emitter.
+All transcendentals (FSIN, FCOS, etc.), BCD, FCMOV and unsupported environment forms use the decoded x87 helper. It runs the existing interpreter operation from an immutable copy of its prefixes, escape byte, ModR/M and trailing bytes, rather than re-reading guest code after a JIT boundary. The current direct set also includes the implemented FILD/FISTP, D8 comparison, FLDCW/FNSTCW, FLD1/FLDZ and FST/FSTP mem32 forms. Address-size and segment-override forms likewise use the helper until a decoder-correct native emitter exists.
 
 ---
 

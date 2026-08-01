@@ -95,6 +95,41 @@ func TestX86JIT_FPU_DDReg2IsNotNativeFST(t *testing.T) {
 	}
 }
 
+func TestX86JIT_FPUHelperUsesDecodedBytes(t *testing.T) {
+	r := newX86JITTestRig(t)
+	const pc = uint32(0x1000)
+	// D9 F0 is F2XM1, intentionally owned by the canonical helper rather
+	// than SSE lowering.  Replace the guest bytes with FNOP after decoding;
+	// a helper that calls Step against mutable guest code would silently no-op.
+	r.cpu.memory[pc] = 0xD9
+	r.cpu.memory[pc+1] = 0xF0
+	instrs := x86ScanBlock(r.cpu.memory, pc)
+	if len(instrs) == 0 {
+		t.Fatal("x86ScanBlock returned no instruction")
+	}
+	payload, ok := x86FPUHelperPayloadFor(instrs[0], r.cpu.memory, r.cpu.CS)
+	if !ok {
+		t.Fatal("x86FPUHelperPayloadFor rejected F2XM1")
+	}
+	r.cpu.memory[pc+1] = 0xD0 // FNOP in mutable guest backing
+	r.cpu.FPU.Reset()
+	r.cpu.FPU.regs[0] = 1
+	r.cpu.FPU.setTag(0, x87TagValid)
+	r.cpu.EIP = pc
+
+	r.cpu.x86RunFPUHelper(payload)
+
+	if got, want := r.cpu.FPU.regs[0], 1.0; got != want {
+		t.Fatalf("F2XM1 result = %v, want %v", got, want)
+	}
+	if got, want := r.cpu.EIP, pc+2; got != want {
+		t.Fatalf("EIP = 0x%X, want 0x%X", got, want)
+	}
+	if r.cpu.jitDecodedFPU != nil {
+		t.Fatal("decoded helper payload was not cleared")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // D8 memory-operand arithmetic (FADD/FMUL/FSUB/FSUBR/FDIV/FDIVR m32)
 // ---------------------------------------------------------------------------

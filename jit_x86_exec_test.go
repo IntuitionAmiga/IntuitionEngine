@@ -332,6 +332,16 @@ func TestX86JIT_X87ExtendedRegisterFormsAreAdmitted(t *testing.T) {
 	}
 }
 
+func TestX86JIT_X87HelperFormsMatchInterpreter(t *testing.T) {
+	// F2XM1 is deliberately not an SSE operation.  Its compiled-prefix miss
+	// must take the decoded helper path and retain the interpreter's status and
+	// provenance rather than becoming an untracked generic fallback.
+	code := []byte{0xD9, 0xE8, 0xD9, 0xF0, 0xF4} // FLD1; F2XM1; HLT
+	jit := runX86JITProgram(t, 0x1000, code...)
+	interp := runX86InterpreterProgram(t, 0x1000, code...)
+	assertX86JITFPUStateEqual(t, jit.FPU, interp.FPU)
+}
+
 func assertX86JITFPUStateEqual(t *testing.T, got, want *FPU_X87) {
 	t.Helper()
 	if got.FCW != want.FCW || got.FSW != want.FSW || got.FTW != want.FTW ||

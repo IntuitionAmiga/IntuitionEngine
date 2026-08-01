@@ -262,7 +262,11 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 						stepT0 = time.Now()
 					}
 					cpu.x86RenormalizeFPUBoundary()
-					cpu.Step()
+					if payload, ok := x86FPUHelperPayloadFor(instrs[0], cpu.memory, cpu.CS); ok {
+						cpu.x86RunFPUHelper(payload)
+					} else {
+						cpu.Step()
+					}
 					if perfAcctOn {
 						cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
 					}

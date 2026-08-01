@@ -843,9 +843,11 @@ bitmap check on the fast path. Native stack and word emitters (`PUSH`/`POP` r32,
 memory-source `MOVSX Gv,Ew`) validate their whole access span against the
 guest-visible RAM ceiling (`ProfileMemoryCap()`, not the backing slice length)
 before any load, store or `ESP` change, and bail to the interpreter on
-cross-page, out-of-bounds or I/O spans. Instructions with segment, far
-control-flow, interrupt, port-I/O or complex-flag semantics stay on the
-interpreter.
+cross-page, out-of-bounds or I/O spans. Instructions with far control-flow,
+interrupt, port-I/O or complex-flag semantics stay on the interpreter.
+Unsupported x87 forms, including segmented and address-size memory forms, use
+a CPU-local decoded helper snapshot so the canonical interpreter handler does
+not re-read mutable guest instruction bytes.
 
 Runtime switches are `X86_JIT_CHAINS` (default on), `X86_JIT_REGIONS` (default
 off), `X86_JIT_RTS` (default off), `X86_JIT_STATS` (profiling, default off), the
