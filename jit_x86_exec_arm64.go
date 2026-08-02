@@ -9,11 +9,34 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
 	"unsafe"
 )
 
 const x86JitExecMemSize = 16 * 1024 * 1024
+
+// x86ARM64PatchBranchAt patches one ARM64 B instruction at patchAddr. Unlike
+// PatchRel32At, whose address names an amd64 displacement field, patchAddr is
+// the address of the complete ARM64 instruction. The writable alias must be
+// cleaned and the executable alias invalidated before a native chain can use
+// the new target.
+func x86ARM64PatchBranchAt(patchAddr, targetAddr uintptr) bool {
+	if patchAddr&3 != 0 || targetAddr&3 != 0 {
+		return false
+	}
+	delta := int64(targetAddr) - int64(patchAddr)
+	if delta < -(1<<27) || delta >= 1<<27 {
+		return false // imm26 signed words: +/- 128 MiB
+	}
+	p, writableAddr, ok := lookupWritableBytes(patchAddr, 4)
+	if !ok {
+		return false
+	}
+	binary.LittleEndian.PutUint32(p, arm64B(int32(delta)))
+	flushICacheDual(writableAddr, patchAddr, 4)
+	return true
+}
 
 func (cpu *CPU_X86) x86GetJITExecMem() *ExecMem {
 	if cpu.x86JitExecMem == nil {
@@ -165,11 +188,24 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		ctx.NeedIOFallback = 0
 		ctx.NeedInval = 0
 		ctx.ExitReason = x86JITExitNone
+		// Initialise the native-chain ABI on every Go entry.  Current blocks
+		// still return normally; forthcoming chain exits consume this budget and
+		// fold ChainCount into their eventual RetCount exactly as amd64 does.
+		ctx.ChainCount = 0
+		if bounded {
+			ctx.ChainBudget = 1
+		} else {
+			ctx.ChainBudget = 65536
+		}
 		preESI, preEDI, preECX := cpu.jitRegs[6], cpu.jitRegs[7], cpu.jitRegs[1]
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
 		cpu.EIP = ctx.RetPC
 		completed := int(ctx.RetCount)
-		if completed == 0 {
+		// A cold guard or canonical FPU helper can exit before the first native
+		// instruction retires.  Its interpreter replay below owns that one
+		// instruction's timing; substituting block.instrCount here would charge
+		// it once as native work and once again through Step.
+		if completed == 0 && ctx.NeedIOFallback == 0 {
 			completed = block.instrCount
 		}
 		if completed > len(block.x86CyclePrefix) {

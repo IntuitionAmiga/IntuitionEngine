@@ -432,6 +432,324 @@ func x86ARM64EmitGrp2CL8ShiftReg(cb *CodeBuffer, ji X86JITInstr) bool {
 	return true
 }
 
+// x86ARM64EmitGrp2CL16ShiftReg lowers operand-size-prefixed D3 register
+// SHL/SHR/SAR forms.  Keep the count as an emitted one-bit loop: after the
+// i386 five-bit mask, counts 16..31 must not acquire AArch64's modulo-32
+// variable-shift behaviour.
+func x86ARM64EmitGrp2CL16ShiftReg(cb *CodeBuffer, ji X86JITInstr) bool {
+	if ji.opcode != 0xD3 || !ji.hasModRM || ji.modrm>>6 != 3 || ji.prefixes != x86PrefOpSize {
+		return false
+	}
+	op, rm := ji.grpOp, ji.modrm&7
+	if op != 4 && op != 5 && op != 6 && op != 7 {
+		return false
+	}
+	x86ARM64EmitLoadReg(cb, 18, 1) // ECX
+	x86ARM64EmitMovImm32(cb, 12, 31)
+	cb.Emit32(arm64AND_W(18, 18, 12))
+	zero := cb.Len()
+	cb.Emit32(arm64CBZ(18, 0))
+	cb.Emit32(arm64ORR_W(17, 18, 31)) // original masked count
+	x86ARM64EmitPartialRegLoad(cb, 16, rm, 16)
+	cb.Emit32(arm64ORR_W(21, 16, 31)) // original word for count-one OF
+	cb.Emit32(arm64LDR_imm(14, x86ARM64RegCtx, x86CtxOffFlagsPtr/8))
+	cb.Emit32(arm64LDR_W_imm(20, 14, 0))
+	x86ARM64EmitMovImm32(cb, 12, x86FlagOF)
+	cb.Emit32(arm64AND_W(20, 20, 12))
+
+	loop := cb.Len()
+	switch op {
+	case 4, 6: // SHL/SAL
+		cb.Emit32(arm64LSR_W_imm(19, 16, 15))
+		cb.Emit32(arm64LSL_W_imm(16, 16, 1))
+	case 5: // SHR
+		x86ARM64EmitMovImm32(cb, 12, 1)
+		cb.Emit32(arm64AND_W(19, 16, 12))
+		cb.Emit32(arm64LSR_W_imm(16, 16, 1))
+	case 7: // SAR
+		x86ARM64EmitMovImm32(cb, 12, 1)
+		cb.Emit32(arm64AND_W(19, 16, 12))
+		cb.Emit32(arm64SXTH(16, 16))
+		cb.Emit32(arm64ASR_W_imm(16, 16, 1))
+	}
+	x86ARM64EmitTruncate(cb, 16, 16)
+	cb.Emit32(arm64SUB_W_imm(18, 18, 1))
+	back := cb.Len()
+	cb.Emit32(arm64CBNZ(18, 0))
+	cb.PatchUint32(back, arm64CBNZ(18, int32(loop-back)))
+	// The interpreter defines word SHL/SHR with a count at or above the
+	// operand width as zero with CF clear.  SAR instead retains the sign-fill
+	// carry produced by the loop.
+	if op != 7 {
+		x86ARM64EmitMovImm32(cb, 12, 16)
+		cb.Emit32(arm64CMP_W(17, 12))
+		keepCarry := cb.Len()
+		cb.Emit32(arm64Bcond(arm64CondLO, 0))
+		x86ARM64EmitMovImm32(cb, 19, 0)
+		carryDone := cb.Len()
+		cb.PatchUint32(keepCarry, arm64Bcond(arm64CondLO, int32(carryDone-keepCarry)))
+	}
+
+	x86ARM64EmitLoadReg(cb, 13, rm)
+	x86ARM64EmitWordInsert(cb, 13, 16)
+	x86ARM64EmitStoreReg(cb, rm, 13)
+	x86ARM64EmitLogicFlags(cb, 16, 16)
+	cb.Emit32(arm64LDR_W_imm(10, 14, 0))
+	cb.Emit32(arm64ORR_W(10, 10, 19))
+	cb.Emit32(arm64STR_W_imm(10, 14, 0))
+	x86ARM64EmitMovImm32(cb, 12, 1)
+	cb.Emit32(arm64CMP_W(17, 12))
+	notOne := cb.Len()
+	cb.Emit32(arm64Bcond(arm64CondNE, 0))
+	if op == 4 || op == 6 {
+		cb.Emit32(arm64LSR_W_imm(11, 16, 15))
+		cb.Emit32(arm64LSR_W_imm(12, 21, 15))
+		cb.Emit32(arm64EOR_W(11, 11, 12))
+	} else if op == 5 {
+		cb.Emit32(arm64LSR_W_imm(11, 21, 15))
+	} else { // SAR clears OF for count one.
+		x86ARM64EmitMovImm32(cb, 11, 0)
+	}
+	noOF := cb.Len()
+	cb.Emit32(arm64CBZ(11, 0))
+	x86ARM64EmitFlagBit(cb, x86FlagOF, true, false)
+	noOFPC := cb.Len()
+	cb.PatchUint32(noOF, arm64CBZ(11, int32(noOFPC-noOF)))
+	afterOF := cb.Len()
+	cb.Emit32(arm64B(0))
+	oldOF := cb.Len()
+	cb.Emit32(arm64LDR_W_imm(10, 14, 0))
+	cb.Emit32(arm64ORR_W(10, 10, 20))
+	cb.Emit32(arm64STR_W_imm(10, 14, 0))
+	end := cb.Len()
+	cb.PatchUint32(notOne, arm64Bcond(arm64CondNE, int32(oldOF-notOne)))
+	cb.PatchUint32(afterOF, arm64B(int32(end-afterOF)))
+	cb.PatchUint32(zero, arm64CBZ(18, int32(end-zero)))
+	return true
+}
+
+// x86ARM64EmitGrp2CLCarryRotateReg lowers register RCL/RCR forms.  The
+// interpreter defines byte and word counts modulo nine and seventeen after
+// the normal five-bit mask, while dword counts retain the masked value.  An
+// emitted one-bit loop is compact, exact and avoids coupling guest CF to
+// AArch64 NZCV.
+func x86ARM64EmitGrp2CLCarryRotateReg(cb *CodeBuffer, ji X86JITInstr) bool {
+	if !ji.hasModRM || ji.modrm>>6 != 3 || (ji.grpOp != 2 && ji.grpOp != 3) {
+		return false
+	}
+	var width uint32
+	var guest byte
+	switch ji.opcode {
+	case 0xD2:
+		if ji.prefixes != 0 {
+			return false
+		}
+		width, guest = 8, ji.modrm&7 // retain AH/CH/DH/BH selector
+	case 0xD3:
+		if ji.prefixes == x86PrefOpSize {
+			width = 16
+		} else if ji.prefixes == 0 {
+			width = 32
+		} else {
+			return false
+		}
+		guest = ji.modrm & 7
+	default:
+		return false
+	}
+
+	x86ARM64EmitLoadReg(cb, 18, 1) // ECX
+	x86ARM64EmitMovImm32(cb, 12, 31)
+	cb.Emit32(arm64AND_W(18, 18, 12))
+	if width != 32 {
+		modulus := width + 1
+		reduce := cb.Len()
+		x86ARM64EmitMovImm32(cb, 12, modulus)
+		cb.Emit32(arm64CMP_W(18, 12))
+		doneReduce := cb.Len()
+		cb.Emit32(arm64Bcond(arm64CondLO, 0))
+		cb.Emit32(arm64SUB_W(18, 18, 12))
+		back := cb.Len()
+		cb.Emit32(arm64B(0))
+		endReduce := cb.Len()
+		cb.PatchUint32(doneReduce, arm64Bcond(arm64CondLO, int32(endReduce-doneReduce)))
+		cb.PatchUint32(back, arm64B(int32(reduce-back)))
+	}
+	zero := cb.Len()
+	cb.Emit32(arm64CBZ(18, 0))
+	cb.Emit32(arm64ORR_W(17, 18, 31)) // effective count for OF
+	x86ARM64EmitPartialRegLoad(cb, 16, guest, width)
+	cb.Emit32(arm64LDR_imm(14, x86ARM64RegCtx, x86CtxOffFlagsPtr/8))
+	cb.Emit32(arm64LDR_W_imm(20, 14, 0))
+	x86ARM64EmitMovImm32(cb, 12, x86FlagCF)
+	cb.Emit32(arm64AND_W(19, 20, 12)) // carry-in as bit zero
+
+	loop := cb.Len()
+	if ji.grpOp == 2 { // RCL
+		cb.Emit32(arm64LSR_W_imm(13, 16, width-1))
+		cb.Emit32(arm64LSL_W_imm(16, 16, 1))
+		cb.Emit32(arm64ORR_W(16, 16, 19))
+	} else { // RCR
+		x86ARM64EmitMovImm32(cb, 12, 1)
+		cb.Emit32(arm64AND_W(13, 16, 12))
+		cb.Emit32(arm64LSR_W_imm(16, 16, 1))
+		cb.Emit32(arm64LSL_W_imm(12, 19, width-1))
+		cb.Emit32(arm64ORR_W(16, 16, 12))
+	}
+	x86ARM64EmitTruncate(cb, 16, width)
+	cb.Emit32(arm64ORR_W(19, 13, 31))
+	cb.Emit32(arm64SUB_W_imm(18, 18, 1))
+	back := cb.Len()
+	cb.Emit32(arm64CBNZ(18, 0))
+	cb.PatchUint32(back, arm64CBNZ(18, int32(loop-back)))
+
+	if width == 8 {
+		x86ARM64EmitLoadReg(cb, 13, guest&3)
+		x86ARM64EmitByteInsert(cb, 13, 16, ji.modrm&7 >= 4)
+		x86ARM64EmitStoreReg(cb, guest&3, 13)
+	} else if width == 16 {
+		x86ARM64EmitLoadReg(cb, 13, guest)
+		x86ARM64EmitWordInsert(cb, 13, 16)
+		x86ARM64EmitStoreReg(cb, guest, 13)
+	} else {
+		x86ARM64EmitStoreReg(cb, guest, 16)
+	}
+
+	// Rotates preserve every flag except CF and (only when count is one) OF.
+	x86ARM64EmitMovImm32(cb, 10, ^uint32(x86FlagCF|x86FlagOF))
+	cb.Emit32(arm64AND_W(10, 20, 10))
+	x86ARM64EmitMovImm32(cb, 12, 1)
+	cb.Emit32(arm64CMP_W(17, 12))
+	notOne := cb.Len()
+	cb.Emit32(arm64Bcond(arm64CondNE, 0))
+	if ji.grpOp == 2 {
+		cb.Emit32(arm64LSR_W_imm(21, 16, width-1))
+		cb.Emit32(arm64EOR_W(21, 21, 19))
+	} else {
+		cb.Emit32(arm64LSR_W_imm(21, 16, width-1))
+		cb.Emit32(arm64LSR_W_imm(12, 16, width-2))
+		x86ARM64EmitMovImm32(cb, 13, 1)
+		cb.Emit32(arm64AND_W(12, 12, 13))
+		cb.Emit32(arm64EOR_W(21, 21, 12))
+	}
+	cb.Emit32(arm64LSL_W_imm(21, 21, 11))
+	cb.Emit32(arm64ORR_W(10, 10, 21))
+	afterOF := cb.Len()
+	cb.Emit32(arm64B(0))
+	oldOF := cb.Len()
+	x86ARM64EmitMovImm32(cb, 12, x86FlagOF)
+	cb.Emit32(arm64AND_W(21, 20, 12))
+	cb.Emit32(arm64ORR_W(10, 10, 21))
+	end := cb.Len()
+	cb.PatchUint32(notOne, arm64Bcond(arm64CondNE, int32(oldOF-notOne)))
+	cb.PatchUint32(afterOF, arm64B(int32(end-afterOF)))
+	cb.Emit32(arm64ORR_W(10, 10, 19))
+	cb.Emit32(arm64STR_W_imm(10, 14, 0))
+	endNoop := cb.Len()
+	cb.PatchUint32(zero, arm64CBZ(18, int32(endNoop-zero)))
+	return true
+}
+
+// x86ARM64EmitGrp2CLRotateNarrowReg lowers byte and word ROL/ROR register
+// forms.  Dword ROL/ROR already use the variable-rotate lowering above; the
+// narrow forms need their own modulo-width count before execution.
+func x86ARM64EmitGrp2CLRotateNarrowReg(cb *CodeBuffer, ji X86JITInstr) bool {
+	if !ji.hasModRM || ji.modrm>>6 != 3 || (ji.grpOp != 0 && ji.grpOp != 1) {
+		return false
+	}
+	var width uint32
+	var guest byte
+	switch ji.opcode {
+	case 0xD2:
+		if ji.prefixes != 0 {
+			return false
+		}
+		width, guest = 8, ji.modrm&7
+	case 0xD3:
+		if ji.prefixes != x86PrefOpSize {
+			return false
+		}
+		width, guest = 16, ji.modrm&7
+	default:
+		return false
+	}
+	x86ARM64EmitLoadReg(cb, 18, 1)
+	// The interpreter first applies the architectural five-bit mask.  Do not
+	// reduce this to the operand width before deciding whether the operation is
+	// a no-op: CL=8 for byte and CL=16 for word ROL/ROR still recompute CF from
+	// the unchanged result, while only a zero five-bit count preserves flags.
+	x86ARM64EmitMovImm32(cb, 12, 31)
+	cb.Emit32(arm64AND_W(18, 18, 12))
+	zero := cb.Len()
+	cb.Emit32(arm64CBZ(18, 0))
+	// Keep W18 as the raw five-bit count so full-width rotations update CF;
+	// W17 is the interpreter's width-reduced count, used only for OF.
+	cb.Emit32(arm64ORR_W(17, 18, 31))
+	x86ARM64EmitMovImm32(cb, 12, width-1)
+	cb.Emit32(arm64AND_W(17, 17, 12))
+	x86ARM64EmitPartialRegLoad(cb, 16, guest, width)
+	cb.Emit32(arm64LDR_imm(14, x86ARM64RegCtx, x86CtxOffFlagsPtr/8))
+	cb.Emit32(arm64LDR_W_imm(20, 14, 0))
+	loop := cb.Len()
+	if ji.grpOp == 0 { // ROL
+		cb.Emit32(arm64LSR_W_imm(19, 16, width-1))
+		cb.Emit32(arm64LSL_W_imm(16, 16, 1))
+		cb.Emit32(arm64ORR_W(16, 16, 19))
+	} else { // ROR
+		x86ARM64EmitMovImm32(cb, 12, 1)
+		cb.Emit32(arm64AND_W(19, 16, 12))
+		cb.Emit32(arm64LSR_W_imm(16, 16, 1))
+		cb.Emit32(arm64LSL_W_imm(12, 19, width-1))
+		cb.Emit32(arm64ORR_W(16, 16, 12))
+	}
+	x86ARM64EmitTruncate(cb, 16, width)
+	cb.Emit32(arm64SUB_W_imm(18, 18, 1))
+	back := cb.Len()
+	cb.Emit32(arm64CBNZ(18, 0))
+	cb.PatchUint32(back, arm64CBNZ(18, int32(loop-back)))
+	if width == 8 {
+		x86ARM64EmitLoadReg(cb, 13, guest&3)
+		x86ARM64EmitByteInsert(cb, 13, 16, guest >= 4)
+		x86ARM64EmitStoreReg(cb, guest&3, 13)
+	} else {
+		x86ARM64EmitLoadReg(cb, 13, guest)
+		x86ARM64EmitWordInsert(cb, 13, 16)
+		x86ARM64EmitStoreReg(cb, guest, 13)
+	}
+	x86ARM64EmitMovImm32(cb, 10, ^uint32(x86FlagCF|x86FlagOF))
+	cb.Emit32(arm64AND_W(10, 20, 10))
+	x86ARM64EmitMovImm32(cb, 12, 1)
+	cb.Emit32(arm64CMP_W(17, 12))
+	notOne := cb.Len()
+	cb.Emit32(arm64Bcond(arm64CondNE, 0))
+	if ji.grpOp == 0 {
+		cb.Emit32(arm64LSR_W_imm(21, 16, width-1))
+		cb.Emit32(arm64EOR_W(21, 21, 19))
+	} else {
+		cb.Emit32(arm64LSR_W_imm(21, 16, width-1))
+		cb.Emit32(arm64LSR_W_imm(12, 16, width-2))
+		x86ARM64EmitMovImm32(cb, 13, 1)
+		cb.Emit32(arm64AND_W(12, 12, 13))
+		cb.Emit32(arm64EOR_W(21, 21, 12))
+	}
+	cb.Emit32(arm64LSL_W_imm(21, 21, 11))
+	cb.Emit32(arm64ORR_W(10, 10, 21))
+	afterOF := cb.Len()
+	cb.Emit32(arm64B(0))
+	oldOF := cb.Len()
+	x86ARM64EmitMovImm32(cb, 12, x86FlagOF)
+	cb.Emit32(arm64AND_W(21, 20, 12))
+	cb.Emit32(arm64ORR_W(10, 10, 21))
+	end := cb.Len()
+	cb.PatchUint32(notOne, arm64Bcond(arm64CondNE, int32(oldOF-notOne)))
+	cb.PatchUint32(afterOF, arm64B(int32(end-afterOF)))
+	cb.Emit32(arm64ORR_W(10, 10, 19))
+	cb.Emit32(arm64STR_W_imm(10, 14, 0))
+	endNoop := cb.Len()
+	cb.PatchUint32(zero, arm64CBZ(18, int32(endNoop-zero)))
+	return true
+}
+
 // x86ARM64EmitArithFlags publishes the i386 arithmetic flag subset using
 // already-truncated operands.  The host NZCV register is only used for the
 // unsigned comparisons; AF and parity follow the interpreter's explicit
@@ -1049,24 +1367,36 @@ func x86ARM64EmitFSTPSTi(cb *CodeBuffer, ji X86JITInstr, memory []byte, retired 
 	if ji.modrm&7 != 0 {
 		branches = append(branches, check(14))
 	}
-	// Copy value, then copy source tag to destination and empty the old top.
+	// Copy the value and tag class before advancing TOP.  A direct successor
+	// can observe the new ST(0) without returning through the dispatcher, so
+	// normalising tags only at the block boundary would expose stale state.
+	cb.Emit32(arm64LSL_W_imm(12, 11, 1))
+	cb.Emit32(arm64LSR_W(13, 15, 12))
+	x86ARM64EmitMovImm32(cb, 16, 3)
+	cb.Emit32(arm64AND_W(13, 13, 16)) // source tag
+
+	// Replace the destination's two FTW bits with the source tag.
+	cb.Emit32(arm64LSL_W_imm(12, 14, 1))
+	cb.Emit32(arm64LSLV_W(16, 16, 12))
+	cb.Emit32(arm64MVN_W(16, 16))
+	cb.Emit32(arm64AND_W(15, 15, 16))
+	cb.Emit32(arm64LSLV_W(13, 13, 12))
+	cb.Emit32(arm64ORR_W(15, 15, 13))
+
+	// Empty the old physical ST(0) slot, including the i == 0 case.
+	cb.Emit32(arm64LSL_W_imm(12, 11, 1))
+	x86ARM64EmitMovImm32(cb, 16, 3)
+	cb.Emit32(arm64LSLV_W(16, 16, 12))
+	cb.Emit32(arm64ORR_W(15, 15, 16))
+	cb.Emit32(arm64STRH_imm(15, 10, x86ARM64FPUOffFTW/2))
+
 	cb.Emit32(arm64LSL_W_imm(12, 11, 3))
 	cb.Emit32(arm64LDR_reg(13, 10, 12))
 	cb.Emit32(arm64LSL_W_imm(14, 14, 3))
 	cb.Emit32(arm64STR_reg(13, 10, 14))
-	// The post-store tag normalisation at the dispatcher boundary derives the
-	// destination class from the copied value. Marking old ST(0) empty is the
-	// only persistent tag transition required here.
-	cb.Emit32(arm64LDRH_imm(13, 10, x86ARM64FPUOffFTW/2))
-	cb.Emit32(arm64LSR_W_imm(12, 12, 2))
-	x86ARM64EmitMovImm32(cb, 14, 3)
-	cb.Emit32(arm64LSLV_W(14, 14, 12))
-	cb.Emit32(arm64ORR_W(13, 13, 14))
-	cb.Emit32(arm64STRH_imm(13, 10, x86ARM64FPUOffFTW/2))
 	cb.Emit32(arm64LDRH_imm(13, 10, x86ARM64FPUOffFSW/2))
 	x86ARM64EmitMovImm32(cb, 14, ^uint32(7<<11))
 	cb.Emit32(arm64AND_W(13, 13, 14))
-	cb.Emit32(arm64LSR_W_imm(11, 11, 0))
 	cb.Emit32(arm64ADD_W_imm(11, 11, 1))
 	x86ARM64EmitMovImm32(cb, 14, 7)
 	cb.Emit32(arm64AND_W(11, 11, 14))
@@ -2645,6 +2975,12 @@ func x86ARM64EmitInstruction(cb *CodeBuffer, ji X86JITInstr, memory []byte, reti
 	case (op == 0xA6 || op == 0xA7) && x86ARM64EmitCMPS(cb, ji, retired, bails):
 		return true
 	case (op == 0xAE || op == 0xAF) && x86ARM64EmitSCAS(cb, ji, retired, bails):
+		return true
+	case (ji.opcode == 0xD2 || ji.opcode == 0xD3) && x86ARM64EmitGrp2CLRotateNarrowReg(cb, ji):
+		return true
+	case (ji.opcode == 0xD2 || ji.opcode == 0xD3) && x86ARM64EmitGrp2CLCarryRotateReg(cb, ji):
+		return true
+	case ji.opcode == 0xD3 && ji.grpOp >= 4 && x86ARM64EmitGrp2CL16ShiftReg(cb, ji):
 		return true
 	case ji.opcode == 0xD3 && ji.grpOp >= 4 && x86ARM64EmitGrp2CL32Reg(cb, ji):
 		return true

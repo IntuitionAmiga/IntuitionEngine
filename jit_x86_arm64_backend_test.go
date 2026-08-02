@@ -4,10 +4,36 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math"
 	"testing"
 	"unsafe"
 )
+
+func TestX86ARM64_PatchBranchAt(t *testing.T) {
+	em, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(em.Free)
+	addr, err := em.Write([]byte{0, 0, 0, 0, 0, 0, 0, 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !x86ARM64PatchBranchAt(addr, addr+4) {
+		t.Fatal("failed to patch in-range ARM64 branch")
+	}
+	got, ok := em.execBytes(addr, 4)
+	if !ok {
+		t.Fatal("cannot inspect executable branch")
+	}
+	if want := arm64B(4); binary.LittleEndian.Uint32(got) != want {
+		t.Fatalf("branch word=%08X want %08X", binary.LittleEndian.Uint32(got), want)
+	}
+	if x86ARM64PatchBranchAt(addr+1, addr+4) {
+		t.Fatal("unaligned branch patch accepted")
+	}
+}
 
 func newX86ARM64DispatchCPU(code []byte) *CPU_X86 {
 	bus := NewMachineBus()
@@ -359,6 +385,110 @@ func TestX86ARM64_DirectGroup2DwordShiftCLParity(t *testing.T) {
 			if got, want := jit.Flags, interp.Flags; got != want {
 				t.Fatalf("EFLAGS = %08X, want %08X for D3 %02X CL=%d", got, want, op, count)
 			}
+		}
+	}
+}
+
+func TestX86ARM64_DirectGroup2WordShiftCLParity(t *testing.T) {
+	for _, op := range []byte{0xE0, 0xE8, 0xF8} { // SHL, SHR, SAR AX,CL
+		for _, count := range []uint32{0, 1, 4, 15, 16, 17, 31, 33} {
+			code := []byte{0x66, 0xD3, op, 0xF4}
+			newCPU := func() *CPU_X86 {
+				cpu := newX86ARM64DispatchCPU(code)
+				cpu.EAX, cpu.ECX = 0x123489AB, 0x56780000|count
+				cpu.Flags = x86FlagOF | x86FlagAF
+				return cpu
+			}
+			jit := newCPU()
+			jit.X86ExecuteJIT()
+			interp := newCPU()
+			for interp.Running() && !interp.Halted {
+				interp.Step()
+			}
+			if got, want := jit.EAX, interp.EAX; got != want {
+				t.Fatalf("EAX = %08X, want %08X for 66 D3 %02X CL=%d", got, want, op, count)
+			}
+			if got, want := jit.Flags, interp.Flags; got != want {
+				t.Fatalf("EFLAGS = %08X, want %08X for 66 D3 %02X CL=%d", got, want, op, count)
+			}
+			if got, want := jit.Cycles, interp.Cycles; got != want {
+				t.Fatalf("cycles = %d, want %d for 66 D3 %02X CL=%d", got, want, op, count)
+			}
+		}
+	}
+}
+
+func TestX86ARM64_DirectGroup2CarryRotateCLParity(t *testing.T) {
+	tests := []struct {
+		name string
+		code []byte
+	}{
+		{"rol-ah", []byte{0xD2, 0xC4, 0xF4}},
+		{"ror-ah", []byte{0xD2, 0xCC, 0xF4}},
+		{"rcl-ah", []byte{0xD2, 0xD4, 0xF4}},
+		{"rcr-ah", []byte{0xD2, 0xDC, 0xF4}},
+		{"rol-ax", []byte{0x66, 0xD3, 0xC0, 0xF4}},
+		{"ror-ax", []byte{0x66, 0xD3, 0xC8, 0xF4}},
+		{"rcl-ax", []byte{0x66, 0xD3, 0xD0, 0xF4}},
+		{"rcr-ax", []byte{0x66, 0xD3, 0xD8, 0xF4}},
+		{"rcl-eax", []byte{0xD3, 0xD0, 0xF4}},
+		{"rcr-eax", []byte{0xD3, 0xD8, 0xF4}},
+	}
+	for _, tc := range tests {
+		for _, count := range []uint32{0, 1, 2, 8, 9, 16, 17, 31, 33} {
+			newCPU := func() *CPU_X86 {
+				cpu := newX86ARM64DispatchCPU(tc.code)
+				cpu.EAX, cpu.ECX = 0xA55A89AB, 0xC0DE0000|count
+				cpu.Flags = x86FlagCF | x86FlagOF | x86FlagAF | x86FlagPF
+				return cpu
+			}
+			jit := newCPU()
+			jit.X86ExecuteJIT()
+			interp := newCPU()
+			for interp.Running() && !interp.Halted {
+				interp.Step()
+			}
+			if got, want := jit.EAX, interp.EAX; got != want {
+				t.Fatalf("%s EAX = %08X, want %08X for CL=%d", tc.name, got, want, count)
+			}
+			if got, want := jit.Flags, interp.Flags; got != want {
+				t.Fatalf("%s EFLAGS = %08X, want %08X for CL=%d", tc.name, got, want, count)
+			}
+			if got, want := jit.Cycles, interp.Cycles; got != want {
+				t.Fatalf("%s cycles = %d, want %d for CL=%d", tc.name, got, want, count)
+			}
+		}
+	}
+}
+
+func TestX86ARM64_NarrowRotateFullWidthCountUpdatesCarry(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		code  []byte
+		eax   uint32
+		count uint32
+	}{
+		{"rol-ah-8", []byte{0xD2, 0xC4, 0xF4}, 0x00000200, 8},
+		{"ror-ah-8", []byte{0xD2, 0xCC, 0xF4}, 0x00008000, 8},
+		{"rol-ax-16", []byte{0x66, 0xD3, 0xC0, 0xF4}, 0x00000002, 16},
+		{"ror-ax-16", []byte{0x66, 0xD3, 0xC8, 0xF4}, 0x00008000, 16},
+	} {
+		newCPU := func() *CPU_X86 {
+			cpu := newX86ARM64DispatchCPU(tc.code)
+			cpu.EAX, cpu.ECX, cpu.Flags = tc.eax, tc.count, x86FlagCF|x86FlagOF
+			return cpu
+		}
+		jit := newCPU()
+		jit.X86ExecuteJIT()
+		interp := newCPU()
+		for interp.Running() && !interp.Halted {
+			interp.Step()
+		}
+		if got, want := jit.EAX, interp.EAX; got != want {
+			t.Fatalf("%s EAX=%08X want %08X", tc.name, got, want)
+		}
+		if got, want := jit.Flags, interp.Flags; got != want {
+			t.Fatalf("%s EFLAGS=%08X want %08X", tc.name, got, want)
 		}
 	}
 }
@@ -2088,6 +2218,179 @@ func TestX86ARM64_ProductionFPUHelperParity(t *testing.T) {
 	}
 }
 
+// The ARM64 x87 dispatcher must either lower a register form directly or
+// replay its immutable decoded payload.  Sweep the complete register-form
+// escape space so uncommon helper-owned operations cannot silently lose FPU
+// provenance or state publication.
+func TestX86ARM64_AllRegisterFPUFormsParity(t *testing.T) {
+	newCPU := func(code []byte) *CPU_X86 {
+		cpu := newX86ARM64DispatchCPU(code)
+		cpu.FPU.Reset()
+		for i := range cpu.FPU.regs {
+			cpu.FPU.regs[i] = float64(i + 1)
+			cpu.FPU.setTag(i, x87TagValid)
+		}
+		return cpu
+	}
+	for escape := byte(0xD8); escape <= 0xDF; escape++ {
+		for modrm := byte(0xC0); ; modrm++ {
+			code := []byte{escape, modrm, 0xF4}
+			jit := newCPU(code)
+			jit.X86ExecuteJIT()
+			interp := newCPU(code)
+			interp.x86RunInterpreter()
+			if got, want := jit.FPU.FCW, interp.FPU.FCW; got != want {
+				t.Fatalf("%02X %02X FCW=%04X want %04X", escape, modrm, got, want)
+			}
+			if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+				t.Fatalf("%02X %02X FSW=%04X want %04X", escape, modrm, got, want)
+			}
+			if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+				t.Fatalf("%02X %02X FTW=%04X want %04X", escape, modrm, got, want)
+			}
+			if got, want := jit.FPU.FIP, interp.FPU.FIP; got != want {
+				t.Fatalf("%02X %02X FIP=%08X want %08X", escape, modrm, got, want)
+			}
+			if got, want := jit.FPU.FCS, interp.FPU.FCS; got != want {
+				t.Fatalf("%02X %02X FCS=%04X want %04X", escape, modrm, got, want)
+			}
+			if got, want := jit.FPU.FDP, interp.FPU.FDP; got != want {
+				t.Fatalf("%02X %02X FDP=%08X want %08X", escape, modrm, got, want)
+			}
+			if got, want := jit.FPU.FDS, interp.FPU.FDS; got != want {
+				t.Fatalf("%02X %02X FDS=%04X want %04X", escape, modrm, got, want)
+			}
+			if got, want := jit.FPU.FOP, interp.FPU.FOP; got != want {
+				t.Fatalf("%02X %02X FOP=%04X want %04X", escape, modrm, got, want)
+			}
+			for i := range jit.FPU.regs {
+				if got, want := math.Float64bits(jit.FPU.regs[i]), math.Float64bits(interp.FPU.regs[i]); got != want {
+					t.Fatalf("%02X %02X ST%d=%016X want %016X", escape, modrm, i, got, want)
+				}
+			}
+			if got, want := jit.Cycles, interp.Cycles; got != want {
+				t.Fatalf("%02X %02X cycles=%d want %d", escape, modrm, got, want)
+			}
+			if modrm == 0xFF {
+				break
+			}
+		}
+	}
+}
+
+func TestX86ARM64_AllDisp32FPUFormsParity(t *testing.T) {
+	const operand = uint32(0x500)
+	newCPU := func(code []byte) *CPU_X86 {
+		cpu := newX86ARM64DispatchCPU(code)
+		cpu.FPU.Reset()
+		for i := range cpu.FPU.regs {
+			cpu.FPU.regs[i] = float64(i + 1)
+			cpu.FPU.setTag(i, x87TagValid)
+		}
+		for i := uint32(0); i < 128; i++ {
+			cpu.memory[operand+i] = byte(i*37 + 11)
+		}
+		return cpu
+	}
+	for escape := byte(0xD8); escape <= 0xDF; escape++ {
+		for reg := byte(0); reg < 8; reg++ {
+			code := []byte{escape, 0x05 | reg<<3, byte(operand & 0xFF), byte(operand >> 8), byte(operand >> 16), byte(operand >> 24), 0xF4}
+			jit := newCPU(code)
+			jit.X86ExecuteJIT()
+			interp := newCPU(code)
+			for interp.Running() && !interp.Halted {
+				interp.Step()
+			}
+			if got, want := jit.FPU.FCW, interp.FPU.FCW; got != want {
+				t.Fatalf("%02X /%d FCW=%04X want %04X", escape, reg, got, want)
+			}
+			if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+				t.Fatalf("%02X /%d FSW=%04X want %04X", escape, reg, got, want)
+			}
+			if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+				t.Fatalf("%02X /%d FTW=%04X want %04X", escape, reg, got, want)
+			}
+			if got, want := jit.FPU.FIP, interp.FPU.FIP; got != want {
+				t.Fatalf("%02X /%d FIP=%08X want %08X", escape, reg, got, want)
+			}
+			if got, want := jit.FPU.FDP, interp.FPU.FDP; got != want {
+				t.Fatalf("%02X /%d FDP=%08X want %08X", escape, reg, got, want)
+			}
+			if got, want := jit.FPU.FOP, interp.FPU.FOP; got != want {
+				t.Fatalf("%02X /%d FOP=%04X want %04X", escape, reg, got, want)
+			}
+			for i := range jit.FPU.regs {
+				if got, want := math.Float64bits(jit.FPU.regs[i]), math.Float64bits(interp.FPU.regs[i]); got != want {
+					t.Fatalf("%02X /%d ST%d=%016X want %016X", escape, reg, i, got, want)
+				}
+			}
+			if got, want := jit.memory[operand:operand+128], interp.memory[operand:operand+128]; !bytes.Equal(got, want) {
+				t.Fatalf("%02X /%d operand memory differs", escape, reg)
+			}
+			if got, want := jit.Cycles, interp.Cycles; got != want {
+				t.Fatalf("%02X /%d cycles=%d want %d", escape, reg, got, want)
+			}
+		}
+	}
+}
+
+func TestX86ARM64_AllRegisterRelativeFPUFormsParity(t *testing.T) {
+	const operand = uint32(0x504)
+	newCPU := func(code []byte) *CPU_X86 {
+		cpu := newX86ARM64DispatchCPU(code)
+		cpu.EBX = 0x500
+		cpu.FPU.Reset()
+		for i := range cpu.FPU.regs {
+			cpu.FPU.regs[i] = float64(i + 1)
+			cpu.FPU.setTag(i, x87TagValid)
+		}
+		// Keep environment-load forms deterministic and self-contained. Random
+		// bytes can install arbitrary x87 provenance addresses, which is useful
+		// for fuzzing but makes this addressing regression emit unrelated bus
+		// warnings while it executes the following HLT.
+		clear(cpu.memory[operand : operand+128])
+		return cpu
+	}
+	for escape := byte(0xD8); escape <= 0xDF; escape++ {
+		for reg := byte(0); reg < 8; reg++ {
+			code := []byte{escape, 0x43 | reg<<3, 0x04, 0xF4} // [EBX+4]
+			jit := newCPU(code)
+			jit.X86ExecuteJIT()
+			interp := newCPU(code)
+			interp.x86RunInterpreter()
+			if got, want := jit.FPU.FCW, interp.FPU.FCW; got != want {
+				t.Fatalf("%02X /%d FCW=%04X want %04X", escape, reg, got, want)
+			}
+			if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+				t.Fatalf("%02X /%d FSW=%04X want %04X", escape, reg, got, want)
+			}
+			if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+				t.Fatalf("%02X /%d FTW=%04X want %04X", escape, reg, got, want)
+			}
+			if got, want := jit.FPU.FIP, interp.FPU.FIP; got != want {
+				t.Fatalf("%02X /%d FIP=%08X want %08X", escape, reg, got, want)
+			}
+			if got, want := jit.FPU.FDP, interp.FPU.FDP; got != want {
+				t.Fatalf("%02X /%d FDP=%08X want %08X", escape, reg, got, want)
+			}
+			if got, want := jit.FPU.FOP, interp.FPU.FOP; got != want {
+				t.Fatalf("%02X /%d FOP=%04X want %04X", escape, reg, got, want)
+			}
+			for i := range jit.FPU.regs {
+				if got, want := math.Float64bits(jit.FPU.regs[i]), math.Float64bits(interp.FPU.regs[i]); got != want {
+					t.Fatalf("%02X /%d ST%d=%016X want %016X", escape, reg, i, got, want)
+				}
+			}
+			if got, want := jit.memory[operand:operand+128], interp.memory[operand:operand+128]; !bytes.Equal(got, want) {
+				t.Fatalf("%02X /%d operand memory differs", escape, reg)
+			}
+			if got, want := jit.Cycles, interp.Cycles; got != want {
+				t.Fatalf("%02X /%d cycles=%d want %d", escape, reg, got, want)
+			}
+		}
+	}
+}
+
 func TestX86ARM64_FPUHelperPrefixParity(t *testing.T) {
 	for _, code := range [][]byte{
 		{0x64, 0xD9, 0xF0, 0xF4}, // FS:F2XM1
@@ -2218,6 +2521,43 @@ func TestX86ARM64_DirectFSTPSTiParity(t *testing.T) {
 	}
 	if got, want := jit.FPU.FOP, interp.FPU.FOP; got != want {
 		t.Fatalf("FOP = %04X, want %04X", got, want)
+	}
+}
+
+// FSTP ST(i) must publish its destination tag before the native block returns:
+// a following direct x87 instruction is allowed to inspect FTW in the same
+// block.  Use a zero source and a non-zero destination so stale FTW is
+// distinguishable from the copied source class without dispatcher
+// normalisation hiding the error.
+func TestX86ARM64_DirectFSTPSTiPublishesDestinationTag(t *testing.T) {
+	const pc = uint32(0x100)
+	newCPU := func() *CPU_X86 {
+		cpu := newX86ARM64DispatchCPU([]byte{0xDD, 0xD9}) // FSTP ST(1)
+		cpu.FPU.push(2)
+		cpu.FPU.push(0)
+		return cpu
+	}
+	jit := newCPU()
+	em, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(em.Free)
+	instrs := x86ScanBlock(jit.memory, pc)
+	block, err := x86CompileBlockForCPU(jit, instrs[:1], pc, em)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := newX86JITContext(jit, nil, nil)
+	callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
+
+	interp := newCPU()
+	interp.Step()
+	if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+		t.Fatalf("native FTW = %04X, want architectural %04X before dispatcher return", got, want)
+	}
+	if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+		t.Fatalf("native FSW = %04X, want architectural %04X before dispatcher return", got, want)
 	}
 }
 
