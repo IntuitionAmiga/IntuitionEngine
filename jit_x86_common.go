@@ -54,6 +54,9 @@ type X86JITContext struct {
 	FPUHelperEA       uint32   // 176: resolved flat effective address
 	FPUHelperWidth    uint32   // 180: memory access width, zero for register forms
 	FPUHelperBytes    [15]byte // 184: immutable prefixes, opcode and operands
+	_pad4             byte     // 199: align chained accounting words
+	ChainCycles       uint32   // 200: static cycle charge accumulated by native chain exits
+	ChainTicks        uint32   // 204: static device-tick charge accumulated by native chain exits
 }
 
 // X86JITContext field offsets (must match struct layout above)
@@ -93,6 +96,8 @@ const (
 	x86CtxOffFPUHelperEA       = 176
 	x86CtxOffFPUHelperWidth    = 180
 	x86CtxOffFPUHelperBytes    = 184
+	x86CtxOffChainCycles       = 200
+	x86CtxOffChainTicks        = 204
 )
 
 const (
@@ -1396,11 +1401,9 @@ func x86AnalyzeBlockRegs(instrs []X86JITInstr, memory []byte, startPC uint32) x8
 
 const x86Tier2Threshold = 64 // execution count before recompilation
 
-// x86TierController declaration lives in jit_x86_tier_amd64.go so it
-// stays gated behind the same `amd64 && (linux||windows||darwin)`
-// build tag as NewTierController / X86RegProfile (jit_tier_common.go).
-// jit_x86_common.go itself is untagged and must compile on
-// arm64/non-Linux test builds, where those symbols are absent.
+// x86TierController is available on the native amd64 and Linux/ARM64 x86 JIT
+// hosts. jit_x86_common.go itself remains untagged so non-native builds retain
+// the interpreter-only x86 path.
 
 // x86Tier2RegAlloc computes an optimal register mapping for a specific block.
 // Returns a mapping: guestReg -> hostReg (0 if spilled).

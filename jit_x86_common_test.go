@@ -51,6 +51,8 @@ func TestX86JITContext_FieldOffsets(t *testing.T) {
 		{"FPUHelperEA", uintptr(unsafe.Pointer(&ctx.FPUHelperEA)) - base, x86CtxOffFPUHelperEA},
 		{"FPUHelperWidth", uintptr(unsafe.Pointer(&ctx.FPUHelperWidth)) - base, x86CtxOffFPUHelperWidth},
 		{"FPUHelperBytes", uintptr(unsafe.Pointer(&ctx.FPUHelperBytes)) - base, x86CtxOffFPUHelperBytes},
+		{"ChainCycles", uintptr(unsafe.Pointer(&ctx.ChainCycles)) - base, x86CtxOffChainCycles},
+		{"ChainTicks", uintptr(unsafe.Pointer(&ctx.ChainTicks)) - base, x86CtxOffChainTicks},
 	}
 
 	for _, tt := range tests {

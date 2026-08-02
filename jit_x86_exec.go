@@ -2,11 +2,8 @@
 //
 // (c) 2024-2026 Zayn Otley - GPLv3 or later
 
-// x86 JIT is amd64-only (per CLAUDE.md: only IE64 has arm64 JIT).
-// The aspirational `arm64 && linux` tag from earlier wiring rounds was
-// never followed by an arm64 emit/compile implementation, so cross-
-// builds fail with "undefined: x86CompileBlock" / "x86CompileRegion".
-// Narrow to amd64-only until the arm64 emitter actually lands.
+// This is the amd64 x86 JIT dispatcher. Linux/ARM64 has its corresponding
+// emitter and dispatcher in the arm64-tagged x86 files.
 
 //go:build amd64 && (linux || windows || darwin)
 

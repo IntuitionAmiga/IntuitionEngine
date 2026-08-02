@@ -35,6 +35,130 @@ func TestX86ARM64_PatchBranchAt(t *testing.T) {
 	}
 }
 
+func TestX86ARM64_NativeChainAccumulatesRetirementAndCharges(t *testing.T) {
+	mem := make([]byte, 0x2000)
+	const sourcePC = uint32(0x100)
+	const targetPC = uint32(0x110)
+	copy(mem[sourcePC:], []byte{0xEB, 0x0E}) // JMP 0x110
+	copy(mem[targetPC:], []byte{0xB8, 0x78, 0x56, 0x34, 0x12, 0xF4})
+	em, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(em.Free)
+	cpu := &CPU_X86{memory: mem}
+	ctx := newX86JITContext(cpu, nil, nil)
+	source, err := x86CompileBlockForCPU(cpu, x86ScanBlock(mem, sourcePC), sourcePC, em)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := x86CompileBlockForCPU(cpu, x86ScanBlock(mem, targetPC), targetPC, em)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.chainEntry == 0 || target.chainEntry == 0 || len(source.chainSlots) != 1 {
+		t.Fatalf("chain admission: source=%#x target=%#x slots=%d", source.chainEntry, target.chainEntry, len(source.chainSlots))
+	}
+	cache := NewCodeCache()
+	cache.Put(target)
+	cache.Put(source)
+	x86ARM64PatchBlockChains(cache, source)
+	ctx.ChainBudget = 2
+	callNative(source.execAddr, uintptr(unsafe.Pointer(ctx)))
+	if got, want := cpu.jitRegs[0], uint32(0x12345678); got != want {
+		t.Fatalf("EAX=%08X want %08X", got, want)
+	}
+	if got, want := ctx.RetPC, targetPC+5; got != want {
+		t.Fatalf("RetPC=%08X want %08X", got, want)
+	}
+	if got, want := ctx.RetCount, uint32(2); got != want {
+		t.Fatalf("RetCount=%d want %d", got, want)
+	}
+	if ctx.ChainTicks == 0 {
+		t.Fatal("native chain omitted static device-tick charge")
+	}
+}
+
+func TestX86ARM64_InvalidationUnpatchesNativeChain(t *testing.T) {
+	mem := make([]byte, 0x2000)
+	const sourcePC = uint32(0x100)
+	const targetPC = uint32(0x110)
+	copy(mem[sourcePC:], []byte{0xEB, 0x0E})
+	copy(mem[targetPC:], []byte{0x90, 0xF4})
+	em, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(em.Free)
+	cpu := &CPU_X86{memory: mem}
+	source, err := x86CompileBlockForCPU(cpu, x86ScanBlock(mem, sourcePC), sourcePC, em)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := x86CompileBlockForCPU(cpu, x86ScanBlock(mem, targetPC), targetPC, em)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := NewCodeCache()
+	cache.Put(target)
+	cache.Put(source)
+	x86ARM64PatchBlockChains(cache, source)
+	slot := source.chainSlots[0]
+	before, ok := em.execBytes(slot.patchAddr, 4)
+	if !ok || binary.LittleEndian.Uint32(before) == arm64B(int32(slot.fallbackAddr-slot.patchAddr)) {
+		t.Fatal("chain was not patched to its live target")
+	}
+	cache.UnpatchChainsInRange(uint64(targetPC), uint64(targetPC+1))
+	after, ok := em.execBytes(slot.patchAddr, 4)
+	if !ok {
+		t.Fatal("cannot inspect restored chain branch")
+	}
+	if got, want := binary.LittleEndian.Uint32(after), arm64B(int32(slot.fallbackAddr-slot.patchAddr)); got != want {
+		t.Fatalf("unpatched branch=%08X want %08X", got, want)
+	}
+}
+
+func TestX86ARM64_CompileRegionInternalBranches(t *testing.T) {
+	mem := make([]byte, 0x3000)
+	const entry = uint32(0x100)
+	copy(mem[0x100:], []byte{0xEB, 0x0E})                   // JMP 0x110
+	copy(mem[0x110:], []byte{0xB8, 0x78, 0x56, 0x34, 0x12}) // MOV EAX,12345678
+	copy(mem[0x115:], []byte{0xEB, 0x09})                   // JMP 0x120
+	copy(mem[0x120:], []byte{0xBB, 0xEF, 0xCD, 0xAB, 0x90}) // MOV EBX,90ABCDEF
+	copy(mem[0x125:], []byte{0xEB, 0x09})                   // JMP 0x130
+	mem[0x130] = 0xF4
+	region := x86FormRegion(entry, NewCodeCache(), mem)
+	if region == nil || len(region.blocks) != 3 {
+		t.Fatalf("region=%#v scans=%#v %#v %#v", region,
+			x86ScanBlock(mem, 0x100), x86ScanBlock(mem, 0x110), x86ScanBlock(mem, 0x120))
+	}
+	em, err := AllocExecMem(4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(em.Free)
+	cpu := &CPU_X86{memory: mem}
+	ctx := newX86JITContext(cpu, nil, nil)
+	block, err := x86CompileRegionForCPU(cpu, region, em)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx.ChainBudget = 1 // force the terminal cold return after the region.
+	callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
+	if got, want := cpu.jitRegs[0], uint32(0x12345678); got != want {
+		t.Fatalf("EAX=%08X want %08X", got, want)
+	}
+	if got, want := cpu.jitRegs[3], uint32(0x90ABCDEF); got != want {
+		t.Fatalf("EBX=%08X want %08X", got, want)
+	}
+	if got, want := ctx.RetPC, uint32(0x130); got != want {
+		t.Fatalf("RetPC=%08X want %08X", got, want)
+	}
+	if got, want := ctx.RetCount, uint32(5); got != want {
+		t.Fatalf("RetCount=%d want %d", got, want)
+	}
+}
+
 func newX86ARM64DispatchCPU(code []byte) *CPU_X86 {
 	bus := NewMachineBus()
 	adapter := NewX86BusAdapter(bus)

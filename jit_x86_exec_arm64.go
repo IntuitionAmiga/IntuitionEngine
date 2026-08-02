@@ -93,6 +93,22 @@ func (cpu *CPU_X86) freeX86JIT() {
 	cpu.x86JitCodeBM = nil
 }
 
+// x86ARM64PatchBlockChains wires both directions when a block becomes live.
+// The cache owns every inbound slot, while the explicit outbound pass handles
+// targets compiled before their sources.  x86ARM64PatchBranchAt flushes the
+// instruction cache for each rewritten B instruction.
+func x86ARM64PatchBlockChains(cache *CodeCache, block *JITBlock) {
+	if !x86BlockChainingEnabled || cache == nil || block == nil || block.chainEntry == 0 {
+		return
+	}
+	cache.PatchChainsTo(block.startPC, block.chainEntry)
+	for _, slot := range block.chainSlots {
+		if target := cache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
+			patchChainSlot(slot, target.chainEntry)
+		}
+	}
+}
+
 func (cpu *CPU_X86) X86ExecuteJIT() {
 	if err := cpu.initX86JIT(); err != nil {
 		panic(err)
@@ -170,6 +186,26 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			}
 			cpu.x86JitCache.Put(block)
 			x86MarkCodePagesForBlock(cpu.x86JitCodeBM, block)
+			x86ARM64PatchBlockChains(cpu.x86JitCache, block)
+		} else if x86RegionPromotionEnabled && !bounded {
+			// Region promotion is deliberately outside bounded shadow windows:
+			// those callers require one-instruction compilation and exact
+			// dispatcher observation.  The region compiler itself declines
+			// back-edges, preserving dynamic loop accounting at block exits.
+			block.execCount++
+			if x86TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+				block.lastPromoteAt = block.execCount
+				region := x86FormRegion(pc, cpu.x86JitCache, cpu.memory)
+				if region != nil && x86TierController.ShouldPromoteRegion(len(region.blocks)) {
+					if promoted, err := x86CompileRegionForCPU(cpu, region, em); err == nil {
+						promoted.execCount = block.execCount
+						cpu.x86JitCache.Put(promoted)
+						x86MarkCodePagesForBlock(cpu.x86JitCodeBM, promoted)
+						x86ARM64PatchBlockChains(cpu.x86JitCache, promoted)
+						block = promoted
+					}
+				}
+			}
 		}
 		// A block cached during an unbounded run can be wider than the
 		// remaining deterministic window. Replay one instruction rather than
@@ -188,10 +224,12 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		ctx.NeedIOFallback = 0
 		ctx.NeedInval = 0
 		ctx.ExitReason = x86JITExitNone
-		// Initialise the native-chain ABI on every Go entry.  Current blocks
-		// still return normally; forthcoming chain exits consume this budget and
-		// fold ChainCount into their eventual RetCount exactly as amd64 does.
+		// Initialise the native-chain ABI on every Go entry. ARM64 chain exits
+		// consume this budget and fold instruction, cycle and device-tick
+		// accounting into their eventual cold return.
 		ctx.ChainCount = 0
+		ctx.ChainCycles = 0
+		ctx.ChainTicks = 0
 		if bounded {
 			ctx.ChainBudget = 1
 		} else {
@@ -208,10 +246,13 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		if completed == 0 && ctx.NeedIOFallback == 0 {
 			completed = block.instrCount
 		}
-		if completed > len(block.x86CyclePrefix) {
+		if ctx.ChainTicks == 0 && completed > len(block.x86CyclePrefix) {
 			completed = len(block.x86CyclePrefix)
 		}
-		if completed > 0 {
+		if ctx.ChainTicks != 0 {
+			cpu.Cycles += uint64(ctx.ChainCycles)
+			cpu.bus.Tick(int(ctx.ChainTicks))
+		} else if completed > 0 {
 			cpu.Cycles += block.x86CyclePrefix[completed-1]
 			if len(block.x86TickPrefix) >= completed {
 				cpu.bus.Tick(int(block.x86TickPrefix[completed-1]))

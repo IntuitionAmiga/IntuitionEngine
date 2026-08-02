@@ -6,7 +6,7 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 
 **Memory model (PLAN_MAX_RAM.md):** the x86 CPU is a flat 32-bit guest. Visible RAM is the x86 32-bit profile ceiling clamped against the autodetected active visible RAM (queried via the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair). The JIT's address-mask emission must not retain the historical 25-bit / 32 MB mask; bounds checks read the active visible RAM through the bus accessor rather than a hardcoded constant.
 
-**Platform support:** amd64/linux, amd64/darwin and amd64/windows; Linux/ARM64. ARM64 has native register moves; guarded byte, word and dword MOV, ALU, TEST, Group 3 NOT/NEG and count-one SHL/SHR/SAR memory forms; count-one register rotations; 32-bit immediate SHL/SHR/SAR/ROL/ROR with exact count masking; byte, word and 32-bit register `CL` SHL/SHR/SAR/RCL/RCR; 16-bit and 32-bit register and guarded-memory IMUL forms; guarded register and memory destination immediate SHLD/SHRD, including 16-bit immediate counts through 16, plus 32-bit register `CL` forms; guarded MOVS, STOS, LODS, CMPS and SCAS byte, word and dword forms with REP/REPNE loops; LES/LDS pointer loads; register-source, immediate or absolute-offset writes; guarded memory XCHG and XLAT; guarded register, immediate and segment PUSH plus register, segment and non-ESP-addressed memory POP; guarded PUSHF/POPF and PUSHA/POPA; 32-bit `ENTER imm16,0`; LEAVE; LEA; byte extensions; flag-bit operations and SALC; FNOP, FCHS, FABS, FNCLEX, FNINIT, FNSTSW AX, FFREE, FXCH, FSTP ST(i) and finite valid-tag register `FADD`, `FMUL`, `FSUB`, `FSUBR`, `FDIV` and `FDIVR`; selected x87 helper exits; and an interpreter-resume dispatcher. A guarded memory access returns to the interpreter before any guest mutation for a page crossing, visible-RAM boundary or MMIO page. A native write to a compiled page publishes its exact invalidation range before dispatch continues. ARM64 does not yet implement amd64 chaining, regions or full direct x87 arithmetic.
+**Platform support:** amd64/linux, amd64/darwin and amd64/windows; Linux/ARM64. ARM64 has native register moves; guarded byte, word and dword MOV, ALU, TEST, Group 3 NOT/NEG and count-one SHL/SHR/SAR memory forms; count-one register rotations; 32-bit immediate SHL/SHR/SAR/ROL/ROR with exact count masking; byte, word and 32-bit register `CL` SHL/SHR/SAR/RCL/RCR; 16-bit and 32-bit register and guarded-memory IMUL forms; guarded register and memory destination immediate SHLD/SHRD, including 16-bit immediate counts through 16, plus 32-bit register `CL` forms; guarded MOVS, STOS, LODS, CMPS and SCAS byte, word and dword forms with REP/REPNE loops; LES/LDS pointer loads; register-source, immediate or absolute-offset writes; guarded memory XCHG and XLAT; guarded register, immediate and segment PUSH plus register, segment and non-ESP-addressed memory POP; guarded PUSHF/POPF and PUSHA/POPA; 32-bit `ENTER imm16,0`; LEAVE; LEA; byte extensions; flag-bit operations and SALC; FNOP, FCHS, FABS, FNCLEX, FNINIT, FNSTSW AX, FFREE, FXCH, FSTP ST(i) and finite valid-tag register `FADD`, `FMUL`, `FSUB`, `FSUBR`, `FDIV` and `FDIVR`; selected x87 helper exits; native static-successor chaining; acyclic three-or-more-block region promotion; and an interpreter-resume dispatcher. A guarded memory access returns to the interpreter before any guest mutation for a page crossing, visible-RAM boundary or MMIO page. A native write to a compiled page publishes its exact invalidation range before dispatch continues. ARM64 chains check the bounded-return budget and completed invalidation state before every patched branch; invalidation restores the cold return branch before a target is released. ARM64 regions deliberately leave back-edges and dynamic REP cycle accounting at normal block boundaries.
 
 **Activation:** Set `cpu.x86JitEnabled = true` and call `cpu.X86ExecuteJIT()` or `cpu.x86JitExecute()`. The dispatch function `x86JitExecute()` routes to the JIT when enabled, otherwise to the interpreter.
 
@@ -139,6 +139,8 @@ Offset  Type      Field               Description
 176     uint32    FPUHelperEA          resolved flat effective address
 180     uint32    FPUHelperWidth       x87 memory access width
 184     byte[15]  FPUHelperBytes       immutable instruction snapshot
+200     uint32    ChainCycles          static cycle charge accumulated by native chain exits
+204     uint32    ChainTicks           static device-tick charge accumulated by native chain exits
 ```
 
 ## Guest Register File
@@ -250,7 +252,7 @@ Hot blocks can be compiled together as a single native unit with one prologue/ep
 4. Single shared epilogue
 5. Deferred bail stubs at region end
 
-Regions are only formed for 3+ block sequences. Single-block self-loops use the lighter self-loop optimization. Two-block sequences use Tier 2 single-block recompilation.
+Regions are only formed for 3+ block sequences. Single-block self-loops use the lighter self-loop optimization. Two-block sequences use Tier 2 single-block recompilation. Linux/ARM64 promotes acyclic direct-only regions and keeps region back-edges at the dispatcher until variable retirement and cycle accounting have a dedicated region-loop ABI.
 
 ---
 

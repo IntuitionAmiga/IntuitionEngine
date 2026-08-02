@@ -1008,6 +1008,14 @@ func (cb *CodeBuffer) PatchUint32(offset int, val uint32) {
 type chainSlot struct {
 	targetPC  uint64  // 6502/IE64 PC this exit targets (full uint64 for IE64)
 	patchAddr uintptr // address of JMP rel32 displacement in ExecMem
+	// patch and fallbackAddr describe non-amd64 chain branches.  Most native
+	// backends use a JMP rel32 whose displacement starts at patchAddr and fall
+	// back to patchAddr+4.  ARM64 instead patches the complete B instruction
+	// and needs its explicit cold-return address.  Keeping that distinction in
+	// the cache lets SMC invalidation unpatch either encoding before releasing
+	// a target block.
+	patch        func(uintptr)
+	fallbackAddr uintptr
 }
 
 type JITBlock struct {
@@ -1063,8 +1071,34 @@ type JITBlock struct {
 }
 
 type chainPatchRef struct {
-	patchAddr uintptr
-	ptbr      uint64
+	patchAddr    uintptr
+	ptbr         uint64
+	patch        func(uintptr)
+	fallbackAddr uintptr
+}
+
+func patchChainSlot(slot chainSlot, target uintptr) {
+	if slot.patch != nil {
+		slot.patch(target)
+		return
+	}
+	PatchRel32At(slot.patchAddr, target)
+}
+
+func unpatchChainSlot(slot chainSlot) {
+	fallback := slot.fallbackAddr
+	if fallback == 0 {
+		fallback = slot.patchAddr + 4
+	}
+	patchChainSlot(slot, fallback)
+}
+
+func patchChainRef(ref chainPatchRef, target uintptr) {
+	if ref.patch != nil {
+		ref.patch(target)
+		return
+	}
+	PatchRel32At(ref.patchAddr, target)
 }
 
 // JITBlockCoveredRanges returns the guest PC ranges the block's native
@@ -1574,7 +1608,7 @@ func (cc *CodeCache) releaseAllExecMem() {
 func (cc *CodeCache) PatchChainsTo(targetPC uint64, chainEntry uintptr) {
 	for _, ref := range cc.inboundChainSlots[targetPC] {
 		if ref.patchAddr != 0 {
-			PatchRel32At(ref.patchAddr, chainEntry)
+			patchChainRef(ref, chainEntry)
 		}
 	}
 }
@@ -1589,7 +1623,7 @@ func (cc *CodeCache) PatchChainsTo(targetPC uint64, chainEntry uintptr) {
 func (cc *CodeCache) PatchChainsToScoped(targetPC uint64, chainEntry uintptr, scopePtbr uint64) {
 	for _, ref := range cc.inboundChainSlots[targetPC] {
 		if ref.ptbr == scopePtbr && ref.patchAddr != 0 {
-			PatchRel32At(ref.patchAddr, chainEntry)
+			patchChainRef(ref, chainEntry)
 		}
 	}
 }
@@ -1603,8 +1637,10 @@ func (cc *CodeCache) registerChainSlots(block *JITBlock) {
 			continue
 		}
 		cc.inboundChainSlots[slot.targetPC] = append(cc.inboundChainSlots[slot.targetPC], chainPatchRef{
-			patchAddr: slot.patchAddr,
-			ptbr:      block.ptbr,
+			patchAddr:    slot.patchAddr,
+			ptbr:         block.ptbr,
+			patch:        slot.patch,
+			fallbackAddr: slot.fallbackAddr,
 		})
 	}
 }
@@ -1653,7 +1689,7 @@ func (cc *CodeCache) unpatchChainsToBlock(target *JITBlock) {
 			if slot.patchAddr == 0 || !targeted(slot.targetPC) {
 				continue
 			}
-			PatchRel32At(slot.patchAddr, slot.patchAddr+4)
+			unpatchChainSlot(slot)
 		}
 	}
 	for _, block := range cc.mmuBlocks {
@@ -1661,7 +1697,7 @@ func (cc *CodeCache) unpatchChainsToBlock(target *JITBlock) {
 			if slot.patchAddr == 0 || !targeted(slot.targetPC) {
 				continue
 			}
-			PatchRel32At(slot.patchAddr, slot.patchAddr+4)
+			unpatchChainSlot(slot)
 		}
 	}
 }
@@ -1713,7 +1749,7 @@ func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint64) {
 				continue
 			}
 			if targetDoomed(slot.targetPC) {
-				PatchRel32At(slot.patchAddr, slot.patchAddr+4)
+				unpatchChainSlot(slot)
 			}
 		}
 	}
@@ -1723,7 +1759,7 @@ func (cc *CodeCache) UnpatchChainsInRange(lo, hi uint64) {
 				continue
 			}
 			if targetDoomed(slot.targetPC) {
-				PatchRel32At(slot.patchAddr, slot.patchAddr+4)
+				unpatchChainSlot(slot)
 			}
 		}
 	}

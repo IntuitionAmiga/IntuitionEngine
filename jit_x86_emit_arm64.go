@@ -989,6 +989,8 @@ func x86ARM64EmitDeferredBails(cb *CodeBuffer, bails []x86ARM64DeferredBail) {
 		x86ARM64EmitMovImm32(cb, x86ARM64Scratch, bail.retPC)
 		cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
 		x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(bail.retCount))
+		cb.Emit32(arm64LDR_W_imm(x86ARM64Scratch2, x86ARM64RegCtx, x86CtxOffChainCount/4))
+		cb.Emit32(arm64ADD_W(x86ARM64Scratch, x86ARM64Scratch, x86ARM64Scratch2))
 		cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
 		if bail.inval {
 			x86ARM64EmitMovImm32(cb, x86ARM64Scratch, 1)
@@ -1189,6 +1191,8 @@ func x86ARM64EmitFPUHelperExit(cb *CodeBuffer, p x86FPUHelperPayload, retired in
 	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, p.InstrPC)
 	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
 	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(retired))
+	cb.Emit32(arm64LDR_W_imm(x86ARM64Scratch2, x86ARM64RegCtx, x86CtxOffChainCount/4))
+	cb.Emit32(arm64ADD_W(x86ARM64Scratch, x86ARM64Scratch, x86ARM64Scratch2))
 	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
 	cb.Emit32(arm64RET())
 	return true
@@ -2074,11 +2078,92 @@ func x86ARM64EmitSCAS(cb *CodeBuffer, ji X86JITInstr, retired int, bails *[]x86A
 	return true
 }
 
+// x86ARM64ChainExit is resolved after ExecMem.Write gives the code buffer its
+// executable address.  ARM64 patches whole B instructions rather than an
+// amd64 rel32 displacement, so the cold return address is retained explicitly
+// for SMC invalidation to restore.
+type x86ARM64ChainExit struct {
+	targetPC    uint32
+	branchOff   int
+	fallbackOff int
+}
+
+// x86ARM64EmitChainOrReturn emits the shared terminal path for a statically
+// known successor.  A chain always checks its bounded-execution budget and a
+// completed native SMC store before entering the patched target.  Either check
+// takes the cold path, publishes the accumulated retired count and returns to
+// Go so interrupt, debugger and invalidation observation remain intact.
+func x86ARM64EmitChainOrReturn(cb *CodeBuffer, targetPC uint32, retired int, cycles, ticks uint32, exits *[]x86ARM64ChainExit) {
+	if !x86BlockChainingEnabled {
+		x86ARM64EmitMovImm32(cb, x86ARM64Scratch, targetPC)
+		cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
+		x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(retired))
+		cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
+		cb.Emit32(arm64RET())
+		return
+	}
+
+	// ChainCount += retired; ChainBudget--.
+	cb.Emit32(arm64LDR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffChainCount/4))
+	x86ARM64EmitMovImm32(cb, x86ARM64Scratch2, uint32(retired))
+	cb.Emit32(arm64ADD_W(x86ARM64Scratch, x86ARM64Scratch, x86ARM64Scratch2))
+	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffChainCount/4))
+	cb.Emit32(arm64LDR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffChainCycles/4))
+	x86ARM64EmitMovImm32(cb, x86ARM64Scratch2, cycles)
+	cb.Emit32(arm64ADD_W(x86ARM64Scratch, x86ARM64Scratch, x86ARM64Scratch2))
+	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffChainCycles/4))
+	cb.Emit32(arm64LDR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffChainTicks/4))
+	x86ARM64EmitMovImm32(cb, x86ARM64Scratch2, ticks)
+	cb.Emit32(arm64ADD_W(x86ARM64Scratch, x86ARM64Scratch, x86ARM64Scratch2))
+	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffChainTicks/4))
+	cb.Emit32(arm64LDR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffChainBudget/4))
+	x86ARM64EmitMovImm32(cb, x86ARM64Scratch2, 1)
+	cb.Emit32(arm64SUB_W(x86ARM64Scratch, x86ARM64Scratch, x86ARM64Scratch2))
+	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffChainBudget/4))
+	budgetBail := cb.Len()
+	cb.Emit32(arm64CBZ(x86ARM64Scratch, 0))
+	cb.Emit32(arm64LDR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffNeedInval/4))
+	invalBail := cb.Len()
+	cb.Emit32(arm64CBNZ(x86ARM64Scratch, 0))
+
+	branchOff := cb.Len()
+	cb.Emit32(arm64B(0)) // initially patched to cold return below
+	fallbackOff := cb.Len()
+	cb.PatchUint32(budgetBail, arm64CBZ(x86ARM64Scratch, int32(fallbackOff-budgetBail)))
+	cb.PatchUint32(invalBail, arm64CBNZ(x86ARM64Scratch, int32(fallbackOff-invalBail)))
+	cb.PatchUint32(branchOff, arm64B(int32(fallbackOff-branchOff)))
+
+	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, targetPC)
+	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
+	cb.Emit32(arm64LDR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffChainCount/4))
+	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
+	cb.Emit32(arm64RET())
+	*exits = append(*exits, x86ARM64ChainExit{targetPC: targetPC, branchOff: branchOff, fallbackOff: fallbackOff})
+}
+
+func x86ARM64InstallChainSlots(block *JITBlock, exits []x86ARM64ChainExit, chainable bool) {
+	if block == nil || !x86BlockChainingEnabled || !chainable || len(exits) == 0 {
+		return
+	}
+	// An ARM64 chained transfer keeps X0 and LR live, so the normal native
+	// entry is also the lightweight chain entry.
+	block.chainEntry = block.execAddr
+	for _, exit := range exits {
+		patchAddr := block.execAddr + uintptr(exit.branchOff)
+		fallbackAddr := block.execAddr + uintptr(exit.fallbackOff)
+		block.chainSlots = append(block.chainSlots, chainSlot{
+			targetPC: uint64(exit.targetPC), patchAddr: patchAddr, fallbackAddr: fallbackAddr,
+			patch: func(target uintptr) { x86ARM64PatchBranchAt(patchAddr, target) },
+		})
+	}
+}
+
 // x86ARM64EmitDirectJMP terminates the generated prefix at an unconditional
 // relative branch. The block scanner's fall-through PC remains useful for
 // cache ownership, but the native result must publish the architectural
-// branch target before returning to the dispatcher.
-func x86ARM64EmitDirectJMP(cb *CodeBuffer, ji X86JITInstr, memory []byte, retired int) bool {
+// branch target before returning to the dispatcher or transfer through a
+// generation-safe patched chain.
+func x86ARM64EmitDirectJMP(cb *CodeBuffer, ji X86JITInstr, memory []byte, retired int, cycles, ticks uint32, exits *[]x86ARM64ChainExit) bool {
 	if ji.prefixes&^x86PrefOpSize != 0 {
 		return false
 	}
@@ -2114,11 +2199,7 @@ func x86ARM64EmitDirectJMP(cb *CodeBuffer, ji X86JITInstr, memory []byte, retire
 		return false
 	}
 	target := uint32(int32(ji.opcodePC+uint32(ji.length)) + disp)
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, target)
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(retired+1))
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
-	cb.Emit32(arm64RET())
+	x86ARM64EmitChainOrReturn(cb, target, retired+1, cycles, ticks, exits)
 	return true
 }
 
@@ -2126,7 +2207,7 @@ func x86ARM64EmitDirectJMP(cb *CodeBuffer, ji X86JITInstr, memory []byte, retire
 // block. Its pushed continuation and resolved target both follow the
 // interpreter's operand-size rules. A code-page stack write exits through the
 // normal exact-range invalidation path before the target is dispatched.
-func x86ARM64EmitDirectCALL(cb *CodeBuffer, ji X86JITInstr, memory []byte, retired int, bails *[]x86ARM64DeferredBail) bool {
+func x86ARM64EmitDirectCALL(cb *CodeBuffer, ji X86JITInstr, memory []byte, retired int, cycles, ticks uint32, bails *[]x86ARM64DeferredBail, exits *[]x86ARM64ChainExit) bool {
 	if ji.opcode != 0xE8 || ji.prefixes&^x86PrefOpSize != 0 {
 		return false
 	}
@@ -2163,11 +2244,7 @@ func x86ARM64EmitDirectCALL(cb *CodeBuffer, ji X86JITInstr, memory []byte, retir
 	}
 	x86ARM64EmitStoreReg(cb, 4, x86ARM64Scratch)
 	x86ARM64EmitSMCStoreCheck(cb, uint32(width), target, retired+1, bails)
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, target)
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(retired+1))
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
-	cb.Emit32(arm64RET())
+	x86ARM64EmitChainOrReturn(cb, target, retired+1, cycles, ticks, exits)
 	return true
 }
 
@@ -2198,6 +2275,8 @@ func x86ARM64EmitDirectRET(cb *CodeBuffer, ji X86JITInstr, memory []byte, retire
 	x86ARM64EmitStoreReg(cb, 4, x86ARM64Scratch)
 	cb.Emit32(arm64STR_W_imm(12, x86ARM64RegCtx, x86CtxOffRetPC/4))
 	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(retired+1))
+	cb.Emit32(arm64LDR_W_imm(x86ARM64Scratch2, x86ARM64RegCtx, x86CtxOffChainCount/4))
+	cb.Emit32(arm64ADD_W(x86ARM64Scratch, x86ARM64Scratch, x86ARM64Scratch2))
 	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
 	cb.Emit32(arm64RET())
 	return true
@@ -2273,7 +2352,7 @@ func x86ARM64EmitJccCondition(cb *CodeBuffer, condition byte) bool {
 
 // x86ARM64EmitDirectJcc is a terminal direct branch. Both local paths publish
 // a complete block result, ensuring the dispatcher sees the selected x86 PC.
-func x86ARM64EmitDirectJcc(cb *CodeBuffer, ji X86JITInstr, memory []byte, retired int) bool {
+func x86ARM64EmitDirectJcc(cb *CodeBuffer, ji X86JITInstr, memory []byte, retired int, cycles, ticks uint32, exits *[]x86ARM64ChainExit) bool {
 	if ji.prefixes&^x86PrefOpSize != 0 {
 		return false
 	}
@@ -2313,25 +2392,17 @@ func x86ARM64EmitDirectJcc(cb *CodeBuffer, ji X86JITInstr, memory []byte, retire
 	}
 	notTaken := cb.Len()
 	cb.Emit32(arm64CBZ(x86ARM64Scratch, 0))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, target)
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(retired+1))
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
-	cb.Emit32(arm64RET())
+	x86ARM64EmitChainOrReturn(cb, target, retired+1, cycles, ticks, exits)
 	notTakenPC := cb.Len()
 	cb.PatchUint32(notTaken, arm64CBZ(x86ARM64Scratch, int32(notTakenPC-notTaken)))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, fallthroughPC)
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(retired+1))
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
-	cb.Emit32(arm64RET())
+	x86ARM64EmitChainOrReturn(cb, fallthroughPC, retired+1, cycles, ticks, exits)
 	return true
 }
 
 // x86ARM64EmitDirectLoop covers LOOP, LOOPE, LOOPNE and JCXZ. Address-size
 // LOOP forms update only CX, preserving the upper half of ECX exactly as the
 // interpreter's SetCX path does.
-func x86ARM64EmitDirectLoop(cb *CodeBuffer, ji X86JITInstr, memory []byte, retired int) bool {
+func x86ARM64EmitDirectLoop(cb *CodeBuffer, ji X86JITInstr, memory []byte, retired int, cycles, ticks uint32, exits *[]x86ARM64ChainExit) bool {
 	op := byte(ji.opcode)
 	if op < 0xE0 || op > 0xE3 || ji.prefixes&^(x86PrefAddrSize|x86PrefOpSize) != 0 || ji.length < 2 {
 		return false
@@ -2379,18 +2450,10 @@ func x86ARM64EmitDirectLoop(cb *CodeBuffer, ji X86JITInstr, memory []byte, retir
 	}
 	notTaken := cb.Len()
 	cb.Emit32(arm64CBZ(x86ARM64Scratch, 0))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, target)
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(retired+1))
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
-	cb.Emit32(arm64RET())
+	x86ARM64EmitChainOrReturn(cb, target, retired+1, cycles, ticks, exits)
 	notTakenPC := cb.Len()
 	cb.PatchUint32(notTaken, arm64CBZ(x86ARM64Scratch, int32(notTakenPC-notTaken)))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, fallthroughPC)
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(retired+1))
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
-	cb.Emit32(arm64RET())
+	x86ARM64EmitChainOrReturn(cb, fallthroughPC, retired+1, cycles, ticks, exits)
 	return true
 }
 
@@ -4753,7 +4816,11 @@ func x86CompileBlockForCPU(cpu *CPU_X86, instrs []X86JITInstr, startPC uint32, e
 	helperExit := false
 	terminalExit := false
 	var bails []x86ARM64DeferredBail
+	var chainExits []x86ARM64ChainExit
+	cyclePrefix := x86JITCyclePrefix(instrs)
+	tickPrefix := x86JITTickPrefix(instrs)
 	for _, ji := range instrs {
+		cycles, ticks := uint32(cyclePrefix[count]), uint32(tickPrefix[count])
 		if ji.opcode >= 0xD8 && ji.opcode <= 0xDF {
 			if x86ARM64EmitFNOP(cb, ji, cpu.memory) {
 				count++
@@ -4807,13 +4874,13 @@ func x86CompileBlockForCPU(cpu *CPU_X86, instrs []X86JITInstr, startPC uint32, e
 			helperExit = true
 			break
 		}
-		if x86ARM64EmitDirectJMP(cb, ji, cpu.memory, count) {
+		if x86ARM64EmitDirectJMP(cb, ji, cpu.memory, count, cycles, ticks, &chainExits) {
 			count++
 			pc = ji.opcodePC + uint32(ji.length)
 			terminalExit = true
 			break
 		}
-		if x86ARM64EmitDirectCALL(cb, ji, cpu.memory, count, &bails) {
+		if x86ARM64EmitDirectCALL(cb, ji, cpu.memory, count, cycles, ticks, &bails, &chainExits) {
 			count++
 			pc = ji.opcodePC + uint32(ji.length)
 			terminalExit = true
@@ -4825,13 +4892,13 @@ func x86CompileBlockForCPU(cpu *CPU_X86, instrs []X86JITInstr, startPC uint32, e
 			terminalExit = true
 			break
 		}
-		if x86ARM64EmitDirectJcc(cb, ji, cpu.memory, count) {
+		if x86ARM64EmitDirectJcc(cb, ji, cpu.memory, count, cycles, ticks, &chainExits) {
 			count++
 			pc = ji.opcodePC + uint32(ji.length)
 			terminalExit = true
 			break
 		}
-		if x86ARM64EmitDirectLoop(cb, ji, cpu.memory, count) {
+		if x86ARM64EmitDirectLoop(cb, ji, cpu.memory, count, cycles, ticks, &chainExits) {
 			count++
 			pc = ji.opcodePC + uint32(ji.length)
 			terminalExit = true
@@ -4860,16 +4927,17 @@ func x86CompileBlockForCPU(cpu *CPU_X86, instrs []X86JITInstr, startPC uint32, e
 		if err != nil {
 			return nil, err
 		}
-		return &JITBlock{startPC: uint64(startPC), endPC: uint64(pc), instrCount: count,
+		block := &JITBlock{startPC: uint64(startPC), endPC: uint64(pc), instrCount: count,
 			x86CyclePrefix: x86JITCyclePrefix(compiled), x86TickPrefix: x86JITTickPrefix(compiled), x86DynamicCycles: x86JITDynamicCycles(compiled),
-			execAddr: addr, execSize: len(code)}, nil
+			execAddr: addr, execSize: len(code)}
+		x86ARM64InstallChainSlots(block, chainExits, len(bails) == 0 && !helperExit && len(block.x86DynamicCycles) == 0)
+		return block, nil
 	}
-	// Publish the same block-result ABI as the amd64 backend.
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, pc)
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetPC/4))
-	x86ARM64EmitMovImm32(cb, x86ARM64Scratch, uint32(count))
-	cb.Emit32(arm64STR_W_imm(x86ARM64Scratch, x86ARM64RegCtx, x86CtxOffRetCount/4))
-	cb.Emit32(arm64RET())
+	// A non-terminating scanner prefix has a statically known fall-through,
+	// just like a direct JMP.  Folding it through the chain exit is essential:
+	// otherwise a chained predecessor's retired count would be lost when this
+	// block returns normally to the dispatcher.
+	x86ARM64EmitChainOrReturn(cb, pc, count, uint32(cyclePrefix[count-1]), uint32(tickPrefix[count-1]), &chainExits)
 	x86ARM64EmitDeferredBails(cb, bails)
 	code := cb.Bytes()
 	addr, err := execMem.Write(code)
@@ -4877,9 +4945,11 @@ func x86CompileBlockForCPU(cpu *CPU_X86, instrs []X86JITInstr, startPC uint32, e
 		return nil, err
 	}
 	compiled := append([]X86JITInstr(nil), instrs[:count]...)
-	return &JITBlock{startPC: uint64(startPC), endPC: uint64(pc), instrCount: count,
+	block := &JITBlock{startPC: uint64(startPC), endPC: uint64(pc), instrCount: count,
 		x86CyclePrefix: x86JITCyclePrefix(compiled), x86TickPrefix: x86JITTickPrefix(compiled), x86DynamicCycles: x86JITDynamicCycles(compiled),
-		execAddr: addr, execSize: len(code)}, nil
+		execAddr: addr, execSize: len(code)}
+	x86ARM64InstallChainSlots(block, chainExits, len(bails) == 0 && len(block.x86DynamicCycles) == 0)
+	return block, nil
 }
 
 // x86CompileBlock is the CPU-independent test entry point used to prove the
@@ -4891,4 +4961,109 @@ func x86CompileBlock(instrs []X86JITInstr, startPC uint32, execMem *ExecMem, mem
 	}
 	stub := &CPU_X86{memory: memory}
 	return x86CompileBlockForCPU(stub, instrs, startPC, execMem)
+}
+
+// x86CompileRegionForCPU lowers an acyclic, direct-only region into one ARM64
+// entry point.  Back-edges deliberately remain basic-block dispatches: their
+// variable retirement and cycle counts need a separate loop-accounting ABI,
+// whereas an acyclic region retires each flattened instruction exactly once.
+// This preserves the outer interrupt and bounded-execution observation points
+// while still removing the Go round trips from hot straight-line traces.
+func x86CompileRegionForCPU(cpu *CPU_X86, region *x86Region, execMem *ExecMem) (*JITBlock, error) {
+	if cpu == nil || execMem == nil || region == nil || len(region.blocks) < 2 || len(region.backEdges) != 0 {
+		return nil, fmt.Errorf("region not ARM64-admissible")
+	}
+	cb := NewCodeBuffer(1024)
+	cb.Emit32(arm64LDR_imm(x86ARM64RegRegs, x86ARM64RegCtx, x86CtxOffJITRegsPtr/8))
+	labels := make([]int, len(region.blocks))
+	blockIndex := make(map[uint32]int, len(region.blocks))
+	for i, pc := range region.blockPCs {
+		blockIndex[pc] = i
+	}
+	type forwardBranch struct{ off, target int }
+	var forward []forwardBranch
+	var bails []x86ARM64DeferredBail
+	var chainExits []x86ARM64ChainExit
+	var all []X86JITInstr
+	total := 0
+	var staticCycles, staticTicks uint32
+
+	for bi, instrs := range region.blocks {
+		if len(instrs) == 0 {
+			return nil, fmt.Errorf("empty region block")
+		}
+		labels[bi] = cb.Len()
+		for ii, ji := range instrs {
+			nextCycles := staticCycles + uint32(x86JITCycleCost(ji))
+			nextTicks := staticTicks + uint32(max(x86JITCycleCost(ji), 1))
+			last := ii == len(instrs)-1
+			if last && x86IsBlockTerminator(ji.opcode) {
+				if target, known := x86ResolveTerminatorTarget(&ji, cpu.memory, region.blockPCs[bi]); known {
+					if targetIdx, internal := blockIndex[target]; internal {
+						if targetIdx <= bi { // variable loop accounting stays at the dispatch boundary.
+							return nil, fmt.Errorf("region back-edge")
+						}
+						off := cb.Len()
+						cb.Emit32(arm64B(0))
+						forward = append(forward, forwardBranch{off: off, target: targetIdx})
+						total++
+						staticCycles, staticTicks = nextCycles, nextTicks
+						all = append(all, ji)
+						continue
+					}
+				}
+				if !x86ARM64EmitDirectJMP(cb, ji, cpu.memory, total, nextCycles, nextTicks, &chainExits) {
+					return nil, fmt.Errorf("unsupported ARM64 region terminator")
+				}
+				total++
+				staticCycles, staticTicks = nextCycles, nextTicks
+				all = append(all, ji)
+				// A terminal external branch returns from the native function.
+				if bi != len(region.blocks)-1 {
+					return nil, fmt.Errorf("external region branch before final block")
+				}
+				continue
+			}
+			// The current region path is deliberately direct-only: helper exits
+			// replay one instruction and would split a flattened retirement count.
+			if ji.opcode >= 0xD8 && ji.opcode <= 0xDF || !x86ARM64EmitInstruction(cb, ji, cpu.memory, total, &bails) {
+				return nil, fmt.Errorf("unsupported ARM64 region instruction")
+			}
+			total++
+			staticCycles, staticTicks = nextCycles, nextTicks
+			all = append(all, ji)
+		}
+	}
+	for _, fix := range forward {
+		cb.PatchUint32(fix.off, arm64B(int32(labels[fix.target]-fix.off)))
+	}
+	last := region.blocks[len(region.blocks)-1][len(region.blocks[len(region.blocks)-1])-1]
+	if !x86IsBlockTerminator(last.opcode) {
+		x86ARM64EmitChainOrReturn(cb, last.opcodePC+uint32(last.length), total, staticCycles, staticTicks, &chainExits)
+	}
+	x86ARM64EmitDeferredBails(cb, bails)
+	code := cb.Bytes()
+	addr, err := execMem.Write(code)
+	if err != nil {
+		return nil, err
+	}
+	covered := make([][2]uint64, 0, len(region.blocks))
+	for i, block := range region.blocks {
+		end := block[len(block)-1].opcodePC + uint32(block[len(block)-1].length)
+		covered = append(covered, [2]uint64{uint64(region.blockPCs[i]), uint64(end)})
+	}
+	block := &JITBlock{
+		startPC: uint64(region.entryPC), endPC: uint64(last.opcodePC + uint32(last.length)), instrCount: total,
+		x86CyclePrefix: x86JITCyclePrefix(all), x86TickPrefix: x86JITTickPrefix(all), x86DynamicCycles: x86JITDynamicCycles(all),
+		execAddr: addr, execSize: len(code), tier: 2, coveredRanges: covered,
+	}
+	x86ARM64InstallChainSlots(block, chainExits, len(bails) == 0 && len(block.x86DynamicCycles) == 0)
+	return block, nil
+}
+
+func x86CompileRegion(region *x86Region, execMem *ExecMem, memory []byte) (*JITBlock, error) {
+	if len(memory) == 0 {
+		return nil, fmt.Errorf("region has no memory")
+	}
+	return x86CompileRegionForCPU(&CPU_X86{memory: memory}, region, execMem)
 }
