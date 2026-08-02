@@ -5107,6 +5107,212 @@ func TestX86WasmCompileBlockModule_DirectX87CompareForms(t *testing.T) {
 	}
 }
 
+func TestX86WasmCompileBlockModule_DirectX87DERegisterPopArithmetic(t *testing.T) {
+	const startPC = uint32(0x1000)
+	type testCase struct {
+		name   string
+		code   []byte
+		setup  func(*CPU_X86)
+		helper bool
+	}
+	run := func(t *testing.T, tc testCase) {
+		t.Helper()
+		mem := make([]byte, int(startPC)+len(tc.code)+0x10)
+		copy(mem[startPC:], tc.code)
+		instrs := x86ScanBlock(mem, startPC)
+		compiled, err := x86WasmCompileBlockModule(instrs, startPC, mem)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		r := wazero.NewRuntime(context.Background())
+		t.Cleanup(func() { _ = r.Close(context.Background()) })
+		ctx := context.Background()
+		instantiateNamed(t, r, ctx, "env", buildWasmMemoryModule(t))
+		mod, err := r.Instantiate(ctx, compiled.module)
+		if err != nil {
+			t.Fatalf("instantiate block: %v", err)
+		}
+		memExport := mod.Memory()
+		const (
+			ctxAddr    = uint32(0x80)
+			regsAddr   = uint32(0x200)
+			flagsAddr  = uint32(0x280)
+			segsAddr   = uint32(0x2C0)
+			fpuAddr    = uint32(0x300)
+			guestBase  = uint32(0x1000)
+			ioBMAddr   = uint32(0x5000)
+			codeBMAddr = uint32(0x5800)
+		)
+		writePtr := func(off, addr uint32) {
+			buf := make([]byte, 8)
+			binary.LittleEndian.PutUint64(buf, uint64(addr))
+			if !memExport.Write(ctxAddr+off, buf) {
+				t.Fatalf("seed ptr off %d", off)
+			}
+		}
+		if !memExport.Write(ctxAddr, make([]byte, 256)) || !memExport.Write(regsAddr, make([]byte, 32)) ||
+			!memExport.Write(flagsAddr, make([]byte, 4)) || !memExport.Write(segsAddr, make([]byte, 16)) ||
+			!memExport.Write(fpuAddr, make([]byte, x86FPUSize)) || !memExport.Write(guestBase, make([]byte, 0x2000)) ||
+			!memExport.Write(ioBMAddr, make([]byte, 32)) || !memExport.Write(codeBMAddr, make([]byte, 32)) {
+			t.Fatal("seed memory")
+		}
+		writePtr(x86CtxOffJITRegsPtr, regsAddr)
+		writePtr(x86CtxOffFlagsPtr, flagsAddr)
+		writePtr(x86CtxOffSegRegsPtr, segsAddr)
+		writePtr(x86CtxOffFPUPtr, fpuAddr)
+		writePtr(x86CtxOffMemPtr, guestBase)
+		writePtr(x86CtxOffIOBitmapPtr, ioBMAddr)
+		writePtr(x86CtxOffCodePageBitmapPtr, codeBMAddr)
+
+		bus := NewMachineBus()
+		adapter := NewX86BusAdapter(bus)
+		cpu := NewCPU_X86(adapter)
+		cpu.memory = adapter.GetMemory()
+		copy(cpu.memory[startPC:], tc.code)
+		cpu.CS = 0x3456
+		cpu.FPU.Reset()
+		if tc.setup != nil {
+			tc.setup(cpu)
+		}
+		word := make([]byte, 4)
+		binary.LittleEndian.PutUint32(word, cpu.Flags)
+		if !memExport.Write(flagsAddr, word) {
+			t.Fatal("seed flags")
+		}
+		segBytes := make([]byte, 12)
+		binary.LittleEndian.PutUint16(segBytes[x86SegCS*2:], cpu.CS)
+		if !memExport.Write(segsAddr, segBytes) {
+			t.Fatal("seed segs")
+		}
+		writeWasmFPU(t, memExport, fpuAddr, cpu.FPU)
+		binary.LittleEndian.PutUint32(word, 0x2000)
+		if !memExport.Write(ctxAddr+x86CtxOffMemSize, word) {
+			t.Fatal("seed MemSize")
+		}
+
+		interp := runX86InterpreterOneInstr(t, startPC, func(cpu *CPU_X86) {
+			cpu.CS = 0x3456
+			cpu.FPU.Reset()
+			if tc.setup != nil {
+				tc.setup(cpu)
+			}
+		}, tc.code...)
+		if _, err := mod.ExportedFunction("block").Call(ctx, uint64(ctxAddr)); err != nil {
+			t.Fatalf("call block: %v", err)
+		}
+		if tc.helper {
+			if got, want := readWasmU32(t, memExport, ctxAddr+x86CtxOffExitReason), x86JITExitFPUHelper; got != want {
+				t.Fatalf("ExitReason=%d want %d", got, want)
+			}
+			payload := readWasmFPUHelperPayload(t, memExport, ctxAddr)
+			if got, want := payload.Bytes[:len(tc.code)], tc.code; !bytes.Equal(got, want) {
+				t.Fatalf("payload bytes=% X want % X", got, want)
+			}
+			return
+		}
+		if got := readWasmU32(t, memExport, ctxAddr+x86CtxOffExitReason); got != 0 {
+			t.Fatalf("ExitReason=%d want 0", got)
+		}
+		if got, want := readWasmU32(t, memExport, ctxAddr+x86CtxOffRetPC), startPC+uint32(len(tc.code)); got != want {
+			t.Fatalf("RetPC=%#x want %#x", got, want)
+		}
+		if got, want := readWasmU32(t, memExport, ctxAddr+x86CtxOffRetCount), uint32(1); got != want {
+			t.Fatalf("RetCount=%d want %d", got, want)
+		}
+		gotFPU := readWasmFPU(t, memExport, fpuAddr)
+		assertFPUStateEqual(t, gotFPU, *interp.FPU)
+	}
+
+	for _, tc := range []testCase{
+		{
+			name: "faddp",
+			code: []byte{0xDE, 0xC1},
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.regs[0] = 1.25
+				cpu.FPU.regs[1] = 2.5
+				cpu.FPU.setTag(0, x87TagValid)
+				cpu.FPU.setTag(1, x87TagValid)
+			},
+		},
+		{
+			name: "fmulp",
+			code: []byte{0xDE, 0xC9},
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.regs[0] = 1.5
+				cpu.FPU.regs[1] = 2.25
+				cpu.FPU.setTag(0, x87TagValid)
+				cpu.FPU.setTag(1, x87TagValid)
+			},
+		},
+		{
+			name: "fsubrp",
+			code: []byte{0xDE, 0xE1},
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.regs[0] = 1.25
+				cpu.FPU.regs[1] = 5.5
+				cpu.FPU.setTag(0, x87TagValid)
+				cpu.FPU.setTag(1, x87TagValid)
+			},
+		},
+		{
+			name: "fsubp",
+			code: []byte{0xDE, 0xE9},
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.regs[0] = 5.5
+				cpu.FPU.regs[1] = 1.25
+				cpu.FPU.setTag(0, x87TagValid)
+				cpu.FPU.setTag(1, x87TagValid)
+			},
+		},
+		{
+			name: "fdivrp",
+			code: []byte{0xDE, 0xF1},
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.regs[0] = 3
+				cpu.FPU.regs[1] = 9
+				cpu.FPU.setTag(0, x87TagValid)
+				cpu.FPU.setTag(1, x87TagValid)
+			},
+		},
+		{
+			name: "fdivp",
+			code: []byte{0xDE, 0xF9},
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.regs[0] = 9
+				cpu.FPU.regs[1] = 3
+				cpu.FPU.setTag(0, x87TagValid)
+				cpu.FPU.setTag(1, x87TagValid)
+			},
+		},
+		{
+			name: "helper_zero_result",
+			code: []byte{0xDE, 0xE9},
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.regs[0] = 2
+				cpu.FPU.regs[1] = 2
+				cpu.FPU.setTag(0, x87TagValid)
+				cpu.FPU.setTag(1, x87TagValid)
+			},
+			helper: true,
+		},
+		{
+			name: "helper_zero_tag",
+			code: []byte{0xDE, 0xC1},
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.regs[0] = 1
+				cpu.FPU.regs[1] = 0
+				cpu.FPU.setTag(0, x87TagValid)
+				cpu.FPU.setTag(1, x87TagZero)
+			},
+			helper: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run(t, tc)
+		})
+	}
+}
+
 func TestX86WasmCompileBlockModule_DirectMemoryTESTImmediateAndGuardBails(t *testing.T) {
 	const startPC = uint32(0x100)
 	mem := make([]byte, 0x280)
@@ -6228,82 +6434,9 @@ func TestX86WasmCompileConditionalRegionModule_ShortJccBranchesInternally(t *tes
 }
 
 func TestX86WasmCompileSubsetManifestRows(t *testing.T) {
-	supported := map[string]bool{
-		"MOV r32,imm32":                 true,
-		"MOV r8,imm8":                   true,
-		"MOV r/m8,r8":                   true,
-		"MOV r32,m32 guarded":           true,
-		"MOV moffs guarded":             true,
-		"MOV r8,m8 guarded":             true,
-		"MOV m32,r32 guarded":           true,
-		"MOV m,imm guarded":             true,
-		"LEA SIB/disp32":                true,
-		"MOVZX/MOVSX guarded memory":    true,
-		"Grp1 r/m32,imm8":               true,
-		"Grp2 byte,count one":           true,
-		"Grp2 word/dword,count one":     true,
-		"Grp2 memory,count one":         true,
-		"Grp2 dword,imm8":               true,
-		"Grp2 byte shift,CL":            true,
-		"Grp2 word shift,CL":            true,
-		"Grp2 dword shift,CL":           true,
-		"Grp2 carry rotate,CL":          true,
-		"Grp3":                          true,
-		"INC/DEC register":              true,
-		"byte ALU r/m,r":                true,
-		"dword ALU r/m,r":               true,
-		"ALU accumulator,imm":           true,
-		"IMUL immediate":                true,
-		"PUSH/POP register":             true,
-		"MOV r/m32,r32":                 true,
-		"MOV r32,r/m32":                 true,
-		"POP guarded memory":            true,
-		"PUSH immediate":                true,
-		"PUSH/POP segment":              true,
-		"PUSHA/POPA":                    true,
-		"PUSHF/POPF":                    true,
-		"CLI/STI":                       true,
-		"segment MOV":                   true,
-		"segment MOV guarded memory":    true,
-		"TEST":                          true,
-		"XCHG":                          true,
-		"XCHG guarded memory":           true,
-		"CBW/CWDE and CWD/CDQ":          true,
-		"LES/LDS":                       true,
-		"XLAT":                          true,
-		"ENTER/LEAVE":                   true,
-		"LEAVE":                         true,
-		"MOVZX/MOVSX":                   true,
-		"SETcc":                         true,
-		"CMOVcc":                        true,
-		"BSF/BSR":                       true,
-		"BSWAP":                         true,
-		"SALC":                          true,
-		"ignored operand-size prefix":   true,
-		"WAIT":                          true,
-		"near CALL":                     true,
-		"near RET":                      true,
-		"Jcc":                           true,
-		"LOOP":                          true,
-		"near JMP":                      true,
-		"bit test":                      true,
-		"double shift":                  true,
-		"double shift 16-bit immediate": true,
-		"double shift CL":               true,
-		"MOVS":                          true,
-		"STOS":                          true,
-		"LODS":                          true,
-		"CMPS":                          true,
-		"SCAS":                          true,
-		"REP MOVS":                      true,
-		"REP STOS":                      true,
-		"REP CMPS":                      true,
-		"REP SCAS":                      true,
-		"REP LODS":                      true,
-	}
 	const pc = uint32(0x100)
 	for _, row := range x86JITCoverageManifest {
-		if !supported[row.form] {
+		if row.wasm == x86JITCoverageUnavailable {
 			continue
 		}
 		mem := make([]byte, int(pc)+len(row.sample))
@@ -6314,6 +6447,24 @@ func TestX86WasmCompileSubsetManifestRows(t *testing.T) {
 		}
 		if _, err := x86WasmCompileBlockModule(instrs, pc, mem); err != nil {
 			t.Fatalf("%s (% X): compile failed: %v", row.form, row.sample, err)
+		}
+	}
+}
+
+func TestX86WasmCoverageManifest(t *testing.T) {
+	const pc = uint32(0x100)
+	for _, row := range x86JITCoverageManifest {
+		if row.wasm == x86JITCoverageUnavailable {
+			continue
+		}
+		mem := make([]byte, 0x2000)
+		copy(mem[pc:], row.sample)
+		instrs := x86ScanBlock(mem, pc)
+		if len(instrs) == 0 {
+			t.Fatalf("%s (% X): scanner returned no instructions", row.form, row.sample)
+		}
+		if _, err := x86WasmCompileBlockModule(instrs, pc, mem); err != nil {
+			t.Fatalf("%s (% X): advertised %s wasm path did not compile: %v", row.form, row.sample, row.wasm, err)
 		}
 	}
 }

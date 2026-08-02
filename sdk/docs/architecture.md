@@ -48,12 +48,12 @@ flowchart LR
         M68K["M68K 68020 interpreter"]
         Z80["Z80 interpreter"]
         C6502["6502 interpreter"]
-        X86["x86 interpreter / amd64 and Linux arm64 JIT paths"]
+        X86["x86 interpreter / amd64, Linux arm64 and wasm JIT paths"]
         JIE64["IE64 JIT<br/>amd64 + arm64"]
         J6502["6502 JIT<br/>amd64"]
         JM68K["M68K JIT<br/>amd64 + arm64 + wasm"]
         JZ80["Z80 JIT<br/>amd64 only"]
-        JX86["x86 JIT<br/>amd64 + Linux arm64"]
+        JX86["x86 JIT<br/>amd64 + Linux arm64 + wasm"]
         CPUMON["Debug CPU adapters<br/>IE32, IE64, M68K, Z80, 6502, x86"]
     end
 
@@ -830,26 +830,31 @@ Interrupt Delivery" section of this manual for the full model.
 
 ### x86 JIT backends
 
-The x86 guest core has a native amd64 JIT on Linux, Windows and macOS, plus a
-Linux/ARM64 direct-prefix backend. wasm has no x86 JIT and interprets. The guest target is the
-32-bit flat-model i386 base plus the intentionally supported `BSWAP` and an x87
+The x86 guest core has a native amd64 JIT on Linux, Windows and macOS, a
+Linux/ARM64 direct-prefix backend, and a js/wasm backend gated on wasm SIMD.
+The guest target is the 32-bit flat-model i386 base plus the intentionally supported `BSWAP` and an x87
 FPU, lowered through SSE2 on amd64 where eligible; there is no 486/Pentium/MMX/SSE guest requirement. Blocks are
 scanned and compiled with the fixed Tier 1 register mapping plus per-block Tier 2
 frequency allocation, native EFLAGS passthrough, block chaining, and self-loop
 and experimental multi-block region formation.
 
-Those allocation, chaining and region features are amd64-specific. Linux/ARM64
-keeps guest registers memory-resident and directly lowers a verified register
-subset plus guarded MOV, ALU, TEST, 16-bit and 32-bit IMUL, Group 3 NOT/NEG,
-LES/LDS, count-one SHL/SHR/SAR and immediate SHLD/SHRD memory forms, including
-16-bit immediate counts through 16. Guard failure returns to the interpreter before
-mutation; a native write to a compiled 256-byte page publishes an exact
-invalidation range. Variable-count shifts, strings and unsupported control
-flow return to the interpreter. Its x87 forms use direct lowering for reset,
-status, sign-only forms and finite register `FADD ST(0),ST(i)`; the remaining
-supported forms use the canonical decoded helper exit. The finite valid-tag
-register `FADD`, `FMUL`, `FSUB`, `FSUBR`, `FDIV` and `FDIVR` forms are directly lowered; every
-tag transition and exceptional result resumes through that helper.
+Linux/ARM64 keeps guest registers memory-resident and directly lowers a
+verified register subset plus guarded MOV, ALU, TEST, 16-bit and 32-bit IMUL,
+Group 3 NOT/NEG, LES/LDS, count-one SHL/SHR/SAR and immediate SHLD/SHRD
+memory forms, including 16-bit immediate counts through 16. Guard failure
+returns to the interpreter before mutation; a native write to a compiled
+256-byte page publishes an exact invalidation range. Its x87 forms use direct
+lowering for reset, status, sign-only forms and finite register
+`FADD ST(0),ST(i)`; the remaining supported forms use the canonical decoded
+helper exit. The finite valid-tag register `FADD`, `FMUL`, `FSUB`, `FSUBR`,
+`FDIV` and `FDIVR` forms are directly lowered; every tag transition and
+exceptional result resumes through that helper.
+
+The js/wasm backend publishes the manifest-backed direct and canonical x87
+helper families through imported guest memory, a WebAssembly table driver,
+native chaining, loop regions and conditional region promotion. Public
+availability is all-or-nothing: when wasm SIMD support is missing the complete
+x86 wasm JIT stays unavailable and x86 interpretation continues normally.
 
 Memory accesses at runtime-computed addresses go through a page-safety and I/O
 bitmap check on the fast path. Native stack and word emitters (`PUSH`/`POP` r32,

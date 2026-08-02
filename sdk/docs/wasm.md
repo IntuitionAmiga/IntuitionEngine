@@ -64,7 +64,7 @@ resulting start-up time remain browser-dependent.
 
 ## What is different from native
 
-- **IE64 and M68K have wasm JIT tiers; the other CPUs interpret.** Hot IE64 blocks are
+- **IE64, M68K and x86 have wasm JIT tiers; the other CPUs interpret.** Hot IE64 blocks are
   translated into runtime wasm modules and installed asynchronously while the
   interpreter continues. The tier is enabled by default and is disabled while
   the architectural timer or MMU is active. `IE64_WASM_JIT=0` or
@@ -118,9 +118,9 @@ resulting start-up time remain browser-dependent.
   IE32, M68K, Z80 and 6502 interpreter loops call `hostCooperativeYield()`
   (`cpu_yield_wasm.go`) periodically. The IE64 JIT dispatcher checks every 64
   dispatch iterations, since one iteration there can be a whole chained run.
-  The browser x86 interpreter does not yet call this hook. On the yielding
-  paths, after each guest slice (default 16 ms, one display frame) the CPU
-  M68K wasm dispatcher also yields on a tight dispatch cadence. The CPU
+  The x86 interpreter and x86 wasm JIT dispatcher also use the yielding path.
+  On the yielding paths, after each guest slice (default 16 ms, one display
+  frame) the M68K wasm dispatcher also yields on a tight dispatch cadence. The CPU
   goroutine parks until the browser's next requestAnimationFrame, resuming
   through a zero-delay timeout so the paint happens first; a 50 ms timeout
   races the frame so hidden tabs (where rAF stops) keep executing.
@@ -176,12 +176,13 @@ remain interpreted.
   test natively; run `go test -tags headless -run 'TestWasm' .`.
 - Layer B (build gate): `make test-wasm-build` builds the package for js/wasm
   both plain (Vulkan excluded by `!js`) and with `-tags novulkan`.
-- Layer C (runtime): `make test-wasm-node` runs the selected `TestWasmJIT_`
-  and `TestWasmFileBridge_` js/wasm tests under Node via the repo-local runner
-  (`tools/wasm/go_js_wasm_exec`). The runner exposes the module memory as
-  `__goMem`, matching the demo page. See [`IE64_JIT.md`](IE64_JIT.md) for the
-  wasm JIT test contract and native differential-test command. Wasm-only RAM
-  tests are not selected by this target.
+- Layer C (runtime): `make test-wasm-node` runs the selected `TestWasmJIT_`,
+  `TestX86WasmJIT_` and `TestWasmFileBridge_` js/wasm tests under Node via the
+  repo-local runner (`tools/wasm/go_js_wasm_exec`). The runner exposes the
+  module memory as `__goMem`, matching the demo page. See
+  [`IE64_JIT.md`](IE64_JIT.md) for the IE64 wasm JIT contract and native
+  differential-test command. Wasm-only RAM tests are not selected by this
+  target.
   Browser verification: serve the site, open `/demo/` and `/demo/?jit=0`;
   the JIT variant logs `IE64 wasm JIT: first block installed` to the
   console, both boot to the BASIC Ready prompt.
@@ -206,11 +207,11 @@ remain interpreted.
   production cache policy requires revalidation on every visit. The browser
   may reuse its cached response when the server reports that the binary has not
   changed.
-- Guest CPU speed: IE64 tiers up through the wasm JIT; IE32, M68K, Z80, 6502
-  and x86 are interpreter-only in the browser.
-- The browser x86 interpreter does not call the cooperative-yield hook. A tight
-  x86 workload can therefore block rendering and input until it stops or
-  halts.
+- Guest CPU speed: IE64, M68K and x86 can tier up through their wasm JIT
+  backends; IE32, Z80 and 6502 remain interpreter-only in the browser.
+- The browser x86 path participates in the cooperative-yield hook through both
+  its interpreter and wasm JIT dispatcher, so long x86 runs yield control back
+  to rendering and input between guest slices.
 - The IE64 wasm JIT has a deliberately narrower instruction surface than the
   native backends. Its exact coverage and fallback rules are documented in
   [`IE64_JIT.md`](IE64_JIT.md).

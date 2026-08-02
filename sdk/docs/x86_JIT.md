@@ -2,11 +2,11 @@
 
 ## Overview
 
-The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 386 32-bit extensions) into native code at runtime. The amd64 backend has the full native emitter, while Linux/ARM64 executes a verified direct subset and resumes every other form through the canonical interpreter boundary. Both scan a block, cache admitted native prefixes and dispatch through `callNative()`.
+The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 386 32-bit extensions) into native code at runtime. The amd64 backend has the full native emitter, Linux/ARM64 executes a verified direct subset and resumes every other form through the canonical interpreter boundary, and js/wasm lowers the manifest-backed direct and canonical-helper families into WebAssembly modules gated on wasm SIMD. Native backends dispatch through `callNative()`. The js/wasm backend dispatches through its dedicated WebAssembly table driver.
 
 **Memory model (PLAN_MAX_RAM.md):** the x86 CPU is a flat 32-bit guest. Visible RAM is the x86 32-bit profile ceiling clamped against the autodetected active visible RAM (queried via the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair). The JIT's address-mask emission must not retain the historical 25-bit / 32 MB mask; bounds checks read the active visible RAM through the bus accessor rather than a hardcoded constant.
 
-**Platform support:** amd64/linux, amd64/darwin and amd64/windows; Linux/ARM64. ARM64 has native register moves; guarded byte, word and dword MOV, ALU, TEST, Group 3 NOT/NEG and count-one SHL/SHR/SAR memory forms; count-one register rotations; 32-bit immediate SHL/SHR/SAR/ROL/ROR with exact count masking; byte, word and 32-bit register `CL` SHL/SHR/SAR/RCL/RCR; 16-bit and 32-bit register and guarded-memory IMUL forms; guarded register and memory destination immediate SHLD/SHRD, including 16-bit immediate counts through 16, plus 32-bit register `CL` forms; guarded MOVS, STOS, LODS, CMPS and SCAS byte, word and dword forms with REP/REPNE loops; LES/LDS pointer loads; register-source, immediate or absolute-offset writes; guarded memory XCHG and XLAT; guarded register, immediate and segment PUSH plus register, segment and non-ESP-addressed memory POP; guarded PUSHF/POPF and PUSHA/POPA; 32-bit `ENTER imm16,0`; LEAVE; LEA; byte extensions; flag-bit operations and SALC; FNOP, FCHS, FABS, FNCLEX, FNINIT, FNSTSW AX, FFREE, FXCH, FSTP ST(i) and finite valid-tag register `FADD`, `FMUL`, `FSUB`, `FSUBR`, `FDIV` and `FDIVR`; selected x87 helper exits; native static-successor chaining; acyclic three-or-more-block region promotion; and an interpreter-resume dispatcher. A guarded memory access returns to the interpreter before any guest mutation for a page crossing, visible-RAM boundary or MMIO page. A native write to a compiled page publishes its exact invalidation range before dispatch continues. ARM64 chains check the bounded-return budget and completed invalidation state before every patched branch; invalidation restores the cold return branch before a target is released. ARM64 regions deliberately leave back-edges and dynamic REP cycle accounting at normal block boundaries.
+**Platform support:** amd64/linux, amd64/darwin and amd64/windows; Linux/ARM64; and js/wasm with wasm SIMD. ARM64 has native register moves; guarded byte, word and dword MOV, ALU, TEST, Group 3 NOT/NEG and count-one SHL/SHR/SAR memory forms; count-one register rotations; 32-bit immediate SHL/SHR/SAR/ROL/ROR with exact count masking; byte, word and 32-bit register `CL` SHL/SHR/SAR/RCL/RCR; 16-bit and 32-bit register and guarded-memory IMUL forms; guarded register and memory destination immediate SHLD/SHRD, including 16-bit immediate counts through 16, plus 32-bit register `CL` forms; guarded MOVS, STOS, LODS, CMPS and SCAS byte, word and dword forms with REP/REPNE loops; LES/LDS pointer loads; register-source, immediate or absolute-offset writes; guarded memory XCHG and XLAT; guarded register, immediate and segment PUSH plus register, segment and non-ESP-addressed memory POP; guarded PUSHF/POPF and PUSHA/POPA; 32-bit `ENTER imm16,0`; LEAVE; LEA; byte extensions; flag-bit operations and SALC; FNOP, FCHS, FABS, FNCLEX, FNINIT, FNSTSW AX, FFREE, FXCH, FSTP ST(i) and finite valid-tag register `FADD`, `FMUL`, `FSUB`, `FSUBR`, `FDIV` and `FDIVR`; selected x87 helper exits; native static-successor chaining; acyclic three-or-more-block region promotion; and an interpreter-resume dispatcher. The js/wasm backend exposes the manifest-backed direct and canonical-helper families through imported guest memory, the WebAssembly driver cache, native chaining, direct loop regions and conditional three-block region promotion. A guarded memory access returns to the interpreter before any guest mutation for a page crossing, visible-RAM boundary or MMIO page. A native write to a compiled page publishes its exact invalidation range before dispatch continues. ARM64 chains check the bounded-return budget and completed invalidation state before every patched branch; invalidation restores the cold return branch before a target is released. wasm availability is all-or-nothing: when SIMD support is missing the complete x86 wasm JIT stays disabled and x86 interpretation continues normally.
 
 **Activation:** Set `cpu.x86JitEnabled = true` and call `cpu.X86ExecuteJIT()` or `cpu.x86JitExecute()`. The dispatch function `x86JitExecute()` routes to the JIT when enabled, otherwise to the interpreter.
 
@@ -15,13 +15,13 @@ The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 38
 **Coverage:** 50+ instruction forms including byte, word and dword MOV, `MOV` to and from segment selectors, segment PUSH/POP and LES/LDS pointer loads, ADD/SUB/AND/OR/XOR/CMP/TEST, byte and dword INC/DEC, DAA/DAS, guarded Group 3 TEST/NOT/NEG/MUL/IMUL/DIV/IDIV forms, immediate IMUL, guarded near CALL/RET/JMP forms including indirect dword targets, 16-bit and 32-bit register PUSH/POP and POP r/m, PUSHA/POPA, 16-bit and 32-bit PUSHF/POPF, CLI/STI, `ENTER imm16,imm8`, LEA, XCHG, Jcc, JECXZ, JMP rel8/rel32, interpreter-neutral LOCK and ignored operand-size prefixes on supported forms, BT/BTS/BTR/BTC and their immediate forms, XLAT, SALC, WAIT, AAA/AAS/AAM/AAD, register dword and guarded memory count-one SHL/SHR/SAR/ROL/ROR forms, byte `CL`-count-one shifts and rotates, immediate SHLD/SHRD memory destinations, MOVSX/MOVZX, SETcc, CMOVcc, BSF/BSR, LOOP/LOOPE/LOOPNE, SAHF/LAHF, LEAVE, CBW/CWDE/CWD/CDQ, unprefixed plus REP and REPNE MOVSB/MOVSW/MOVSD/STOSB/STOSW/STOSD/CMPSB/CMPSW/CMPSD/SCASB/SCASW/SCASD/LODSB/LODSW/LODSD, x87 FADD/FSUB/FMUL/FDIV/FLD/FST/FSTP/FXCH/FCHS/FABS. Far control flow, INT/IRET and I/O port instructions fall back to the interpreter.
 
 `jit_x86_coverage_manifest.go` is the checked opcode-family inventory. Its
-amd64 test verifies that every listed direct or canonical x87-helper form is
-admitted by the production scanner and emits through the production compiler.
-Its dispatch-inventory companion walks the interpreter's base and extended
-opcode tables, requiring an explicit amd64 direct, x87-helper or documented
-interpreter-fallback decision for every implemented handler. ARM64 records its
-native direct and canonical x87-helper admissions; every other form resumes
-through the interpreter. wasm remains unavailable.
+backend coverage tests verify that every listed direct or canonical x87-helper
+form is admitted by the production scanner and emits through the production
+compiler on the targets that advertise it. Its dispatch-inventory companion
+walks the interpreter's base and extended opcode tables, requiring an explicit
+direct, x87-helper or documented interpreter-fallback decision for every
+implemented handler. wasm now publishes manifest-backed direct and canonical
+x87-helper rows under the same contract.
 
 ---
 
@@ -93,6 +93,11 @@ through the interpreter. wasm remains unavailable.
 | `jit_x86_emit_arm64.go` | `arm64 && linux` | Linux/ARM64 direct-prefix emitter and canonical x87 helper-payload exits |
 | `jit_x86_exec_arm64.go` | `arm64 && linux` | Linux/ARM64 cache, executable-memory lifecycle and interpreter-resume dispatcher |
 | `jit_x86_dispatch_arm64.go` | `arm64 && linux` | Enables Linux/ARM64 x86 JIT dispatch |
+| `jit_x86_wasm_emit.go` | none | Shared WebAssembly module builder for x86 blocks, loop regions, conditional regions and canonical x87 helper exits |
+| `jit_x86_exec_wasm.go` | `js && wasm` | js/wasm x86 JIT runtime, module cache, chaining driver and region promotion dispatcher |
+| `jit_x86_dispatch_wasm.go` | `js && wasm` | Enables js/wasm x86 JIT dispatch when wasm SIMD support is available |
+| `jit_x86_wasm_emit_test.go` | none | wazero-backed block, driver, region, manifest and x87 coverage tests for the shared x86 wasm builder |
+| `jit_x86_runtime_wasm_js_test.go` | `js && wasm` | Node-run js/wasm x86 runtime parity and region-promotion tests |
 | `jit_x86_dispatch_stub.go` | all other platforms | Fallback stubs for unsupported platforms |
 | `x86_jit_benchmark_test.go` | `amd64 && linux` | ALU/Memory/Mixed/String benchmark suite with Interpreter/JIT variants |
 

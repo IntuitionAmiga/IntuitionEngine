@@ -4,11 +4,11 @@
 
 package main
 
-// The parity plan forbids advertising a partial wasm x86 JIT as available.
-// Keep the public availability bit down until the full manifest-backed backend
-// is complete, even though subsets below can be developed and differentially
-// tested already.
-const x86WasmCoverageReady = false
+// The manifest-backed wasm x86 backend now covers the decoder-supported direct
+// and canonical-helper families published by the x86 JIT contract. Public
+// availability still remains gated on host SIMD support and the ordinary
+// js/wasm runtime checks below.
+const x86WasmCoverageReady = true
 
 func (cpu *CPU_X86) x86JitExecute() {
 	if !x86JitAvailable || !x86WasmJITEnabled() {

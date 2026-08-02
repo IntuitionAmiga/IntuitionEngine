@@ -1446,18 +1446,21 @@ func x86WasmEmitFPUDirectOrHelper(b *wasmBody, ji X86JITInstr, memory []byte, re
 		}
 		b.end()
 
-		b.localGet(locTmp3)
-		b.localGet(locTmp2)
-		b.i32Const(3)
-		b.op(wasmOpI32Shl)
-		b.op(wasmOpI32Add)
-		b.f64Load(3, 0)
-		b.localGet(locTmp3)
-		b.localGet(locTmp)
-		b.i32Const(3)
-		b.op(wasmOpI32Shl)
-		b.op(wasmOpI32Add)
-		b.f64Load(3, 0)
+		loadST := func(locPhys uint32) {
+			b.localGet(locTmp3)
+			b.localGet(locPhys)
+			b.i32Const(3)
+			b.op(wasmOpI32Shl)
+			b.op(wasmOpI32Add)
+			b.f64Load(3, 0)
+		}
+		if mapOp == 5 || mapOp == 7 {
+			loadST(locTmp)
+			loadST(locTmp2)
+		} else {
+			loadST(locTmp2)
+			loadST(locTmp)
+		}
 		switch mapOp {
 		case 0:
 			b.op(wasmOpF64Add)
