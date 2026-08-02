@@ -87,6 +87,21 @@ sdk/bin/ie64asm -D FEATURE=1 program.asm    # Predefine an equate from the CLI
 - `incbin` payloads are cached after the first layout read and reused for emission; if a later layout pass observes file drift, `incbin-changed` is reported without serving the changed bytes.
 - IE64 instructions are fixed 8-byte encodings.
 
+### IE64 bare-metal C (in development)
+
+The `ie64-unknown-none` C toolchain is a freestanding, flat-image toolchain.
+Its frozen SDK ABI and library contract are in [IE64_TOOLCHAIN.md](IE64_TOOLCHAIN.md).
+The repository-owned integration gate is:
+
+```bash
+make test-ie64-toolchain
+```
+
+It builds the sibling QBE and cproc trees and then requires their future
+`ie64-cproc` driver. Until that driver lands, the gate fails deliberately with
+a deterministic missing-driver diagnostic rather than pretending the SDK
+sources have been integrated.
+
 ### IE64 Disassembler (`ie64dis`)
 
 ```bash

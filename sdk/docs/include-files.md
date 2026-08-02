@@ -10,6 +10,7 @@ Hardware definition include files for Intuition Engine programs. Each file provi
 | `ie32.inc` | IE32 | ie32asm | Hardware constants (`.equ` directives) |
 | `ie64.inc` | IE64 | ie64asm | Hardware constants and macros |
 | `ie64_fp.inc` | IE64 | ie64asm | IEEE 754 FP64 BASIC math and print helpers |
+| `ie64.h` and standard C headers | IE64 bare-metal C | ie64-cproc | Freestanding C ABI headers; see `IE64_TOOLCHAIN.md` |
 | `ie65.inc` | 6502 | ca65 | Constants, macros, zero page allocation |
 | `ie65.cfg` | 6502 | ld65 | Linker configuration |
 | `ie68.inc` | M68K | vasmm68k_mot | Constants with M68K macros |

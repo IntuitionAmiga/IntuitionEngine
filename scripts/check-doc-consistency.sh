@@ -60,6 +60,7 @@ new_make_targets=(
   test-x86-harte-short
   release-verify
   distclean
+  test-ie64-toolchain
 )
 
 for target in "${new_make_targets[@]}"; do

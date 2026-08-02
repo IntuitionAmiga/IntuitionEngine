@@ -8,6 +8,7 @@ Developer kit for building software that runs on the Intuition Engine retro hard
 sdk/
   bin/              Assembler and tool binaries (built by make)
   include/          Platform headers and linker configs
+    assert.h, std*.h, ie64.h  IE64 bare-metal C headers
     ie32.inc          IE32 (custom 32-bit RISC) macro library + hardware register map
     ie64.inc          IE64 (custom 64-bit RISC) macro library + EhBASIC memory layout
     ie65.inc          6502 macro library + memory bank definitions
@@ -97,6 +98,7 @@ RUN "demo.ies"
 |----------|-----------|---------|
 | IE32 | `ie32asm` (built-in) | `make ie32asm` |
 | IE64 | `ie64asm` (built-in) | `make ie64asm` |
+| IE64 bare-metal C | `ie64-cproc` (in development) | `make test-ie64-toolchain` |
 | M68K | `vasmm68k_mot` | [VASM](http://sun.hasenbraten.de/vasm/) |
 | Z80 | `vasmz80_std` | [VASM](http://sun.hasenbraten.de/vasm/) |
 | 6502 | `ca65` / `ld65` | [cc65](https://cc65.github.io/) |
