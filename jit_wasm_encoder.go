@@ -272,10 +272,19 @@ func (b *wasmBody) vecMemOp(o wasmVecOp, align, offset uint32) {
 	b.uleb(uint64(offset))
 }
 
-func (b *wasmBody) i32Load(align, offset uint32)  { b.memOp(wasmOpI32Load, align, offset) }
+func (b *wasmBody) i32Load(align, offset uint32) { b.memOp(wasmOpI32Load, align, offset) }
+func (b *wasmBody) i32Load8U(align, offset uint32) {
+	b.memOp(wasmOpI32Load8U, align, offset)
+}
+func (b *wasmBody) i32Load16U(align, offset uint32) {
+	b.memOp(wasmOpI32Load16U, align, offset)
+}
 func (b *wasmBody) i64Load(align, offset uint32)  { b.memOp(wasmOpI64Load, align, offset) }
 func (b *wasmBody) f64Load(align, offset uint32)  { b.memOp(wasmOpF64Load, align, offset) }
 func (b *wasmBody) i32Store(align, offset uint32) { b.memOp(wasmOpI32Store, align, offset) }
+func (b *wasmBody) i32Store8(align, offset uint32) {
+	b.memOp(wasmOpI32Store8, align, offset)
+}
 func (b *wasmBody) i64Store(align, offset uint32) { b.memOp(wasmOpI64Store, align, offset) }
 func (b *wasmBody) f64Store(align, offset uint32) { b.memOp(wasmOpF64Store, align, offset) }
 func (b *wasmBody) v128Load(align, offset uint32) { b.vecMemOp(wasmVecV128Load, align, offset) }
