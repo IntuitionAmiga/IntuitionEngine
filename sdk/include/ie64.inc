@@ -32,7 +32,7 @@ VECTOR_IRQ        equ 0x000004
 
 ; Program space
 PROGRAM_START     equ 0x001000
-STACK_TOP         equ 0x0DF000              ; Top of stack (grows downward)
+STACK_TOP         equ 0x09F000              ; Top of stack (grows downward)
 BASIC_STACK_BYTES equ 0x00010000           ; Dynamic BASIC hardware stack reservation
 BASIC_CTRL_BYTES  equ 0x00010000           ; Dynamic BASIC control-flow stack reservation
 BASIC_STACK_GUARD_BYTES equ 0x00001000     ; Guard page below active visible RAM
