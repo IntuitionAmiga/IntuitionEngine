@@ -2,11 +2,11 @@
 
 ## Overview
 
-The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 386 32-bit extensions) into native x86-64 instructions at runtime. It follows the same architecture as the IE64 and M68K JITs: scan a block of instructions, compile to native code, cache the result, and dispatch via `callNative()`. Includes x87 FPU support via SSE2, self-loop native compilation, and multi-block region compilation.
+The x86 JIT compiler translates basic blocks of x86 machine code (8086 base + 386 32-bit extensions) into native code at runtime. The amd64 backend has the full native emitter, while Linux/ARM64 executes a verified direct subset and resumes every other form through the canonical interpreter boundary. Both scan a block, cache admitted native prefixes and dispatch through `callNative()`.
 
 **Memory model (PLAN_MAX_RAM.md):** the x86 CPU is a flat 32-bit guest. Visible RAM is the x86 32-bit profile ceiling clamped against the autodetected active visible RAM (queried via the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair). The JIT's address-mask emission must not retain the historical 25-bit / 32 MB mask; bounds checks read the active visible RAM through the bus accessor rather than a hardcoded constant.
 
-**Platform support:** amd64/linux, amd64/darwin, and amd64/windows. ARM64 backend deferred.
+**Platform support:** amd64/linux, amd64/darwin and amd64/windows; Linux/ARM64. ARM64 has native register moves; guarded byte, word and dword MOV, ALU, TEST, Group 3 NOT/NEG and count-one SHL/SHR/SAR memory forms; count-one register rotations; 32-bit immediate SHL/SHR/SAR/ROL/ROR with exact count masking; 32-bit register `CL` SHL/SHR/SAR and byte register `CL` SHL/SHR/SAR; 16-bit and 32-bit register and guarded-memory IMUL forms; guarded register and memory destination immediate SHLD/SHRD, including 16-bit immediate counts through 16, plus 32-bit register `CL` forms; guarded MOVS, STOS, LODS, CMPS and SCAS byte, word and dword forms with REP/REPNE loops; LES/LDS pointer loads; register-source, immediate or absolute-offset writes; guarded memory XCHG and XLAT; guarded register, immediate and segment PUSH plus register, segment and non-ESP-addressed memory POP; guarded PUSHF/POPF and PUSHA/POPA; 32-bit `ENTER imm16,0`; LEAVE; LEA; byte extensions; flag-bit operations and SALC; FNOP, FCHS, FABS, FNCLEX, FNINIT, FNSTSW AX, FFREE, FXCH, FSTP ST(i) and finite valid-tag register `FADD`, `FMUL`, `FSUB`, `FSUBR`, `FDIV` and `FDIVR`; selected x87 helper exits; and an interpreter-resume dispatcher. A guarded memory access returns to the interpreter before any guest mutation for a page crossing, visible-RAM boundary or MMIO page. A native write to a compiled page publishes its exact invalidation range before dispatch continues. ARM64 does not yet implement amd64 chaining, regions, Group 2 `CL` rotations/carry rotates, word variable shifts or full direct x87 arithmetic.
 
 **Activation:** Set `cpu.x86JitEnabled = true` and call `cpu.X86ExecuteJIT()` or `cpu.x86JitExecute()`. The dispatch function `x86JitExecute()` routes to the JIT when enabled, otherwise to the interpreter.
 
@@ -19,8 +19,9 @@ amd64 test verifies that every listed direct or canonical x87-helper form is
 admitted by the production scanner and emits through the production compiler.
 Its dispatch-inventory companion walks the interpreter's base and extended
 opcode tables, requiring an explicit amd64 direct, x87-helper or documented
-interpreter-fallback decision for every implemented handler. ARM64 and wasm
-are explicitly unavailable whole backends, not partial scalar substitutes.
+interpreter-fallback decision for every implemented handler. ARM64 records its
+native direct and canonical x87-helper admissions; every other form resumes
+through the interpreter. wasm remains unavailable.
 
 ---
 
@@ -89,6 +90,9 @@ are explicitly unavailable whole backends, not partial scalar substitutes.
 | `jit_x86_exec.go` | `amd64 && (linux \|\| windows \|\| darwin)` | X86ExecuteJIT main loop, init/free lifecycle, hot-block detection, chain patching, RTS cache management, profile counters |
 | `jit_x86_exec_test.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Integration tests: HLT, multi-instruction, JIT-vs-interpreter equivalence, chaining, self-mod detection, dispatch, CMP/TEST+Jcc fusion, multi-block region |
 | `jit_x86_dispatch.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Sets `x86JitAvailable = true`, routing function |
+| `jit_x86_emit_arm64.go` | `arm64 && linux` | Linux/ARM64 direct-prefix emitter and canonical x87 helper-payload exits |
+| `jit_x86_exec_arm64.go` | `arm64 && linux` | Linux/ARM64 cache, executable-memory lifecycle and interpreter-resume dispatcher |
+| `jit_x86_dispatch_arm64.go` | `arm64 && linux` | Enables Linux/ARM64 x86 JIT dispatch |
 | `jit_x86_dispatch_stub.go` | all other platforms | Fallback stubs for unsupported platforms |
 | `x86_jit_benchmark_test.go` | `amd64 && linux` | ALU/Memory/Mixed/String benchmark suite with Interpreter/JIT variants |
 
@@ -102,7 +106,7 @@ Passed to every JIT-compiled x86 block as the sole argument (RDI on x86-64).
 Offset  Type      Field               Description
 0       uintptr   JITRegsPtr          &cpu.jitRegs[0] -- guest register file (x86 encoding order)
 8       uintptr   MemPtr              &cpu.memory[0] -- direct memory base
-16      uint32    MemSize             len(cpu.memory)
+16      uint32    MemSize             guest-visible direct-access RAM ceiling
 20      uint32    _pad0               alignment
 24      uintptr   FlagsPtr            &cpu.Flags -- guest EFLAGS
 32      uintptr   EIPPtr              &cpu.EIP
@@ -650,7 +654,7 @@ single-instance IPC.
 
 ### Deferred
 
-- ARM64 backend
+- ARM64 Group 2 `CL` rotations/carry rotates, word variable shifts, chaining and region promotion
 - AVX2 bulk memory for REP STOS/MOVS (VMOVDQU 32-byte loops)
 - Jcc two-way chain slots (taken + not-taken for inter-block conditional branches)
 - Loop memory-check hoisting for linear base+stride patterns

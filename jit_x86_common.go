@@ -17,7 +17,7 @@ import (
 type X86JITContext struct {
 	JITRegsPtr        uintptr  // 0:   &cpu.jitRegs[0]
 	MemPtr            uintptr  // 8:   &cpu.memory[0]
-	MemSize           uint32   // 16:  len(memory)
+	MemSize           uint32   // 16:  direct-access RAM ceiling
 	_pad0             uint32   // 20:  alignment padding
 	FlagsPtr          uintptr  // 24:  &cpu.Flags
 	EIPPtr            uintptr  // 32:  &cpu.EIP
@@ -110,7 +110,9 @@ func newX86JITContext(cpu *CPU_X86, codePageBitmap []byte, ioBitmap []byte) *X86
 	ctx := &X86JITContext{
 		JITRegsPtr: uintptr(unsafe.Pointer(&cpu.jitRegs[0])),
 		MemPtr:     uintptr(unsafe.Pointer(&cpu.memory[0])),
-		MemSize:    uint32(len(cpu.memory)),
+		// Native memory accesses must stay below the active guest-visible RAM
+		// ceiling, which can be smaller than the backing slice.
+		MemSize:    cpu.x86VisibleRAMCeiling(),
 		FlagsPtr:   uintptr(unsafe.Pointer(&cpu.Flags)),
 		EIPPtr:     uintptr(unsafe.Pointer(&cpu.EIP)),
 		CpuPtr:     uintptr(unsafe.Pointer(cpu)),
@@ -175,6 +177,8 @@ func x86JITCycleCost(ji X86JITInstr) uint64 {
 		op >= 0x30 && op <= 0x35 || op >= 0x38 && op <= 0x3D || op >= 0x80 && op <= 0x85 ||
 		op == 0xA8 || op == 0xA9:
 		return 2
+	case op == 0x9C || op == 0x9D: // PUSHF / POPF
+		return 2
 	case op >= 0x40 && op <= 0x5F || op == 0x06 || op == 0x07 || op == 0x0E ||
 		op == 0x16 || op == 0x17 || op == 0x1E || op == 0x1F || op == 0x68 || op == 0x6A ||
 		op >= 0x88 && op <= 0x8E || op >= 0x90 && op <= 0x9F || op >= 0xA0 && op <= 0xA3 ||
@@ -188,14 +192,22 @@ func x86JITCycleCost(ji X86JITInstr) uint64 {
 		return 4
 	case op == 0x69 || op == 0x6B || op == 0xF7:
 		return 10
+	case op == 0xD7:
+		return 5
+	case op == 0xD6:
+		return 2
 	case op == 0x8F || op == 0xFE || op == 0xFF || op == 0xC9:
 		return 2
 	case op == 0xC4 || op == 0xC5:
 		return 4
+	case op == 0xC8:
+		return 10
 	case op >= 0x70 && op <= 0x7F || op == 0xE9 || op == 0xEB:
 		return 2
 	case op == 0xE8:
 		return 3
+	case op >= 0xE0 && op <= 0xE3: // LOOP/LOOPE/LOOPNE/JCXZ
+		return 5
 	case op == 0xC3:
 		return 2
 	case op == 0xC2:
@@ -636,6 +648,8 @@ func x86BaseOpcodeExtra(memory []byte, pc uint32, opcode byte, opSize bool) int 
 		return x86ModRMExtra(memory, pc, 1)
 	case 0xC1: // Grp2 Ev, Ib
 		return x86ModRMExtra(memory, pc, 1)
+	case 0xC4, 0xC5: // LES/LDS Gv,Mp
+		return x86ModRMExtra(memory, pc, 0)
 	case 0xC6: // MOV Eb, Ib
 		return x86ModRMExtra(memory, pc, 1)
 

@@ -1911,8 +1911,8 @@ func TestX86JIT_AMD64CoverageManifest(t *testing.T) {
 		if row.amd64 != x86JITCoverageDirect && row.amd64 != x86JITCoverageFPUHelper {
 			t.Fatalf("%s: invalid amd64 coverage path %q", row.form, row.amd64)
 		}
-		if row.arm64 != x86JITCoverageUnavailable || row.wasm != x86JITCoverageUnavailable {
-			t.Fatalf("%s: unavailable x86 backends must not claim partial coverage", row.form)
+		if row.wasm != x86JITCoverageUnavailable {
+			t.Fatalf("%s: unavailable wasm backend must not claim partial coverage", row.form)
 		}
 
 		for i := range r.cpu.memory[pc : pc+32] {

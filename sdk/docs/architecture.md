@@ -48,12 +48,12 @@ flowchart LR
         M68K["M68K 68020 interpreter"]
         Z80["Z80 interpreter"]
         C6502["6502 interpreter"]
-        X86["x86 interpreter / amd64 JIT path"]
+        X86["x86 interpreter / amd64 and Linux arm64 JIT paths"]
         JIE64["IE64 JIT<br/>amd64 + arm64"]
         J6502["6502 JIT<br/>amd64"]
         JM68K["M68K JIT<br/>amd64 + arm64 + wasm"]
         JZ80["Z80 JIT<br/>amd64 only"]
-        JX86["x86 JIT<br/>amd64 only"]
+        JX86["x86 JIT<br/>amd64 + Linux arm64"]
         CPUMON["Debug CPU adapters<br/>IE32, IE64, M68K, Z80, 6502, x86"]
     end
 
@@ -455,7 +455,7 @@ flowchart LR
 | Subsystem | Runtime surface | Primary files | Wired registration / dispatch |
 |-----------|-----------------|---------------|-------------------------------|
 | CPU cores | IE32, IE64, M68K, Z80, 6502, x86 | `cpu_*.go`, `cpu_*_runner.go` | `main.go` selects runners by file extension, OS mode, or EXEC MMIO |
-| JIT | IE64 and M68K on amd64, arm64 and wasm; 6502, Z80 and x86 on amd64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch*.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` | Build tags plus `runtime.GOARCH`; unsupported hosts use dispatch stubs. The M68K arm64 backend is available through the normal JIT activation path after passing its real-hardware execution gate |
+| JIT | IE64 and M68K on amd64, arm64 and wasm; 6502 and Z80 on amd64; x86 on amd64 and Linux arm64 | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch*.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch*.go` | Build tags plus `runtime.GOARCH`; unsupported hosts use dispatch stubs. Linux arm64 x86 executes a native direct subset and resumes remaining forms through the interpreter |
 | Bus and RAM | Host-sized guest RAM, profile clamps, MMIO, byte/64-bit handlers | `machine_bus.go`, `memory_sizing.go`, `profile_bounds.go`, `sysinfo_mmio.go` | `main.go` registers devices before execution; `MachineBus.SealMappings` prevents late maps |
 | Machine lifecycle | Load resolution, reset quiesce, CPU/profile recreation, monitor/runtime rewiring | `machine_lifecycle.go`, `main.go` | `main.go` owns concrete devices; `Machine` applies reset/load orchestration through injected dependencies and profile targets |
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
@@ -560,7 +560,7 @@ never emitted unless the host supports them.
 | Host platform | JIT-enabled guest cores | Dispatch files |
 |---------------|-------------------------|----------------|
 | Linux amd64 | IE64, 6502, M68K, Z80, x86 | `jit_dispatch.go`, amd64 per-core dispatch files |
-| Linux arm64 | IE64, M68K | `jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false |
+| Linux arm64 | IE64, M68K, x86 | `jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_x86_dispatch_arm64.go`; x86 executes a verified direct subset and uses interpreter resume for remaining forms |
 | Windows amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
 | Windows arm64 | IE64, M68K | IE64 and M68K dispatch; other non-IE64 cores use stubs |
 | macOS amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
@@ -828,15 +828,28 @@ Interrupt Delivery" section of this manual for the full model.
   x86 self-modifying-code tracking uses 256-byte code pages and range
   invalidation.
 
-### x86 JIT backend (amd64)
+### x86 JIT backends
 
-The x86 guest core has a native amd64 JIT (Linux, Windows and macOS amd64; no
-arm64 or wasm backend, where the x86 core interprets). The guest target is the
+The x86 guest core has a native amd64 JIT on Linux, Windows and macOS, plus a
+Linux/ARM64 direct-prefix backend. wasm has no x86 JIT and interprets. The guest target is the
 32-bit flat-model i386 base plus the intentionally supported `BSWAP` and an x87
-FPU on SSE2; there is no 486/Pentium/MMX/SSE guest requirement. Blocks are
+FPU, lowered through SSE2 on amd64 where eligible; there is no 486/Pentium/MMX/SSE guest requirement. Blocks are
 scanned and compiled with the fixed Tier 1 register mapping plus per-block Tier 2
 frequency allocation, native EFLAGS passthrough, block chaining, and self-loop
 and experimental multi-block region formation.
+
+Those allocation, chaining and region features are amd64-specific. Linux/ARM64
+keeps guest registers memory-resident and directly lowers a verified register
+subset plus guarded MOV, ALU, TEST, 16-bit and 32-bit IMUL, Group 3 NOT/NEG,
+LES/LDS, count-one SHL/SHR/SAR and immediate SHLD/SHRD memory forms, including
+16-bit immediate counts through 16. Guard failure returns to the interpreter before
+mutation; a native write to a compiled 256-byte page publishes an exact
+invalidation range. Variable-count shifts, strings and unsupported control
+flow return to the interpreter. Its x87 forms use direct lowering for reset,
+status, sign-only forms and finite register `FADD ST(0),ST(i)`; the remaining
+supported forms use the canonical decoded helper exit. The finite valid-tag
+register `FADD`, `FMUL`, `FSUB`, `FSUBR`, `FDIV` and `FDIVR` forms are directly lowered; every
+tag transition and exceptional result resumes through that helper.
 
 Memory accesses at runtime-computed addresses go through a page-safety and I/O
 bitmap check on the fast path. Native stack and word emitters (`PUSH`/`POP` r32,

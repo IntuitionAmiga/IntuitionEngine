@@ -29,7 +29,7 @@ ARM64_QEMU_GODEBUG="${ARM64_QEMU_GODEBUG:-asyncpreemptoff=1}"
 # Keep the Linux/arm64 execution gate explicit about each native parity family:
 # ABI, static-JMP dispatch, regions, register mapping, floating point, MMIO and
 # the remaining ARM64 emitter/runtime tests.
-ARM64_QEMU_TEST_REGEX="${ARM64_QEMU_TEST_REGEX:-TestJITContext_FieldOffsets|TestIE64ChaseStaticJumps|TestIE64SMC|TestIE64FormRegion|TestIE64Region|TestIE64JIT_MMIOStoreMidBlock_ResumesInBlock|TestIE64JIT_HelperResume|TestIE64Worker|TestARM64_|TestARM64RegMap_|TestJIT_ARM64_|TestJIT_vs_Interpreter_FP}"
+ARM64_QEMU_TEST_REGEX="${ARM64_QEMU_TEST_REGEX:-TestJITContext_FieldOffsets|TestIE64ChaseStaticJumps|TestIE64SMC|TestIE64FormRegion|TestIE64Region|TestIE64JIT_MMIOStoreMidBlock_ResumesInBlock|TestIE64JIT_HelperResume|TestIE64Worker|TestARM64_|TestARM64RegMap_|TestJIT_ARM64_|TestJIT_vs_Interpreter_FP|TestX86ARM64}"
 
 # The only tests skipped are the three that qemu user mode genuinely cannot
 # host: they need guest memory mapped above 4 GiB, so they read back host

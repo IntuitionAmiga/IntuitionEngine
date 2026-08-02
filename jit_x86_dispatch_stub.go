@@ -1,14 +1,11 @@
 // jit_x86_dispatch_stub.go - x86 JIT stub for non-JIT platforms.
 //
-// x86 JIT is amd64-only. The arm64-linux build was tagged in earlier
-// rounds, but the x86 emitter never landed there, so this stub fills
-// every non-amd64 build (including arm64-linux) with an interpreter
-// fallback. CPUX86Runner.JITEnabled has no effect outside amd64; the
-// runner's r.jit gate falls through to x86RunInterpreter via dispatch.
+// x86 JIT is unavailable on targets without a native backend. Linux/arm64
+// has its own dispatcher and must stay out of this fallback.
 //
 // (c) 2024-2026 Zayn Otley - GPLv3 or later
 
-//go:build !(amd64 && (linux || windows || darwin))
+//go:build !(amd64 && (linux || windows || darwin)) && !(arm64 && linux)
 
 package main
 
