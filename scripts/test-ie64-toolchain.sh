@@ -56,7 +56,8 @@ host_lib_test="${tmp_dir}/libie64c-host-test"
 "${cproc_dir}/ie64-cproc" -o "${halt_image}" \
   "${root_dir}/sdk/tests/ie64-cproc/halt_runtime.c"
 "${cproc_dir}/ie64-cproc" -o "${interrupt_image}" \
-  "${root_dir}/sdk/tests/ie64-cproc/interrupt_runtime.c"
+  "${root_dir}/sdk/tests/ie64-cproc/interrupt_runtime.c" \
+  "${root_dir}/sdk/tests/ie64-cproc/interrupt_runtime.s"
 "${cproc_dir}/ie64-cproc" -DFAULT_ADDRESS=0x82001 \
   -o "${atomic_misaligned_image}" \
   "${root_dir}/sdk/tests/ie64-cproc/atomic_fault_runtime.c"

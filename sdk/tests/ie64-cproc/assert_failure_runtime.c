@@ -6,4 +6,6 @@ main(void)
 {
 	*(volatile uint64_t *)0x80000 = 0x4153534552544641UL;
 	assert(0);
+	*(volatile uint64_t *)0x80000 = 0x4153534552544241UL;
+	return 1;
 }
