@@ -111,12 +111,15 @@ const (
 	wasmOpI32Sub    byte = 0x6b
 	wasmOpI32Mul    byte = 0x6c
 	wasmOpI32DivU   byte = 0x6e
+	wasmOpI32RemU   byte = 0x70
 	wasmOpI32And    byte = 0x71
 	wasmOpI32Or     byte = 0x72
 	wasmOpI32Xor    byte = 0x73
 	wasmOpI32Shl    byte = 0x74
 	wasmOpI32ShrS   byte = 0x75
 	wasmOpI32ShrU   byte = 0x76
+	wasmOpI32Rotl   byte = 0x77
+	wasmOpI32Rotr   byte = 0x78
 
 	wasmOpI64Add  byte = 0x7c
 	wasmOpI64Sub  byte = 0x7d
