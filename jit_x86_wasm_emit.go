@@ -6,7 +6,10 @@
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"math"
+)
 
 const (
 	x86WasmDriverCacheEntries = 4096
@@ -88,6 +91,9 @@ func x86WasmTerminalJccTarget(ji X86JITInstr, memory []byte) (condition byte, ta
 }
 
 func x86WasmSupportedInstr(ji X86JITInstr) bool {
+	if ji.opcode >= 0xD8 && ji.opcode <= 0xDF {
+		return ji.hasModRM
+	}
 	if ji.opcode >= 0x0F00 {
 		op2 := byte(ji.opcode)
 		switch op2 {
@@ -368,6 +374,8 @@ func x86WasmSelectCompiledPrefix(instrs []X86JITInstr, memory []byte, startPC ui
 				return nil, 0, 0, x86WasmTerminalFallthrough, false
 			}
 			return instrs[:i+1], target, spanEnd, x86WasmTerminalJMP, true
+		case op >= 0xD8 && op <= 0xDF:
+			return instrs[:i+1], spanEnd, spanEnd, x86WasmTerminalFallthrough, true
 		case x86WasmIsShortJcc(op):
 			return instrs[:i+1], spanEnd, spanEnd, x86WasmTerminalJcc, true
 		}
@@ -440,6 +448,81 @@ func x86WasmEmitEA32(b *wasmBody, ji X86JITInstr, memory []byte, locRegs, locEA 
 		b.op(wasmOpI32Add)
 		b.localSet(locEA)
 	}
+	return true
+}
+
+func x86WasmEmitEA16(b *wasmBody, ji X86JITInstr, memory []byte, locRegs, locEA uint32) bool {
+	if !ji.hasModRM || ji.prefixes&x86PrefAddrSize == 0 {
+		return false
+	}
+	mod, rm := ji.modrm>>6, ji.modrm&7
+	if mod == 3 {
+		return false
+	}
+	modrmPC := x86FindModRMPC(&ji, memory)
+	if modrmPC >= uint32(len(memory)) {
+		return false
+	}
+	b.i32Const(0)
+	b.localSet(locEA)
+	addReg16 := func(reg byte) {
+		b.localGet(locEA)
+		x86WasmEmitLoadReg32(b, locRegs, reg)
+		b.i32Const(0xFFFF)
+		b.op(wasmOpI32And)
+		b.op(wasmOpI32Add)
+		b.localSet(locEA)
+	}
+	switch rm {
+	case 0:
+		addReg16(3)
+		addReg16(6)
+	case 1:
+		addReg16(3)
+		addReg16(7)
+	case 2:
+		addReg16(5)
+		addReg16(6)
+	case 3:
+		addReg16(5)
+		addReg16(7)
+	case 4:
+		addReg16(6)
+	case 5:
+		addReg16(7)
+	case 6:
+		if mod != 0 {
+			addReg16(5)
+		}
+	case 7:
+		addReg16(3)
+	}
+	pos := int(modrmPC) + 1
+	dispBytes := 0
+	if mod == 1 {
+		dispBytes = 1
+	} else if mod == 2 || (mod == 0 && rm == 6) {
+		dispBytes = 2
+	}
+	if pos+dispBytes > len(memory) {
+		return false
+	}
+	disp := uint32(0)
+	if dispBytes == 1 {
+		disp = uint32(int32(int8(memory[pos])))
+	} else if dispBytes == 2 {
+		disp = uint32(int32(int16(uint16(memory[pos]) | uint16(memory[pos+1])<<8)))
+	}
+	if dispBytes != 0 {
+		b.localGet(locEA)
+		b.i32Const(int32(disp))
+		b.op(wasmOpI32Add)
+		b.localSet(locEA)
+	}
+	b.localGet(locEA)
+	b.i32Const(0xFFFF)
+	b.op(wasmOpI32And)
+	b.localSet(locEA)
 	return true
 }
 
@@ -634,6 +717,799 @@ func x86WasmEmitExitReasonReturn(b *wasmBody, locCtx uint32, retPC uint32, retCo
 	b.i32Const(int32(reason))
 	b.i32Store(2, x86CtxOffExitReason)
 	b.op(wasmOpReturn)
+}
+
+func x86WasmEmitStoreCtxByte(b *wasmBody, locCtx uint32, off uint32, value byte) {
+	b.localGet(locCtx)
+	b.i32Const(int32(value))
+	b.i32Store8(0, off)
+}
+
+func x86WasmEmitFPUHelperExit(b *wasmBody, ji X86JITInstr, memory []byte, retired int, locCtx, locRegs, locSeg, locEA uint32) bool {
+	payload, ok := x86FPUHelperPayloadFor(ji, memory, 0)
+	if !ok {
+		return false
+	}
+	segment, ok := x86FPUHelperSegmentFromPayload(payload)
+	if !ok {
+		return false
+	}
+	memForm := ji.modrm>>6 != 3
+	width := uint32(0)
+	if memForm {
+		if ji.prefixes&x86PrefAddrSize != 0 {
+			if !x86WasmEmitEA16(b, ji, memory, locRegs, locEA) {
+				return false
+			}
+		} else {
+			if !x86WasmEmitEA32(b, ji, memory, locRegs, locEA) {
+				return false
+			}
+		}
+		width = x86FPUHelperAccessWidthFromOpcode(payload.Escape, payload.ModRM)
+	} else {
+		b.i32Const(0)
+		b.localSet(locEA)
+	}
+
+	b.localGet(locCtx)
+	b.i32Const(int32(payload.InstrPC))
+	b.i32Store(2, x86CtxOffFPUHelperInstrPC)
+
+	x86WasmEmitLoadSeg16(b, locCtx, locSeg, x86SegCS)
+	b.localSet(locSeg)
+	b.localGet(locCtx)
+	b.localGet(locSeg)
+	b.i32Store16(1, x86CtxOffFPUHelperCS)
+
+	x86WasmEmitStoreCtxByte(b, locCtx, x86CtxOffFPUHelperEscape, payload.Escape)
+	x86WasmEmitStoreCtxByte(b, locCtx, x86CtxOffFPUHelperModRM, payload.ModRM)
+	x86WasmEmitStoreCtxByte(b, locCtx, x86CtxOffFPUHelperPrefixes, payload.Prefixes)
+	x86WasmEmitStoreCtxByte(b, locCtx, x86CtxOffFPUHelperLength, payload.Length)
+	x86WasmEmitStoreCtxByte(b, locCtx, x86CtxOffFPUHelperSegment, segment)
+	for off, byt := range payload.Bytes {
+		x86WasmEmitStoreCtxByte(b, locCtx, x86CtxOffFPUHelperBytes+uint32(off), byt)
+	}
+
+	b.localGet(locCtx)
+	b.localGet(locEA)
+	b.i32Store(2, x86CtxOffFPUHelperEA)
+	b.localGet(locCtx)
+	b.i32Const(int32(width))
+	b.i32Store(2, x86CtxOffFPUHelperWidth)
+	b.localGet(locCtx)
+	b.i32Const(1)
+	b.i32Store(2, x86CtxOffNeedIOFallback)
+	x86WasmEmitExitReasonReturn(b, locCtx, payload.InstrPC, retired, x86JITExitFPUHelper)
+	return true
+}
+
+func x86WasmEmitFPUCaptureOp(b *wasmBody, ji X86JITInstr, memory []byte, locCtx, locFPU, locTmp uint32) bool {
+	modrmPC := x86FindModRMPC(&ji, memory)
+	if modrmPC < 1 {
+		return false
+	}
+	b.localGet(locCtx)
+	b.i32Load(2, x86CtxOffFPUPtr)
+	b.localSet(locFPU)
+	b.localGet(locFPU)
+	b.i32Const(int32(modrmPC - 1))
+	b.i32Store(2, x86FPUOffFIP)
+	x86WasmEmitLoadSeg16(b, locCtx, locTmp, x86SegCS)
+	b.localSet(locTmp)
+	b.localGet(locFPU)
+	b.localGet(locTmp)
+	b.i32Store16(1, x86FPUOffFCS)
+	b.localGet(locFPU)
+	b.i32Const(int32((uint16(byte(ji.opcode)-0xD8) << 8) | uint16(ji.modrm)))
+	b.i32Store16(1, x86FPUOffFOP)
+	return true
+}
+
+func x86WasmEmitFPUReadTop(b *wasmBody, locFPU, locTop uint32) {
+	b.localGet(locFPU)
+	b.i32Load16U(1, x86FPUOffFSW)
+	b.i32Const(11)
+	b.op(wasmOpI32ShrU)
+	b.i32Const(7)
+	b.op(wasmOpI32And)
+	b.localSet(locTop)
+}
+
+func x86WasmEmitFPUTagAtPhys(b *wasmBody, locFPU, locPhys, locTag uint32) {
+	b.localGet(locPhys)
+	b.i32Const(1)
+	b.op(wasmOpI32Shl)
+	b.localSet(locTag)
+	b.localGet(locFPU)
+	b.i32Load16U(1, x86FPUOffFTW)
+	b.localGet(locTag)
+	b.op(wasmOpI32ShrU)
+	b.i32Const(3)
+	b.op(wasmOpI32And)
+	b.localSet(locTag)
+}
+
+func x86WasmEmitFPUSetTagAtPhys(b *wasmBody, locFPU, locPhys, locTag, locTmp uint32) {
+	b.localGet(locPhys)
+	b.i32Const(1)
+	b.op(wasmOpI32Shl)
+	b.localSet(locTmp)
+	b.localGet(locFPU)
+	b.localGet(locFPU)
+	b.i32Load16U(1, x86FPUOffFTW)
+	b.i32Const(3)
+	b.localGet(locTmp)
+	b.op(wasmOpI32Shl)
+	b.i32Const(-1)
+	b.op(wasmOpI32Xor)
+	b.op(wasmOpI32And)
+	b.localGet(locTag)
+	b.i32Const(3)
+	b.op(wasmOpI32And)
+	b.localGet(locTmp)
+	b.op(wasmOpI32Shl)
+	b.op(wasmOpI32Or)
+	b.i32Store16(1, x86FPUOffFTW)
+}
+
+func x86WasmEmitFPUSetTop(b *wasmBody, locFPU, locTop, locTmp uint32) {
+	b.localGet(locFPU)
+	b.localGet(locFPU)
+	b.i32Load16U(1, x86FPUOffFSW)
+	b.i32Const(^int32(x87FSW_TOPMask))
+	b.op(wasmOpI32And)
+	b.localGet(locTop)
+	b.i32Const(7)
+	b.op(wasmOpI32And)
+	b.i32Const(x87FSW_TOPShift)
+	b.op(wasmOpI32Shl)
+	b.op(wasmOpI32Or)
+	b.i32Store16(1, x86FPUOffFSW)
+}
+
+func x86WasmEmitFPUPhysFromTopPlus(b *wasmBody, locTop uint32, delta int32, locOut uint32) {
+	b.localGet(locTop)
+	if delta != 0 {
+		b.i32Const(delta)
+		b.op(wasmOpI32Add)
+	}
+	b.i32Const(7)
+	b.op(wasmOpI32And)
+	b.localSet(locOut)
+}
+
+func x86WasmEmitFPUCompareDirect(b *wasmBody, ji X86JITInstr, memory []byte, retired int, locCtx, locRegs, locTop, locPhys, locFPU, locTagA, locTagB uint32, zeroSrc, pop bool) bool {
+	if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locFPU, locTagA) {
+		return false
+	}
+	x86WasmEmitFPUReadTop(b, locFPU, locTop)
+	x86WasmEmitFPUTagAtPhys(b, locFPU, locTop, locTagA)
+	b.localGet(locTagA)
+	b.i32Const(int32(x87TagEmpty))
+	b.op(wasmOpI32Eq)
+	b.ifVoid()
+	if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTagA, locTop) {
+		return false
+	}
+	b.end()
+	b.localGet(locTagA)
+	b.i32Const(int32(x87TagSpecial))
+	b.op(wasmOpI32Eq)
+	b.ifVoid()
+	if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTagA, locTop) {
+		return false
+	}
+	b.end()
+
+	if !zeroSrc {
+		x86WasmEmitFPUPhysFromTopPlus(b, locTop, int32(ji.modrm&7), locPhys)
+		x86WasmEmitFPUTagAtPhys(b, locFPU, locPhys, locTagB)
+		b.localGet(locTagB)
+		b.i32Const(int32(x87TagEmpty))
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTagB, locPhys) {
+			return false
+		}
+		b.end()
+		b.localGet(locTagB)
+		b.i32Const(int32(x87TagSpecial))
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTagB, locPhys) {
+			return false
+		}
+		b.end()
+	}
+
+	b.localGet(locFPU)
+	b.i32Load16U(1, x86FPUOffFSW)
+	b.i32Const(^int32(x87FSW_C0 | x87FSW_C1 | x87FSW_C2 | x87FSW_C3))
+	b.op(wasmOpI32And)
+	b.localSet(locTagA)
+
+	loadSrc := func() {
+		if zeroSrc {
+			b.f64Const(0)
+			return
+		}
+		b.localGet(locFPU)
+		b.localGet(locPhys)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.f64Load(3, 0)
+	}
+	loadST0 := func() {
+		b.localGet(locFPU)
+		b.localGet(locTop)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.f64Load(3, 0)
+	}
+
+	loadST0()
+	loadSrc()
+	b.op(wasmOpF64Lt)
+	b.ifVoid()
+	b.localGet(locTagA)
+	b.i32Const(int32(x87FSW_C0))
+	b.op(wasmOpI32Or)
+	b.localSet(locTagA)
+	b.end()
+
+	loadST0()
+	loadSrc()
+	b.op(wasmOpF64Eq)
+	b.ifVoid()
+	b.localGet(locTagA)
+	b.i32Const(int32(x87FSW_C3))
+	b.op(wasmOpI32Or)
+	b.localSet(locTagA)
+	b.end()
+
+	b.localGet(locFPU)
+	b.localGet(locTagA)
+	b.i32Store16(1, x86FPUOffFSW)
+
+	if pop {
+		b.i32Const(int32(x87TagEmpty))
+		b.localSet(locTagA)
+		x86WasmEmitFPUSetTagAtPhys(b, locFPU, locTop, locTagA, locTagB)
+		x86WasmEmitFPUPhysFromTopPlus(b, locTop, 1, locTop)
+		x86WasmEmitFPUSetTop(b, locFPU, locTop, locTagA)
+	}
+
+	return true
+}
+
+func x86WasmEmitFPUDirectOrHelper(b *wasmBody, ji X86JITInstr, memory []byte, retired int, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5 uint32) bool {
+	switch {
+	case ji.opcode == 0xD9 && ji.modrm == 0xD0: // FNOP
+		return x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2)
+	case ji.opcode == 0xDB && ji.modrm == 0xE2: // FNCLEX
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		b.localGet(locTmp3)
+		b.localGet(locTmp3)
+		b.i32Load16U(1, x86FPUOffFSW)
+		b.i32Const(0x7F00)
+		b.op(wasmOpI32And)
+		b.i32Store16(1, x86FPUOffFSW)
+		return true
+	case ji.opcode == 0xDB && ji.modrm == 0xE3: // FNINIT
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffFPUPtr)
+		b.localSet(locTmp3)
+		for off := uint32(0); off < 64; off += 8 {
+			b.localGet(locTmp3)
+			b.i64Const(0)
+			b.i64Store(3, off)
+		}
+		b.localGet(locTmp3)
+		b.i32Const(0x037F)
+		b.i32Store16(1, x86FPUOffFCW)
+		b.localGet(locTmp3)
+		b.i32Const(0)
+		b.i32Store16(1, x86FPUOffFSW)
+		b.localGet(locTmp3)
+		b.i32Const(0xFFFF)
+		b.i32Store16(1, x86FPUOffFTW)
+		b.localGet(locTmp3)
+		b.i32Const(0)
+		b.i32Store(2, x86FPUOffFIP)
+		b.localGet(locTmp3)
+		b.i32Const(0)
+		b.i32Store16(1, x86FPUOffFCS)
+		b.localGet(locTmp3)
+		b.i32Const(0)
+		b.i32Store(2, x86FPUOffFDP)
+		b.localGet(locTmp3)
+		b.i32Const(0)
+		b.i32Store16(1, x86FPUOffFDS)
+		b.localGet(locTmp3)
+		b.i32Const(0)
+		b.i32Store16(1, x86FPUOffFOP)
+		return true
+	case ji.opcode == 0xDF && ji.modrm == 0xE0: // FNSTSW AX
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		b.localGet(locTmp3)
+		b.i32Load16U(1, x86FPUOffFSW)
+		x86WasmEmitInsertReg16(b, locRegs, locTmp, 0)
+		return true
+	case ji.opcode == 0xD9 && (ji.modrm == 0xE0 || ji.modrm == 0xE1): // FCHS/FABS
+		const locI64Tmp = 10
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		x86WasmEmitFPUReadTop(b, locTmp3, locTmp)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp, locTmp2)
+		b.localGet(locTmp2)
+		b.i32Const(3)
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp2, locTmp) {
+			return false
+		}
+		b.end()
+		b.localGet(locTmp3)
+		b.localGet(locTmp)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.localSet(locTmp)
+		b.localGet(locTmp)
+		b.i64Load(3, 0)
+		if ji.modrm == 0xE0 {
+			b.i64Const(-9223372036854775808)
+			b.op(wasmOpI64Xor)
+		} else {
+			b.i64Const(0x7FFFFFFFFFFFFFFF)
+			b.op(wasmOpI64And)
+		}
+		b.localSet(locI64Tmp)
+		b.localGet(locTmp)
+		b.localGet(locI64Tmp)
+		b.i64Store(3, 0)
+		return true
+	case ji.opcode == 0xD9 && ji.modrm >= 0xC0 && ji.modrm <= 0xC7: // FLD ST(i)
+		const locI64Tmp = 10
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		x86WasmEmitFPUReadTop(b, locTmp3, locTmp)
+		x86WasmEmitFPUPhysFromTopPlus(b, locTmp, int32(ji.modrm&7), locTmp2)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp2, locTmp4)
+		b.localGet(locTmp4)
+		b.i32Const(3)
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp4, locTmp2) {
+			return false
+		}
+		b.end()
+		x86WasmEmitFPUPhysFromTopPlus(b, locTmp, -1, locTmp)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp, locTmp5)
+		b.localGet(locTmp5)
+		b.i32Const(3)
+		b.op(wasmOpI32Ne)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp5, locTmp) {
+			return false
+		}
+		b.end()
+		x86WasmEmitFPUSetTop(b, locTmp3, locTmp, locTmp2)
+		x86WasmEmitFPUSetTagAtPhys(b, locTmp3, locTmp, locTmp4, locTmp5)
+		b.localGet(locTmp3)
+		b.localGet(locTmp2)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.i64Load(3, 0)
+		b.localSet(locI64Tmp)
+		b.localGet(locTmp3)
+		b.localGet(locTmp)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.localGet(locI64Tmp)
+		b.i64Store(3, 0)
+		return true
+	case ji.opcode == 0xD9 && ji.modrm >= 0xC8 && ji.modrm <= 0xCF: // FXCH ST(i)
+		const locI64Tmp = 10
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		x86WasmEmitFPUReadTop(b, locTmp3, locTmp)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp, locTmp4)
+		b.localGet(locTmp4)
+		b.i32Const(3)
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp4, locTmp) {
+			return false
+		}
+		b.end()
+		x86WasmEmitFPUPhysFromTopPlus(b, locTmp, int32(ji.modrm&7), locTmp2)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp2, locTmp5)
+		b.localGet(locTmp5)
+		b.i32Const(3)
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp5, locTmp2) {
+			return false
+		}
+		b.end()
+		b.localGet(locTmp3)
+		b.localGet(locTmp2)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.i64Load(3, 0)
+		b.localSet(locI64Tmp)
+		b.localGet(locTmp3)
+		b.localGet(locTmp2)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.localGet(locTmp3)
+		b.localGet(locTmp)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.i64Load(3, 0)
+		b.i64Store(3, 0)
+		b.localGet(locTmp3)
+		b.localGet(locTmp)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.localGet(locI64Tmp)
+		b.i64Store(3, 0)
+		x86WasmEmitFPUSetTagAtPhys(b, locTmp3, locTmp, locTmp5, locTmp4)
+		x86WasmEmitFPUSetTagAtPhys(b, locTmp3, locTmp2, locTmp4, locTmp5)
+		return true
+	case ji.opcode == 0xDD && ji.modrm>>6 == 3 && (ji.modrm>>3)&7 == 0: // FFREE ST(i)
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		x86WasmEmitFPUReadTop(b, locTmp3, locTmp)
+		if i := int32(ji.modrm & 7); i != 0 {
+			b.localGet(locTmp)
+			b.i32Const(i)
+			b.op(wasmOpI32Add)
+			b.i32Const(7)
+			b.op(wasmOpI32And)
+			b.localSet(locTmp)
+		}
+		b.localGet(locTmp)
+		b.i32Const(1)
+		b.op(wasmOpI32Shl)
+		b.localSet(locTmp2)
+		b.localGet(locTmp3)
+		b.localGet(locTmp3)
+		b.i32Load16U(1, x86FPUOffFTW)
+		b.i32Const(3)
+		b.localGet(locTmp2)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Or)
+		b.i32Store16(1, x86FPUOffFTW)
+		return true
+	case ji.opcode == 0xDD && ji.modrm >= 0xD8 && ji.modrm <= 0xDF: // FSTP ST(i)
+		const locI64Tmp = 10
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		x86WasmEmitFPUReadTop(b, locTmp3, locTmp)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp, locTmp4)
+		b.localGet(locTmp4)
+		b.i32Const(3)
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp4, locTmp) {
+			return false
+		}
+		b.end()
+		x86WasmEmitFPUPhysFromTopPlus(b, locTmp, int32(ji.modrm&7), locTmp2)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp2, locTmp5)
+		b.localGet(locTmp5)
+		b.i32Const(3)
+		b.op(wasmOpI32Eq)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp5, locTmp2) {
+			return false
+		}
+		b.end()
+		b.localGet(locTmp3)
+		b.localGet(locTmp)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.i64Load(3, 0)
+		b.localSet(locI64Tmp)
+		b.localGet(locTmp3)
+		b.localGet(locTmp2)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.localGet(locI64Tmp)
+		b.i64Store(3, 0)
+		x86WasmEmitFPUSetTagAtPhys(b, locTmp3, locTmp2, locTmp4, locTmp5)
+		b.i32Const(int32(x87TagEmpty))
+		b.localSet(locTmp5)
+		x86WasmEmitFPUSetTagAtPhys(b, locTmp3, locTmp, locTmp5, locTmp4)
+		x86WasmEmitFPUPhysFromTopPlus(b, locTmp, 1, locTmp)
+		x86WasmEmitFPUSetTop(b, locTmp3, locTmp, locTmp2)
+		return true
+	case ji.opcode == 0xD9 && (ji.modrm == 0xF6 || ji.modrm == 0xF7): // FDECSTP/FINCSTP
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		x86WasmEmitFPUReadTop(b, locTmp3, locTmp)
+		if ji.modrm == 0xF6 {
+			x86WasmEmitFPUPhysFromTopPlus(b, locTmp, -1, locTmp)
+		} else {
+			x86WasmEmitFPUPhysFromTopPlus(b, locTmp, 1, locTmp)
+		}
+		x86WasmEmitFPUSetTop(b, locTmp3, locTmp, locTmp2)
+		return true
+	case ji.opcode == 0xD9 && ji.modrm >= 0xE8 && ji.modrm <= 0xEE: // x87 constants
+		const locI64Tmp = 10
+		var bits uint64
+		switch ji.modrm {
+		case 0xE8:
+			bits = 0x3FF0000000000000
+		case 0xEE:
+			bits = 0
+		default:
+			bits = math.Float64bits(x87ConstTable[ji.modrm-0xE8])
+		}
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		x86WasmEmitFPUReadTop(b, locTmp3, locTmp)
+		x86WasmEmitFPUPhysFromTopPlus(b, locTmp, -1, locTmp)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp, locTmp2)
+		b.localGet(locTmp2)
+		b.i32Const(3)
+		b.op(wasmOpI32Ne)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp2, locTmp) {
+			return false
+		}
+		b.end()
+		x86WasmEmitFPUSetTop(b, locTmp3, locTmp, locTmp2)
+		b.i64Const(int64(bits))
+		b.localSet(locI64Tmp)
+		b.localGet(locTmp3)
+		b.localGet(locTmp)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.localGet(locI64Tmp)
+		b.i64Store(3, 0)
+		tag := int32(x87TagValid)
+		if bits == 0 {
+			tag = int32(x87TagZero)
+		}
+		b.i32Const(tag)
+		b.localSet(locTmp2)
+		x86WasmEmitFPUSetTagAtPhys(b, locTmp3, locTmp, locTmp2, locTmp4)
+		return true
+	case ji.opcode == 0xD8 && ji.modrm>>6 == 3:
+		const (
+			locI64Tmp = 10
+			expMask   = int64(0x7FF0000000000000)
+		)
+		op := (ji.modrm >> 3) & 7
+		if op == 2 || op == 3 {
+			return x86WasmEmitFPUCompareDirect(b, ji, memory, retired, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, false, op == 3)
+		}
+		if op != 0 && op != 1 && op != 4 && op != 5 && op != 6 && op != 7 {
+			return x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp2, locTmp)
+		}
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		x86WasmEmitFPUReadTop(b, locTmp3, locTmp)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp, locTmp4)
+		b.localGet(locTmp4)
+		b.i32Const(int32(x87TagValid))
+		b.op(wasmOpI32Ne)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp4, locTmp) {
+			return false
+		}
+		b.end()
+		x86WasmEmitFPUPhysFromTopPlus(b, locTmp, int32(ji.modrm&7), locTmp2)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp2, locTmp5)
+		b.localGet(locTmp5)
+		b.i32Const(int32(x87TagValid))
+		b.op(wasmOpI32Ne)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp5, locTmp2) {
+			return false
+		}
+		b.end()
+		if op == 5 || op == 7 {
+			b.localGet(locTmp3)
+			b.localGet(locTmp2)
+			b.i32Const(3)
+			b.op(wasmOpI32Shl)
+			b.op(wasmOpI32Add)
+			b.f64Load(3, 0)
+			b.localGet(locTmp3)
+			b.localGet(locTmp)
+			b.i32Const(3)
+			b.op(wasmOpI32Shl)
+			b.op(wasmOpI32Add)
+			b.f64Load(3, 0)
+		} else {
+			b.localGet(locTmp3)
+			b.localGet(locTmp)
+			b.i32Const(3)
+			b.op(wasmOpI32Shl)
+			b.op(wasmOpI32Add)
+			b.f64Load(3, 0)
+			b.localGet(locTmp3)
+			b.localGet(locTmp2)
+			b.i32Const(3)
+			b.op(wasmOpI32Shl)
+			b.op(wasmOpI32Add)
+			b.f64Load(3, 0)
+		}
+		switch op {
+		case 0:
+			b.op(wasmOpF64Add)
+		case 1:
+			b.op(wasmOpF64Mul)
+		case 4, 5:
+			b.op(wasmOpF64Sub)
+		case 6, 7:
+			b.op(wasmOpF64Div)
+		}
+		b.op(wasmOpI64ReinterpretF64)
+		b.localSet(locI64Tmp)
+		b.localGet(locI64Tmp)
+		b.i64Const(expMask)
+		b.op(wasmOpI64And)
+		b.op(wasmOpI64Eqz)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp4, locTmp) {
+			return false
+		}
+		b.end()
+		b.localGet(locI64Tmp)
+		b.i64Const(expMask)
+		b.op(wasmOpI64And)
+		b.i64Const(expMask)
+		b.op(wasmOpI64Eq)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp5, locTmp2) {
+			return false
+		}
+		b.end()
+		b.localGet(locTmp3)
+		b.localGet(locTmp)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.localGet(locI64Tmp)
+		b.i64Store(3, 0)
+		return true
+	case ji.opcode == 0xDE && ji.modrm>>6 == 3:
+		const (
+			locI64Tmp = 10
+			expMask   = int64(0x7FF0000000000000)
+		)
+		op := (ji.modrm >> 3) & 7
+		mapOp := int(op)
+		switch op {
+		case 4:
+			mapOp = 5
+		case 5:
+			mapOp = 4
+		case 6:
+			mapOp = 7
+		case 7:
+			mapOp = 6
+		}
+		if op != 0 && op != 1 && op != 4 && op != 5 && op != 6 && op != 7 {
+			return x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp2, locTmp)
+		}
+		if !x86WasmEmitFPUCaptureOp(b, ji, memory, locCtx, locTmp3, locTmp2) {
+			return false
+		}
+		x86WasmEmitFPUReadTop(b, locTmp3, locTmp)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp, locTmp4)
+		b.localGet(locTmp4)
+		b.i32Const(int32(x87TagValid))
+		b.op(wasmOpI32Ne)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp4, locTmp) {
+			return false
+		}
+		b.end()
+		x86WasmEmitFPUPhysFromTopPlus(b, locTmp, int32(ji.modrm&7), locTmp2)
+		x86WasmEmitFPUTagAtPhys(b, locTmp3, locTmp2, locTmp5)
+		b.localGet(locTmp5)
+		b.i32Const(int32(x87TagValid))
+		b.op(wasmOpI32Ne)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp5, locTmp2) {
+			return false
+		}
+		b.end()
+
+		b.localGet(locTmp3)
+		b.localGet(locTmp2)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.f64Load(3, 0)
+		b.localGet(locTmp3)
+		b.localGet(locTmp)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.f64Load(3, 0)
+		switch mapOp {
+		case 0:
+			b.op(wasmOpF64Add)
+		case 1:
+			b.op(wasmOpF64Mul)
+		case 4, 5:
+			b.op(wasmOpF64Sub)
+		case 6, 7:
+			b.op(wasmOpF64Div)
+		}
+		b.op(wasmOpI64ReinterpretF64)
+		b.localSet(locI64Tmp)
+		b.localGet(locI64Tmp)
+		b.i64Const(expMask)
+		b.op(wasmOpI64And)
+		b.op(wasmOpI64Eqz)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp4, locTmp) {
+			return false
+		}
+		b.end()
+		b.localGet(locI64Tmp)
+		b.i64Const(expMask)
+		b.op(wasmOpI64And)
+		b.i64Const(expMask)
+		b.op(wasmOpI64Eq)
+		b.ifVoid()
+		if !x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp5, locTmp2) {
+			return false
+		}
+		b.end()
+		b.localGet(locTmp3)
+		b.localGet(locTmp2)
+		b.i32Const(3)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.localGet(locI64Tmp)
+		b.i64Store(3, 0)
+		x86WasmEmitFPUSetTagAtPhys(b, locTmp3, locTmp2, locTmp4, locTmp5)
+		b.i32Const(int32(x87TagEmpty))
+		b.localSet(locTmp5)
+		x86WasmEmitFPUSetTagAtPhys(b, locTmp3, locTmp, locTmp5, locTmp4)
+		x86WasmEmitFPUPhysFromTopPlus(b, locTmp, 1, locTmp)
+		x86WasmEmitFPUSetTop(b, locTmp3, locTmp, locTmp4)
+		return true
+	case ji.opcode == 0xD9 && ji.modrm == 0xE4: // FTST
+		return x86WasmEmitFPUCompareDirect(b, ji, memory, retired, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, true, false)
+	case ji.opcode == 0xDD && ji.modrm>>6 == 3 && (ji.grpOp == 4 || ji.grpOp == 5): // FUCOM/FUCOMP ST(i)
+		return x86WasmEmitFPUCompareDirect(b, ji, memory, retired, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, false, ji.grpOp == 5)
+	default:
+		return x86WasmEmitFPUHelperExit(b, ji, memory, retired, locCtx, locRegs, locTmp2, locTmp)
+	}
 }
 
 func x86WasmEmitSpanGuard(b *wasmBody, locCtx, locEA, locPtr, locTmp uint32, size uint32, retPC uint32, retCount int) {
@@ -2175,6 +3051,9 @@ func x86WasmEmitTerminalLoop(b *wasmBody, ji X86JITInstr, memory []byte, locCtx,
 }
 
 func x86WasmEmitInstr(b *wasmBody, ji X86JITInstr, memory []byte, retired int, cycles, ticks uint32, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, locTmp8 uint32) bool {
+	if ji.opcode >= 0xD8 && ji.opcode <= 0xDF {
+		return x86WasmEmitFPUDirectOrHelper(b, ji, memory, retired, locCtx, locRegs, locTmp, locTmp2, locTmp5, locTmp6, locTmp7)
+	}
 	if ji.opcode >= 0x0F00 {
 		op2 := byte(ji.opcode)
 		switch op2 {
@@ -5042,7 +5921,7 @@ func x86WasmCompileBlockModule(instrs []X86JITInstr, startPC uint32, memory []by
 		x86WasmEmitRetPCAndCount(b, retPC, len(compiledInstrs), totalCycles, totalTicks)
 	}
 	b.end()
-	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, b.code)
+	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI64}, b.code)
 	m.exportFunc("block", fn)
 	block := &JITBlock{
 		startPC:          uint64(startPC),
@@ -5074,6 +5953,8 @@ func x86WasmCompileRegionModule(region *x86Region, memory []byte) (*x86WasmCompi
 		}
 		op := byte(ji.opcode)
 		switch op {
+		case 0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF:
+			return true
 		case 0x89, 0x8B:
 			return ji.hasModRM && ji.modrm>>6 != 3 && ji.prefixes == 0
 		case 0xF6, 0xF7:

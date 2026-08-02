@@ -106,6 +106,19 @@ const (
 	x86JITExitInterpFallback
 )
 
+const (
+	x86FPUOffRegs = 0
+	x86FPUOffFCW  = 64
+	x86FPUOffFSW  = 66
+	x86FPUOffFTW  = 68
+	x86FPUOffFIP  = 72
+	x86FPUOffFCS  = 76
+	x86FPUOffFDP  = 80
+	x86FPUOffFDS  = 84
+	x86FPUOffFOP  = 86
+	x86FPUSize    = 88
+)
+
 // x86JitAvailable is set to true at init time on platforms that support x86 JIT.
 var x86JitAvailable bool
 
@@ -344,6 +357,77 @@ func x86FPUHelperPayloadFromContext(ctx *X86JITContext) (x86FPUHelperPayload, bo
 		Bytes:    ctx.FPUHelperBytes,
 	}
 	return p, true
+}
+
+func x86FindModRMPCFromHelperPayload(p x86FPUHelperPayload) int {
+	for i := 0; i < int(p.Length); i++ {
+		if p.Bytes[i] >= 0xD8 && p.Bytes[i] <= 0xDF {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+// x86FPUHelperSegmentFromPayload derives the interpreter-visible effective
+// segment register for a canonical x87 helper payload. Segment bases remain
+// flat in this model, but provenance and helper replay retain the selected
+// segment register.
+func x86FPUHelperSegmentFromPayload(p x86FPUHelperPayload) (byte, bool) {
+	seg := byte(x86SegDS)
+	for i := 0; i < int(p.Length); i++ {
+		switch p.Bytes[i] {
+		case 0x26:
+			seg = x86SegES
+		case 0x2E:
+			seg = x86SegCS
+		case 0x36:
+			seg = x86SegSS
+		case 0x3E:
+			seg = x86SegDS
+		case 0x64:
+			seg = x86SegFS
+		case 0x65:
+			seg = x86SegGS
+		case 0xD8, 0xD9, 0xDA, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF:
+			goto decoded
+		}
+	}
+	return 0, false
+decoded:
+	mod, rm := p.ModRM>>6, p.ModRM&7
+	if mod == 3 {
+		return x86SegDS, true
+	}
+	if p.Prefixes&x86PrefAddrSize != 0 {
+		if p.Prefixes&x86PrefSeg != 0 {
+			return seg, true
+		}
+		switch rm {
+		case 2, 3:
+			return x86SegSS, true
+		case 6:
+			if mod != 0 {
+				return x86SegSS, true
+			}
+		}
+		return x86SegDS, true
+	}
+	if p.Prefixes&x86PrefSeg != 0 {
+		return seg, true
+	}
+	if rm == 4 {
+		modrmPC := x86FindModRMPCFromHelperPayload(p)
+		if modrmPC+1 >= int(p.Length) {
+			return 0, false
+		}
+		base := p.Bytes[modrmPC+1] & 7
+		if !(mod == 0 && base == 5) && (base == 4 || base == 5) {
+			return x86SegSS, true
+		}
+	} else if mod != 0 && (rm == 4 || rm == 5) {
+		return x86SegSS, true
+	}
+	return seg, true
 }
 
 func x86FPUHelperAccessWidthFromOpcode(opcode, modrm byte) uint32 {
