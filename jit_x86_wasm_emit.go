@@ -183,12 +183,22 @@ func x86WasmSupportedInstr(ji X86JITInstr) bool {
 		return ji.prefixes == 0
 	case op == 0xA1 || op == 0xA3:
 		return ji.prefixes&^x86PrefOpSize == 0
+	case op == 0xA4 || op == 0xA6 || op == 0xAA || op == 0xAC || op == 0xAE:
+		return ji.prefixes&^(x86PrefRep|x86PrefRepNE) == 0
+	case op == 0xA5 || op == 0xA7 || op == 0xAB || op == 0xAD || op == 0xAF:
+		return ji.prefixes&^(x86PrefOpSize|x86PrefRep|x86PrefRepNE) == 0
 	case op == 0x9C || op == 0x9D:
 		return ji.prefixes&^x86PrefOpSize == 0
 	case op == 0xF6:
-		return ji.hasModRM && ji.modrm>>6 != 3 && ji.prefixes == 0 && (ji.grpOp == 0 || ji.grpOp == 1)
+		return ji.hasModRM && ji.prefixes == 0 &&
+			((ji.modrm>>6 != 3 && (ji.grpOp == 0 || ji.grpOp == 1)) ||
+				ji.grpOp == 0 || ji.grpOp == 1 || ji.grpOp == 2 || ji.grpOp == 3 ||
+				ji.grpOp == 4 || ji.grpOp == 5 || ji.grpOp == 6 || ji.grpOp == 7)
 	case op == 0xF7:
-		return ji.hasModRM && ji.modrm>>6 != 3 && ji.prefixes == 0 && (ji.grpOp == 0 || ji.grpOp == 1)
+		return ji.hasModRM && ji.prefixes&^x86PrefOpSize == 0 &&
+			((ji.modrm>>6 != 3 && (ji.grpOp == 0 || ji.grpOp == 1)) ||
+				ji.grpOp == 0 || ji.grpOp == 1 || ji.grpOp == 2 || ji.grpOp == 3 ||
+				ji.grpOp == 4 || ji.grpOp == 5 || ji.grpOp == 6 || ji.grpOp == 7)
 	case op == 0xC6:
 		return ji.hasModRM && ji.modrm>>6 != 3 && ji.prefixes == 0 && ji.grpOp == 0
 	case op == 0xC7:
@@ -258,6 +268,8 @@ func x86WasmBlockTerminalPC(instrs []X86JITInstr, memory []byte, startPC uint32)
 		case 0x90, 0x98, 0x99, 0x9B, 0xD6, 0xFA, 0xFB, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0xC4, 0xC5: // NOP, WAIT, MOVs, LEA, control
 			continue
 		case 0xA0, 0xA1, 0xA2, 0xA3:
+			continue
+		case 0xA4, 0xA5, 0xA6, 0xA7, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE, 0xAF:
 			continue
 		case 0x06, 0x07, 0x0E, 0x16, 0x17, 0x1E, 0x1F, 0x68, 0x6A, 0x8F, 0x9C, 0x9D:
 			continue
@@ -540,6 +552,46 @@ func x86WasmEmitStoreSeg16(b *wasmBody, locCtx, locValue, locSegPtr uint32, seg 
 	b.i32Store16(1, 0)
 }
 
+func x86WasmEmitStringAdvance(b *wasmBody, locCtx, locValue, locFlagsPtr, locFlags uint32, width uint32) {
+	b.localGet(locCtx)
+	b.i32Load(2, x86CtxOffFlagsPtr)
+	b.localSet(locFlagsPtr)
+	b.localGet(locFlagsPtr)
+	b.i32Load(2, 0)
+	b.i32Const(int32(x86FlagDF))
+	b.op(wasmOpI32And)
+	b.ifVoid()
+	b.localGet(locValue)
+	b.i32Const(int32(width))
+	b.op(wasmOpI32Sub)
+	b.localSet(locValue)
+	b.elseBranch()
+	b.localGet(locValue)
+	b.i32Const(int32(width))
+	b.op(wasmOpI32Add)
+	b.localSet(locValue)
+	b.end()
+}
+
+func x86WasmEmitStringDynamicCredit(b *wasmBody, locCtx, locInitial, locCurrent, locCycles, locTicks uint32) {
+	b.localGet(locInitial)
+	b.localGet(locCurrent)
+	b.op(wasmOpI32Sub)
+	b.localSet(locCycles)
+	b.localGet(locCycles)
+	b.op(wasmOpI32Eqz)
+	b.ifVoid()
+	b.i32Const(0)
+	b.localSet(locTicks)
+	b.elseBranch()
+	b.localGet(locCycles)
+	b.i32Const(1)
+	b.op(wasmOpI32Sub)
+	b.localSet(locTicks)
+	b.end()
+	x86WasmEmitDynamicChainCredit(b, locCtx, locCycles, locTicks)
+}
+
 func x86WasmEmitBailReturn(b *wasmBody, locCtx, locEA uint32, retPC uint32, retCount int, mmio bool, invalSize uint32) {
 	b.localGet(locCtx)
 	b.i32Const(int32(retPC))
@@ -565,6 +617,22 @@ func x86WasmEmitBailReturn(b *wasmBody, locCtx, locEA uint32, retPC uint32, retC
 		b.i32Const(1)
 		b.i32Store(2, x86CtxOffNeedIOFallback)
 	}
+	b.op(wasmOpReturn)
+}
+
+func x86WasmEmitExitReasonReturn(b *wasmBody, locCtx uint32, retPC uint32, retCount int, reason uint32) {
+	b.localGet(locCtx)
+	b.i32Const(int32(retPC))
+	b.i32Store(2, x86CtxOffRetPC)
+	b.localGet(locCtx)
+	b.i32Const(int32(retCount))
+	b.localGet(locCtx)
+	b.i32Load(2, x86CtxOffChainCount)
+	b.op(wasmOpI32Add)
+	b.i32Store(2, x86CtxOffRetCount)
+	b.localGet(locCtx)
+	b.i32Const(int32(reason))
+	b.i32Store(2, x86CtxOffExitReason)
 	b.op(wasmOpReturn)
 }
 
@@ -914,6 +982,233 @@ func x86WasmEmitArithFlags8(b *wasmBody, locCtx, locResult, locA, locB, locMaske
 	b.i32Const(1)
 	b.op(wasmOpI32And)
 	b.i32Const(11)
+	b.op(wasmOpI32Shl)
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+
+	b.localGet(locFlagsPtr)
+	b.localGet(locFlags)
+	b.i32Store(2, 0)
+}
+
+func x86WasmEmitSubFlagsWidth(b *wasmBody, locCtx, locA, locB, locResult, locFlagsPtr, locFlags uint32, width uint32) {
+	b.localGet(locCtx)
+	b.i32Load(2, x86CtxOffFlagsPtr)
+	b.localSet(locFlagsPtr)
+	b.localGet(locFlagsPtr)
+	b.i32Load(2, 0)
+	b.localSet(locFlags)
+
+	if width == 1 {
+		b.localGet(locResult)
+		b.i32Const(0xFF)
+		b.op(wasmOpI32And)
+		b.localSet(locResult)
+	} else if width == 2 {
+		b.localGet(locResult)
+		b.i32Const(0xFFFF)
+		b.op(wasmOpI32And)
+		b.localSet(locResult)
+	}
+
+	b.localGet(locFlags)
+	b.i32Const(^int32(x86FlagCF | x86FlagPF | x86FlagAF | x86FlagZF | x86FlagSF | x86FlagOF))
+	b.op(wasmOpI32And)
+	b.localSet(locFlags)
+
+	b.localGet(locFlags)
+	b.i32Const(int32(x86FlagZF))
+	b.i32Const(0)
+	b.localGet(locResult)
+	b.op(wasmOpI32Eqz)
+	b.op(wasmOpSelect)
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+
+	signShift := int32(width*8 - 1)
+	b.localGet(locFlags)
+	b.localGet(locResult)
+	b.i32Const(signShift)
+	b.op(wasmOpI32ShrU)
+	b.i32Const(1)
+	b.op(wasmOpI32And)
+	b.i32Const(7)
+	b.op(wasmOpI32Shl)
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+
+	b.localGet(locFlags)
+	b.localGet(locA)
+	b.localGet(locB)
+	b.op(wasmOpI32LtU)
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+
+	b.localGet(locFlags)
+	b.localGet(locA)
+	b.localGet(locB)
+	b.op(wasmOpI32Xor)
+	b.localGet(locResult)
+	b.op(wasmOpI32Xor)
+	b.i32Const(0x10)
+	b.op(wasmOpI32And)
+	b.i32Const(2)
+	b.op(wasmOpI32ShrU)
+	b.i32Const(4)
+	b.op(wasmOpI32Shl)
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+
+	b.localGet(locFlags)
+	b.localGet(locA)
+	b.localGet(locB)
+	b.op(wasmOpI32Xor)
+	b.localGet(locA)
+	b.localGet(locResult)
+	b.op(wasmOpI32Xor)
+	b.op(wasmOpI32And)
+	b.i32Const(signShift)
+	b.op(wasmOpI32ShrU)
+	b.i32Const(1)
+	b.op(wasmOpI32And)
+	b.i32Const(11)
+	b.op(wasmOpI32Shl)
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+
+	b.localGet(locResult)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
+	b.localSet(locResult)
+	for _, shift := range []int32{4, 2, 1} {
+		b.localGet(locResult)
+		b.localGet(locResult)
+		b.i32Const(shift)
+		b.op(wasmOpI32ShrU)
+		b.op(wasmOpI32Xor)
+		b.localSet(locResult)
+	}
+	b.localGet(locFlags)
+	b.localGet(locResult)
+	b.i32Const(1)
+	b.op(wasmOpI32And)
+	b.i32Const(1)
+	b.op(wasmOpI32Xor)
+	b.i32Const(2)
+	b.op(wasmOpI32Shl)
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+
+	b.localGet(locFlagsPtr)
+	b.localGet(locFlags)
+	b.i32Store(2, 0)
+}
+
+func x86WasmEmitNEGFlagsWidth(b *wasmBody, locCtx, locOrig, locResult, locFlagsPtr, locFlags, locScratch uint32, width uint32) {
+	b.localGet(locCtx)
+	b.i32Load(2, x86CtxOffFlagsPtr)
+	b.localSet(locFlagsPtr)
+	b.localGet(locFlagsPtr)
+	b.i32Load(2, 0)
+	b.localSet(locFlags)
+
+	mask := int32(-1)
+	signShift := int32(31)
+	overflowConst := int32(-2147483648)
+	switch width {
+	case 1:
+		mask = 0xFF
+		signShift = 7
+		overflowConst = 0x80
+	case 2:
+		mask = 0xFFFF
+		signShift = 15
+		overflowConst = 0x8000
+	}
+	if width != 4 {
+		b.localGet(locResult)
+		b.i32Const(mask)
+		b.op(wasmOpI32And)
+		b.localSet(locResult)
+	}
+
+	b.localGet(locFlags)
+	b.i32Const(^int32(x86FlagCF | x86FlagPF | x86FlagAF | x86FlagZF | x86FlagSF | x86FlagOF))
+	b.op(wasmOpI32And)
+	b.localSet(locFlags)
+
+	b.localGet(locOrig)
+	b.op(wasmOpI32Eqz)
+	b.ifVoid()
+	b.elseBranch()
+	b.localGet(locFlags)
+	b.i32Const(int32(x86FlagCF))
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+	b.end()
+
+	b.localGet(locFlags)
+	b.i32Const(int32(x86FlagZF))
+	b.i32Const(0)
+	b.localGet(locResult)
+	b.op(wasmOpI32Eqz)
+	b.op(wasmOpSelect)
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+
+	b.localGet(locFlags)
+	b.localGet(locResult)
+	b.i32Const(signShift)
+	b.op(wasmOpI32ShrU)
+	b.i32Const(1)
+	b.op(wasmOpI32And)
+	b.i32Const(7)
+	b.op(wasmOpI32Shl)
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+
+	b.localGet(locOrig)
+	b.i32Const(0xF)
+	b.op(wasmOpI32And)
+	b.op(wasmOpI32Eqz)
+	b.ifVoid()
+	b.elseBranch()
+	b.localGet(locFlags)
+	b.i32Const(int32(x86FlagAF))
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+	b.end()
+
+	b.localGet(locOrig)
+	b.i32Const(overflowConst)
+	b.op(wasmOpI32Eq)
+	b.ifVoid()
+	b.localGet(locFlags)
+	b.i32Const(int32(x86FlagOF))
+	b.op(wasmOpI32Or)
+	b.localSet(locFlags)
+	b.elseBranch()
+	b.end()
+
+	b.localGet(locResult)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
+	b.localSet(locScratch)
+	for _, shift := range []int32{4, 2, 1} {
+		b.localGet(locScratch)
+		b.localGet(locScratch)
+		b.i32Const(shift)
+		b.op(wasmOpI32ShrU)
+		b.op(wasmOpI32Xor)
+		b.localSet(locScratch)
+	}
+	b.localGet(locFlags)
+	b.localGet(locScratch)
+	b.i32Const(1)
+	b.op(wasmOpI32And)
+	b.i32Const(1)
+	b.op(wasmOpI32Xor)
+	b.i32Const(2)
 	b.op(wasmOpI32Shl)
 	b.op(wasmOpI32Or)
 	b.localSet(locFlags)
@@ -1879,7 +2174,7 @@ func x86WasmEmitTerminalLoop(b *wasmBody, ji X86JITInstr, memory []byte, locCtx,
 	return true
 }
 
-func x86WasmEmitInstr(b *wasmBody, ji X86JITInstr, memory []byte, retired int, cycles, ticks uint32, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7 uint32) bool {
+func x86WasmEmitInstr(b *wasmBody, ji X86JITInstr, memory []byte, retired int, cycles, ticks uint32, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, locTmp8 uint32) bool {
 	if ji.opcode >= 0x0F00 {
 		op2 := byte(ji.opcode)
 		switch op2 {
@@ -2874,6 +3169,449 @@ func x86WasmEmitInstr(b *wasmBody, ji X86JITInstr, memory []byte, retired int, c
 			x86WasmEmitStoreReg32(b, locRegs, locTmp3, 5)
 		}
 		return true
+	case op == 0xA4 || op == 0xA5: // MOVS
+		width := uint32(1)
+		rep := ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0
+		if op == 0xA5 {
+			width = 4
+			if ji.prefixes&x86PrefOpSize != 0 {
+				width = 2
+			}
+		}
+		if rep {
+			x86WasmEmitLoadReg32(b, locRegs, 1)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			b.op(wasmOpI32Eqz)
+			b.ifVoid()
+			b.elseBranch()
+			b.localGet(locTmp4)
+			b.localSet(locTmp5)
+			b.block()
+			b.loop()
+			x86WasmEmitLoadReg32(b, locRegs, 1)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			b.op(wasmOpI32Eqz)
+			b.brIf(1)
+		}
+		x86WasmEmitLoadReg32(b, locRegs, 6)
+		b.localSet(locTmp)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp6, locTmp7, width, ji.opcodePC, retired)
+		x86WasmEmitLoadReg32(b, locRegs, 7)
+		b.localSet(locTmp2)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp2, locTmp6, locTmp7, width, ji.opcodePC, retired)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffMemPtr)
+		b.localGet(locTmp)
+		b.op(wasmOpI32Add)
+		if width == 1 {
+			b.i32Load8U(0, 0)
+		} else if width == 2 {
+			b.i32Load16U(1, 0)
+		} else {
+			b.i32Load(2, 0)
+		}
+		b.localSet(locTmp3)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffMemPtr)
+		b.localGet(locTmp2)
+		b.op(wasmOpI32Add)
+		b.localGet(locTmp3)
+		if width == 1 {
+			b.i32Store8(0, 0)
+		} else if width == 2 {
+			b.i32Store16(1, 0)
+		} else {
+			b.i32Store(2, 0)
+		}
+		x86WasmEmitStringAdvance(b, locCtx, locTmp, locTmp6, locTmp7, width)
+		x86WasmEmitStringAdvance(b, locCtx, locTmp2, locTmp6, locTmp7, width)
+		if rep {
+			b.localGet(locTmp4)
+			b.i32Const(1)
+			b.op(wasmOpI32Sub)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			x86WasmEmitStoreReg32(b, locRegs, locTmp6, 1)
+		}
+		b.localGet(locTmp)
+		x86WasmEmitStoreReg32(b, locRegs, locTmp6, 6)
+		b.localGet(locTmp2)
+		x86WasmEmitStoreReg32(b, locRegs, locTmp6, 7)
+		x86WasmEmitSMCStoreCheck(b, locCtx, locTmp2, locTmp6, width, ji.opcodePC+uint32(ji.length), retired+1)
+		if !rep {
+			b.i32Const(1)
+			b.localSet(locTmp6)
+			b.i32Const(0)
+			b.localSet(locTmp7)
+			x86WasmEmitDynamicChainCredit(b, locCtx, locTmp6, locTmp7)
+		}
+		if rep {
+			b.br(0)
+			b.end()
+			b.end()
+			x86WasmEmitStringDynamicCredit(b, locCtx, locTmp5, locTmp4, locTmp6, locTmp7)
+			b.end()
+		}
+		return true
+	case op == 0xAA || op == 0xAB: // STOS
+		width := uint32(1)
+		rep := ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0
+		if op == 0xAB {
+			width = 4
+			if ji.prefixes&x86PrefOpSize != 0 {
+				width = 2
+			}
+		}
+		if rep {
+			x86WasmEmitLoadReg32(b, locRegs, 1)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			b.op(wasmOpI32Eqz)
+			b.ifVoid()
+			b.elseBranch()
+			b.localGet(locTmp4)
+			b.localSet(locTmp5)
+			b.block()
+			b.loop()
+			x86WasmEmitLoadReg32(b, locRegs, 1)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			b.op(wasmOpI32Eqz)
+			b.brIf(1)
+		}
+		x86WasmEmitLoadReg32(b, locRegs, 7)
+		b.localSet(locTmp)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp6, locTmp7, width, ji.opcodePC, retired)
+		if width == 1 {
+			x86WasmEmitExtractReg8(b, locRegs, 0)
+		} else {
+			x86WasmEmitLoadReg32(b, locRegs, 0)
+			if width == 2 {
+				b.i32Const(0xFFFF)
+				b.op(wasmOpI32And)
+			}
+		}
+		b.localSet(locTmp2)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffMemPtr)
+		b.localGet(locTmp)
+		b.op(wasmOpI32Add)
+		b.localGet(locTmp2)
+		if width == 1 {
+			b.i32Store8(0, 0)
+		} else if width == 2 {
+			b.i32Store16(1, 0)
+		} else {
+			b.i32Store(2, 0)
+		}
+		x86WasmEmitStringAdvance(b, locCtx, locTmp, locTmp6, locTmp7, width)
+		if rep {
+			b.localGet(locTmp4)
+			b.i32Const(1)
+			b.op(wasmOpI32Sub)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			x86WasmEmitStoreReg32(b, locRegs, locTmp6, 1)
+		}
+		b.localGet(locTmp)
+		x86WasmEmitStoreReg32(b, locRegs, locTmp6, 7)
+		x86WasmEmitSMCStoreCheck(b, locCtx, locTmp, locTmp6, width, ji.opcodePC+uint32(ji.length), retired+1)
+		if !rep {
+			b.i32Const(1)
+			b.localSet(locTmp6)
+			b.i32Const(0)
+			b.localSet(locTmp7)
+			x86WasmEmitDynamicChainCredit(b, locCtx, locTmp6, locTmp7)
+		}
+		if rep {
+			b.br(0)
+			b.end()
+			b.end()
+			x86WasmEmitStringDynamicCredit(b, locCtx, locTmp5, locTmp4, locTmp6, locTmp7)
+			b.end()
+		}
+		return true
+	case op == 0xAC || op == 0xAD: // LODS
+		width := uint32(1)
+		rep := ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0
+		if op == 0xAD {
+			width = 4
+			if ji.prefixes&x86PrefOpSize != 0 {
+				width = 2
+			}
+		}
+		if rep {
+			x86WasmEmitLoadReg32(b, locRegs, 1)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			b.op(wasmOpI32Eqz)
+			b.ifVoid()
+			b.elseBranch()
+			b.localGet(locTmp4)
+			b.localSet(locTmp5)
+			b.block()
+			b.loop()
+			x86WasmEmitLoadReg32(b, locRegs, 1)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			b.op(wasmOpI32Eqz)
+			b.brIf(1)
+		}
+		x86WasmEmitLoadReg32(b, locRegs, 6)
+		b.localSet(locTmp)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp6, locTmp7, width, ji.opcodePC, retired)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffMemPtr)
+		b.localGet(locTmp)
+		b.op(wasmOpI32Add)
+		if width == 1 {
+			b.i32Load8U(0, 0)
+			b.localSet(locTmp2)
+			b.localGet(locTmp2)
+			x86WasmEmitInsertReg8(b, locRegs, locTmp6, 0)
+		} else if width == 2 {
+			b.i32Load16U(1, 0)
+			b.localSet(locTmp2)
+			b.localGet(locTmp2)
+			x86WasmEmitInsertReg16(b, locRegs, locTmp6, 0)
+		} else {
+			b.i32Load(2, 0)
+			x86WasmEmitStoreReg32(b, locRegs, locTmp6, 0)
+		}
+		x86WasmEmitStringAdvance(b, locCtx, locTmp, locTmp6, locTmp7, width)
+		if rep {
+			b.localGet(locTmp4)
+			b.i32Const(1)
+			b.op(wasmOpI32Sub)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			x86WasmEmitStoreReg32(b, locRegs, locTmp6, 1)
+		}
+		b.localGet(locTmp)
+		x86WasmEmitStoreReg32(b, locRegs, locTmp6, 6)
+		if !rep {
+			b.i32Const(1)
+			b.localSet(locTmp6)
+			b.i32Const(0)
+			b.localSet(locTmp7)
+			x86WasmEmitDynamicChainCredit(b, locCtx, locTmp6, locTmp7)
+		}
+		if rep {
+			b.br(0)
+			b.end()
+			b.end()
+			x86WasmEmitStringDynamicCredit(b, locCtx, locTmp5, locTmp4, locTmp6, locTmp7)
+			b.end()
+		}
+		return true
+	case op == 0xA6 || op == 0xA7: // CMPS
+		width := uint32(1)
+		rep := ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0
+		repNE := ji.prefixes&x86PrefRepNE != 0
+		if op == 0xA7 {
+			width = 4
+			if ji.prefixes&x86PrefOpSize != 0 {
+				width = 2
+			}
+		}
+		if rep {
+			x86WasmEmitLoadReg32(b, locRegs, 1)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			b.op(wasmOpI32Eqz)
+			b.ifVoid()
+			b.elseBranch()
+			b.localGet(locTmp4)
+			b.localSet(locTmp5)
+			b.block()
+			b.loop()
+			x86WasmEmitLoadReg32(b, locRegs, 1)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			b.op(wasmOpI32Eqz)
+			b.brIf(1)
+		}
+		x86WasmEmitLoadReg32(b, locRegs, 6)
+		b.localSet(locTmp)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp6, locTmp7, width, ji.opcodePC, retired)
+		x86WasmEmitLoadReg32(b, locRegs, 7)
+		b.localSet(locTmp2)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp2, locTmp6, locTmp7, width, ji.opcodePC, retired)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffMemPtr)
+		b.localGet(locTmp)
+		b.op(wasmOpI32Add)
+		if width == 1 {
+			b.i32Load8U(0, 0)
+		} else if width == 2 {
+			b.i32Load16U(1, 0)
+		} else {
+			b.i32Load(2, 0)
+		}
+		b.localSet(locTmp3)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffMemPtr)
+		b.localGet(locTmp2)
+		b.op(wasmOpI32Add)
+		if width == 1 {
+			b.i32Load8U(0, 0)
+		} else if width == 2 {
+			b.i32Load16U(1, 0)
+		} else {
+			b.i32Load(2, 0)
+		}
+		b.localSet(locTmp6)
+		b.localGet(locTmp3)
+		b.localGet(locTmp6)
+		b.op(wasmOpI32Sub)
+		b.localSet(locTmp7)
+		b.localGet(locTmp7)
+		b.op(wasmOpI32Eqz)
+		b.localSet(locTmp8)
+		x86WasmEmitSubFlagsWidth(b, locCtx, locTmp3, locTmp6, locTmp7, locTmp, locTmp2, width)
+		x86WasmEmitLoadReg32(b, locRegs, 6)
+		b.localSet(locTmp)
+		x86WasmEmitLoadReg32(b, locRegs, 7)
+		b.localSet(locTmp2)
+		x86WasmEmitStringAdvance(b, locCtx, locTmp, locTmp6, locTmp7, width)
+		x86WasmEmitStringAdvance(b, locCtx, locTmp2, locTmp6, locTmp7, width)
+		if rep {
+			b.localGet(locTmp4)
+			b.i32Const(1)
+			b.op(wasmOpI32Sub)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			x86WasmEmitStoreReg32(b, locRegs, locTmp7, 1)
+		}
+		b.localGet(locTmp)
+		x86WasmEmitStoreReg32(b, locRegs, locTmp7, 6)
+		b.localGet(locTmp2)
+		x86WasmEmitStoreReg32(b, locRegs, locTmp7, 7)
+		if !rep {
+			b.i32Const(1)
+			b.localSet(locTmp6)
+			b.i32Const(0)
+			b.localSet(locTmp7)
+			x86WasmEmitDynamicChainCredit(b, locCtx, locTmp6, locTmp7)
+		}
+		if rep {
+			b.localGet(locTmp8)
+			if repNE {
+				b.brIf(1)
+				b.br(0)
+			} else {
+				b.ifVoid()
+				b.br(1)
+				b.elseBranch()
+				b.br(2)
+				b.end()
+			}
+			b.end()
+			b.end()
+			x86WasmEmitStringDynamicCredit(b, locCtx, locTmp5, locTmp4, locTmp6, locTmp7)
+			b.end()
+		}
+		return true
+	case op == 0xAE || op == 0xAF: // SCAS
+		width := uint32(1)
+		rep := ji.prefixes&(x86PrefRep|x86PrefRepNE) != 0
+		repNE := ji.prefixes&x86PrefRepNE != 0
+		if op == 0xAF {
+			width = 4
+			if ji.prefixes&x86PrefOpSize != 0 {
+				width = 2
+			}
+		}
+		if rep {
+			x86WasmEmitLoadReg32(b, locRegs, 1)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			b.op(wasmOpI32Eqz)
+			b.ifVoid()
+			b.elseBranch()
+			b.localGet(locTmp4)
+			b.localSet(locTmp5)
+			b.block()
+			b.loop()
+			x86WasmEmitLoadReg32(b, locRegs, 1)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			b.op(wasmOpI32Eqz)
+			b.brIf(1)
+		}
+		x86WasmEmitLoadReg32(b, locRegs, 7)
+		b.localSet(locTmp)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp6, locTmp7, width, ji.opcodePC, retired)
+		if width == 1 {
+			x86WasmEmitExtractReg8(b, locRegs, 0)
+		} else {
+			x86WasmEmitLoadReg32(b, locRegs, 0)
+			if width == 2 {
+				b.i32Const(0xFFFF)
+				b.op(wasmOpI32And)
+			}
+		}
+		b.localSet(locTmp2)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffMemPtr)
+		b.localGet(locTmp)
+		b.op(wasmOpI32Add)
+		if width == 1 {
+			b.i32Load8U(0, 0)
+		} else if width == 2 {
+			b.i32Load16U(1, 0)
+		} else {
+			b.i32Load(2, 0)
+		}
+		b.localSet(locTmp6)
+		b.localGet(locTmp2)
+		b.localGet(locTmp6)
+		b.op(wasmOpI32Sub)
+		b.localSet(locTmp7)
+		b.localGet(locTmp7)
+		b.op(wasmOpI32Eqz)
+		b.localSet(locTmp8)
+		x86WasmEmitSubFlagsWidth(b, locCtx, locTmp2, locTmp6, locTmp7, locTmp, locTmp3, width)
+		x86WasmEmitLoadReg32(b, locRegs, 7)
+		b.localSet(locTmp)
+		x86WasmEmitStringAdvance(b, locCtx, locTmp, locTmp6, locTmp7, width)
+		if rep {
+			b.localGet(locTmp4)
+			b.i32Const(1)
+			b.op(wasmOpI32Sub)
+			b.localSet(locTmp4)
+			b.localGet(locTmp4)
+			x86WasmEmitStoreReg32(b, locRegs, locTmp6, 1)
+		}
+		b.localGet(locTmp)
+		x86WasmEmitStoreReg32(b, locRegs, locTmp6, 7)
+		if !rep {
+			b.i32Const(1)
+			b.localSet(locTmp6)
+			b.i32Const(0)
+			b.localSet(locTmp7)
+			x86WasmEmitDynamicChainCredit(b, locCtx, locTmp6, locTmp7)
+		}
+		if rep {
+			b.localGet(locTmp8)
+			if repNE {
+				b.brIf(1)
+				b.br(0)
+			} else {
+				b.ifVoid()
+				b.br(1)
+				b.elseBranch()
+				b.br(2)
+				b.end()
+			}
+			b.end()
+			b.end()
+			x86WasmEmitStringDynamicCredit(b, locCtx, locTmp5, locTmp4, locTmp6, locTmp7)
+			b.end()
+		}
+		return true
 	case op == 0xFA || op == 0xFB: // CLI/STI
 		b.localGet(locCtx)
 		b.i32Load(2, x86CtxOffFlagsPtr)
@@ -3609,20 +4347,385 @@ func x86WasmEmitInstr(b *wasmBody, ji X86JITInstr, memory []byte, retired int, c
 		b.localSet(locTmp4)
 		x86WasmEmitLogicFlags(b, locCtx, locTmp4, locTmp2, locTmp5, locTmp6, 8)
 		return true
-	case op == 0xF7 && ji.hasModRM && ji.modrm>>6 != 3 && ji.prefixes == 0 && (ji.grpOp == 0 || ji.grpOp == 1):
+	case op == 0xF6 && ji.hasModRM && ji.modrm>>6 == 3 && ji.prefixes == 0 && (ji.grpOp == 0 || ji.grpOp == 1):
+		x86WasmEmitExtractReg8(b, locRegs, ji.modrm&7)
+		b.i32Const(int32(uint32(x86WasmImmediate8(ji, memory))))
+		b.op(wasmOpI32And)
+		b.localSet(locTmp4)
+		x86WasmEmitLogicFlags(b, locCtx, locTmp4, locTmp2, locTmp5, locTmp6, 8)
+		return true
+	case op == 0xF7 && ji.hasModRM && ji.modrm>>6 != 3 && ji.prefixes&^x86PrefOpSize == 0 && (ji.grpOp == 0 || ji.grpOp == 1):
+		width := uint32(4)
+		if ji.prefixes&x86PrefOpSize != 0 {
+			width = 2
+		}
 		if !x86WasmEmitEA32(b, ji, memory, locRegs, locTmp) {
 			return false
 		}
-		x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp2, locTmp3, 4, ji.opcodePC, retired)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp2, locTmp3, width, ji.opcodePC, retired)
 		b.localGet(locCtx)
 		b.i32Load(2, x86CtxOffMemPtr)
 		b.localGet(locTmp)
 		b.op(wasmOpI32Add)
-		b.i32Load(2, 0)
-		b.i32Const(int32(x86WasmImmediate32(ji, memory)))
+		if width == 2 {
+			b.i32Load16U(1, 0)
+			b.i32Const(int32(uint32(x86WasmImmediate16(ji, memory))))
+		} else {
+			b.i32Load(2, 0)
+			b.i32Const(int32(x86WasmImmediate32(ji, memory)))
+		}
 		b.op(wasmOpI32And)
 		b.localSet(locTmp4)
-		x86WasmEmitLogicFlags(b, locCtx, locTmp4, locTmp2, locTmp5, locTmp6, 32)
+		x86WasmEmitLogicFlags(b, locCtx, locTmp4, locTmp2, locTmp5, locTmp6, width*8)
+		return true
+	case op == 0xF7 && ji.hasModRM && ji.modrm>>6 == 3 && ji.prefixes&^x86PrefOpSize == 0 && (ji.grpOp == 0 || ji.grpOp == 1):
+		width := uint32(4)
+		if ji.prefixes&x86PrefOpSize != 0 {
+			width = 2
+		}
+		x86WasmEmitLoadReg32(b, locRegs, ji.modrm&7)
+		if width == 2 {
+			b.i32Const(0xFFFF)
+			b.op(wasmOpI32And)
+			b.i32Const(int32(uint32(x86WasmImmediate16(ji, memory))))
+		} else {
+			b.i32Const(int32(x86WasmImmediate32(ji, memory)))
+		}
+		b.op(wasmOpI32And)
+		b.localSet(locTmp4)
+		x86WasmEmitLogicFlags(b, locCtx, locTmp4, locTmp2, locTmp5, locTmp6, width*8)
+		return true
+	case (op == 0xF6 && ji.hasModRM && ji.prefixes == 0 && (ji.grpOp == 4 || ji.grpOp == 5)) ||
+		(op == 0xF7 && ji.hasModRM && ji.prefixes&^x86PrefOpSize == 0 && (ji.grpOp == 4 || ji.grpOp == 5)):
+		width := uint32(4)
+		if op == 0xF6 {
+			width = 1
+		} else if ji.prefixes&x86PrefOpSize != 0 {
+			width = 2
+		}
+		if ji.modrm>>6 == 3 {
+			if width == 1 {
+				x86WasmEmitExtractReg8(b, locRegs, ji.modrm&7)
+			} else {
+				x86WasmEmitLoadReg32(b, locRegs, ji.modrm&7)
+				if width == 2 {
+					b.i32Const(0xFFFF)
+					b.op(wasmOpI32And)
+				}
+			}
+		} else {
+			if !x86WasmEmitEA32(b, ji, memory, locRegs, locTmp) {
+				return false
+			}
+			x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp2, locTmp3, width, ji.opcodePC, retired)
+			b.localGet(locCtx)
+			b.i32Load(2, x86CtxOffMemPtr)
+			b.localGet(locTmp)
+			b.op(wasmOpI32Add)
+			if width == 1 {
+				b.i32Load8U(0, 0)
+			} else if width == 2 {
+				b.i32Load16U(1, 0)
+			} else {
+				b.i32Load(2, 0)
+			}
+		}
+		b.localSet(locTmp3) // operand
+		if ji.grpOp == 4 {  // MUL
+			switch width {
+			case 1:
+				x86WasmEmitExtractReg8(b, locRegs, 0)
+				b.localSet(locTmp2)
+				b.localGet(locTmp2)
+				b.localGet(locTmp3)
+				b.op(wasmOpI32Mul)
+				b.localSet(locTmp4)
+				b.localGet(locTmp4)
+				x86WasmEmitInsertReg16(b, locRegs, locTmp5, 0)
+				b.localGet(locCtx)
+				b.i32Load(2, x86CtxOffFlagsPtr)
+				b.localSet(locTmp2)
+				b.localGet(locTmp2)
+				b.i32Load(2, 0)
+				b.i32Const(^int32(x86FlagCF | x86FlagOF))
+				b.op(wasmOpI32And)
+				b.localSet(locTmp5)
+				b.localGet(locTmp4)
+				b.i32Const(8)
+				b.op(wasmOpI32ShrU)
+				b.op(wasmOpI32Eqz)
+				b.ifVoid()
+				b.elseBranch()
+				b.localGet(locTmp5)
+				b.i32Const(int32(x86FlagCF | x86FlagOF))
+				b.op(wasmOpI32Or)
+				b.localSet(locTmp5)
+				b.end()
+				b.localGet(locTmp2)
+				b.localGet(locTmp5)
+				b.i32Store(2, 0)
+			case 2:
+				x86WasmEmitLoadReg32(b, locRegs, 0)
+				b.i32Const(0xFFFF)
+				b.op(wasmOpI32And)
+				b.localSet(locTmp2)
+				b.localGet(locTmp2)
+				b.localGet(locTmp3)
+				b.op(wasmOpI32Mul)
+				b.localSet(locTmp4)
+				b.localGet(locTmp4)
+				x86WasmEmitInsertReg16(b, locRegs, locTmp5, 0)
+				b.localGet(locTmp4)
+				b.i32Const(16)
+				b.op(wasmOpI32ShrU)
+				x86WasmEmitInsertReg16(b, locRegs, locTmp5, 2)
+				b.localGet(locCtx)
+				b.i32Load(2, x86CtxOffFlagsPtr)
+				b.localSet(locTmp2)
+				b.localGet(locTmp2)
+				b.i32Load(2, 0)
+				b.i32Const(^int32(x86FlagCF | x86FlagOF))
+				b.op(wasmOpI32And)
+				b.localSet(locTmp5)
+				b.localGet(locTmp4)
+				b.i32Const(16)
+				b.op(wasmOpI32ShrU)
+				b.op(wasmOpI32Eqz)
+				b.ifVoid()
+				b.elseBranch()
+				b.localGet(locTmp5)
+				b.i32Const(int32(x86FlagCF | x86FlagOF))
+				b.op(wasmOpI32Or)
+				b.localSet(locTmp5)
+				b.end()
+				b.localGet(locTmp2)
+				b.localGet(locTmp5)
+				b.i32Store(2, 0)
+			default:
+				x86WasmEmitLoadReg32(b, locRegs, 0)
+				b.localSet(locTmp2)
+				b.localGet(locTmp2)
+				b.op(wasmOpI64ExtendI32U)
+				b.localGet(locTmp3)
+				b.op(wasmOpI64ExtendI32U)
+				b.op(wasmOpI64Mul)
+				b.op(wasmOpI32WrapI64)
+				x86WasmEmitStoreReg32(b, locRegs, locTmp5, 0)
+				b.localGet(locTmp2)
+				b.op(wasmOpI64ExtendI32U)
+				b.localGet(locTmp3)
+				b.op(wasmOpI64ExtendI32U)
+				b.op(wasmOpI64Mul)
+				b.i64Const(32)
+				b.op(wasmOpI64ShrU)
+				b.op(wasmOpI32WrapI64)
+				x86WasmEmitStoreReg32(b, locRegs, locTmp5, 2)
+				b.localGet(locCtx)
+				b.i32Load(2, x86CtxOffFlagsPtr)
+				b.localSet(locTmp2)
+				b.localGet(locTmp2)
+				b.i32Load(2, 0)
+				b.i32Const(^int32(x86FlagCF | x86FlagOF))
+				b.op(wasmOpI32And)
+				b.localSet(locTmp5)
+				x86WasmEmitLoadReg32(b, locRegs, 2)
+				b.op(wasmOpI32Eqz)
+				b.ifVoid()
+				b.elseBranch()
+				b.localGet(locTmp5)
+				b.i32Const(int32(x86FlagCF | x86FlagOF))
+				b.op(wasmOpI32Or)
+				b.localSet(locTmp5)
+				b.end()
+				b.localGet(locTmp2)
+				b.localGet(locTmp5)
+				b.i32Store(2, 0)
+			}
+		} else { // IMUL
+			switch width {
+			case 1:
+				x86WasmEmitExtractReg8(b, locRegs, 0)
+				b.i32Const(24)
+				b.op(wasmOpI32Shl)
+				b.i32Const(24)
+				b.op(wasmOpI32ShrS)
+				b.localSet(locTmp2)
+				b.localGet(locTmp2)
+				b.localGet(locTmp3)
+				b.i32Const(24)
+				b.op(wasmOpI32Shl)
+				b.i32Const(24)
+				b.op(wasmOpI32ShrS)
+				b.op(wasmOpI32Mul)
+				b.localSet(locTmp4)
+				b.localGet(locTmp4)
+				x86WasmEmitInsertReg16(b, locRegs, locTmp5, 0)
+				b.localGet(locCtx)
+				b.i32Load(2, x86CtxOffFlagsPtr)
+				b.localSet(locTmp2)
+				b.localGet(locTmp2)
+				b.i32Load(2, 0)
+				b.i32Const(^int32(x86FlagCF | x86FlagOF))
+				b.op(wasmOpI32And)
+				b.localSet(locTmp5)
+				b.localGet(locTmp4)
+				b.i32Const(8)
+				b.op(wasmOpI32Shl)
+				b.i32Const(8)
+				b.op(wasmOpI32ShrS)
+				b.localGet(locTmp4)
+				b.op(wasmOpI32Eq)
+				b.ifVoid()
+				b.elseBranch()
+				b.localGet(locTmp5)
+				b.i32Const(int32(x86FlagCF | x86FlagOF))
+				b.op(wasmOpI32Or)
+				b.localSet(locTmp5)
+				b.end()
+				b.localGet(locTmp2)
+				b.localGet(locTmp5)
+				b.i32Store(2, 0)
+			case 2:
+				x86WasmEmitLoadReg32(b, locRegs, 0)
+				b.i32Const(16)
+				b.op(wasmOpI32Shl)
+				b.i32Const(16)
+				b.op(wasmOpI32ShrS)
+				b.localSet(locTmp2)
+				b.localGet(locTmp2)
+				b.localGet(locTmp3)
+				b.i32Const(16)
+				b.op(wasmOpI32Shl)
+				b.i32Const(16)
+				b.op(wasmOpI32ShrS)
+				b.op(wasmOpI32Mul)
+				b.localSet(locTmp4)
+				b.localGet(locTmp4)
+				x86WasmEmitInsertReg16(b, locRegs, locTmp5, 0)
+				b.localGet(locTmp4)
+				b.i32Const(16)
+				b.op(wasmOpI32ShrU)
+				x86WasmEmitInsertReg16(b, locRegs, locTmp5, 2)
+				x86WasmEmitMulOverflowFlags(b, locCtx, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, 2)
+			default:
+				x86WasmEmitLoadReg32(b, locRegs, 0)
+				b.localSet(locTmp2)
+				b.localGet(locTmp2)
+				b.op(wasmOpI64ExtendI32S)
+				b.localGet(locTmp3)
+				b.op(wasmOpI64ExtendI32S)
+				b.op(wasmOpI64Mul)
+				b.op(wasmOpI32WrapI64)
+				x86WasmEmitStoreReg32(b, locRegs, locTmp5, 0)
+				b.localGet(locTmp2)
+				b.op(wasmOpI64ExtendI32S)
+				b.localGet(locTmp3)
+				b.op(wasmOpI64ExtendI32S)
+				b.op(wasmOpI64Mul)
+				b.i64Const(32)
+				b.op(wasmOpI64ShrU)
+				b.op(wasmOpI32WrapI64)
+				x86WasmEmitStoreReg32(b, locRegs, locTmp5, 2)
+				x86WasmEmitLoadReg32(b, locRegs, 0)
+				b.localSet(locTmp4)
+				x86WasmEmitMulOverflowFlags(b, locCtx, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, 4)
+			}
+		}
+		return true
+	case (op == 0xF6 && ji.hasModRM && ji.prefixes == 0 && (ji.grpOp == 6 || ji.grpOp == 7)) ||
+		(op == 0xF7 && ji.hasModRM && ji.prefixes&^x86PrefOpSize == 0 && (ji.grpOp == 6 || ji.grpOp == 7)):
+		x86WasmEmitExitReasonReturn(b, locCtx, ji.opcodePC, retired, x86JITExitInterpFallback)
+		return true
+	case (op == 0xF6 && ji.hasModRM && ji.prefixes == 0 && (ji.grpOp == 2 || ji.grpOp == 3)) ||
+		(op == 0xF7 && ji.hasModRM && ji.prefixes&^x86PrefOpSize == 0 && (ji.grpOp == 2 || ji.grpOp == 3)):
+		width := uint32(4)
+		if op == 0xF6 {
+			width = 1
+		} else if ji.prefixes&x86PrefOpSize != 0 {
+			width = 2
+		}
+		if ji.modrm>>6 == 3 {
+			if width == 1 {
+				x86WasmEmitExtractReg8(b, locRegs, ji.modrm&7)
+			} else {
+				x86WasmEmitLoadReg32(b, locRegs, ji.modrm&7)
+				if width == 2 {
+					b.i32Const(0xFFFF)
+					b.op(wasmOpI32And)
+				}
+			}
+		} else {
+			if !x86WasmEmitEA32(b, ji, memory, locRegs, locTmp) {
+				return false
+			}
+			x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp2, locTmp3, width, ji.opcodePC, retired)
+			b.localGet(locCtx)
+			b.i32Load(2, x86CtxOffMemPtr)
+			b.localGet(locTmp)
+			b.op(wasmOpI32Add)
+			if width == 1 {
+				b.i32Load8U(0, 0)
+			} else if width == 2 {
+				b.i32Load16U(1, 0)
+			} else {
+				b.i32Load(2, 0)
+			}
+		}
+		b.localSet(locTmp3)
+		if ji.grpOp == 2 { // NOT
+			b.localGet(locTmp3)
+			b.i32Const(-1)
+			b.op(wasmOpI32Xor)
+			if width == 1 {
+				b.i32Const(0xFF)
+				b.op(wasmOpI32And)
+			} else if width == 2 {
+				b.i32Const(0xFFFF)
+				b.op(wasmOpI32And)
+			}
+			b.localSet(locTmp4)
+		} else { // NEG
+			b.i32Const(0)
+			b.localGet(locTmp3)
+			b.op(wasmOpI32Sub)
+			if width == 1 {
+				b.i32Const(0xFF)
+				b.op(wasmOpI32And)
+			} else if width == 2 {
+				b.i32Const(0xFFFF)
+				b.op(wasmOpI32And)
+			}
+			b.localSet(locTmp4)
+		}
+		if ji.modrm>>6 == 3 {
+			if width == 1 {
+				b.localGet(locTmp4)
+				x86WasmEmitInsertReg8(b, locRegs, locTmp5, ji.modrm&7)
+			} else if width == 2 {
+				b.localGet(locTmp4)
+				x86WasmEmitInsertReg16(b, locRegs, locTmp5, ji.modrm&7)
+			} else {
+				b.localGet(locTmp4)
+				x86WasmEmitStoreReg32(b, locRegs, locTmp5, ji.modrm&7)
+			}
+		} else {
+			b.localGet(locCtx)
+			b.i32Load(2, x86CtxOffMemPtr)
+			b.localGet(locTmp)
+			b.op(wasmOpI32Add)
+			b.localGet(locTmp4)
+			if width == 1 {
+				b.i32Store8(0, 0)
+			} else if width == 2 {
+				b.i32Store16(1, 0)
+			} else {
+				b.i32Store(2, 0)
+			}
+			x86WasmEmitSMCStoreCheck(b, locCtx, locTmp, locTmp5, width, ji.opcodePC+uint32(ji.length), retired+1)
+		}
+		if ji.grpOp == 3 {
+			x86WasmEmitNEGFlagsWidth(b, locCtx, locTmp3, locTmp4, locTmp5, locTmp6, locTmp2, width)
+		}
 		return true
 	case op == 0xC6 && ji.hasModRM && ji.modrm>>6 != 3 && ji.prefixes == 0 && ji.grpOp == 0:
 		if !x86WasmEmitEA32(b, ji, memory, locRegs, locTmp) {
@@ -3906,6 +5009,7 @@ func x86WasmCompileBlockModule(instrs []X86JITInstr, startPC uint32, memory []by
 		locTmp5 = 6
 		locTmp6 = 7
 		locTmp7 = 8
+		locTmp8 = 9
 	)
 	b := &wasmBody{}
 	b.localGet(locCtx)
@@ -3927,7 +5031,7 @@ func x86WasmCompileBlockModule(instrs []X86JITInstr, startPC uint32, memory []by
 			emittedTerminalState = true
 			break
 		}
-		if !x86WasmEmitInstr(b, ji, memory, i, totalCycles, totalTicks, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+		if !x86WasmEmitInstr(b, ji, memory, i, totalCycles, totalTicks, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, locTmp8) {
 			return nil, fmt.Errorf("x86 wasm: unsupported opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
 		}
 		if i == len(compiledInstrs)-1 && (termKind == x86WasmTerminalCALL || termKind == x86WasmTerminalRET) {
@@ -3938,7 +5042,7 @@ func x86WasmCompileBlockModule(instrs []X86JITInstr, startPC uint32, memory []by
 		x86WasmEmitRetPCAndCount(b, retPC, len(compiledInstrs), totalCycles, totalTicks)
 	}
 	b.end()
-	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, b.code)
+	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, b.code)
 	m.exportFunc("block", fn)
 	block := &JITBlock{
 		startPC:          uint64(startPC),
@@ -4047,10 +5151,11 @@ func x86WasmCompileRegionModule(region *x86Region, memory []byte) (*x86WasmCompi
 		locTmp5       = 6
 		locTmp6       = 7
 		locTmp7       = 8
-		locLoopRet    = 9
-		locLoopCycle  = 10
-		locLoopTick   = 11
-		locLoopBudget = 12
+		locTmp8       = 9
+		locLoopRet    = 10
+		locLoopCycle  = 11
+		locLoopTick   = 12
+		locLoopBudget = 13
 	)
 	b := &wasmBody{}
 	b.localGet(locCtx)
@@ -4058,7 +5163,7 @@ func x86WasmCompileRegionModule(region *x86Region, memory []byte) (*x86WasmCompi
 	b.localSet(locRegs)
 	if backEdgeSource < 0 {
 		for i, ji := range all {
-			if !x86WasmEmitInstr(b, ji, memory, i, totalCycles, totalTicks, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+			if !x86WasmEmitInstr(b, ji, memory, i, totalCycles, totalTicks, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, locTmp8) {
 				return nil, fmt.Errorf("x86 wasm: unsupported region opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
 			}
 		}
@@ -4087,7 +5192,7 @@ func x86WasmCompileRegionModule(region *x86Region, memory []byte) (*x86WasmCompi
 
 		for i := 0; i < prefixInstrs; i++ {
 			ji := all[i]
-			if !x86WasmEmitInstr(b, ji, memory, i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+			if !x86WasmEmitInstr(b, ji, memory, i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, locTmp8) {
 				return nil, fmt.Errorf("x86 wasm: unsupported loop-prefix opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
 			}
 		}
@@ -4095,7 +5200,7 @@ func x86WasmCompileRegionModule(region *x86Region, memory []byte) (*x86WasmCompi
 		b.loop()
 		for i := prefixInstrs; i < len(all); i++ {
 			ji := all[i]
-			if !x86WasmEmitInstr(b, ji, memory, i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+			if !x86WasmEmitInstr(b, ji, memory, i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, locTmp8) {
 				return nil, fmt.Errorf("x86 wasm: unsupported loop-body opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
 			}
 		}
@@ -4133,7 +5238,7 @@ func x86WasmCompileRegionModule(region *x86Region, memory []byte) (*x86WasmCompi
 		b.end()
 	}
 	b.end()
-	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, b.code)
+	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, b.code)
 	m.exportFunc("block", fn)
 	block := &JITBlock{
 		startPC:          uint64(region.entryPC),
@@ -4255,6 +5360,7 @@ func x86WasmCompileConditionalRegionModule(region *x86WasmConditionalRegion, mem
 		locTmp5 = 6
 		locTmp6 = 7
 		locTmp7 = 8
+		locTmp8 = 9
 	)
 	b := &wasmBody{}
 	b.localGet(locCtx)
@@ -4263,7 +5369,7 @@ func x86WasmCompileConditionalRegionModule(region *x86WasmConditionalRegion, mem
 
 	for i := 0; i < entryCount-1; i++ {
 		ji := region.entryBlock[i]
-		if !x86WasmEmitInstr(b, ji, memory, i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+		if !x86WasmEmitInstr(b, ji, memory, i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, locTmp8) {
 			return nil, fmt.Errorf("x86 wasm: unsupported conditional-entry opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
 		}
 	}
@@ -4275,7 +5381,7 @@ func x86WasmCompileConditionalRegionModule(region *x86WasmConditionalRegion, mem
 	b.ifVoid()
 	for i := 0; i < targetCount-1; i++ {
 		ji := region.targetBlock[i]
-		if !x86WasmEmitInstr(b, ji, memory, entryCount+fallCount+i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+		if !x86WasmEmitInstr(b, ji, memory, entryCount+fallCount+i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, locTmp8) {
 			return nil, fmt.Errorf("x86 wasm: unsupported conditional-target opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
 		}
 	}
@@ -4283,14 +5389,14 @@ func x86WasmCompileConditionalRegionModule(region *x86WasmConditionalRegion, mem
 	b.elseBranch()
 	for i := 0; i < fallCount-1; i++ {
 		ji := region.fallBlock[i]
-		if !x86WasmEmitInstr(b, ji, memory, entryCount+i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+		if !x86WasmEmitInstr(b, ji, memory, entryCount+i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7, locTmp8) {
 			return nil, fmt.Errorf("x86 wasm: unsupported conditional-fallthrough opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
 		}
 	}
 	x86WasmEmitRetPCAndCount(b, region.exitPC, entryCount+fallCount, entryCycles+fallCycles, entryTicks+fallTicks)
 	b.end()
 	b.end()
-	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, b.code)
+	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, b.code)
 	m.exportFunc("block", fn)
 	block := &JITBlock{
 		startPC:        uint64(region.entryPC),

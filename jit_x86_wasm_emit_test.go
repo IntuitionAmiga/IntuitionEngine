@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
 	"testing"
 
 	"github.com/tetratelabs/wazero"
@@ -2956,9 +2957,9 @@ func TestX86WasmCompileBlockModule_DirectDoubleShift(t *testing.T) {
 			ctxAddr    = uint32(0x80)
 			regsAddr   = uint32(0x200)
 			flagsAddr  = uint32(0x280)
-			guestBase  = uint32(0x300)
-			ioBMAddr   = uint32(0x900)
-			codeBMAddr = uint32(0x980)
+			guestBase  = uint32(0x1000)
+			ioBMAddr   = uint32(0x5000)
+			codeBMAddr = uint32(0x5800)
 		)
 		if !memExport.Write(ctxAddr, make([]byte, 256)) || !memExport.Write(regsAddr, make([]byte, 32)) ||
 			!memExport.Write(flagsAddr, make([]byte, 4)) || !memExport.Write(guestBase, make([]byte, 0x2000)) ||
@@ -3110,9 +3111,9 @@ func TestX86WasmCompileBlockModule_DirectShiftFamilies(t *testing.T) {
 			ctxAddr    = uint32(0x80)
 			regsAddr   = uint32(0x200)
 			flagsAddr  = uint32(0x280)
-			guestBase  = uint32(0x300)
-			ioBMAddr   = uint32(0x900)
-			codeBMAddr = uint32(0x980)
+			guestBase  = uint32(0x1000)
+			ioBMAddr   = uint32(0x5000)
+			codeBMAddr = uint32(0x5800)
 		)
 		if !memExport.Write(ctxAddr, make([]byte, 256)) || !memExport.Write(regsAddr, make([]byte, 32)) ||
 			!memExport.Write(flagsAddr, make([]byte, 4)) || !memExport.Write(guestBase, make([]byte, 0x2000)) ||
@@ -3307,6 +3308,724 @@ func TestX86WasmCompileBlockModule_DirectShiftFamilies(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestX86WasmCompileBlockModule_DirectStringFamilies(t *testing.T) {
+	const startPC = uint32(0x1000)
+	run := func(t *testing.T, code []byte, setup func(*CPU_X86), check func(*testing.T, *CPU_X86, api.Memory, uint32, uint32)) {
+		t.Helper()
+		mem := make([]byte, int(startPC)+len(code)+0x20)
+		copy(mem[startPC:], code)
+		instrs := x86ScanBlock(mem, startPC)
+		compiled, err := x86WasmCompileBlockModule(instrs, startPC, mem)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		r := wazero.NewRuntime(context.Background())
+		t.Cleanup(func() { _ = r.Close(context.Background()) })
+		ctx := context.Background()
+		instantiateNamed(t, r, ctx, "env", buildWasmMemoryModule(t))
+		mod, err := r.Instantiate(ctx, compiled.module)
+		if err != nil {
+			t.Fatalf("instantiate block: %v", err)
+		}
+		memExport := mod.Memory()
+		const (
+			ctxAddr    = uint32(0x80)
+			regsAddr   = uint32(0x200)
+			flagsAddr  = uint32(0x280)
+			guestBase  = uint32(0x1000)
+			ioBMAddr   = uint32(0x5000)
+			codeBMAddr = uint32(0x5800)
+		)
+		if !memExport.Write(ctxAddr, make([]byte, 256)) || !memExport.Write(regsAddr, make([]byte, 32)) ||
+			!memExport.Write(flagsAddr, make([]byte, 4)) || !memExport.Write(guestBase, make([]byte, 0x3000)) ||
+			!memExport.Write(ioBMAddr, make([]byte, 32)) || !memExport.Write(codeBMAddr, make([]byte, 32)) {
+			t.Fatal("seed memory")
+		}
+		writePtr := func(off, addr uint32) {
+			buf := make([]byte, 8)
+			binary.LittleEndian.PutUint64(buf, uint64(addr))
+			if !memExport.Write(ctxAddr+off, buf) {
+				t.Fatalf("seed ptr off %d", off)
+			}
+		}
+		writePtr(x86CtxOffJITRegsPtr, regsAddr)
+		writePtr(x86CtxOffFlagsPtr, flagsAddr)
+		writePtr(x86CtxOffMemPtr, guestBase)
+		writePtr(x86CtxOffIOBitmapPtr, ioBMAddr)
+		writePtr(x86CtxOffCodePageBitmapPtr, codeBMAddr)
+
+		bus := NewMachineBus()
+		adapter := NewX86BusAdapter(bus)
+		cpu := NewCPU_X86(adapter)
+		cpu.memory = adapter.GetMemory()
+		copy(cpu.memory[startPC:], code)
+		if setup != nil {
+			setup(cpu)
+		}
+		interpBus := NewMachineBus()
+		interpAdapter := NewX86BusAdapter(interpBus)
+		interp := NewCPU_X86(interpAdapter)
+		interp.memory = interpAdapter.GetMemory()
+		copy(interp.memory[startPC:], code)
+		interp.EIP = startPC
+		if setup != nil {
+			setup(interp)
+		}
+		for interp.Running() && !interp.Halted && interp.EIP != compiled.retPC {
+			interp.Step()
+		}
+		word := make([]byte, 4)
+		for reg, val := range []uint32{cpu.EAX, cpu.ECX, cpu.EDX, cpu.EBX, cpu.ESP, cpu.EBP, cpu.ESI, cpu.EDI} {
+			binary.LittleEndian.PutUint32(word, val)
+			if !memExport.Write(regsAddr+uint32(reg*4), word) {
+				t.Fatalf("seed reg %d", reg)
+			}
+		}
+		binary.LittleEndian.PutUint32(word, cpu.Flags)
+		if !memExport.Write(flagsAddr, word) {
+			t.Fatal("seed flags")
+		}
+		binary.LittleEndian.PutUint32(word, 0x3000)
+		if !memExport.Write(ctxAddr+x86CtxOffMemSize, word) {
+			t.Fatal("seed MemSize")
+		}
+		if !memExport.Write(guestBase, cpu.memory[:0x3000]) {
+			t.Fatal("seed guest memory")
+		}
+		if _, err := mod.ExportedFunction("block").Call(ctx, uint64(ctxAddr)); err != nil {
+			t.Fatalf("call block: %v", err)
+		}
+		readReg := func(idx int) uint32 {
+			b, ok := memExport.Read(regsAddr+uint32(idx*4), 4)
+			if !ok {
+				t.Fatalf("read reg %d", idx)
+			}
+			return binary.LittleEndian.Uint32(b)
+		}
+		readU32 := func(addr uint32) uint32 {
+			b, ok := memExport.Read(addr, 4)
+			if !ok {
+				t.Fatalf("read %#x", addr)
+			}
+			return binary.LittleEndian.Uint32(b)
+		}
+		if got := readU32(ctxAddr + x86CtxOffNeedIOFallback); got != 0 {
+			bm, _ := memExport.Read(ioBMAddr, 8)
+			dst, _ := memExport.Read(guestBase+0x600, 8)
+			t.Fatalf("NeedIOFallback=%d RetPC=%#x MemPtr=%#x IOPtr=%#x ECX=%#x ESI=%#x EDI=%#x dst=% X IOBM=% X", got, readU32(ctxAddr+x86CtxOffRetPC), readU32(ctxAddr+x86CtxOffMemPtr), readU32(ctxAddr+x86CtxOffIOBitmapPtr), readReg(1), readReg(6), readReg(7), dst, bm)
+		}
+		if got := readU32(ctxAddr + x86CtxOffNeedInval); got != 0 {
+			t.Fatalf("NeedInval=%d RetPC=%#x", got, readU32(ctxAddr+x86CtxOffRetPC))
+		}
+		for reg, want := range []uint32{interp.EAX, interp.ECX, interp.ESI, interp.EDI} {
+			idx := []int{0, 1, 6, 7}[reg]
+			if got := readReg(idx); got != want {
+				t.Fatalf("reg %d=%#x want %#x ECX=%#x/%#x ESI=%#x/%#x EDI=%#x/%#x RetPC=%#x NeedIO=%d NeedInval=%d",
+					idx, got, want,
+					readReg(1), interp.ECX,
+					readReg(6), interp.ESI,
+					readReg(7), interp.EDI,
+					readU32(ctxAddr+x86CtxOffRetPC),
+					readU32(ctxAddr+x86CtxOffNeedIOFallback),
+					readU32(ctxAddr+x86CtxOffNeedInval))
+			}
+		}
+		if got, want := readU32(flagsAddr), interp.Flags; got != want {
+			t.Fatalf("Flags=%#x want %#x", got, want)
+		}
+		if got, want := readU32(ctxAddr+x86CtxOffRetPC), compiled.retPC; got != want {
+			t.Fatalf("RetPC=%#x want %#x", got, want)
+		}
+		if got, want := readU32(ctxAddr+x86CtxOffRetCount), uint32(compiled.block.instrCount); got != want {
+			t.Fatalf("RetCount=%d want %d", got, want)
+		}
+		if got, want := uint64(readU32(ctxAddr+x86CtxOffChainCycles)), interp.Cycles; got != want {
+			t.Fatalf("ChainCycles=%d want %d", got, want)
+		}
+		if check != nil {
+			check(t, interp, memExport, guestBase, ctxAddr)
+		}
+	}
+
+	t.Run("movs", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			code  []byte
+			width uint32
+			df    bool
+		}{
+			{"movsb_forward", []byte{0xA4, 0xF4}, 1, false},
+			{"movsw_forward", []byte{0x66, 0xA5, 0xF4}, 2, false},
+			{"movsd_forward", []byte{0xA5, 0xF4}, 4, false},
+			{"movsb_reverse", []byte{0xA4, 0xF4}, 1, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				run(t, tc.code, func(cpu *CPU_X86) {
+					cpu.ESI, cpu.EDI = 0x500, 0x600
+					if tc.df {
+						cpu.Flags |= x86FlagDF
+					}
+					for i := uint32(0); i < tc.width; i++ {
+						cpu.memory[0x500+i] = byte(0xA0 + i)
+					}
+				}, func(t *testing.T, interp *CPU_X86, memExport api.Memory, guestBase uint32, _ uint32) {
+					got, ok := memExport.Read(guestBase+0x600, tc.width)
+					if !ok {
+						t.Fatal("read destination")
+					}
+					if want := interp.memory[0x600 : 0x600+tc.width]; string(got) != string(want) {
+						t.Fatalf("memory=% X want % X", got, want)
+					}
+				})
+			})
+		}
+	})
+
+	t.Run("rep_movs", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			code  []byte
+			width uint32
+			df    bool
+		}{
+			{"movsb_forward", []byte{0xF3, 0xA4, 0xF4}, 1, false},
+			{"movsw_forward", []byte{0x66, 0xF3, 0xA5, 0xF4}, 2, false},
+			{"movsd_forward", []byte{0xF3, 0xA5, 0xF4}, 4, false},
+			{"movsb_reverse", []byte{0xF3, 0xA4, 0xF4}, 1, true},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				run(t, tc.code, func(cpu *CPU_X86) {
+					cpu.ECX = 4
+					cpu.ESI, cpu.EDI = 0x500, 0x600
+					if tc.df {
+						cpu.ESI += 3 * tc.width
+						cpu.EDI += 3 * tc.width
+						cpu.Flags |= x86FlagDF
+					}
+					for i := uint32(0); i < 4*tc.width; i++ {
+						cpu.memory[0x500+i] = byte(0x80 + i)
+					}
+				}, func(t *testing.T, interp *CPU_X86, memExport api.Memory, guestBase uint32, _ uint32) {
+					got, ok := memExport.Read(guestBase+0x600, 16)
+					if !ok {
+						t.Fatal("read destination")
+					}
+					if want := interp.memory[0x600:0x610]; string(got) != string(want) {
+						t.Fatalf("memory=% X want % X", got, want)
+					}
+				})
+			})
+		}
+	})
+
+	t.Run("stos_and_lods", func(t *testing.T) {
+		run(t, []byte{0xAA, 0xF4}, func(cpu *CPU_X86) {
+			cpu.EAX, cpu.EDI = 0xA1B2C3D4, 0x600
+		}, func(t *testing.T, interp *CPU_X86, memExport api.Memory, guestBase uint32, _ uint32) {
+			got, _ := memExport.Read(guestBase+0x600, 1)
+			if want := interp.memory[0x600:0x601]; string(got) != string(want) {
+				t.Fatalf("stos memory=% X want % X", got, want)
+			}
+		})
+		run(t, []byte{0xF3, 0xAB, 0xF4}, func(cpu *CPU_X86) {
+			cpu.EAX, cpu.ECX, cpu.EDI = 0xA1B2C3D4, 4, 0x600
+		}, func(t *testing.T, interp *CPU_X86, memExport api.Memory, guestBase uint32, _ uint32) {
+			got, _ := memExport.Read(guestBase+0x600, 16)
+			if want := interp.memory[0x600:0x610]; string(got) != string(want) {
+				t.Fatalf("rep stos memory=% X want % X", got, want)
+			}
+		})
+		run(t, []byte{0xAC, 0xF4}, func(cpu *CPU_X86) {
+			cpu.EAX, cpu.ESI = 0xDEADBEEF, 0x500
+			cpu.memory[0x500] = 0x44
+		}, nil)
+		run(t, []byte{0xF3, 0xAD, 0xF4}, func(cpu *CPU_X86) {
+			cpu.EAX, cpu.ECX, cpu.ESI = 0xDEAD0000, 4, 0x500
+			for i := uint32(0); i < 16; i++ {
+				cpu.memory[0x500+i] = byte(0x30 + i)
+			}
+		}, nil)
+	})
+
+	t.Run("cmps_and_scas", func(t *testing.T) {
+		run(t, []byte{0xA6, 0xF4}, func(cpu *CPU_X86) {
+			cpu.ESI, cpu.EDI = 0x500, 0x600
+			cpu.memory[0x500], cpu.memory[0x600] = 0x40, 0x20
+		}, nil)
+		run(t, []byte{0xF3, 0xA7, 0xF4}, func(cpu *CPU_X86) {
+			cpu.ECX, cpu.ESI, cpu.EDI = 4, 0x500, 0x600
+			copy(cpu.memory[0x500:], []byte{1, 0, 2, 0, 3, 0, 4, 0})
+			copy(cpu.memory[0x600:], []byte{1, 0, 2, 0, 3, 0, 4, 0})
+		}, nil)
+		run(t, []byte{0xF2, 0xA6, 0xF4}, func(cpu *CPU_X86) {
+			cpu.ECX, cpu.ESI, cpu.EDI = 4, 0x500, 0x600
+			copy(cpu.memory[0x500:], []byte{1, 2, 3, 4})
+			copy(cpu.memory[0x600:], []byte{9, 2, 8, 7})
+		}, nil)
+		run(t, []byte{0xAE, 0xF4}, func(cpu *CPU_X86) {
+			cpu.EAX, cpu.EDI = 0x10203040, 0x600
+			cpu.memory[0x600] = 0x20
+		}, nil)
+		run(t, []byte{0xF3, 0xAF, 0xF4}, func(cpu *CPU_X86) {
+			cpu.EAX, cpu.ECX, cpu.EDI = 0x44, 4, 0x600
+			copy(cpu.memory[0x600:], []byte{0x44, 0, 0, 0, 0x44, 0, 0, 0, 0x44, 0, 0, 0, 0x44, 0, 0, 0})
+		}, nil)
+		run(t, []byte{0xF2, 0xAE, 0xF4}, func(cpu *CPU_X86) {
+			cpu.EAX, cpu.ECX, cpu.EDI = 0x44, 4, 0x600
+			copy(cpu.memory[0x600:], []byte{0x11, 0x44, 0x22, 0x33})
+		}, nil)
+	})
+}
+
+func TestX86WasmCompileBlockModule_DirectGroup3NotNeg(t *testing.T) {
+	const startPC = uint32(0x1000)
+	run := func(t *testing.T, code []byte, setup func(*CPU_X86), check func(*testing.T, *CPU_X86, api.Memory, uint32)) {
+		t.Helper()
+		interp := runX86InterpreterProgramWithSetup(t, startPC, setup, code...)
+		mem := make([]byte, int(startPC)+len(code)+0x10)
+		copy(mem[startPC:], code)
+		instrs := x86ScanBlock(mem, startPC)
+		compiled, err := x86WasmCompileBlockModule(instrs, startPC, mem)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		r := wazero.NewRuntime(context.Background())
+		t.Cleanup(func() { _ = r.Close(context.Background()) })
+		ctx := context.Background()
+		instantiateNamed(t, r, ctx, "env", buildWasmMemoryModule(t))
+		mod, err := r.Instantiate(ctx, compiled.module)
+		if err != nil {
+			t.Fatalf("instantiate block: %v", err)
+		}
+		memExport := mod.Memory()
+		const (
+			ctxAddr    = uint32(0x80)
+			regsAddr   = uint32(0x200)
+			flagsAddr  = uint32(0x280)
+			guestBase  = uint32(0x1000)
+			ioBMAddr   = uint32(0x5000)
+			codeBMAddr = uint32(0x5800)
+		)
+		if !memExport.Write(ctxAddr, make([]byte, 256)) || !memExport.Write(regsAddr, make([]byte, 32)) ||
+			!memExport.Write(flagsAddr, make([]byte, 4)) || !memExport.Write(guestBase, make([]byte, 0x2000)) ||
+			!memExport.Write(ioBMAddr, make([]byte, 32)) || !memExport.Write(codeBMAddr, make([]byte, 32)) {
+			t.Fatal("seed memory")
+		}
+		writePtr := func(off, addr uint32) {
+			buf := make([]byte, 8)
+			binary.LittleEndian.PutUint64(buf, uint64(addr))
+			if !memExport.Write(ctxAddr+off, buf) {
+				t.Fatalf("seed ptr off %d", off)
+			}
+		}
+		writePtr(x86CtxOffJITRegsPtr, regsAddr)
+		writePtr(x86CtxOffFlagsPtr, flagsAddr)
+		writePtr(x86CtxOffMemPtr, guestBase)
+		writePtr(x86CtxOffIOBitmapPtr, ioBMAddr)
+		writePtr(x86CtxOffCodePageBitmapPtr, codeBMAddr)
+
+		bus := NewMachineBus()
+		adapter := NewX86BusAdapter(bus)
+		cpu := NewCPU_X86(adapter)
+		cpu.memory = adapter.GetMemory()
+		copy(cpu.memory[startPC:], code)
+		if setup != nil {
+			setup(cpu)
+		}
+		word := make([]byte, 4)
+		for reg, val := range []uint32{cpu.EAX, cpu.ECX, cpu.EDX, cpu.EBX, cpu.ESP, cpu.EBP, cpu.ESI, cpu.EDI} {
+			binary.LittleEndian.PutUint32(word, val)
+			if !memExport.Write(regsAddr+uint32(reg*4), word) {
+				t.Fatalf("seed reg %d", reg)
+			}
+		}
+		binary.LittleEndian.PutUint32(word, cpu.Flags)
+		if !memExport.Write(flagsAddr, word) {
+			t.Fatal("seed flags")
+		}
+		binary.LittleEndian.PutUint32(word, 0x2000)
+		if !memExport.Write(ctxAddr+x86CtxOffMemSize, word) {
+			t.Fatal("seed MemSize")
+		}
+		if !memExport.Write(guestBase, cpu.memory[:0x2000]) {
+			t.Fatal("seed guest memory")
+		}
+		if _, err := mod.ExportedFunction("block").Call(ctx, uint64(ctxAddr)); err != nil {
+			t.Fatalf("call block: %v", err)
+		}
+		readReg := func(idx int) uint32 {
+			b, ok := memExport.Read(regsAddr+uint32(idx*4), 4)
+			if !ok {
+				t.Fatalf("read reg %d", idx)
+			}
+			return binary.LittleEndian.Uint32(b)
+		}
+		readU32 := func(addr uint32) uint32 {
+			b, ok := memExport.Read(addr, 4)
+			if !ok {
+				t.Fatalf("read %#x", addr)
+			}
+			return binary.LittleEndian.Uint32(b)
+		}
+		if got, want := readReg(0), interp.EAX; got != want {
+			t.Fatalf("EAX=%#x want %#x", got, want)
+		}
+		if got, want := readU32(flagsAddr), interp.Flags; got != want {
+			t.Fatalf("Flags=%#x want %#x", got, want)
+		}
+		if got, want := readU32(ctxAddr+x86CtxOffRetPC), compiled.retPC; got != want {
+			t.Fatalf("RetPC=%#x want %#x", got, want)
+		}
+		if got := readU32(ctxAddr + x86CtxOffNeedIOFallback); got != 0 {
+			t.Fatalf("NeedIOFallback=%d", got)
+		}
+		if got := readU32(ctxAddr + x86CtxOffNeedInval); got != 0 {
+			t.Fatalf("NeedInval=%d", got)
+		}
+		if check != nil {
+			check(t, interp, memExport, guestBase)
+		}
+	}
+
+	cases := [][]byte{
+		{0xF6, 0xD0, 0xF4},       // NOT AL
+		{0xF6, 0xD8, 0xF4},       // NEG AL
+		{0xF7, 0xD0, 0xF4},       // NOT EAX
+		{0xF7, 0xD8, 0xF4},       // NEG EAX
+		{0x66, 0xF7, 0xD8, 0xF4}, // NEG AX
+		{0xF6, 0x13, 0xF4},       // NOT byte [EBX]
+		{0xF6, 0x1B, 0xF4},       // NEG byte [EBX]
+		{0xF7, 0x13, 0xF4},       // NOT dword [EBX]
+		{0xF7, 0x1B, 0xF4},       // NEG dword [EBX]
+		{0x66, 0xF7, 0x1B, 0xF4}, // NEG word [EBX]
+	}
+	for _, code := range cases {
+		for _, eax := range []uint32{0, 1, 0x80, 0x8000, 0x80000000} {
+			name := fmt.Sprintf("%X_eax_%08X", code, eax)
+			t.Run(name, func(t *testing.T) {
+				run(t, code, func(cpu *CPU_X86) {
+					cpu.EAX, cpu.EBX, cpu.Flags = eax, 0x400, x86FlagCF|x86FlagPF|x86FlagAF|x86FlagZF|x86FlagSF|x86FlagOF
+					cpu.memory[0x400], cpu.memory[0x401], cpu.memory[0x402], cpu.memory[0x403] = byte(eax), byte(eax>>8), byte(eax>>16), byte(eax>>24)
+				}, func(t *testing.T, interp *CPU_X86, memExport api.Memory, guestBase uint32) {
+					got, ok := memExport.Read(guestBase+0x400, 4)
+					if !ok {
+						t.Fatal("read guest memory")
+					}
+					if want := interp.memory[0x400:0x404]; string(got) != string(want) {
+						t.Fatalf("memory=% X want % X", got, want)
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestX86WasmCompileBlockModule_DirectGroup3TestMulImul(t *testing.T) {
+	const startPC = uint32(0x1000)
+	run := func(t *testing.T, code []byte, setup func(*CPU_X86), check func(*testing.T, *CPU_X86, api.Memory, uint32)) {
+		t.Helper()
+		interp := runX86InterpreterProgramWithSetup(t, startPC, setup, code...)
+		mem := make([]byte, int(startPC)+len(code)+0x10)
+		copy(mem[startPC:], code)
+		instrs := x86ScanBlock(mem, startPC)
+		compiled, err := x86WasmCompileBlockModule(instrs, startPC, mem)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		r := wazero.NewRuntime(context.Background())
+		t.Cleanup(func() { _ = r.Close(context.Background()) })
+		ctx := context.Background()
+		instantiateNamed(t, r, ctx, "env", buildWasmMemoryModule(t))
+		mod, err := r.Instantiate(ctx, compiled.module)
+		if err != nil {
+			t.Fatalf("instantiate block: %v", err)
+		}
+		memExport := mod.Memory()
+		const (
+			ctxAddr    = uint32(0x80)
+			regsAddr   = uint32(0x200)
+			flagsAddr  = uint32(0x280)
+			guestBase  = uint32(0x1000)
+			ioBMAddr   = uint32(0x5000)
+			codeBMAddr = uint32(0x5800)
+		)
+		if !memExport.Write(ctxAddr, make([]byte, 256)) || !memExport.Write(regsAddr, make([]byte, 32)) ||
+			!memExport.Write(flagsAddr, make([]byte, 4)) || !memExport.Write(guestBase, make([]byte, 0x2000)) ||
+			!memExport.Write(ioBMAddr, make([]byte, 32)) || !memExport.Write(codeBMAddr, make([]byte, 32)) {
+			t.Fatal("seed memory")
+		}
+		writePtr := func(off, addr uint32) {
+			buf := make([]byte, 8)
+			binary.LittleEndian.PutUint64(buf, uint64(addr))
+			if !memExport.Write(ctxAddr+off, buf) {
+				t.Fatalf("seed ptr off %d", off)
+			}
+		}
+		writePtr(x86CtxOffJITRegsPtr, regsAddr)
+		writePtr(x86CtxOffFlagsPtr, flagsAddr)
+		writePtr(x86CtxOffMemPtr, guestBase)
+		writePtr(x86CtxOffIOBitmapPtr, ioBMAddr)
+		writePtr(x86CtxOffCodePageBitmapPtr, codeBMAddr)
+
+		bus := NewMachineBus()
+		adapter := NewX86BusAdapter(bus)
+		cpu := NewCPU_X86(adapter)
+		cpu.memory = adapter.GetMemory()
+		copy(cpu.memory[startPC:], code)
+		if setup != nil {
+			setup(cpu)
+		}
+		word := make([]byte, 4)
+		for reg, val := range []uint32{cpu.EAX, cpu.ECX, cpu.EDX, cpu.EBX, cpu.ESP, cpu.EBP, cpu.ESI, cpu.EDI} {
+			binary.LittleEndian.PutUint32(word, val)
+			if !memExport.Write(regsAddr+uint32(reg*4), word) {
+				t.Fatalf("seed reg %d", reg)
+			}
+		}
+		binary.LittleEndian.PutUint32(word, cpu.Flags)
+		if !memExport.Write(flagsAddr, word) {
+			t.Fatal("seed flags")
+		}
+		binary.LittleEndian.PutUint32(word, 0x2000)
+		if !memExport.Write(ctxAddr+x86CtxOffMemSize, word) {
+			t.Fatal("seed MemSize")
+		}
+		if !memExport.Write(guestBase, cpu.memory[:0x2000]) {
+			t.Fatal("seed guest memory")
+		}
+		if _, err := mod.ExportedFunction("block").Call(ctx, uint64(ctxAddr)); err != nil {
+			t.Fatalf("call block: %v", err)
+		}
+		readReg := func(idx int) uint32 {
+			b, ok := memExport.Read(regsAddr+uint32(idx*4), 4)
+			if !ok {
+				t.Fatalf("read reg %d", idx)
+			}
+			return binary.LittleEndian.Uint32(b)
+		}
+		readU32 := func(addr uint32) uint32 {
+			b, ok := memExport.Read(addr, 4)
+			if !ok {
+				t.Fatalf("read %#x", addr)
+			}
+			return binary.LittleEndian.Uint32(b)
+		}
+		if got, want := readReg(0), interp.EAX; got != want {
+			t.Fatalf("EAX=%#x want %#x", got, want)
+		}
+		if got, want := readReg(2), interp.EDX; got != want {
+			t.Fatalf("EDX=%#x want %#x", got, want)
+		}
+		if got, want := readU32(flagsAddr), interp.Flags; got != want {
+			t.Fatalf("Flags=%#x want %#x", got, want)
+		}
+		if got, want := readU32(ctxAddr+x86CtxOffRetPC), compiled.retPC; got != want {
+			t.Fatalf("RetPC=%#x want %#x", got, want)
+		}
+		if got := readU32(ctxAddr + x86CtxOffNeedIOFallback); got != 0 {
+			t.Fatalf("NeedIOFallback=%d", got)
+		}
+		if got := readU32(ctxAddr + x86CtxOffNeedInval); got != 0 {
+			t.Fatalf("NeedInval=%d", got)
+		}
+		if check != nil {
+			check(t, interp, memExport, guestBase)
+		}
+	}
+
+	t.Run("test", func(t *testing.T) {
+		for _, code := range [][]byte{
+			{0xF6, 0xC0, 0x0F, 0xF4},
+			{0xF6, 0xC4, 0x0F, 0xF4},
+			{0xF7, 0xC0, 0x0F, 0, 0, 0, 0xF4},
+			{0x66, 0xF7, 0xC0, 0x0F, 0, 0xF4},
+			{0xF6, 0x03, 0x0F, 0xF4},
+			{0xF7, 0x03, 0x0F, 0, 0, 0, 0xF4},
+			{0x66, 0xF7, 0x03, 0x0F, 0, 0xF4},
+		} {
+			name := fmt.Sprintf("%X", code)
+			t.Run(name, func(t *testing.T) {
+				run(t, code, func(cpu *CPU_X86) {
+					cpu.EAX, cpu.EBX, cpu.Flags = 0x8000000F, 0x400, x86FlagCF|x86FlagAF|x86FlagOF
+					cpu.memory[0x400], cpu.memory[0x401], cpu.memory[0x402], cpu.memory[0x403] = 0x0F, 0, 0, 0x80
+				}, nil)
+			})
+		}
+	})
+
+	t.Run("mul_imul", func(t *testing.T) {
+		for _, code := range [][]byte{
+			{0xF6, 0xE3, 0xF4},       // MUL BL
+			{0xF6, 0xEB, 0xF4},       // IMUL BL
+			{0x66, 0xF7, 0xE3, 0xF4}, // MUL BX
+			{0x66, 0xF7, 0xEB, 0xF4}, // IMUL BX
+			{0xF7, 0xE3, 0xF4},       // MUL EBX
+			{0xF7, 0xEB, 0xF4},       // IMUL EBX
+			{0xF6, 0x23, 0xF4},       // MUL byte [EBX]
+			{0xF6, 0x2B, 0xF4},       // IMUL byte [EBX]
+			{0x66, 0xF7, 0x23, 0xF4}, // MUL word [EBX]
+			{0x66, 0xF7, 0x2B, 0xF4}, // IMUL word [EBX]
+			{0xF7, 0x23, 0xF4},       // MUL dword [EBX]
+			{0xF7, 0x2B, 0xF4},       // IMUL dword [EBX]
+		} {
+			name := fmt.Sprintf("%X", code)
+			t.Run(name, func(t *testing.T) {
+				run(t, code, func(cpu *CPU_X86) {
+					cpu.EAX, cpu.EBX, cpu.EDX, cpu.Flags = 0x80000005, 0x400, 0x12345678, x86FlagPF|x86FlagZF
+					cpu.memory[0x400], cpu.memory[0x401], cpu.memory[0x402], cpu.memory[0x403] = 0xFB, 0xFF, 0xFF, 0x7F
+				}, func(t *testing.T, interp *CPU_X86, memExport api.Memory, guestBase uint32) {
+					got, ok := memExport.Read(guestBase+0x400, 4)
+					if !ok {
+						t.Fatal("read guest memory")
+					}
+					if want := interp.memory[0x400:0x404]; string(got) != string(want) {
+						t.Fatalf("memory=% X want % X", got, want)
+					}
+				})
+			})
+		}
+	})
+}
+
+func TestX86WasmCompileBlockModule_DirectGroup3DivIDivFallback(t *testing.T) {
+	const startPC = uint32(0x1000)
+	run := func(t *testing.T, code []byte, setup func(*CPU_X86)) {
+		t.Helper()
+		mem := make([]byte, int(startPC)+len(code)+0x10)
+		copy(mem[startPC:], code)
+		instrs := x86ScanBlock(mem, startPC)
+		compiled, err := x86WasmCompileBlockModule(instrs, startPC, mem)
+		if err != nil {
+			t.Fatalf("compile: %v", err)
+		}
+		r := wazero.NewRuntime(context.Background())
+		t.Cleanup(func() { _ = r.Close(context.Background()) })
+		ctx := context.Background()
+		instantiateNamed(t, r, ctx, "env", buildWasmMemoryModule(t))
+		mod, err := r.Instantiate(ctx, compiled.module)
+		if err != nil {
+			t.Fatalf("instantiate block: %v", err)
+		}
+		memExport := mod.Memory()
+		const (
+			ctxAddr    = uint32(0x80)
+			regsAddr   = uint32(0x200)
+			flagsAddr  = uint32(0x280)
+			guestBase  = uint32(0x1000)
+			ioBMAddr   = uint32(0x5000)
+			codeBMAddr = uint32(0x5800)
+		)
+		if !memExport.Write(ctxAddr, make([]byte, 256)) || !memExport.Write(regsAddr, make([]byte, 32)) ||
+			!memExport.Write(flagsAddr, make([]byte, 4)) || !memExport.Write(guestBase, make([]byte, 0x2000)) ||
+			!memExport.Write(ioBMAddr, make([]byte, 32)) || !memExport.Write(codeBMAddr, make([]byte, 32)) {
+			t.Fatal("seed memory")
+		}
+		writePtr := func(off, addr uint32) {
+			buf := make([]byte, 8)
+			binary.LittleEndian.PutUint64(buf, uint64(addr))
+			if !memExport.Write(ctxAddr+off, buf) {
+				t.Fatalf("seed ptr off %d", off)
+			}
+		}
+		writePtr(x86CtxOffJITRegsPtr, regsAddr)
+		writePtr(x86CtxOffFlagsPtr, flagsAddr)
+		writePtr(x86CtxOffMemPtr, guestBase)
+		writePtr(x86CtxOffIOBitmapPtr, ioBMAddr)
+		writePtr(x86CtxOffCodePageBitmapPtr, codeBMAddr)
+
+		bus := NewMachineBus()
+		adapter := NewX86BusAdapter(bus)
+		cpu := NewCPU_X86(adapter)
+		cpu.memory = adapter.GetMemory()
+		copy(cpu.memory[startPC:], code)
+		if setup != nil {
+			setup(cpu)
+		}
+		word := make([]byte, 4)
+		for reg, val := range []uint32{cpu.EAX, cpu.ECX, cpu.EDX, cpu.EBX, cpu.ESP, cpu.EBP, cpu.ESI, cpu.EDI} {
+			binary.LittleEndian.PutUint32(word, val)
+			if !memExport.Write(regsAddr+uint32(reg*4), word) {
+				t.Fatalf("seed reg %d", reg)
+			}
+		}
+		binary.LittleEndian.PutUint32(word, cpu.Flags)
+		if !memExport.Write(flagsAddr, word) {
+			t.Fatal("seed flags")
+		}
+		binary.LittleEndian.PutUint32(word, 0x2000)
+		if !memExport.Write(ctxAddr+x86CtxOffMemSize, word) {
+			t.Fatal("seed MemSize")
+		}
+		if !memExport.Write(guestBase, cpu.memory[:0x2000]) {
+			t.Fatal("seed guest memory")
+		}
+		if _, err := mod.ExportedFunction("block").Call(ctx, uint64(ctxAddr)); err != nil {
+			t.Fatalf("call block: %v", err)
+		}
+		readReg := func(idx int) uint32 {
+			b, ok := memExport.Read(regsAddr+uint32(idx*4), 4)
+			if !ok {
+				t.Fatalf("read reg %d", idx)
+			}
+			return binary.LittleEndian.Uint32(b)
+		}
+		readU32 := func(addr uint32) uint32 {
+			b, ok := memExport.Read(addr, 4)
+			if !ok {
+				t.Fatalf("read %#x", addr)
+			}
+			return binary.LittleEndian.Uint32(b)
+		}
+		if got, want := readReg(0), cpu.EAX; got != want {
+			t.Fatalf("EAX=%#x want %#x", got, want)
+		}
+		if got, want := readReg(2), cpu.EDX; got != want {
+			t.Fatalf("EDX=%#x want %#x", got, want)
+		}
+		if got, want := readU32(flagsAddr), cpu.Flags; got != want {
+			t.Fatalf("Flags=%#x want %#x", got, want)
+		}
+		if got, want := readU32(ctxAddr+x86CtxOffRetPC), startPC; got != want {
+			t.Fatalf("RetPC=%#x want %#x", got, want)
+		}
+		if got, want := readU32(ctxAddr+x86CtxOffRetCount), uint32(0); got != want {
+			t.Fatalf("RetCount=%d want %d", got, want)
+		}
+		if got, want := readU32(ctxAddr+x86CtxOffExitReason), x86JITExitInterpFallback; got != want {
+			t.Fatalf("ExitReason=%d want %d", got, want)
+		}
+		if got := readU32(ctxAddr + x86CtxOffNeedIOFallback); got != 0 {
+			t.Fatalf("NeedIOFallback=%d", got)
+		}
+		if got := readU32(ctxAddr + x86CtxOffNeedInval); got != 0 {
+			t.Fatalf("NeedInval=%d", got)
+		}
+	}
+
+	for _, code := range [][]byte{
+		{0xF6, 0xF1, 0xF4},       // DIV CL
+		{0xF6, 0xF9, 0xF4},       // IDIV CL
+		{0x66, 0xF7, 0xF3, 0xF4}, // DIV BX
+		{0x66, 0xF7, 0xFB, 0xF4}, // IDIV BX
+		{0xF7, 0xF3, 0xF4},       // DIV EBX
+		{0xF7, 0xFB, 0xF4},       // IDIV EBX
+		{0xF6, 0x33, 0xF4},       // DIV byte [EBX]
+		{0xF6, 0x3B, 0xF4},       // IDIV byte [EBX]
+		{0x66, 0xF7, 0x33, 0xF4}, // DIV word [EBX]
+		{0x66, 0xF7, 0x3B, 0xF4}, // IDIV word [EBX]
+		{0xF7, 0x33, 0xF4},       // DIV dword [EBX]
+		{0xF7, 0x3B, 0xF4},       // IDIV dword [EBX]
+	} {
+		name := fmt.Sprintf("%X", code)
+		t.Run(name, func(t *testing.T) {
+			run(t, code, func(cpu *CPU_X86) {
+				cpu.EAX, cpu.EDX, cpu.EBX, cpu.ECX = 100, 0, 0x400, 10
+				cpu.memory[0x400], cpu.memory[0x401], cpu.memory[0x402], cpu.memory[0x403] = 10, 0, 0, 0
+			})
+		})
+	}
 }
 
 func TestX86WasmCompileBlockModule_DirectMemoryTESTImmediateAndGuardBails(t *testing.T) {
@@ -4450,6 +5169,7 @@ func TestX86WasmCompileSubsetManifestRows(t *testing.T) {
 		"Grp2 word shift,CL":            true,
 		"Grp2 dword shift,CL":           true,
 		"Grp2 carry rotate,CL":          true,
+		"Grp3":                          true,
 		"INC/DEC register":              true,
 		"byte ALU r/m,r":                true,
 		"dword ALU r/m,r":               true,
@@ -4491,6 +5211,16 @@ func TestX86WasmCompileSubsetManifestRows(t *testing.T) {
 		"double shift":                  true,
 		"double shift 16-bit immediate": true,
 		"double shift CL":               true,
+		"MOVS":                          true,
+		"STOS":                          true,
+		"LODS":                          true,
+		"CMPS":                          true,
+		"SCAS":                          true,
+		"REP MOVS":                      true,
+		"REP STOS":                      true,
+		"REP CMPS":                      true,
+		"REP SCAS":                      true,
+		"REP LODS":                      true,
 	}
 	const pc = uint32(0x100)
 	for _, row := range x86JITCoverageManifest {

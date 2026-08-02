@@ -338,7 +338,15 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			cpu.syncJITRegsToNamed()
 			cpu.syncJITSegRegsToNamed()
 			cpu.x86RenormalizeFPUBoundary()
-			cpu.Step()
+			if ctx.ExitReason == x86JITExitFPUHelper {
+				if payload, ok := x86FPUHelperPayloadFromContext(ctx); ok {
+					cpu.x86RunFPUHelper(payload)
+				} else {
+					cpu.Step()
+				}
+			} else {
+				cpu.Step()
+			}
 			cpu.syncJITRegsFromNamed()
 			cpu.syncJITSegRegsFromNamed()
 			if bounded {

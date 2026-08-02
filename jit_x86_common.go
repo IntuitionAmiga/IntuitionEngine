@@ -103,6 +103,7 @@ const (
 const (
 	x86JITExitNone uint32 = iota
 	x86JITExitFPUHelper
+	x86JITExitInterpFallback
 )
 
 // x86JitAvailable is set to true at init time on platforms that support x86 JIT.
