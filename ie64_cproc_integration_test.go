@@ -10,16 +10,18 @@ import (
 const ie64CProcSmokeResultAddress = 0x00080000
 const ie64CProcSmokeResult = uint64(0x494536344350524f)
 
-func TestIE64CProcSmokeImageDefaultJIT(t *testing.T) {
-	imagePath := os.Getenv("IE64_TOOLCHAIN_IMAGE")
+func runIE64CProcImageWithRAM(t *testing.T, environment string, expected, activeRAM uint64) {
+	t.Helper()
+	imagePath := os.Getenv(environment)
 	if imagePath == "" {
-		t.Skip("set IE64_TOOLCHAIN_IMAGE through make test-ie64-toolchain")
+		t.Skipf("set %s through make test-ie64-toolchain", environment)
 	}
 	image, err := os.ReadFile(imagePath)
 	if err != nil {
 		t.Fatalf("read toolchain smoke image: %v", err)
 	}
 	bus := NewMachineBus()
+	bus.ApplyProfileVisibleCeiling(activeRAM)
 	cpu := NewCPU64(bus)
 	if err := cpu.LoadFlatProgramBytes(image); err != nil {
 		t.Fatalf("load toolchain smoke image: %v", err)
@@ -38,7 +40,57 @@ func TestIE64CProcSmokeImageDefaultJIT(t *testing.T) {
 		waitDoneWithGuard(t, done)
 		t.Fatal("toolchain smoke image timed out under the default JIT")
 	}
-	if got := binary.LittleEndian.Uint64(cpu.memory[ie64CProcSmokeResultAddress:]); got != ie64CProcSmokeResult {
-		t.Fatalf("toolchain smoke result = %#x, want %#x", got, ie64CProcSmokeResult)
+	if got := binary.LittleEndian.Uint64(cpu.memory[ie64CProcSmokeResultAddress:]); got != expected {
+		t.Fatalf("toolchain result = %#x, want %#x (PC=%#x R1=%#x SP=%#x)",
+			got, expected, cpu.PC, cpu.regs[1], cpu.regs[31])
 	}
+}
+
+func runIE64CProcImage(t *testing.T, environment string, expected uint64) {
+	t.Helper()
+	runIE64CProcImageWithRAM(t, environment, expected, uint64(DEFAULT_MEMORY_SIZE))
+}
+
+func TestIE64CProcSmokeImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_IMAGE", ie64CProcSmokeResult)
+}
+
+func TestIE64CProcABIImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_ABI_IMAGE", 0x4142495041535345)
+}
+
+func TestIE64CProcLibraryImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_LIB_IMAGE", 0x4c49425041535345)
+}
+
+func TestIE64CProcBuiltinImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_BUILTIN_IMAGE", 0x4255494c54494e53)
+}
+
+func TestIE64CProcHaltImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_HALT_IMAGE", 0x48414c5450415353)
+}
+
+func TestIE64CProcInterruptImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_INTERRUPT_IMAGE", 0x494e545250415353)
+}
+
+func TestIE64CProcAtomicMisalignedImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_ATOMIC_MISALIGNED_IMAGE", 0x41544f4d4641554c)
+}
+
+func TestIE64CProcAtomicApertureImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_ATOMIC_APERTURE_IMAGE", 0x41544f4d4641554c)
+}
+
+func TestIE64CProcAssertImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_ASSERT_IMAGE", 0x4153534552544f4b)
+}
+
+func TestIE64CProcAssertFailureImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_ASSERT_FAILURE_IMAGE", 0x4153534552544641)
+}
+
+func TestIE64CProcStartupRejectsLowRAMDefaultJIT(t *testing.T) {
+	runIE64CProcImageWithRAM(t, "IE64_TOOLCHAIN_IMAGE", 0, 0x9efff)
 }
