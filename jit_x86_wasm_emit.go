@@ -20,6 +20,16 @@ type x86WasmCompiledModule struct {
 	retPC  uint32
 }
 
+type x86WasmConditionalRegion struct {
+	entryPC     uint32
+	entryBlock  []X86JITInstr
+	fallBlock   []X86JITInstr
+	targetBlock []X86JITInstr
+	fallPC      uint32
+	targetPC    uint32
+	exitPC      uint32
+}
+
 func x86WasmImmediate8(ji X86JITInstr, memory []byte) byte {
 	return memory[ji.opcodePC+uint32(ji.length)-1]
 }
@@ -32,14 +42,58 @@ func x86WasmImmediate32(ji X86JITInstr, memory []byte) uint32 {
 		uint32(memory[immPC+3])<<24
 }
 
+func x86WasmImmediate16(ji X86JITInstr, memory []byte) uint16 {
+	immPC := ji.opcodePC + uint32(ji.length) - 2
+	return uint16(memory[immPC]) | uint16(memory[immPC+1])<<8
+}
+
 func x86WasmIsShortJcc(op byte) bool {
 	return op >= 0x70 && op <= 0x7F
+}
+
+func x86WasmIsNearJcc(ji X86JITInstr) bool {
+	return ji.opcode >= 0x0F80 && ji.opcode <= 0x0F8F
+}
+
+func x86WasmTerminalJccTarget(ji X86JITInstr, memory []byte) (condition byte, target, nextPC uint32, ok bool) {
+	nextPC = ji.opcodePC + uint32(ji.length)
+	switch {
+	case x86WasmIsShortJcc(byte(ji.opcode)):
+		if ji.prefixes != 0 || ji.length < 2 {
+			return 0, 0, 0, false
+		}
+		condition = byte(ji.opcode) & 0x0F
+		target = uint32(int32(nextPC) + int32(int8(x86WasmImmediate8(ji, memory))))
+		return condition, target, nextPC, true
+	case x86WasmIsNearJcc(ji):
+		if ji.prefixes&^x86PrefOpSize != 0 {
+			return 0, 0, 0, false
+		}
+		condition = byte(ji.opcode) & 0x0F
+		if ji.prefixes&x86PrefOpSize != 0 {
+			if ji.length < 4 {
+				return 0, 0, 0, false
+			}
+			target = uint32(int32(nextPC) + int32(int16(x86WasmImmediate16(ji, memory))))
+			return condition, target, nextPC, true
+		}
+		if ji.length < 6 {
+			return 0, 0, 0, false
+		}
+		target = uint32(int32(nextPC) + int32(x86WasmImmediate32(ji, memory)))
+		return condition, target, nextPC, true
+	default:
+		return 0, 0, 0, false
+	}
 }
 
 func x86WasmSupportedInstr(ji X86JITInstr) bool {
 	if ji.opcode >= 0x0F00 {
 		op2 := byte(ji.opcode)
 		switch op2 {
+		case 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+			0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F:
+			return ji.prefixes&^x86PrefOpSize == 0
 		case 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
 			0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F:
 			return ji.hasModRM && ji.modrm>>6 == 3 && ji.prefixes&^x86PrefOpSize == 0
@@ -63,6 +117,10 @@ func x86WasmSupportedInstr(ji X86JITInstr) bool {
 	switch {
 	case op == 0x90 || op == 0x9B:
 		return true
+	case op >= 0xE0 && op <= 0xE3:
+		return ji.prefixes&^(x86PrefAddrSize|x86PrefOpSize) == 0
+	case op == 0xE8:
+		return ji.prefixes&^x86PrefOpSize == 0
 	case op >= 0x91 && op <= 0x97:
 		return true
 	case op >= 0xB8 && op <= 0xBF:
@@ -103,6 +161,8 @@ func x86WasmSupportedInstr(ji X86JITInstr) bool {
 		return ji.prefixes == 0
 	case op == 0xEB || op == 0xE9:
 		return true
+	case op == 0xC3 || op == 0xC2:
+		return ji.prefixes == 0
 	case x86WasmIsShortJcc(op):
 		return ji.prefixes == 0
 	}
@@ -120,6 +180,12 @@ func x86WasmBlockTerminalPC(instrs []X86JITInstr, memory []byte, startPC uint32)
 		}
 		if ji.opcode >= 0x0F00 {
 			switch op {
+			case 0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+				0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8D, 0x8E, 0x8F:
+				if i != len(instrs)-1 {
+					return 0, false
+				}
+				return ji.opcodePC + uint32(ji.length), true
 			case 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
 				0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
 				0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
@@ -183,6 +249,9 @@ const (
 	x86WasmTerminalFallthrough x86WasmBlockTerminalKind = iota
 	x86WasmTerminalJMP
 	x86WasmTerminalJcc
+	x86WasmTerminalCALL
+	x86WasmTerminalRET
+	x86WasmTerminalLoop
 )
 
 func x86WasmSelectCompiledPrefix(instrs []X86JITInstr, memory []byte, startPC uint32) ([]X86JITInstr, uint32, uint32, x86WasmBlockTerminalKind, bool) {
@@ -200,6 +269,14 @@ func x86WasmSelectCompiledPrefix(instrs []X86JITInstr, memory []byte, startPC ui
 		op := byte(ji.opcode)
 		spanEnd = ji.opcodePC + uint32(ji.length)
 		switch {
+		case x86WasmIsNearJcc(ji):
+			return instrs[:i+1], spanEnd, spanEnd, x86WasmTerminalJcc, true
+		case op >= 0xE0 && op <= 0xE3:
+			return instrs[:i+1], spanEnd, spanEnd, x86WasmTerminalLoop, true
+		case op == 0xE8:
+			return instrs[:i+1], 0, spanEnd, x86WasmTerminalCALL, true
+		case op == 0xC3 || op == 0xC2:
+			return instrs[:i+1], 0, spanEnd, x86WasmTerminalRET, true
 		case op == 0xE9 || op == 0xEB:
 			target, ok := x86ResolveTerminatorTarget(&ji, memory, startPC)
 			if !ok {
@@ -790,25 +867,87 @@ func x86WasmEmitJccCondition(b *wasmBody, condition, locCtx, locFlagsPtr, locFla
 	return true
 }
 
-func x86WasmEmitTerminalJcc(b *wasmBody, ji X86JITInstr, memory []byte, locCtx, locFlagsPtr, locFlags uint32, instrCount int) bool {
-	op := byte(ji.opcode)
-	if !x86WasmIsShortJcc(op) || ji.prefixes != 0 {
+func x86WasmEmitTerminalJcc(b *wasmBody, ji X86JITInstr, memory []byte, locCtx, locFlagsPtr, locFlags uint32, instrCount int, cycles, ticks uint32) bool {
+	condition, target, nextPC, ok := x86WasmTerminalJccTarget(ji, memory)
+	if !ok {
 		return false
 	}
-	nextPC := ji.opcodePC + uint32(ji.length)
-	target := uint32(int32(nextPC) + int32(int8(x86WasmImmediate8(ji, memory))))
-	if !x86WasmEmitJccCondition(b, uint32(op&0x0F), locCtx, locFlagsPtr, locFlags) {
+	if !x86WasmEmitJccCondition(b, uint32(condition), locCtx, locFlagsPtr, locFlags) {
 		return false
 	}
 	b.ifVoid()
-	x86WasmEmitRetPCAndCount(b, target, instrCount)
+	x86WasmEmitRetPCAndCount(b, target, instrCount, cycles, ticks)
 	b.elseBranch()
-	x86WasmEmitRetPCAndCount(b, nextPC, instrCount)
+	x86WasmEmitRetPCAndCount(b, nextPC, instrCount, cycles, ticks)
 	b.end()
 	return true
 }
 
-func x86WasmEmitInstr(b *wasmBody, ji X86JITInstr, memory []byte, retired int, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7 uint32) bool {
+func x86WasmEmitTerminalLoop(b *wasmBody, ji X86JITInstr, memory []byte, locCtx, locRegs, locCount, locTmp, locFlagsPtr, locFlags uint32, instrCount int, cycles, ticks uint32) bool {
+	op := byte(ji.opcode)
+	if op < 0xE0 || op > 0xE3 || ji.prefixes&^(x86PrefAddrSize|x86PrefOpSize) != 0 || ji.length < 2 {
+		return false
+	}
+	nextPC := ji.opcodePC + uint32(ji.length)
+	target := uint32(int32(nextPC) + int32(int8(x86WasmImmediate8(ji, memory))))
+
+	x86WasmEmitLoadReg32(b, locRegs, 1)
+	b.localSet(locTmp)
+	if ji.prefixes&x86PrefAddrSize != 0 {
+		b.localGet(locTmp)
+		b.i32Const(0xFFFF)
+		b.op(wasmOpI32And)
+		b.localSet(locCount)
+		if op != 0xE3 {
+			b.localGet(locCount)
+			b.i32Const(1)
+			b.op(wasmOpI32Sub)
+			b.localSet(locCount)
+			b.localGet(locCount)
+			x86WasmEmitInsertReg16(b, locRegs, locTmp, 1)
+		}
+	} else {
+		if op == 0xE3 {
+			b.localGet(locTmp)
+			b.localSet(locCount)
+		} else {
+			b.localGet(locTmp)
+			b.i32Const(1)
+			b.op(wasmOpI32Sub)
+			b.localSet(locCount)
+			b.localGet(locCount)
+			x86WasmEmitStoreReg32(b, locRegs, locTmp, 1)
+		}
+	}
+
+	b.localGet(locCount)
+	b.op(wasmOpI32Eqz)
+	if op == 0xE3 {
+		// JCXZ/JECXZ: branch when count is zero.
+	} else {
+		// LOOP/LOOPE/LOOPNE: branch when decremented count is non-zero.
+		b.op(wasmOpI32Eqz)
+		if op == 0xE0 || op == 0xE1 {
+			b.localGet(locCtx)
+			b.i32Load(2, x86CtxOffFlagsPtr)
+			b.localSet(locFlagsPtr)
+			b.localGet(locFlagsPtr)
+			b.i32Load(2, 0)
+			b.localSet(locFlags)
+			x86WasmEmitFlagPredicate(b, locFlags, x86FlagZF, op == 0xE0)
+			b.op(wasmOpI32And)
+		}
+	}
+
+	b.ifVoid()
+	x86WasmEmitRetPCAndCount(b, target, instrCount, cycles, ticks)
+	b.elseBranch()
+	x86WasmEmitRetPCAndCount(b, nextPC, instrCount, cycles, ticks)
+	b.end()
+	return true
+}
+
+func x86WasmEmitInstr(b *wasmBody, ji X86JITInstr, memory []byte, retired int, cycles, ticks uint32, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7 uint32) bool {
 	if ji.opcode >= 0x0F00 {
 		op2 := byte(ji.opcode)
 		switch op2 {
@@ -1327,6 +1466,70 @@ func x86WasmEmitInstr(b *wasmBody, ji X86JITInstr, memory []byte, retired int, l
 		b.i32Store(2, 0)
 		x86WasmEmitSMCStoreCheck(b, locCtx, locTmp, locTmp2, 4, ji.opcodePC+uint32(ji.length), retired+1)
 		return true
+	case op == 0xE8 && ji.prefixes&^x86PrefOpSize == 0:
+		width := uint32(4)
+		returnPC := ji.opcodePC + uint32(ji.length)
+		target := uint32(0)
+		if ji.prefixes&x86PrefOpSize != 0 {
+			width = 2
+			target = uint32(int32(returnPC) + int32(int16(x86WasmImmediate16(ji, memory))))
+		} else {
+			target = uint32(int32(returnPC) + int32(x86WasmImmediate32(ji, memory)))
+		}
+		x86WasmEmitLoadReg32(b, locRegs, 4)
+		b.i32Const(int32(width))
+		b.op(wasmOpI32Sub)
+		b.localSet(locTmp)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp2, locTmp3, width, ji.opcodePC, retired)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffMemPtr)
+		b.localSet(locTmp2)
+		b.localGet(locTmp2)
+		b.localGet(locTmp)
+		b.op(wasmOpI32Add)
+		b.i32Const(int32(returnPC))
+		if width == 2 {
+			b.i32Store16(1, 0)
+		} else {
+			b.i32Store(2, 0)
+		}
+		b.localGet(locTmp)
+		x86WasmEmitStoreReg32(b, locRegs, locTmp3, 4)
+		x86WasmEmitSMCStoreCheck(b, locCtx, locTmp, locTmp2, width, target, retired+1)
+		x86WasmEmitRetPCAndCount(b, target, retired+1, cycles, ticks)
+		return true
+	case op == 0xC3 && ji.prefixes == 0:
+		x86WasmEmitLoadReg32(b, locRegs, 4)
+		b.localSet(locTmp)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp2, locTmp3, 4, ji.opcodePC, retired)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffMemPtr)
+		b.localGet(locTmp)
+		b.op(wasmOpI32Add)
+		b.i32Load(2, 0)
+		b.localSet(locTmp2)
+		b.localGet(locTmp)
+		b.i32Const(4)
+		b.op(wasmOpI32Add)
+		x86WasmEmitStoreReg32(b, locRegs, locTmp3, 4)
+		x86WasmEmitDynamicRetPCAndCount(b, locCtx, locTmp2, retired+1, cycles, ticks)
+		return true
+	case op == 0xC2 && ji.prefixes == 0:
+		x86WasmEmitLoadReg32(b, locRegs, 4)
+		b.localSet(locTmp)
+		x86WasmEmitSpanGuard(b, locCtx, locTmp, locTmp2, locTmp3, 4, ji.opcodePC, retired)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffMemPtr)
+		b.localGet(locTmp)
+		b.op(wasmOpI32Add)
+		b.i32Load(2, 0)
+		b.localSet(locTmp2)
+		b.localGet(locTmp)
+		b.i32Const(int32(4 + uint32(x86WasmImmediate16(ji, memory))))
+		b.op(wasmOpI32Add)
+		x86WasmEmitStoreReg32(b, locRegs, locTmp3, 4)
+		x86WasmEmitDynamicRetPCAndCount(b, locCtx, locTmp2, retired+1, cycles, ticks)
+		return true
 	case op == 0xF6 && ji.hasModRM && ji.modrm>>6 != 3 && ji.prefixes == 0 && (ji.grpOp == 0 || ji.grpOp == 1):
 		if !x86WasmEmitEA32(b, ji, memory, locRegs, locTmp) {
 			return false
@@ -1464,7 +1667,43 @@ func x86WasmEmitInstr(b *wasmBody, ji X86JITInstr, memory []byte, retired int, l
 	}
 }
 
-func x86WasmEmitRetPCAndCount(b *wasmBody, retPC uint32, instrCount int) {
+func x86WasmEmitChainCredit(b *wasmBody, locCtx uint32, cycles, ticks uint32) {
+	if cycles != 0 {
+		b.localGet(locCtx)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffChainCycles)
+		b.i32Const(int32(cycles))
+		b.op(wasmOpI32Add)
+		b.i32Store(2, x86CtxOffChainCycles)
+	}
+	if ticks != 0 {
+		b.localGet(locCtx)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffChainTicks)
+		b.i32Const(int32(ticks))
+		b.op(wasmOpI32Add)
+		b.i32Store(2, x86CtxOffChainTicks)
+	}
+}
+
+func x86WasmEmitDynamicChainCredit(b *wasmBody, locCtx, locCycles, locTicks uint32) {
+	b.localGet(locCtx)
+	b.localGet(locCtx)
+	b.i32Load(2, x86CtxOffChainCycles)
+	b.localGet(locCycles)
+	b.op(wasmOpI32Add)
+	b.i32Store(2, x86CtxOffChainCycles)
+
+	b.localGet(locCtx)
+	b.localGet(locCtx)
+	b.i32Load(2, x86CtxOffChainTicks)
+	b.localGet(locTicks)
+	b.op(wasmOpI32Add)
+	b.i32Store(2, x86CtxOffChainTicks)
+}
+
+func x86WasmEmitRetPCAndCount(b *wasmBody, retPC uint32, instrCount int, cycles, ticks uint32) {
+	x86WasmEmitChainCredit(b, 0, cycles, ticks)
 	b.localGet(0)
 	b.i32Const(int32(retPC))
 	b.i32Store(2, x86CtxOffRetPC)
@@ -1473,10 +1712,37 @@ func x86WasmEmitRetPCAndCount(b *wasmBody, retPC uint32, instrCount int) {
 	b.i32Store(2, x86CtxOffRetCount)
 }
 
+func x86WasmEmitDynamicRetPCAndCount(b *wasmBody, locCtx, locRetPC uint32, instrCount int, cycles, ticks uint32) {
+	x86WasmEmitChainCredit(b, locCtx, cycles, ticks)
+	b.localGet(locCtx)
+	b.localGet(locRetPC)
+	b.i32Store(2, x86CtxOffRetPC)
+	b.localGet(locCtx)
+	b.i32Const(int32(instrCount))
+	b.i32Store(2, x86CtxOffRetCount)
+}
+
+func x86WasmEmitDynamicRetPCAndLocalCount(b *wasmBody, locCtx, locRetPC, locRetCount, locCycles, locTicks uint32) {
+	x86WasmEmitDynamicChainCredit(b, locCtx, locCycles, locTicks)
+	b.localGet(locCtx)
+	b.localGet(locRetPC)
+	b.i32Store(2, x86CtxOffRetPC)
+	b.localGet(locCtx)
+	b.localGet(locRetCount)
+	b.i32Store(2, x86CtxOffRetCount)
+}
+
 func x86WasmCompileBlockModule(instrs []X86JITInstr, startPC uint32, memory []byte) (*x86WasmCompiledModule, error) {
 	compiledInstrs, retPC, spanEnd, termKind, ok := x86WasmSelectCompiledPrefix(instrs, memory, startPC)
 	if !ok {
 		return nil, fmt.Errorf("x86 wasm: unsupported block at %#x", startPC)
+	}
+	cyclePrefix := x86JITCyclePrefix(compiledInstrs)
+	tickPrefix := x86JITTickPrefix(compiledInstrs)
+	var totalCycles, totalTicks uint32
+	if n := len(cyclePrefix); n != 0 {
+		totalCycles = uint32(cyclePrefix[n-1])
+		totalTicks = uint32(tickPrefix[n-1])
 	}
 	m := newWasmModuleBuilder()
 	m.importMemory("env", "mem", 1)
@@ -1496,21 +1762,31 @@ func x86WasmCompileBlockModule(instrs []X86JITInstr, startPC uint32, memory []by
 	b.localGet(locCtx)
 	b.i32Load(2, x86CtxOffJITRegsPtr)
 	b.localSet(locRegs)
-	emittedTerminalJcc := false
+	emittedTerminalState := false
 	for i, ji := range compiledInstrs {
 		if i == len(compiledInstrs)-1 && termKind == x86WasmTerminalJcc {
-			if !x86WasmEmitTerminalJcc(b, ji, memory, locCtx, locTmp2, locTmp3, len(compiledInstrs)) {
+			if !x86WasmEmitTerminalJcc(b, ji, memory, locCtx, locTmp2, locTmp3, len(compiledInstrs), totalCycles, totalTicks) {
 				return nil, fmt.Errorf("x86 wasm: unsupported short Jcc %#02x at %#x", byte(ji.opcode), ji.opcodePC)
 			}
-			emittedTerminalJcc = true
+			emittedTerminalState = true
 			break
 		}
-		if !x86WasmEmitInstr(b, ji, memory, i, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+		if i == len(compiledInstrs)-1 && termKind == x86WasmTerminalLoop {
+			if !x86WasmEmitTerminalLoop(b, ji, memory, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, len(compiledInstrs), totalCycles, totalTicks) {
+				return nil, fmt.Errorf("x86 wasm: unsupported loop %#02x at %#x", byte(ji.opcode), ji.opcodePC)
+			}
+			emittedTerminalState = true
+			break
+		}
+		if !x86WasmEmitInstr(b, ji, memory, i, totalCycles, totalTicks, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
 			return nil, fmt.Errorf("x86 wasm: unsupported opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
 		}
+		if i == len(compiledInstrs)-1 && (termKind == x86WasmTerminalCALL || termKind == x86WasmTerminalRET) {
+			emittedTerminalState = true
+		}
 	}
-	if !emittedTerminalJcc {
-		x86WasmEmitRetPCAndCount(b, retPC, len(compiledInstrs))
+	if !emittedTerminalState {
+		x86WasmEmitRetPCAndCount(b, retPC, len(compiledInstrs), totalCycles, totalTicks)
 	}
 	b.end()
 	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, b.code)
@@ -1519,8 +1795,8 @@ func x86WasmCompileBlockModule(instrs []X86JITInstr, startPC uint32, memory []by
 		startPC:          uint64(startPC),
 		endPC:            uint64(spanEnd),
 		instrCount:       len(compiledInstrs),
-		x86CyclePrefix:   x86JITCyclePrefix(compiledInstrs),
-		x86TickPrefix:    x86JITTickPrefix(compiledInstrs),
+		x86CyclePrefix:   cyclePrefix,
+		x86TickPrefix:    tickPrefix,
 		x86DynamicCycles: x86JITDynamicCycles(compiledInstrs),
 	}
 	return &x86WasmCompiledModule{
@@ -1534,10 +1810,43 @@ func x86WasmCompileRegionModule(region *x86Region, memory []byte) (*x86WasmCompi
 	if region == nil || len(region.blocks) < 2 {
 		return nil, fmt.Errorf("x86 wasm: empty or single-block region")
 	}
+	x86WasmInstrMayBail := func(ji X86JITInstr) bool {
+		if ji.opcode >= 0x0F00 {
+			op2 := byte(ji.opcode)
+			switch op2 {
+			case 0xB6, 0xB7, 0xBE, 0xBF:
+				return ji.hasModRM && ji.modrm>>6 != 3
+			}
+			return false
+		}
+		op := byte(ji.opcode)
+		switch op {
+		case 0x89, 0x8B:
+			return ji.hasModRM && ji.modrm>>6 != 3 && ji.prefixes == 0
+		case 0xF6, 0xF7:
+			return ji.hasModRM && ji.modrm>>6 != 3 && ji.prefixes == 0 && (ji.grpOp == 0 || ji.grpOp == 1)
+		case 0xE8, 0xC3, 0xC2:
+			return true
+		}
+		return false
+	}
 	all := make([]X86JITInstr, 0, 16)
 	covered := make([][2]uint64, 0, len(region.blocks))
 	var retPC uint32
 	var maxEnd uint64
+	backEdgeSource := -1
+	backEdgeTarget := -1
+	if len(region.backEdges) != 0 {
+		if len(region.backEdges) != 1 {
+			return nil, fmt.Errorf("x86 wasm: multiple loop back-edges unsupported")
+		}
+		for src, dst := range region.backEdges {
+			backEdgeSource, backEdgeTarget = src, dst
+		}
+		if backEdgeSource != len(region.blocks)-1 || backEdgeTarget < 0 || backEdgeTarget >= backEdgeSource {
+			return nil, fmt.Errorf("x86 wasm: unsupported back-edge shape")
+		}
+	}
 	for i, block := range region.blocks {
 		blockPC := region.blockPCs[i]
 		nextPC, ok := x86WasmBlockTerminalPC(block, memory, blockPC)
@@ -1546,6 +1855,9 @@ func x86WasmCompileRegionModule(region *x86Region, memory []byte) (*x86WasmCompi
 		}
 		if i != len(region.blocks)-1 && nextPC != region.blockPCs[i+1] {
 			return nil, fmt.Errorf("x86 wasm: non-linear successor %#x -> %#x", blockPC, nextPC)
+		}
+		if i == len(region.blocks)-1 && backEdgeSource >= 0 && nextPC != region.blockPCs[backEdgeTarget] {
+			return nil, fmt.Errorf("x86 wasm: final loop edge %#x -> %#x does not target loop head", blockPC, nextPC)
 		}
 		retPC = nextPC
 		all = append(all, block...)
@@ -1556,6 +1868,231 @@ func x86WasmCompileRegionModule(region *x86Region, memory []byte) (*x86WasmCompi
 			maxEnd = end
 		}
 	}
+	if backEdgeSource >= 0 {
+		if len(x86JITDynamicCycles(all)) != 0 {
+			return nil, fmt.Errorf("x86 wasm: loop region with dynamic-cycle forms unsupported")
+		}
+		for _, ji := range all {
+			if x86WasmInstrMayBail(ji) {
+				return nil, fmt.Errorf("x86 wasm: loop region with bailing instruction unsupported")
+			}
+		}
+	}
+	cyclePrefix := x86JITCyclePrefix(all)
+	tickPrefix := x86JITTickPrefix(all)
+	var totalCycles, totalTicks uint32
+	if n := len(cyclePrefix); n != 0 {
+		totalCycles = uint32(cyclePrefix[n-1])
+		totalTicks = uint32(tickPrefix[n-1])
+	}
+	m := newWasmModuleBuilder()
+	m.importMemory("env", "mem", 1)
+	typ := m.addType([]byte{wasmTypeI32}, nil)
+	const (
+		locCtx        = 0
+		locRegs       = 1
+		locTmp        = 2
+		locTmp2       = 3
+		locTmp3       = 4
+		locTmp4       = 5
+		locTmp5       = 6
+		locTmp6       = 7
+		locTmp7       = 8
+		locLoopRet    = 9
+		locLoopCycle  = 10
+		locLoopTick   = 11
+		locLoopBudget = 12
+	)
+	b := &wasmBody{}
+	b.localGet(locCtx)
+	b.i32Load(2, x86CtxOffJITRegsPtr)
+	b.localSet(locRegs)
+	if backEdgeSource < 0 {
+		for i, ji := range all {
+			if !x86WasmEmitInstr(b, ji, memory, i, totalCycles, totalTicks, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+				return nil, fmt.Errorf("x86 wasm: unsupported region opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
+			}
+		}
+		x86WasmEmitRetPCAndCount(b, retPC, len(all), totalCycles, totalTicks)
+	} else {
+		loopHeadPC := region.blockPCs[backEdgeTarget]
+		prefixInstrs := 0
+		for i := 0; i < backEdgeTarget; i++ {
+			prefixInstrs += len(region.blocks[i])
+		}
+		loopInstrs := len(all) - prefixInstrs
+		var prefixCycles, prefixTicks uint32
+		if prefixInstrs > 0 {
+			prefixCycles = uint32(cyclePrefix[prefixInstrs-1])
+			prefixTicks = uint32(tickPrefix[prefixInstrs-1])
+		}
+		loopCycles := totalCycles - prefixCycles
+		loopTicks := totalTicks - prefixTicks
+
+		b.i32Const(int32(prefixInstrs))
+		b.localSet(locLoopRet)
+		b.i32Const(int32(prefixCycles))
+		b.localSet(locLoopCycle)
+		b.i32Const(int32(prefixTicks))
+		b.localSet(locLoopTick)
+
+		for i := 0; i < prefixInstrs; i++ {
+			ji := all[i]
+			if !x86WasmEmitInstr(b, ji, memory, i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+				return nil, fmt.Errorf("x86 wasm: unsupported loop-prefix opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
+			}
+		}
+
+		b.loop()
+		for i := prefixInstrs; i < len(all); i++ {
+			ji := all[i]
+			if !x86WasmEmitInstr(b, ji, memory, i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+				return nil, fmt.Errorf("x86 wasm: unsupported loop-body opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
+			}
+		}
+
+		b.localGet(locLoopRet)
+		b.i32Const(int32(loopInstrs))
+		b.op(wasmOpI32Add)
+		b.localSet(locLoopRet)
+		b.localGet(locLoopCycle)
+		b.i32Const(int32(loopCycles))
+		b.op(wasmOpI32Add)
+		b.localSet(locLoopCycle)
+		b.localGet(locLoopTick)
+		b.i32Const(int32(loopTicks))
+		b.op(wasmOpI32Add)
+		b.localSet(locLoopTick)
+
+		b.localGet(locCtx)
+		b.localGet(locCtx)
+		b.i32Load(2, x86CtxOffChainBudget)
+		b.i32Const(1)
+		b.op(wasmOpI32Sub)
+		b.localTee(locLoopBudget)
+		b.i32Store(2, x86CtxOffChainBudget)
+		b.localGet(locLoopBudget)
+		b.op(wasmOpI32Eqz)
+		b.ifVoid()
+		b.i32Const(int32(loopHeadPC))
+		b.localSet(locTmp)
+		x86WasmEmitDynamicRetPCAndLocalCount(b, locCtx, locTmp, locLoopRet, locLoopCycle, locLoopTick)
+		b.op(wasmOpReturn)
+		b.elseBranch()
+		b.br(1)
+		b.end()
+		b.end()
+	}
+	b.end()
+	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, b.code)
+	m.exportFunc("block", fn)
+	block := &JITBlock{
+		startPC:          uint64(region.entryPC),
+		endPC:            maxEnd,
+		instrCount:       len(all),
+		x86CyclePrefix:   cyclePrefix,
+		x86TickPrefix:    tickPrefix,
+		x86DynamicCycles: x86JITDynamicCycles(all),
+		tier:             2,
+		coveredRanges:    covered,
+	}
+	return &x86WasmCompiledModule{
+		module: m.build(),
+		block:  block,
+		retPC:  retPC,
+	}, nil
+}
+
+func x86WasmFormConditionalRegion(entryPC uint32, memory []byte) *x86WasmConditionalRegion {
+	if entryPC >= uint32(len(memory)) {
+		return nil
+	}
+	scannedEntry := x86ScanBlock(memory, entryPC)
+	if len(scannedEntry) == 0 || x86NeedsFallback(scannedEntry) {
+		return nil
+	}
+	entry, _, _, termKind, ok := x86WasmSelectCompiledPrefix(scannedEntry, memory, entryPC)
+	if !ok || len(entry) == 0 || termKind != x86WasmTerminalJcc {
+		return nil
+	}
+	for _, ji := range entry {
+		if x86ShouldStepInInterpreter(ji) {
+			return nil
+		}
+	}
+	last := entry[len(entry)-1]
+	if !x86WasmIsNearJcc(last) && !x86WasmIsShortJcc(byte(last.opcode)) {
+		return nil
+	}
+	_, targetPC, fallthroughPC, ok := x86WasmTerminalJccTarget(last, memory)
+	if !ok || targetPC <= fallthroughPC {
+		return nil
+	}
+
+	fallBlock := x86ScanBlock(memory, fallthroughPC)
+	target := x86ScanBlock(memory, targetPC)
+	if len(fallBlock) == 0 || len(target) == 0 || x86NeedsFallback(fallBlock) || x86NeedsFallback(target) {
+		return nil
+	}
+	for _, block := range [][]X86JITInstr{fallBlock, target} {
+		for _, ji := range block {
+			if x86ShouldStepInInterpreter(ji) {
+				return nil
+			}
+		}
+	}
+	fLast := fallBlock[len(fallBlock)-1]
+	tLast := target[len(target)-1]
+	if byte(fLast.opcode) != 0xE9 && byte(fLast.opcode) != 0xEB {
+		return nil
+	}
+	if byte(tLast.opcode) != 0xE9 && byte(tLast.opcode) != 0xEB {
+		return nil
+	}
+	fExit, ok := x86ResolveTerminatorTarget(&fLast, memory, fallthroughPC)
+	if !ok {
+		return nil
+	}
+	tExit, ok := x86ResolveTerminatorTarget(&tLast, memory, targetPC)
+	if !ok || tExit != fExit {
+		return nil
+	}
+	return &x86WasmConditionalRegion{
+		entryPC:     entryPC,
+		entryBlock:  entry,
+		fallBlock:   fallBlock,
+		targetBlock: target,
+		fallPC:      fallthroughPC,
+		targetPC:    targetPC,
+		exitPC:      fExit,
+	}
+}
+
+func x86WasmCompileConditionalRegionModule(region *x86WasmConditionalRegion, memory []byte) (*x86WasmCompiledModule, error) {
+	if region == nil || len(region.entryBlock) == 0 || len(region.fallBlock) == 0 || len(region.targetBlock) == 0 {
+		return nil, fmt.Errorf("x86 wasm: empty conditional region")
+	}
+	all := make([]X86JITInstr, 0, len(region.entryBlock)+len(region.fallBlock)+len(region.targetBlock))
+	all = append(all, region.entryBlock...)
+	all = append(all, region.fallBlock...)
+	all = append(all, region.targetBlock...)
+	cyclePrefix := x86JITCyclePrefix(all)
+	tickPrefix := x86JITTickPrefix(all)
+	covered := [][2]uint64{
+		{uint64(region.entryPC), uint64(region.entryBlock[len(region.entryBlock)-1].opcodePC + uint32(region.entryBlock[len(region.entryBlock)-1].length))},
+		{uint64(region.fallPC), uint64(region.fallBlock[len(region.fallBlock)-1].opcodePC + uint32(region.fallBlock[len(region.fallBlock)-1].length))},
+		{uint64(region.targetPC), uint64(region.targetBlock[len(region.targetBlock)-1].opcodePC + uint32(region.targetBlock[len(region.targetBlock)-1].length))},
+	}
+	entryCount := len(region.entryBlock)
+	fallCount := len(region.fallBlock)
+	targetCount := len(region.targetBlock)
+	entryCycles := uint32(cyclePrefix[entryCount-1])
+	entryTicks := uint32(tickPrefix[entryCount-1])
+	fallCycles := uint32(cyclePrefix[entryCount+fallCount-1] - cyclePrefix[entryCount-1])
+	fallTicks := uint32(tickPrefix[entryCount+fallCount-1] - tickPrefix[entryCount-1])
+	targetCycles := uint32(cyclePrefix[len(all)-1] - cyclePrefix[entryCount+fallCount-1])
+	targetTicks := uint32(tickPrefix[len(all)-1] - tickPrefix[entryCount+fallCount-1])
+
 	m := newWasmModuleBuilder()
 	m.importMemory("env", "mem", 1)
 	typ := m.addType([]byte{wasmTypeI32}, nil)
@@ -1574,29 +2111,51 @@ func x86WasmCompileRegionModule(region *x86Region, memory []byte) (*x86WasmCompi
 	b.localGet(locCtx)
 	b.i32Load(2, x86CtxOffJITRegsPtr)
 	b.localSet(locRegs)
-	for i, ji := range all {
-		if !x86WasmEmitInstr(b, ji, memory, i, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
-			return nil, fmt.Errorf("x86 wasm: unsupported region opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
+
+	for i := 0; i < entryCount-1; i++ {
+		ji := region.entryBlock[i]
+		if !x86WasmEmitInstr(b, ji, memory, i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+			return nil, fmt.Errorf("x86 wasm: unsupported conditional-entry opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
 		}
 	}
-	x86WasmEmitRetPCAndCount(b, retPC, len(all))
+	entryJcc := region.entryBlock[entryCount-1]
+	condition, _, _, ok := x86WasmTerminalJccTarget(entryJcc, memory)
+	if !ok || !x86WasmEmitJccCondition(b, uint32(condition), locCtx, locTmp2, locTmp3) {
+		return nil, fmt.Errorf("x86 wasm: unsupported conditional-entry branch")
+	}
+	b.ifVoid()
+	for i := 0; i < targetCount-1; i++ {
+		ji := region.targetBlock[i]
+		if !x86WasmEmitInstr(b, ji, memory, entryCount+fallCount+i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+			return nil, fmt.Errorf("x86 wasm: unsupported conditional-target opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
+		}
+	}
+	x86WasmEmitRetPCAndCount(b, region.exitPC, entryCount+targetCount, entryCycles+targetCycles, entryTicks+targetTicks)
+	b.elseBranch()
+	for i := 0; i < fallCount-1; i++ {
+		ji := region.fallBlock[i]
+		if !x86WasmEmitInstr(b, ji, memory, entryCount+i, 0, 0, locCtx, locRegs, locTmp, locTmp2, locTmp3, locTmp4, locTmp5, locTmp6, locTmp7) {
+			return nil, fmt.Errorf("x86 wasm: unsupported conditional-fallthrough opcode %#02x at %#x", byte(ji.opcode), ji.opcodePC)
+		}
+	}
+	x86WasmEmitRetPCAndCount(b, region.exitPC, entryCount+fallCount, entryCycles+fallCycles, entryTicks+fallTicks)
+	b.end()
 	b.end()
 	fn := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, b.code)
 	m.exportFunc("block", fn)
 	block := &JITBlock{
-		startPC:          uint64(region.entryPC),
-		endPC:            maxEnd,
-		instrCount:       len(all),
-		x86CyclePrefix:   x86JITCyclePrefix(all),
-		x86TickPrefix:    x86JITTickPrefix(all),
-		x86DynamicCycles: x86JITDynamicCycles(all),
-		tier:             2,
-		coveredRanges:    covered,
+		startPC:        uint64(region.entryPC),
+		endPC:          uint64(region.targetBlock[len(region.targetBlock)-1].opcodePC + uint32(region.targetBlock[len(region.targetBlock)-1].length)),
+		instrCount:     len(all),
+		x86CyclePrefix: cyclePrefix,
+		x86TickPrefix:  tickPrefix,
+		tier:           2,
+		coveredRanges:  covered,
 	}
 	return &x86WasmCompiledModule{
 		module: m.build(),
 		block:  block,
-		retPC:  retPC,
+		retPC:  region.exitPC,
 	}, nil
 }
 

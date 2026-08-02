@@ -83,3 +83,59 @@ func TestX86SMC_ZeroSizeFallsBackToFullInvalidation(t *testing.T) {
 		t.Fatalf("bitmap page remained marked after zero-size fallback")
 	}
 }
+
+func TestX86SMC_PruneAuxBlockCacheDropsOnlyInvalidatedEntries(t *testing.T) {
+	cache := NewCodeCache()
+	bitmap := make([]byte, 8)
+	first := &JITBlock{startPC: 0x100, endPC: 0x110}
+	second := &JITBlock{startPC: 0x300, endPC: 0x310}
+	cache.Put(first)
+	cache.Put(second)
+	x86MarkCodePagesForBlock(bitmap, first)
+	x86MarkCodePagesForBlock(bitmap, second)
+
+	type auxBlock struct{ meta *JITBlock }
+	aux := map[uint32]auxBlock{
+		uint32(first.startPC):  {meta: first},
+		uint32(second.startPC): {meta: second},
+	}
+	var cleared []uint32
+	ctx := &X86JITContext{InvalAddr: 0x108, InvalSize: 1}
+	if removed := x86InvalidateSMCRange(cache, bitmap, ctx); removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	pruned := x86PruneAuxBlockCache(cache, aux, func(b auxBlock) *JITBlock { return b.meta }, func(pc uint32, _ auxBlock) {
+		cleared = append(cleared, pc)
+	})
+	if pruned != 1 {
+		t.Fatalf("pruned = %d, want 1", pruned)
+	}
+	if len(cleared) != 1 || cleared[0] != uint32(first.startPC) {
+		t.Fatalf("cleared = %v, want [%#x]", cleared, uint32(first.startPC))
+	}
+	if _, ok := aux[uint32(first.startPC)]; ok {
+		t.Fatalf("invalidated block %#x still present in aux cache", uint32(first.startPC))
+	}
+	if got := aux[uint32(second.startPC)].meta; got != second {
+		t.Fatalf("surviving aux block = %#v, want second block", got)
+	}
+}
+
+func TestX86SMC_PruneAuxBlockCacheDropsReplacedEntries(t *testing.T) {
+	cache := NewCodeCache()
+	original := &JITBlock{startPC: 0x100, endPC: 0x110}
+	replacement := &JITBlock{startPC: 0x100, endPC: 0x120}
+	cache.Put(original)
+
+	type auxBlock struct{ meta *JITBlock }
+	aux := map[uint32]auxBlock{0x100: {meta: original}}
+	cache.Put(replacement)
+
+	pruned := x86PruneAuxBlockCache(cache, aux, func(b auxBlock) *JITBlock { return b.meta }, nil)
+	if pruned != 1 {
+		t.Fatalf("pruned = %d, want 1", pruned)
+	}
+	if len(aux) != 0 {
+		t.Fatalf("aux cache still contains replaced entry: %#v", aux)
+	}
+}

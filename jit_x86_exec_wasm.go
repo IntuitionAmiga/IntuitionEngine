@@ -2,10 +2,10 @@
 
 // jit_x86_exec_wasm.go - js/wasm x86 JIT dispatcher.
 //
-// The initial wasm backend focuses on register-only MOV forms, NOP/WAIT, and
-// direct-jump blocks plus forward direct regions so the x86 frontend can
-// exercise native chaining and promotion on the browser path. Unsupported
-// blocks retain the ordinary one-instruction interpreter boundary.
+// The wasm backend incrementally lowers direct x86 forms into imported-memory
+// WebAssembly modules so the browser path can exercise native chaining and
+// region promotion. Unsupported blocks retain the ordinary one-instruction
+// interpreter boundary.
 
 package main
 
@@ -117,6 +117,23 @@ func (rt *x86WasmJITRuntime) cacheStore(pc uint32, slot int) {
 	binary.LittleEndian.PutUint32(e[4:], uint32(slot+1))
 }
 
+func (rt *x86WasmJITRuntime) cacheClear(pc uint32) {
+	idx := pc & (x86WasmDriverCacheEntries - 1)
+	e := rt.pcCache[idx*8 : idx*8+8]
+	clear(e)
+}
+
+func (rt *x86WasmJITRuntime) pruneInvalidatedBlocks() int {
+	return x86PruneAuxBlockCache(rt.cpu.x86JitCache, rt.blocks, func(block *x86WasmJITBlock) *JITBlock {
+		if block == nil {
+			return nil
+		}
+		return block.meta
+	}, func(pc uint32, _ *x86WasmJITBlock) {
+		rt.cacheClear(pc)
+	})
+}
+
 func (rt *x86WasmJITRuntime) instantiateBlock(modBytes []byte) (js.Value, js.Value) {
 	global := js.Global()
 	u8 := global.Get("Uint8Array").New(len(modBytes))
@@ -158,12 +175,19 @@ func (rt *x86WasmJITRuntime) compileBlock(pc uint32, bounded bool) (*x86WasmJITB
 }
 
 func (rt *x86WasmJITRuntime) promoteRegion(pc uint32) *x86WasmJITBlock {
-	region := x86FormRegion(pc, rt.cpu.x86JitCache, rt.cpu.memory)
-	if region == nil || !x86TierController.ShouldPromoteRegion(len(region.blocks)) {
-		return nil
+	var (
+		compiled *x86WasmCompiledModule
+		err      error
+	)
+	if region := x86FormRegion(pc, rt.cpu.x86JitCache, rt.cpu.memory); region != nil && x86TierController.ShouldPromoteRegion(len(region.blocks)) {
+		compiled, err = x86WasmCompileRegionModule(region, rt.cpu.memory)
 	}
-	compiled, err := x86WasmCompileRegionModule(region, rt.cpu.memory)
-	if err != nil {
+	if compiled == nil {
+		if region := x86WasmFormConditionalRegion(pc, rt.cpu.memory); region != nil && x86TierController.ShouldPromoteRegion(3) {
+			compiled, err = x86WasmCompileConditionalRegionModule(region, rt.cpu.memory)
+		}
+	}
+	if err != nil || compiled == nil {
 		return nil
 	}
 	fn, instance := rt.instantiateBlock(compiled.module)
@@ -187,6 +211,8 @@ func (rt *x86WasmJITRuntime) runBlock(block *x86WasmJITBlock) int {
 	ctx.RetPC = cpu.EIP
 	ctx.RetCount = 0
 	ctx.ChainCount = 0
+	ctx.ChainCycles = 0
+	ctx.ChainTicks = 0
 	ctx.ChainBudget = x86WasmChainBudget
 	ctx.NeedIOFallback = 0
 	ctx.NeedInval = 0
@@ -198,7 +224,10 @@ func (rt *x86WasmJITRuntime) runBlock(block *x86WasmJITBlock) int {
 	if completed > len(block.meta.x86CyclePrefix) {
 		completed = len(block.meta.x86CyclePrefix)
 	}
-	if completed > 0 {
+	if ctx.ChainTicks != 0 {
+		cpu.Cycles += uint64(ctx.ChainCycles)
+		cpu.bus.Tick(int(ctx.ChainTicks))
+	} else if completed > 0 {
 		cpu.Cycles += block.meta.x86CyclePrefix[completed-1]
 		if len(block.meta.x86TickPrefix) >= completed {
 			cpu.bus.Tick(int(block.meta.x86TickPrefix[completed-1]))
@@ -317,10 +346,19 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			}
 		}
 		if ctx.NeedInval != 0 {
+			if jitSMCRangeDisabled {
+				cpu.x86JitCache.Invalidate()
+				rt.blocks = map[uint32]*x86WasmJITBlock{}
+				clear(cpu.x86JitCodeBM)
+				clear(rt.pcCache)
+				x86ClearRTSCache(ctx)
+			} else {
+				x86InvalidateSMCRange(cpu.x86JitCache, cpu.x86JitCodeBM, ctx)
+				rt.pruneInvalidatedBlocks()
+			}
 			ctx.NeedInval = 0
-			cpu.x86JitCache.Invalidate()
-			rt.blocks = map[uint32]*x86WasmJITBlock{}
-			clear(cpu.x86JitCodeBM)
+			ctx.InvalAddr = 0
+			ctx.InvalSize = 0
 		}
 	}
 	cpu.syncJITRegsToNamed()

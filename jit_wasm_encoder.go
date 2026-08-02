@@ -282,6 +282,9 @@ func (b *wasmBody) i32Load16U(align, offset uint32) {
 func (b *wasmBody) i64Load(align, offset uint32)  { b.memOp(wasmOpI64Load, align, offset) }
 func (b *wasmBody) f64Load(align, offset uint32)  { b.memOp(wasmOpF64Load, align, offset) }
 func (b *wasmBody) i32Store(align, offset uint32) { b.memOp(wasmOpI32Store, align, offset) }
+func (b *wasmBody) i32Store16(align, offset uint32) {
+	b.memOp(wasmOpI32Store16, align, offset)
+}
 func (b *wasmBody) i32Store8(align, offset uint32) {
 	b.memOp(wasmOpI32Store8, align, offset)
 }
