@@ -1,10 +1,11 @@
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux)
+//go:build (amd64 && (linux || windows || darwin)) || (arm64 && linux) || (js && wasm)
 
 package main
 
 // x86ResolveTerminatorTarget computes the target PC for a block-terminating
 // instruction, if it has a statically known target. Both native x86 JIT
-// backends use the same guest relative-branch encoding.
+// backends, and the js/wasm frontend region planner, use the same guest
+// relative-branch encoding.
 func x86ResolveTerminatorTarget(ji *X86JITInstr, memory []byte, startPC uint32) (uint32, bool) {
 	op := byte(ji.opcode)
 	nextPC := ji.opcodePC + uint32(ji.length)

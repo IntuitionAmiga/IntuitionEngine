@@ -785,7 +785,7 @@ test-wasm-build:
 # (tools/wasm/go_js_wasm_exec) exposes the module memory as __goMem, which
 # the wasm JIT runtime needs, mirroring the demo page.
 test-wasm-node:
-	GOOS=js GOARCH=wasm GOEXPERIMENT=none $(GO) test -exec="$(CURDIR)/tools/wasm/go_js_wasm_exec" -tags "novulkan headless" -run 'TestWasmJIT_|TestWasmFileBridge_' -count=1 .
+	GOOS=js GOARCH=wasm GOEXPERIMENT=none $(GO) test -exec="$(CURDIR)/tools/wasm/go_js_wasm_exec" -tags "novulkan headless" -run 'TestWasm(JIT_|SIMD_)|TestWasmFileBridge_' -count=1 .
 
 test-wasm: test-wasm-build test-wasm-node
 

@@ -22,9 +22,10 @@ import (
 
 // Value types (wasm binary encoding).
 const (
-	wasmTypeI32 byte = 0x7f
-	wasmTypeI64 byte = 0x7e
-	wasmTypeF64 byte = 0x7c
+	wasmTypeI32  byte = 0x7f
+	wasmTypeI64  byte = 0x7e
+	wasmTypeV128 byte = 0x7b
+	wasmTypeF64  byte = 0x7c
 )
 
 // Opcodes. Named constants only for the ones emitted through op(); operands
@@ -166,6 +167,35 @@ const (
 	wasmOpI64Extend8S       byte = 0xc2
 	wasmOpI64Extend16S      byte = 0xc3
 	wasmOpI64Extend32S      byte = 0xc4
+	wasmOpVecPrefix         byte = 0xfd
+)
+
+// Vector SIMD sub-opcodes in the 0xFD prefixed space. Only the subset needed
+// by the shared x86/wasm backend is defined here; further SIMD lowerings can
+// extend this table as they become live.
+type wasmVecOp uint32
+
+const (
+	wasmVecV128Load  wasmVecOp = 0x00
+	wasmVecV128Store wasmVecOp = 0x0b
+	wasmVecV128Const wasmVecOp = 0x0c
+
+	wasmVecV128And wasmVecOp = 0x4e
+	wasmVecV128Or  wasmVecOp = 0x50
+	wasmVecV128Xor wasmVecOp = 0x51
+
+	wasmVecF64x2Splat       wasmVecOp = 0x14
+	wasmVecF64x2ExtractLane wasmVecOp = 0x21
+	wasmVecF64x2ReplaceLane wasmVecOp = 0x22
+	wasmVecF64x2Abs         wasmVecOp = 0xec
+	wasmVecF64x2Neg         wasmVecOp = 0xed
+	wasmVecF64x2Sqrt        wasmVecOp = 0xef
+	wasmVecF64x2Add         wasmVecOp = 0xf0
+	wasmVecF64x2Sub         wasmVecOp = 0xf1
+	wasmVecF64x2Mul         wasmVecOp = 0xf2
+	wasmVecF64x2Div         wasmVecOp = 0xf3
+	wasmVecF64x2Min         wasmVecOp = 0xf4
+	wasmVecF64x2Max         wasmVecOp = 0xf5
 )
 
 // wasmUleb encodes v as unsigned LEB128.
@@ -211,6 +241,10 @@ type wasmBody struct {
 func (b *wasmBody) op(o byte)     { b.code = append(b.code, o) }
 func (b *wasmBody) raw(p []byte)  { b.code = append(b.code, p...) }
 func (b *wasmBody) uleb(v uint64) { b.code = append(b.code, wasmUleb(v)...) }
+func (b *wasmBody) vecOp(o wasmVecOp) {
+	b.op(wasmOpVecPrefix)
+	b.uleb(uint64(o))
+}
 
 func (b *wasmBody) localGet(i uint32) { b.op(wasmOpLocalGet); b.uleb(uint64(i)) }
 func (b *wasmBody) localSet(i uint32) { b.op(wasmOpLocalSet); b.uleb(uint64(i)) }
@@ -232,12 +266,49 @@ func (b *wasmBody) memOp(o byte, align, offset uint32) {
 	b.uleb(uint64(offset))
 }
 
+func (b *wasmBody) vecMemOp(o wasmVecOp, align, offset uint32) {
+	b.vecOp(o)
+	b.uleb(uint64(align))
+	b.uleb(uint64(offset))
+}
+
 func (b *wasmBody) i32Load(align, offset uint32)  { b.memOp(wasmOpI32Load, align, offset) }
 func (b *wasmBody) i64Load(align, offset uint32)  { b.memOp(wasmOpI64Load, align, offset) }
 func (b *wasmBody) f64Load(align, offset uint32)  { b.memOp(wasmOpF64Load, align, offset) }
 func (b *wasmBody) i32Store(align, offset uint32) { b.memOp(wasmOpI32Store, align, offset) }
 func (b *wasmBody) i64Store(align, offset uint32) { b.memOp(wasmOpI64Store, align, offset) }
 func (b *wasmBody) f64Store(align, offset uint32) { b.memOp(wasmOpF64Store, align, offset) }
+func (b *wasmBody) v128Load(align, offset uint32) { b.vecMemOp(wasmVecV128Load, align, offset) }
+func (b *wasmBody) v128Store(align, offset uint32) {
+	b.vecMemOp(wasmVecV128Store, align, offset)
+}
+func (b *wasmBody) v128Const(v [16]byte) {
+	b.vecOp(wasmVecV128Const)
+	b.raw(v[:])
+}
+func (b *wasmBody) v128And() { b.vecOp(wasmVecV128And) }
+func (b *wasmBody) v128Or()  { b.vecOp(wasmVecV128Or) }
+func (b *wasmBody) v128Xor() { b.vecOp(wasmVecV128Xor) }
+func (b *wasmBody) f64x2Splat() {
+	b.vecOp(wasmVecF64x2Splat)
+}
+func (b *wasmBody) f64x2ExtractLane(lane byte) {
+	b.vecOp(wasmVecF64x2ExtractLane)
+	b.op(lane)
+}
+func (b *wasmBody) f64x2ReplaceLane(lane byte) {
+	b.vecOp(wasmVecF64x2ReplaceLane)
+	b.op(lane)
+}
+func (b *wasmBody) f64x2Abs()  { b.vecOp(wasmVecF64x2Abs) }
+func (b *wasmBody) f64x2Neg()  { b.vecOp(wasmVecF64x2Neg) }
+func (b *wasmBody) f64x2Sqrt() { b.vecOp(wasmVecF64x2Sqrt) }
+func (b *wasmBody) f64x2Add()  { b.vecOp(wasmVecF64x2Add) }
+func (b *wasmBody) f64x2Sub()  { b.vecOp(wasmVecF64x2Sub) }
+func (b *wasmBody) f64x2Mul()  { b.vecOp(wasmVecF64x2Mul) }
+func (b *wasmBody) f64x2Div()  { b.vecOp(wasmVecF64x2Div) }
+func (b *wasmBody) f64x2Min()  { b.vecOp(wasmVecF64x2Min) }
+func (b *wasmBody) f64x2Max()  { b.vecOp(wasmVecF64x2Max) }
 
 // block/loop open void-typed structured control frames; end closes the
 // innermost frame (or the function itself as the final end).

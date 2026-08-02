@@ -1,10 +1,11 @@
 // jit_x86_tier_amd64.go - x86 Tier-2 controller binding (Phase 3a).
 //
 // Holds x86TierController, the package-level singleton bound to x86's
-// reference RegPressureProfile. Build tag matches jit_x86_exec.go (the
-// sole consumer) so the symbol is defined on the native amd64 x86 JIT hosts.
+// reference RegPressureProfile. The frontend planner and js/wasm scaffolding
+// both consult it, so the symbol must exist anywhere x86 region promotion can
+// be reasoned about even before a backend executes it.
 
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
+//go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin)) || (js && wasm)
 
 package main
 

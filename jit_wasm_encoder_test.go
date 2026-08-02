@@ -195,6 +195,47 @@ func TestWasmEnc_ExecLoopTo100(t *testing.T) {
 	}
 }
 
+func TestWasmEnc_SIMDProbeExecutes(t *testing.T) {
+	r, ctx := wazeroRun(t, nil)
+	mod, err := r.Instantiate(ctx, wasmSIMDProbeModuleBytes())
+	if err != nil {
+		t.Fatalf("instantiate SIMD probe: %v", err)
+	}
+	res, err := mod.ExportedFunction("probe").Call(ctx)
+	if err != nil {
+		t.Fatalf("call probe: %v", err)
+	}
+	if got := math.Float64frombits(res[0]); got != 3.75 {
+		t.Fatalf("probe() = %v, want 3.75", got)
+	}
+}
+
+func TestWasmEnc_SIMDSubopcodeUsesULEB(t *testing.T) {
+	m := newWasmModuleBuilder()
+	typ := m.addType(nil, []byte{wasmTypeF64})
+	b := &wasmBody{}
+	b.f64Const(1.5)
+	b.f64x2Splat()
+	b.f64Const(2.25)
+	b.f64x2Splat()
+	b.f64x2Add()
+	b.f64x2ExtractLane(0)
+	b.end()
+	fn := m.addFunc(typ, nil, b.code)
+	m.exportFunc("probe", fn)
+	mod := m.build()
+	for _, want := range [][]byte{
+		{wasmOpVecPrefix, 0x14},            // f64x2.splat
+		{wasmOpVecPrefix, 0xf0, 0x01},      // f64x2.add (ULEB-encoded 0xf0)
+		{wasmOpVecPrefix, 0x21, 0x00},      // f64x2.extract_lane 0
+		{wasmOpF64Const, 0x00, 0x00, 0x00}, // scalar f64 constants remain plain opcodes
+	} {
+		if !bytes.Contains(mod, want) {
+			t.Fatalf("module missing SIMD byte pattern % x in % x", want, mod)
+		}
+	}
+}
+
 // buildEnvModule builds the provider module used by the import tests: it
 // defines and exports a one-page memory, a four-slot funcref table with a
 // doubling function seeded in slot 0, and the doubling function itself.
