@@ -29,7 +29,10 @@ verify_checkout() {
     actual="$(git -C "${directory}" rev-parse HEAD)"
     [[ "${actual}" == "${revision}" ]] ||
         fail "${name} revision mismatch: expected ${revision}, found ${actual}"
-    status="$(git -C "${directory}" status --porcelain --untracked-files=all)"
+    # Untracked plans, IDE metadata, and generated files do not enter the
+    # package because the staging commands name every input explicitly. Keep
+    # the reproducibility guard focused on tracked source changes.
+    status="$(git -C "${directory}" status --porcelain --untracked-files=no)"
     [[ -z "${status}" ]] || fail "${name} checkout is not clean"
 }
 
