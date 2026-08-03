@@ -20,7 +20,9 @@ unsigned 32-bit. Enums use `int`. `long double` and C `_Atomic` are rejected.
 
 An aggregate uses its largest member alignment, capped at 8, and rounds its
 size up to that alignment. Bit-fields use cproc's recorded allocation rules;
-the compiler test suite owns executable layout examples.
+the compiler test suite owns executable layout examples. For example,
+`struct { unsigned int a:3, b:5, c:8; }` has size and alignment 4. Its fields
+occupy the low 16 bits of one 32-bit allocation unit in declaration order.
 
 ## Calls
 
@@ -54,6 +56,27 @@ result, and advances by eight bytes.
 
 ## Image and runtime
 
+`ie64-cproc -o program.ie64 source.c source2.c routine.s` compiles and links
+one flat image. It accepts `-I`, `-D`, `-E`, `-S`, `-c`, `-o`, and
+`-nostdlib`. `-S` and `-c` both produce linkable IE64 assembly, not object
+files. With several C inputs they write one `.s` beside each source; a single
+`-o` is rejected. `-E`, `-S`, and `-c` accept only C inputs. Final links accept
+C and linkable assembly inputs.
+
+The development driver resolves its executable and searches that directory
+and each parent for a sibling `IntuitionEngine/sdk`. It never derives the SDK
+from the current directory. The first matching sibling supplies these files:
+
+| Mode | Required SDK paths |
+| --- | --- |
+| `-E`, `-S`, `-c` | `include/` |
+| final `-nostdlib` link | `include/`, `bin/ie64asm` |
+| ordinary final link | `include/`, `bin/ie64asm`, `lib/ie64-cproc/crt0.s`, `lib/ie64-cproc/libie64c.s` |
+
+An ordinary link validates all required paths before starting a compiler
+subprocess. `-nostdlib` never requires either runtime file. Installed layout
+discovery is not part of v1.
+
 The ordinary driver link order is `crt0.s`, generated C units, supplied
 assembly units, and `libie64c.s`. It emits `__ie64_heap_start` after all input.
 The image must fit `[0x1000, 0x8F000)`. `[0x8F000, 0x9F000)` is a full
@@ -73,9 +96,21 @@ Linkable units have no `org` that resets the cursor to `PROG_START`; a forward
 The SDK supplies `assert.h`, `stdbool.h`, `stddef.h`, `stdint.h`, `stdarg.h`,
 `stdalign.h`, `stdnoreturn.h`, `limits.h`, `ctype.h`, `string.h`, `stdlib.h`,
 and `ie64.h`. The partial C library exports exactly the declarations in the
-last three headers. `ctype` arguments must be representable as `unsigned char`.
-`strto*` supports C11 bases and `endptr`; range errors return the applicable
-limit and there is no `errno`.
+last three headers:
+
+- `string.h`: `memchr`, `memcmp`, `memcpy`, `memmove`, `memset`, `strcat`,
+  `strchr`, `strcmp`, `strcpy`, `strlen`, `strncat`, `strncmp`, and `strncpy`.
+- `ctype.h`: `isalnum`, `isalpha`, `isblank`, `iscntrl`, `isdigit`, `isgraph`,
+  `islower`, `isprint`, `ispunct`, `isspace`, `isupper`, `isxdigit`, `tolower`,
+  and `toupper`.
+- `stdlib.h`: `abs`, `labs`, `llabs`, `strtol`, `strtoul`, `strtoll`,
+  `strtoull`, `qsort`, `bsearch`, `malloc`, `calloc`, `realloc`, and `free`.
+
+The remaining standard headers provide their corresponding freestanding types
+and macros only. There is no formatted I/O, environment, locale, file, thread,
+process or hosted termination interface. `ctype` arguments must be
+representable as `unsigned char`. `strto*` supports C11 bases and `endptr`;
+range errors return the applicable limit and there is no `errno`.
 
 The allocator is an 8-byte-aligned bump allocator over
 `[__ie64_heap_start, 0x8F000)`. Zero-size allocation and allocation failure
@@ -97,8 +132,74 @@ behaviour and faults, and intentionally define no C memory-order API.
 | --- | --- | --- |
 | Control, TLB, privilege | `mfcr`, `mtcr`, `tlbinval`, `tlbflush`, `sua*`, `eret`, `rti` | MFCR, MTCR, TLB*, SUA*, ERET, RTI |
 | Atomics | `cas`, `xchg`, `faa`, `fand`, `for`, `fxor` | CAS, XCHG, FAA, FAND, FOR, FXOR |
-| FPU special operations | `fmovecr`, `fmod`, `dmod`, `fint`, `dint`, `fcvt*`, `fmov*` | matching FPU opcodes |
+| FPU special operations | `fmovecr`, `fmod`, `dmod`, `fint`, `dint`, `fcvt*`, `fsin`, `fcos`, `ftan`, `fatan`, `flog`, `fexp`, `fpow`, double equivalents, `fsqrt`, `dsqrt`, `fmov*` | matching FPU opcodes |
 | Interrupt and control flow | `sei`, `cli`, `rti`, `nop`, `halt`, `wait`, `syscall`, `smode` | SEI, CLI, RTI, NOP, HALT, WAIT, SYSCALL, SMODE |
 
 `wait`, `syscall`, FPU constant loads, control-register identifiers and all
 other immediate-only operands must be compile-time constants.
+
+### FPU lowering table
+
+Every scalar FPU opcode has one defined compiler route. The following
+operations arise from ordinary C or QBE lowering:
+
+| IE64 opcodes | C or QBE operation |
+| --- | --- |
+| `FMOV`, `DMOV` | scalar copy |
+| `FLOAD`, `DLOAD`, `FSTORE`, `DSTORE` | scalar object load or store |
+| `FADD`, `DADD`, `FSUB`, `DSUB`, `FMUL`, `DMUL`, `FDIV`, `DDIV` | C arithmetic |
+| `FNEG`, `DNEG` | unary minus |
+| `FCMP`, `DCMP` | C floating comparison |
+| `FCVTIF`, `DCVTIF`, `FCVTFI`, `DCVTFI` | integer and floating conversion |
+| `FMOVI`, `FMOVO` | QBE bit-preserving scalar cast |
+
+Operations without an ordinary C expression use the private interface below.
+The argument codes are `u32`, `u64`, `f32`, `f64`, and `ptr64`. An `imm`
+argument must be a compile-time integer constant.
+
+| C builtin | Arguments | Private QBE operation | IE64 instruction |
+| --- | --- | --- | --- |
+| `__builtin_ie64_fmovecr` | `imm 0..15` | `ie64fmovecr` | `FMOVECR` |
+| `__builtin_ie64_dmovecr` | `imm 0..15` | `ie64dmovecr` | `FMOVECR`, `FCVTSD` |
+| `__builtin_ie64_fmod` | `f32, f32` | `ie64fmod` | `FMOD` |
+| `__builtin_ie64_dmod` | `f64, f64` | `ie64dmod` | `DMOD` |
+| `__builtin_ie64_fabs` | `f32` | `ie64fabs` | `FABS` |
+| `__builtin_ie64_dabs` | `f64` | `ie64dabs` | `DABS` |
+| `__builtin_ie64_fint` | `f32` | `ie64fint` | `FINT` |
+| `__builtin_ie64_dint` | `f64` | `ie64dint` | `DINT` |
+| `__builtin_ie64_fcvtsd` | `f32` | `ie64fcvtsd` | `FCVTSD` |
+| `__builtin_ie64_fcvtds` | `f64` | `ie64fcvtds` | `FCVTDS` |
+| `__builtin_ie64_fsin`, `__builtin_ie64_dsin` | `f32` or `f64` | `ie64fsin`, `ie64dsin` | `FSIN`, `DSIN` |
+| `__builtin_ie64_fcos`, `__builtin_ie64_dcos` | `f32` or `f64` | `ie64fcos`, `ie64dcos` | `FCOS`, `DCOS` |
+| `__builtin_ie64_ftan`, `__builtin_ie64_dtan` | `f32` or `f64` | `ie64ftan`, `ie64dtan` | `FTAN`, `DTAN` |
+| `__builtin_ie64_fatan`, `__builtin_ie64_datan` | `f32` or `f64` | `ie64fatan`, `ie64datan` | `FATAN`, `DATAN` |
+| `__builtin_ie64_flog`, `__builtin_ie64_dlog` | `f32` or `f64` | `ie64flog`, `ie64dlog` | `FLOG`, `DLOG` |
+| `__builtin_ie64_fexp`, `__builtin_ie64_dexp` | `f32` or `f64` | `ie64fexp`, `ie64dexp` | `FEXP`, `DEXP` |
+| `__builtin_ie64_fpow`, `__builtin_ie64_dpow` | two `f32` or two `f64` | `ie64fpow`, `ie64dpow` | `FPOW`, `DPOW` |
+| `__builtin_ie64_fsqrt`, `__builtin_ie64_dsqrt` | `f32` or `f64` | `ie64fsqrt`, `ie64dsqrt` | `FSQRT`, `DSQRT` |
+| `__builtin_ie64_fmovsr` | none | `ie64fmovsr` | `FMOVSR` |
+| `__builtin_ie64_fmovcr` | none | `ie64fmovcr` | `FMOVCR` |
+| `__builtin_ie64_fmovsc` | `u32` | `ie64fmovsc` | `FMOVSC` |
+| `__builtin_ie64_fmovcc` | `u32` | `ie64fmovcc` | `FMOVCC` |
+
+### Non-FPU builtin lowering table
+
+| C builtin | Arguments | Private QBE operation | IE64 instruction |
+| --- | --- | --- | --- |
+| `__builtin_ie64_mfcr` | `imm 0..15` | `ie64mfcr` | `MFCR` |
+| `__builtin_ie64_mtcr` | `imm 0..15, u64` | `ie64mtcr` | `MTCR` |
+| `__builtin_ie64_tlbinval` | `u64` | `ie64tlbinval` | `TLBINVAL` |
+| `__builtin_ie64_tlbflush` | none | `ie64tlbflush` | `TLBFLUSH` |
+| `__builtin_ie64_suaen`, `__builtin_ie64_suadis` | none | `ie64suaen`, `ie64suadis` | `SUAEN`, `SUADIS` |
+| `__builtin_ie64_eret`, `__builtin_ie64_rti` | none | `ie64eret`, `ie64rti` | `ERET`, `RTI` |
+| `__builtin_ie64_nop`, `__builtin_ie64_halt` | none | `ie64nop`, `ie64halt` | `NOP`, `HALT` |
+| `__builtin_ie64_sei`, `__builtin_ie64_cli` | none | `ie64sei`, `ie64cli` | `SEI`, `CLI` |
+| `__builtin_ie64_wait` | `imm u32` | `ie64wait` | `WAIT` |
+| `__builtin_ie64_syscall` | `imm u32` | `ie64syscall` | `SYSCALL` |
+| `__builtin_ie64_smode` | none | `ie64smode` | `SMODE` |
+| `__builtin_ie64_xchg` | `ptr64, u64` | `ie64xchg` | `XCHG` |
+| `__builtin_ie64_faa` | `ptr64, u64` | `ie64faa` | `FAA` |
+| `__builtin_ie64_fand` | `ptr64, u64` | `ie64fand` | `FAND` |
+| `__builtin_ie64_for` | `ptr64, u64` | `ie64for` | `FOR` |
+| `__builtin_ie64_fxor` | `ptr64, u64` | `ie64fxor` | `FXOR` |
+| `__builtin_ie64_cas` | `ptr64, u64, u64` | `ie64cas` | `CAS` |

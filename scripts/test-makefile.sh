@@ -222,7 +222,7 @@ for target in \
   rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets emutos-probe \
   iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets \
   arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-release-rom basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
-  test-makefile test-cross test-cross-binaries ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
+  test-makefile test-cross test-cross-binaries test-x86-jit-parity ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
   test-x86-harte test-x86-harte-short release-verify x64-live-sdk-tools iedoom iedoom-ie86 iedoom-ie68 x86-iedoom-timedemo; do
   assert_phony "$target"
   assert_target_exists "$target"
@@ -274,6 +274,10 @@ assert_makefile_contains '^iedoom: iedoom-ie86 iedoom-ie68'
 assert_recipe_contains x86-iedoom-timedemo 'IE_NO_IPC=1'
 assert_recipe_contains x86-iedoom-timedemo '-script-owned-term'
 assert_recipe_contains x86-iedoom-timedemo '-script "bench/measure_timedemo\.ies"'
+assert_recipe_contains test-x86-jit-parity 'go test -tags headless -run'
+assert_recipe_contains test-x86-jit-parity 'make test-wasm-build'
+assert_recipe_contains test-x86-jit-parity 'make test-wasm-node'
+assert_recipe_contains test-x86-jit-parity 'GOOS=linux GOARCH=arm64'
 assert_var AROS_LIVE_DIR '$(AROSVISION_PROBE_DIR)'
 assert_recipe_contains x64-live 'AROS_RELEASE_DIR="build/arosvision".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh'
 assert_recipe_contains x64-live-rebuild-golden 'AROS_RELEASE_DIR="build/arosvision".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh --rebuild-golden'

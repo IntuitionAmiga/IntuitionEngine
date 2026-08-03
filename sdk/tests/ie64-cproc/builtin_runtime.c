@@ -52,7 +52,11 @@ main(void)
 	__builtin_ie64_tlbinval(0x4000);
 	__builtin_ie64_tlbflush();
 	__builtin_ie64_suaen();
+	if ((__builtin_ie64_mfcr(IE64_CR_MMU_CTRL) & 16) == 0)
+		return fail(21);
 	__builtin_ie64_suadis();
+	if (__builtin_ie64_mfcr(IE64_CR_MMU_CTRL) & 16)
+		return fail(22);
 	__builtin_ie64_mtcr(IE64_CR_TIMER_CTRL, 0);
 	__builtin_ie64_mtcr(IE64_CR_TRAP_VEC, (uintptr_t)trap_handler);
 	ie64_disable_interrupts();
@@ -70,6 +74,9 @@ main(void)
 	if (__builtin_ie64_fmod(7.5f, 2.0f) != 1.5f
 	|| __builtin_ie64_dmod(9.0, 4.0) != 1.0)
 		return fail(10);
+	if (__builtin_ie64_fabs(-2.5f) != 2.5f
+	|| __builtin_ie64_dabs(-3.5) != 3.5)
+		return fail(20);
 	if (__builtin_ie64_fint(2.75f) != 3.0f
 	|| __builtin_ie64_dint(3.25) != 3.0)
 		return fail(11);
@@ -89,6 +96,13 @@ main(void)
 	|| __builtin_ie64_dtan(0.0) != 0.0
 	|| __builtin_ie64_datan(0.0) != 0.0)
 		return fail(14);
+	if (__builtin_ie64_flog(1.0f) != 0.0f
+	|| __builtin_ie64_fexp(0.0f) != 1.0f
+	|| __builtin_ie64_fpow(2.0f, 3.0f) != 8.0f
+	|| __builtin_ie64_dlog(1.0) != 0.0
+	|| __builtin_ie64_dexp(0.0) != 1.0
+	|| __builtin_ie64_dpow(2.0, 3.0) != 8.0)
+		return fail(19);
 
 	__builtin_ie64_fmovsc(0);
 	if (__builtin_ie64_fmovsr() != 0)
