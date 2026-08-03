@@ -1,62 +1,259 @@
-align 16
-runtime.ie64_align8:
-	li r2, #-8
-	bhi r1, r2, .Lruntime.2
-.Lruntime.1:
-	add.q r1, r1, #7
-	and.q r1, r1, #-8
+.section .text,"ax"
+.local ie64_atomic_compare_exchange
+.type ie64_atomic_compare_exchange,@function
+.align 16
+ie64_atomic_compare_exchange:
+	move.q r29, r3
+	move.q r30, r1
+	move.q r1, r2
+	cas r1, (r30), r29
 	move.q r1, r1
 	rts
-.Lruntime.2:
+.size ie64_atomic_compare_exchange,.-ie64_atomic_compare_exchange
+.section .text,"ax"
+.local ie64_atomic_exchange
+.type ie64_atomic_exchange,@function
+.align 16
+ie64_atomic_exchange:
+	xchg r1, (r1), r2
+	move.q r1, r1
+	rts
+.size ie64_atomic_exchange,.-ie64_atomic_exchange
+.section .text,"ax"
+.local ie64_atomic_fetch_add
+.type ie64_atomic_fetch_add,@function
+.align 16
+ie64_atomic_fetch_add:
+	faa r1, (r1), r2
+	move.q r1, r1
+	rts
+.size ie64_atomic_fetch_add,.-ie64_atomic_fetch_add
+.section .text,"ax"
+.local ie64_atomic_fetch_and
+.type ie64_atomic_fetch_and,@function
+.align 16
+ie64_atomic_fetch_and:
+	fand r1, (r1), r2
+	move.q r1, r1
+	rts
+.size ie64_atomic_fetch_and,.-ie64_atomic_fetch_and
+.section .text,"ax"
+.local ie64_atomic_fetch_or
+.type ie64_atomic_fetch_or,@function
+.align 16
+ie64_atomic_fetch_or:
+	for r1, (r1), r2
+	move.q r1, r1
+	rts
+.size ie64_atomic_fetch_or,.-ie64_atomic_fetch_or
+.section .text,"ax"
+.local ie64_atomic_fetch_xor
+.type ie64_atomic_fetch_xor,@function
+.align 16
+ie64_atomic_fetch_xor:
+	fxor r1, (r1), r2
+	move.q r1, r1
+	rts
+.size ie64_atomic_fetch_xor,.-ie64_atomic_fetch_xor
+.section .text,"ax"
+.local ie64_nop
+.type ie64_nop,@function
+.align 16
+ie64_nop:
+	nop
+.L7:
+	rts
+.size ie64_nop,.-ie64_nop
+.section .text,"ax"
+.local ie64_enable_interrupts
+.type ie64_enable_interrupts,@function
+.align 16
+ie64_enable_interrupts:
+	sei
+.L9:
+	rts
+.size ie64_enable_interrupts,.-ie64_enable_interrupts
+.section .text,"ax"
+.local ie64_disable_interrupts
+.type ie64_disable_interrupts,@function
+.align 16
+ie64_disable_interrupts:
+	cli
+.L11:
+	rts
+.size ie64_disable_interrupts,.-ie64_disable_interrupts
+.section .text,"ax"
+.local __ie64_assert_fail
+.type __ie64_assert_fail,@function
+.align 16
+__ie64_assert_fail:
+	halt
+	halt
+.size __ie64_assert_fail,.-__ie64_assert_fail
+.section .text,"ax"
+.global __ie64_terminate
+.type __ie64_terminate,@function
+.align 16
+__ie64_terminate:
+	halt
+	halt
+.size __ie64_terminate,.-__ie64_terminate
+.section .text,"ax"
+.global __libc_init_array
+.type __libc_init_array,@function
+.align 16
+__libc_init_array:
+	sub.q r31, r31, #8
+	store.q r18, 0(r31)
+.L15:
+	move.l r18, #lo32(__preinit_array_start+0)
+	movt r18, #hi32(__preinit_array_start+0)
+.L16:
+	move.l r1, #lo32(__preinit_array_end+0)
+	movt r1, #hi32(__preinit_array_end+0)
+	bls r1, r18, .L18
+.L17:
+	load.q r1, (r18)
+	jsr (r1)
+	add.q r18, r18, #8
+	bra .L16
+.L18:
+	move.l r18, #lo32(__init_array_start+0)
+	movt r18, #hi32(__init_array_start+0)
+.L19:
+	move.l r1, #lo32(__init_array_end+0)
+	movt r1, #hi32(__init_array_end+0)
+	bls r1, r18, .L21
+.L20:
+	load.q r1, (r18)
+	jsr (r1)
+	add.q r18, r18, #8
+	bra .L19
+.L21:
+	load.q r18, 0(r31)
+	add.q r31, r31, #8
+	rts
+.size __libc_init_array,.-__libc_init_array
+.section .text,"ax"
+.global __libc_fini_array
+.type __libc_fini_array,@function
+.align 16
+__libc_fini_array:
+	sub.q r31, r31, #8
+	store.q r18, 0(r31)
+.L23:
+	move.l r18, #lo32(__fini_array_end+0)
+	movt r18, #hi32(__fini_array_end+0)
+.L24:
+	move.l r1, #lo32(__fini_array_start+0)
+	movt r1, #hi32(__fini_array_start+0)
+	beq r18, r1, .L26
+.L25:
+	sub.q r18, r18, #8
+	load.q r1, (r18)
+	jsr (r1)
+	bra .L24
+.L26:
+	load.q r18, 0(r31)
+	add.q r31, r31, #8
+	rts
+.size __libc_fini_array,.-__libc_fini_array
+.section .text,"ax"
+.global exit
+.type exit,@function
+.align 16
+exit:
+	sub.q r31, r31, #8
+	store.q r18, 0(r31)
+	move.q r18, r1
+	jsr __libc_fini_array
+	move.q r1, r18
+	sext.l r1, r1
+	jsr __ie64_terminate
+	halt
+.size exit,.-exit
+.section .text,"ax"
+.local ie64_align8
+.type ie64_align8,@function
+.align 16
+ie64_align8:
+	move.l r2, #0xfffffff8
+	movt r2, #0xffffffff
+	bhi r1, r2, .L30
+.L29:
+	add.q r1, r1, #7
+	move.l r2, #0xfffffff8
+	movt r2, #0xffffffff
+	and.q r1, r1, r2
+	move.q r1, r1
+	rts
+.L30:
 	li r1, #0
 	rts
-align 16
-runtime.ie64_heap_first_byte:
-	move.q r1, #__ie64_heap_start+7
-	and.q r1, r1, #-8
+.size ie64_align8,.-ie64_align8
+.section .text,"ax"
+.local ie64_heap_first_byte
+.type ie64_heap_first_byte,@function
+.align 16
+ie64_heap_first_byte:
+	move.l r2, #0xfffffff8
+	movt r2, #0xffffffff
+	move.l r1, #lo32(__ie64_heap_start+7)
+	movt r1, #hi32(__ie64_heap_start+7)
+	and.q r1, r1, r2
 	move.q r1, r1
 	rts
-align 16
+.size ie64_heap_first_byte,.-ie64_heap_first_byte
+.section .text,"ax"
+.global malloc
+.type malloc,@function
+.align 16
 malloc:
 	sub.q r31, r31, #24
 	store.q r18, 0(r31)
 	store.q r19, 8(r31)
 	move.q r18, r1
 	move.q r1, r18
-	jsr runtime.ie64_align8
+	jsr ie64_align8
 	move.q r19, r1
 	li r1, #0
-	beq r18, r1, .Lruntime.14
-.Lruntime.5:
+	beq r18, r1, .L42
+.L33:
 	li r1, #0
-	beq r19, r1, .Lruntime.14
-.Lruntime.6:
-	li r1, #-9
-	bhi r19, r1, .Lruntime.14
-.Lruntime.7:
-	move.q r30, #runtime.ie64_heap_cursor+0
+	beq r19, r1, .L42
+.L34:
+	move.l r1, #0xfffffff7
+	movt r1, #0xffffffff
+	bhi r19, r1, .L42
+.L35:
+	move.l r30, #lo32(ie64_heap_cursor+0)
+	movt r30, #hi32(ie64_heap_cursor+0)
 	load.q r1, (r30)
 	li r2, #0
-	bne r1, r2, .Lruntime.9
-.Lruntime.8:
-	jsr runtime.ie64_heap_first_byte
-	move.q r30, #runtime.ie64_heap_cursor+0
+	bne r1, r2, .L37
+.L36:
+	jsr ie64_heap_first_byte
+	move.l r30, #lo32(ie64_heap_cursor+0)
+	movt r30, #hi32(ie64_heap_cursor+0)
 	store.q r1, (r30)
-.Lruntime.9:
-	move.q r30, #runtime.ie64_heap_limit+0
+.L37:
+	move.l r30, #lo32(ie64_heap_limit+0)
+	movt r30, #hi32(ie64_heap_limit+0)
 	load.q r3, (r30)
-	bls r3, r1, .Lruntime.13
-.Lruntime.10:
+	bls r3, r1, .L41
+.L38:
 	add.q r2, r19, #8
 	sub.q r3, r3, r1
 	divs.q r3, r3, #1
-	bhi r2, r3, .Lruntime.12
-.Lruntime.11:
+	bhi r2, r3, .L40
+.L39:
 	store.q r18, (r1)
-	move.q r30, #runtime.ie64_heap_cursor+0
+	move.l r30, #lo32(ie64_heap_cursor+0)
+	movt r30, #hi32(ie64_heap_cursor+0)
 	load.q r3, (r30)
 	add.q r2, r2, r3
-	move.q r30, #runtime.ie64_heap_cursor+0
+	move.l r30, #lo32(ie64_heap_cursor+0)
+	movt r30, #hi32(ie64_heap_cursor+0)
 	store.q r2, (r30)
 	add.q r1, r1, #8
 	move.q r1, r1
@@ -64,64 +261,77 @@ malloc:
 	load.q r19, 8(r31)
 	add.q r31, r31, #24
 	rts
-.Lruntime.12:
+.L40:
 	li r1, #0
 	load.q r18, 0(r31)
 	load.q r19, 8(r31)
 	add.q r31, r31, #24
 	rts
-.Lruntime.13:
+.L41:
 	li r1, #0
 	load.q r18, 0(r31)
 	load.q r19, 8(r31)
 	add.q r31, r31, #24
 	rts
-.Lruntime.14:
+.L42:
 	li r1, #0
 	load.q r18, 0(r31)
 	load.q r19, 8(r31)
 	add.q r31, r31, #24
 	rts
-align 16
+.size malloc,.-malloc
+.section .text,"ax"
+.global free
+.type free,@function
+.align 16
 free:
-.Lruntime.16:
+.L44:
 	rts
-align 16
+.size free,.-free
+.section .text,"ax"
+.global calloc
+.type calloc,@function
+.align 16
 calloc:
 	sub.q r31, r31, #8
 	store.q r18, 0(r31)
 	li r3, #0
-	beq r1, r3, .Lruntime.23
-.Lruntime.18:
+	beq r1, r3, .L51
+.L46:
 	li r3, #0
-	beq r2, r3, .Lruntime.23
-.Lruntime.19:
-	li r3, #-1
+	beq r2, r3, .L51
+.L47:
+	move.l r3, #0xffffffff
+	movt r3, #0xffffffff
 	divu.q r3, r3, r2
-	bhi r1, r3, .Lruntime.23
-.Lruntime.20:
+	bhi r1, r3, .L51
+.L48:
 	mulu.q r18, r1, r2
 	move.q r1, r18
 	jsr malloc
 	move.q r3, r18
 	move.q r18, r1
 	li r1, #0
-	beq r18, r1, .Lruntime.22
-.Lruntime.21:
+	beq r18, r1, .L50
+.L49:
 	move.q r1, r18
 	li r2, #0
 	jsr memset
-.Lruntime.22:
+.L50:
 	move.q r1, r18
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-.Lruntime.23:
+.L51:
 	li r1, #0
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-align 16
+.size calloc,.-calloc
+.section .text,"ax"
+.global realloc
+.type realloc,@function
+.align 16
 realloc:
 	sub.q r31, r31, #24
 	store.q r18, 0(r31)
@@ -130,18 +340,18 @@ realloc:
 	move.q r1, r2
 	move.q r2, r30
 	li r3, #0
-	beq r2, r3, .Lruntime.32
-.Lruntime.25:
+	beq r2, r3, .L60
+.L53:
 	move.q r19, r2
 	li r2, #0
-	bne r1, r2, .Lruntime.27
-.Lruntime.26:
+	bne r1, r2, .L55
+.L54:
 	li r1, #0
 	load.q r18, 0(r31)
 	load.q r19, 8(r31)
 	add.q r31, r31, #24
 	rts
-.Lruntime.27:
+.L55:
 	move.q r18, r1
 	move.q r1, r1
 	jsr malloc
@@ -150,14 +360,14 @@ realloc:
 	move.q r1, r18
 	move.q r18, r30
 	li r3, #0
-	beq r18, r3, .Lruntime.31
-.Lruntime.28:
+	beq r18, r3, .L59
+.L56:
 	sub.q r3, r2, #8
 	load.q r19, (r3)
-	bls r1, r19, .Lruntime.30
-.Lruntime.29:
+	bls r1, r19, .L58
+.L57:
 	move.q r1, r19
-.Lruntime.30:
+.L58:
 	move.q r19, r1
 	move.q r1, r18
 	move.q r3, r19
@@ -167,81 +377,93 @@ realloc:
 	load.q r19, 8(r31)
 	add.q r31, r31, #24
 	rts
-.Lruntime.31:
+.L59:
 	li r1, #0
 	load.q r18, 0(r31)
 	load.q r19, 8(r31)
 	add.q r31, r31, #24
 	rts
-.Lruntime.32:
+.L60:
 	jsr malloc
 	move.q r1, r1
 	load.q r18, 0(r31)
 	load.q r19, 8(r31)
 	add.q r31, r31, #24
 	rts
-align 16
+.size realloc,.-realloc
+.section .text,"ax"
+.global memchr
+.type memchr,@function
+.align 16
 memchr:
 	and.q r2, r2, #0xff
-.Lruntime.34:
+.L62:
 	li r4, #0
-	beq r3, r4, .Lruntime.38
-.Lruntime.35:
+	beq r3, r4, .L66
+.L63:
 	load.b r4, (r1)
-	and.q r4, r4, #0xffffffff
-	and.q r5, r2, #0xffffffff
-	beq r4, r5, .Lruntime.37
-.Lruntime.36:
+	move.l r4, r4
+	move.l r5, r2
+	beq r4, r5, .L65
+.L64:
 	add.q r1, r1, #1
 	sub.q r3, r3, #1
-	bra .Lruntime.34
-.Lruntime.37:
+	bra .L62
+.L65:
 	move.q r1, r1
 	rts
-.Lruntime.38:
+.L66:
 	li r1, #0
 	rts
-align 16
+.size memchr,.-memchr
+.section .text,"ax"
+.global memcmp
+.type memcmp,@function
+.align 16
 memcmp:
-.Lruntime.40:
+.L68:
 	li r4, #0
-	beq r3, r4, .Lruntime.47
-.Lruntime.41:
+	beq r3, r4, .L75
+.L69:
 	load.b r4, (r1)
 	load.b r5, (r2)
-	and.q r6, r4, #0xffffffff
-	and.q r7, r5, #0xffffffff
-	bne r6, r7, .Lruntime.43
-.Lruntime.42:
+	move.l r6, r4
+	move.l r7, r5
+	bne r6, r7, .L71
+.L70:
 	add.q r1, r1, #1
 	add.q r2, r2, #1
 	sub.q r3, r3, #1
-	bra .Lruntime.40
-.Lruntime.43:
+	bra .L68
+.L71:
 	sext.l r1, r4
 	sext.l r2, r5
-	blt r1, r2, .Lruntime.45
-.Lruntime.44:
+	blt r1, r2, .L73
+.L72:
 	li r1, #1
-	bra .Lruntime.46
-.Lruntime.45:
-	li r1, #4294967295
-.Lruntime.46:
+	bra .L74
+.L73:
+	li r1, #-1
+.L74:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-.Lruntime.47:
+.L75:
 	li r1, #0
 	rts
-align 16
+.size memcmp,.-memcmp
+.section .text,"ax"
+.global memcpy
+.type memcpy,@function
+.align 16
 memcpy:
 	move.q r4, r1
-.Lruntime.49:
+.L77:
 	move.q r1, r4
-.Lruntime.50:
+.L78:
 	li r5, #0
-	beq r3, r5, .Lruntime.52
-.Lruntime.51:
+	beq r3, r5, .L80
+.L79:
 	move.q r5, r2
 	add.q r2, r2, #1
 	load.b r6, (r5)
@@ -249,20 +471,24 @@ memcpy:
 	add.q r1, r1, #1
 	store.b r6, (r5)
 	sub.q r3, r3, #1
-	bra .Lruntime.50
-.Lruntime.52:
+	bra .L78
+.L80:
 	move.q r1, r4
 	rts
-align 16
+.size memcpy,.-memcpy
+.section .text,"ax"
+.global memmove
+.type memmove,@function
+.align 16
 memmove:
 	move.q r4, r1
-	bls r2, r4, .Lruntime.57
-.Lruntime.54:
+	bls r2, r4, .L85
+.L82:
 	move.q r1, r4
-.Lruntime.55:
+.L83:
 	li r5, #0
-	beq r3, r5, .Lruntime.60
-.Lruntime.56:
+	beq r3, r5, .L88
+.L84:
 	move.q r5, r2
 	add.q r2, r2, #1
 	load.b r6, (r5)
@@ -270,109 +496,129 @@ memmove:
 	add.q r1, r1, #1
 	store.b r6, (r5)
 	sub.q r3, r3, #1
-	bra .Lruntime.55
-.Lruntime.57:
+	bra .L83
+.L85:
 	move.q r1, r2
 	add.q r2, r4, r3
 	add.q r1, r1, r3
-.Lruntime.58:
+.L86:
 	li r5, #0
-	beq r3, r5, .Lruntime.60
-.Lruntime.59:
+	beq r3, r5, .L88
+.L87:
 	sub.q r1, r1, #1
 	load.b r5, (r1)
 	sub.q r2, r2, #1
 	store.b r5, (r2)
 	sub.q r3, r3, #1
-	bra .Lruntime.58
-.Lruntime.60:
+	bra .L86
+.L88:
 	move.q r1, r4
 	rts
-align 16
+.size memmove,.-memmove
+.section .text,"ax"
+.global memset
+.type memset,@function
+.align 16
 memset:
 	move.q r4, r1
-.Lruntime.62:
+.L90:
 	move.q r1, r4
-.Lruntime.63:
+.L91:
 	li r5, #0
-	beq r3, r5, .Lruntime.65
-.Lruntime.64:
+	beq r3, r5, .L93
+.L92:
 	move.q r5, r1
 	add.q r1, r1, #1
 	store.b r2, (r5)
 	sub.q r3, r3, #1
-	bra .Lruntime.63
-.Lruntime.65:
+	bra .L91
+.L93:
 	move.q r1, r4
 	rts
-align 16
+.size memset,.-memset
+.section .text,"ax"
+.global strlen
+.type strlen,@function
+.align 16
 strlen:
 	move.q r2, r1
-.Lruntime.67:
+.L95:
 	move.q r1, r2
-.Lruntime.68:
+.L96:
 	load.b r3, (r1)
 	sext.b r3, r3
-	beq r3, r0, .Lruntime.70
-.Lruntime.69:
+	beq r3, r0, .L98
+.L97:
 	add.q r1, r1, #1
-	bra .Lruntime.68
-.Lruntime.70:
+	bra .L96
+.L98:
 	sub.q r1, r1, r2
 	divs.q r1, r1, #1
 	move.q r1, r1
 	rts
-align 16
+.size strlen,.-strlen
+.section .text,"ax"
+.global strcpy
+.type strcpy,@function
+.align 16
 strcpy:
 	move.q r3, r1
-.Lruntime.72:
+.L100:
 	move.q r1, r3
-.Lruntime.73:
+.L101:
 	load.b r4, (r2)
 	sext.b r4, r4
 	store.b r4, (r1)
-	beq r4, r0, .Lruntime.75
-.Lruntime.74:
+	beq r4, r0, .L103
+.L102:
 	add.q r2, r2, #1
 	add.q r1, r1, #1
-	bra .Lruntime.73
-.Lruntime.75:
+	bra .L101
+.L103:
 	move.q r1, r3
 	rts
-align 16
+.size strcpy,.-strcpy
+.section .text,"ax"
+.global strncpy
+.type strncpy,@function
+.align 16
 strncpy:
 	move.q r4, r2
 	move.q r2, r1
-.Lruntime.77:
+.L105:
 	move.q r1, r2
-.Lruntime.78:
+.L106:
 	li r5, #0
-	beq r3, r5, .Lruntime.80
-.Lruntime.79:
+	beq r3, r5, .L108
+.L107:
 	load.b r6, (r4)
 	sext.b r6, r6
-	bne r6, r0, .Lruntime.83
-.Lruntime.80:
+	bne r6, r0, .L111
+.L108:
 	li r4, #0
-	beq r3, r4, .Lruntime.82
-.Lruntime.81:
+	beq r3, r4, .L110
+.L109:
 	move.q r4, r1
 	add.q r1, r1, #1
 	li r5, #0
 	store.b r5, (r4)
 	sub.q r3, r3, #1
-	bra .Lruntime.80
-.Lruntime.82:
+	bra .L108
+.L110:
 	move.q r1, r2
 	rts
-.Lruntime.83:
+.L111:
 	add.q r4, r4, #1
 	move.q r5, r1
 	add.q r1, r1, #1
 	store.b r6, (r5)
 	sub.q r3, r3, #1
-	bra .Lruntime.78
-align 16
+	bra .L106
+.size strncpy,.-strncpy
+.section .text,"ax"
+.global strcat
+.type strcat,@function
+.align 16
 strcat:
 	sub.q r31, r31, #24
 	store.q r18, 0(r31)
@@ -391,7 +637,11 @@ strcat:
 	load.q r19, 8(r31)
 	add.q r31, r31, #24
 	rts
-align 16
+.size strcat,.-strcat
+.section .text,"ax"
+.global strncat
+.type strncat,@function
+.align 16
 strncat:
 	sub.q r31, r31, #24
 	store.q r18, 0(r31)
@@ -407,21 +657,21 @@ strncat:
 	move.q r4, r1
 	move.q r1, r18
 	add.q r4, r1, r4
-.Lruntime.86:
+.L114:
 	li r5, #0
-	beq r3, r5, .Lruntime.89
-.Lruntime.87:
+	beq r3, r5, .L117
+.L115:
 	load.b r6, (r2)
 	sext.b r6, r6
-	beq r6, r0, .Lruntime.89
-.Lruntime.88:
+	beq r6, r0, .L117
+.L116:
 	add.q r2, r2, #1
 	move.q r5, r4
 	add.q r4, r4, #1
 	store.b r6, (r5)
 	sub.q r3, r3, #1
-	bra .Lruntime.86
-.Lruntime.89:
+	bra .L114
+.L117:
 	li r2, #0
 	store.b r2, (r4)
 	move.q r1, r1
@@ -430,195 +680,227 @@ strncat:
 	load.q r20, 16(r31)
 	add.q r31, r31, #24
 	rts
-align 16
+.size strncat,.-strncat
+.section .text,"ax"
+.global strcmp
+.type strcmp,@function
+.align 16
 strcmp:
-.Lruntime.91:
+.L119:
 	load.b r3, (r1)
 	sext.b r3, r3
 	load.b r4, (r2)
 	sext.b r4, r4
-	and.q r5, r3, #0xffffffff
-	and.q r6, r4, #0xffffffff
-	bne r5, r6, .Lruntime.94
-.Lruntime.92:
-	beq r3, r0, .Lruntime.94
-.Lruntime.93:
+	move.l r5, r3
+	move.l r6, r4
+	bne r5, r6, .L122
+.L120:
+	beq r3, r0, .L122
+.L121:
 	add.q r1, r1, #1
 	add.q r2, r2, #1
-	bra .Lruntime.91
-.Lruntime.94:
+	bra .L119
+.L122:
 	and.q r1, r3, #0xff
 	and.q r2, r4, #0xff
 	sext.l r3, r1
 	sext.l r4, r2
-	blt r3, r4, .Lruntime.96
-.Lruntime.95:
+	blt r3, r4, .L124
+.L123:
 	sext.l r1, r1
 	sext.l r2, r2
 	li r30, #0
-	ble r1, r2, .Lcmpruntime0
+	ble r1, r2, .Lcmp0
 	li r30, #1
-.Lcmpruntime0:
+.Lcmp0:
 	move.q r1, r30
-	bra .Lruntime.97
-.Lruntime.96:
-	li r1, #4294967295
-.Lruntime.97:
+	bra .L125
+.L124:
+	li r1, #-1
+.L125:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size strcmp,.-strcmp
+.section .text,"ax"
+.global strncmp
+.type strncmp,@function
+.align 16
 strncmp:
-.Lruntime.99:
+.L127:
 	li r4, #0
-	beq r3, r4, .Lruntime.108
-.Lruntime.100:
+	beq r3, r4, .L136
+.L128:
 	load.b r4, (r1)
 	sext.b r4, r4
 	load.b r5, (r2)
 	sext.b r5, r5
-	and.q r6, r4, #0xffffffff
-	and.q r7, r5, #0xffffffff
-	bne r6, r7, .Lruntime.104
-.Lruntime.101:
-	beq r4, r0, .Lruntime.103
-.Lruntime.102:
+	move.l r6, r4
+	move.l r7, r5
+	bne r6, r7, .L132
+.L129:
+	beq r4, r0, .L131
+.L130:
 	add.q r2, r2, #1
 	sub.q r3, r3, #1
 	add.q r1, r1, #1
-	bra .Lruntime.99
-.Lruntime.103:
+	bra .L127
+.L131:
 	li r1, #0
 	rts
-.Lruntime.104:
+.L132:
 	and.q r1, r4, #0xff
 	and.q r2, r5, #0xff
 	sext.l r1, r1
 	sext.l r2, r2
-	blt r1, r2, .Lruntime.106
-.Lruntime.105:
+	blt r1, r2, .L134
+.L133:
 	li r1, #1
-	bra .Lruntime.107
-.Lruntime.106:
-	li r1, #4294967295
-.Lruntime.107:
+	bra .L135
+.L134:
+	li r1, #-1
+.L135:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-.Lruntime.108:
+.L136:
 	li r1, #0
 	rts
-align 16
+.size strncmp,.-strncmp
+.section .text,"ax"
+.global strchr
+.type strchr,@function
+.align 16
 strchr:
 	sext.b r2, r2
-.Lruntime.110:
+.L138:
 	load.b r3, (r1)
 	sext.b r3, r3
-	and.q r4, r3, #0xffffffff
-	and.q r5, r2, #0xffffffff
-	beq r4, r5, .Lruntime.114
-.Lruntime.111:
-	beq r3, r0, .Lruntime.113
-.Lruntime.112:
+	move.l r4, r3
+	move.l r5, r2
+	beq r4, r5, .L142
+.L139:
+	beq r3, r0, .L141
+.L140:
 	add.q r1, r1, #1
-	bra .Lruntime.110
-.Lruntime.113:
+	bra .L138
+.L141:
 	li r1, #0
 	rts
-.Lruntime.114:
+.L142:
 	move.q r1, r1
 	rts
-align 16
+.size strchr,.-strchr
+.section .text,"ax"
+.global isalpha
+.type isalpha,@function
+.align 16
 isalpha:
 	sext.l r2, r1
 	li r3, #65
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.117
-.Lruntime.116:
+	blt r2, r3, .L145
+.L144:
 	sext.l r2, r1
 	li r3, #90
 	sext.l r3, r3
-	ble r2, r3, .Lruntime.120
-.Lruntime.117:
+	ble r2, r3, .L148
+.L145:
 	sext.l r2, r1
 	li r3, #97
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.119
-.Lruntime.118:
+	blt r2, r3, .L147
+.L146:
 	sext.l r1, r1
 	li r2, #122
 	sext.l r2, r2
-	ble r1, r2, .Lruntime.120
-.Lruntime.119:
+	ble r1, r2, .L148
+.L147:
 	li r1, #0
-	bra .Lruntime.121
-.Lruntime.120:
+	bra .L149
+.L148:
 	li r1, #1
-.Lruntime.121:
+.L149:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size isalpha,.-isalpha
+.section .text,"ax"
+.global isdigit
+.type isdigit,@function
+.align 16
 isdigit:
 	sext.l r2, r1
 	li r3, #48
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.124
-.Lruntime.123:
+	blt r2, r3, .L152
+.L151:
 	sext.l r1, r1
 	li r2, #57
 	sext.l r2, r2
-	ble r1, r2, .Lruntime.125
-.Lruntime.124:
+	ble r1, r2, .L153
+.L152:
 	li r1, #0
-	bra .Lruntime.126
-.Lruntime.125:
+	bra .L154
+.L153:
 	li r1, #1
-.Lruntime.126:
+.L154:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size isdigit,.-isdigit
+.section .text,"ax"
+.global islower
+.type islower,@function
+.align 16
 islower:
 	sext.l r2, r1
 	li r3, #97
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.129
-.Lruntime.128:
+	blt r2, r3, .L157
+.L156:
 	sext.l r1, r1
 	li r2, #122
 	sext.l r2, r2
-	ble r1, r2, .Lruntime.130
-.Lruntime.129:
+	ble r1, r2, .L158
+.L157:
 	li r1, #0
-	bra .Lruntime.131
-.Lruntime.130:
+	bra .L159
+.L158:
 	li r1, #1
-.Lruntime.131:
+.L159:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size islower,.-islower
+.section .text,"ax"
+.global isupper
+.type isupper,@function
+.align 16
 isupper:
 	sext.l r2, r1
 	li r3, #65
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.134
-.Lruntime.133:
+	blt r2, r3, .L162
+.L161:
 	sext.l r1, r1
 	li r2, #90
 	sext.l r2, r2
-	ble r1, r2, .Lruntime.135
-.Lruntime.134:
+	ble r1, r2, .L163
+.L162:
 	li r1, #0
-	bra .Lruntime.136
-.Lruntime.135:
+	bra .L164
+.L163:
 	li r1, #1
-.Lruntime.136:
+.L164:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size isupper,.-isupper
+.section .text,"ax"
+.global isalnum
+.type isalnum,@function
+.align 16
 isalnum:
 	sub.q r31, r31, #8
 	store.q r18, 0(r31)
@@ -628,127 +910,151 @@ isalnum:
 	jsr isalpha
 	move.q r2, r1
 	move.q r1, r18
-	bne r2, r0, .Lruntime.140
-.Lruntime.138:
+	bne r2, r0, .L168
+.L166:
 	jsr isdigit
-	bne r1, r0, .Lruntime.140
-.Lruntime.139:
+	bne r1, r0, .L168
+.L167:
 	li r1, #0
-	bra .Lruntime.141
-.Lruntime.140:
+	bra .L169
+.L168:
 	li r1, #1
-.Lruntime.141:
+.L169:
 	sext.l r1, r1
 	move.q r1, r1
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-align 16
+.size isalnum,.-isalnum
+.section .text,"ax"
+.global isblank
+.type isblank,@function
+.align 16
 isblank:
-	and.q r2, r1, #0xffffffff
+	move.l r2, r1
 	li r3, #32
-	and.q r3, r3, #0xffffffff
-	beq r2, r3, .Lruntime.145
-.Lruntime.143:
-	and.q r1, r1, #0xffffffff
+	move.l r3, r3
+	beq r2, r3, .L173
+.L171:
+	move.l r1, r1
 	li r2, #9
-	and.q r2, r2, #0xffffffff
-	beq r1, r2, .Lruntime.145
-.Lruntime.144:
+	move.l r2, r2
+	beq r1, r2, .L173
+.L172:
 	li r1, #0
-	bra .Lruntime.146
-.Lruntime.145:
+	bra .L174
+.L173:
 	li r1, #1
-.Lruntime.146:
+.L174:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size isblank,.-isblank
+.section .text,"ax"
+.global iscntrl
+.type iscntrl,@function
+.align 16
 iscntrl:
 	sext.l r2, r1
 	li r3, #32
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.150
-.Lruntime.148:
-	and.q r1, r1, #0xffffffff
+	blt r2, r3, .L178
+.L176:
+	move.l r1, r1
 	li r2, #127
-	and.q r2, r2, #0xffffffff
-	beq r1, r2, .Lruntime.150
-.Lruntime.149:
+	move.l r2, r2
+	beq r1, r2, .L178
+.L177:
 	li r1, #0
-	bra .Lruntime.151
-.Lruntime.150:
+	bra .L179
+.L178:
 	li r1, #1
-.Lruntime.151:
+.L179:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size iscntrl,.-iscntrl
+.section .text,"ax"
+.global isprint
+.type isprint,@function
+.align 16
 isprint:
 	sext.l r2, r1
 	li r3, #32
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.154
-.Lruntime.153:
+	blt r2, r3, .L182
+.L181:
 	sext.l r1, r1
 	li r2, #127
 	sext.l r2, r2
-	blt r1, r2, .Lruntime.155
-.Lruntime.154:
+	blt r1, r2, .L183
+.L182:
 	li r1, #0
-	bra .Lruntime.156
-.Lruntime.155:
+	bra .L184
+.L183:
 	li r1, #1
-.Lruntime.156:
+.L184:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size isprint,.-isprint
+.section .text,"ax"
+.global isgraph
+.type isgraph,@function
+.align 16
 isgraph:
 	sext.l r2, r1
 	li r3, #32
 	sext.l r3, r3
-	ble r2, r3, .Lruntime.159
-.Lruntime.158:
+	ble r2, r3, .L187
+.L186:
 	sext.l r1, r1
 	li r2, #127
 	sext.l r2, r2
-	blt r1, r2, .Lruntime.160
-.Lruntime.159:
+	blt r1, r2, .L188
+.L187:
 	li r1, #0
-	bra .Lruntime.161
-.Lruntime.160:
+	bra .L189
+.L188:
 	li r1, #1
-.Lruntime.161:
+.L189:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size isgraph,.-isgraph
+.section .text,"ax"
+.global isspace
+.type isspace,@function
+.align 16
 isspace:
-	and.q r2, r1, #0xffffffff
+	move.l r2, r1
 	li r3, #32
-	and.q r3, r3, #0xffffffff
-	beq r2, r3, .Lruntime.166
-.Lruntime.163:
+	move.l r3, r3
+	beq r2, r3, .L194
+.L191:
 	sext.l r2, r1
 	li r3, #9
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.165
-.Lruntime.164:
+	blt r2, r3, .L193
+.L192:
 	sext.l r1, r1
 	li r2, #13
 	sext.l r2, r2
-	ble r1, r2, .Lruntime.166
-.Lruntime.165:
+	ble r1, r2, .L194
+.L193:
 	li r1, #0
-	bra .Lruntime.167
-.Lruntime.166:
+	bra .L195
+.L194:
 	li r1, #1
-.Lruntime.167:
+.L195:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size isspace,.-isspace
+.section .text,"ax"
+.global isxdigit
+.type isxdigit,@function
+.align 16
 isxdigit:
 	sub.q r31, r31, #8
 	store.q r18, 0(r31)
@@ -757,39 +1063,43 @@ isxdigit:
 	jsr isdigit
 	move.q r2, r1
 	move.q r1, r18
-	bne r2, r0, .Lruntime.174
-.Lruntime.169:
+	bne r2, r0, .L202
+.L197:
 	sext.l r2, r1
 	li r3, #97
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.171
-.Lruntime.170:
+	blt r2, r3, .L199
+.L198:
 	sext.l r2, r1
 	li r3, #102
 	sext.l r3, r3
-	ble r2, r3, .Lruntime.174
-.Lruntime.171:
+	ble r2, r3, .L202
+.L199:
 	sext.l r2, r1
 	li r3, #65
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.173
-.Lruntime.172:
+	blt r2, r3, .L201
+.L200:
 	sext.l r1, r1
 	li r2, #70
 	sext.l r2, r2
-	ble r1, r2, .Lruntime.174
-.Lruntime.173:
+	ble r1, r2, .L202
+.L201:
 	li r1, #0
-	bra .Lruntime.175
-.Lruntime.174:
+	bra .L203
+.L202:
 	li r1, #1
-.Lruntime.175:
+.L203:
 	sext.l r1, r1
 	move.q r1, r1
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-align 16
+.size isxdigit,.-isxdigit
+.section .text,"ax"
+.global ispunct
+.type ispunct,@function
+.align 16
 ispunct:
 	sub.q r31, r31, #8
 	store.q r18, 0(r31)
@@ -799,22 +1109,26 @@ ispunct:
 	jsr isgraph
 	move.q r2, r1
 	move.q r1, r18
-	beq r2, r0, .Lruntime.179
-.Lruntime.177:
+	beq r2, r0, .L207
+.L205:
 	jsr isalnum
-	bne r1, r0, .Lruntime.179
-.Lruntime.178:
+	bne r1, r0, .L207
+.L206:
 	li r1, #1
-	bra .Lruntime.180
-.Lruntime.179:
+	bra .L208
+.L207:
 	li r1, #0
-.Lruntime.180:
+.L208:
 	sext.l r1, r1
 	move.q r1, r1
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-align 16
+.size ispunct,.-ispunct
+.section .text,"ax"
+.global tolower
+.type tolower,@function
+.align 16
 tolower:
 	sub.q r31, r31, #8
 	store.q r18, 0(r31)
@@ -823,16 +1137,20 @@ tolower:
 	jsr isupper
 	move.q r2, r1
 	move.q r1, r18
-	beq r2, r0, .Lruntime.183
-.Lruntime.182:
+	beq r2, r0, .L211
+.L210:
 	add.l r1, r1, #32
-.Lruntime.183:
+.L211:
 	sext.l r1, r1
 	move.q r1, r1
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-align 16
+.size tolower,.-tolower
+.section .text,"ax"
+.global toupper
+.type toupper,@function
+.align 16
 toupper:
 	sub.q r31, r31, #8
 	store.q r18, 0(r31)
@@ -841,47 +1159,63 @@ toupper:
 	jsr islower
 	move.q r2, r1
 	move.q r1, r18
-	beq r2, r0, .Lruntime.186
-.Lruntime.185:
+	beq r2, r0, .L214
+.L213:
 	sub.l r1, r1, #32
-.Lruntime.186:
+.L214:
 	sext.l r1, r1
 	move.q r1, r1
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-align 16
+.size toupper,.-toupper
+.section .text,"ax"
+.global abs
+.type abs,@function
+.align 16
 abs:
 	sext.l r2, r1
 	li r3, #0
 	sext.l r3, r3
-	bge r2, r3, .Lruntime.189
-.Lruntime.188:
+	bge r2, r3, .L217
+.L216:
 	neg.l r1, r1
-.Lruntime.189:
+.L217:
 	sext.l r1, r1
 	move.q r1, r1
 	rts
-align 16
+.size abs,.-abs
+.section .text,"ax"
+.global labs
+.type labs,@function
+.align 16
 labs:
 	li r2, #0
-	bge r1, r2, .Lruntime.192
-.Lruntime.191:
+	bge r1, r2, .L220
+.L219:
 	neg.q r1, r1
-.Lruntime.192:
+.L220:
 	move.q r1, r1
 	rts
-align 16
+.size labs,.-labs
+.section .text,"ax"
+.global llabs
+.type llabs,@function
+.align 16
 llabs:
 	li r2, #0
-	bge r1, r2, .Lruntime.195
-.Lruntime.194:
+	bge r1, r2, .L223
+.L222:
 	neg.q r1, r1
-.Lruntime.195:
+.L223:
 	move.q r1, r1
 	rts
-align 16
-runtime.ie64_digit:
+.size llabs,.-llabs
+.section .text,"ax"
+.local ie64_digit
+.type ie64_digit,@function
+.align 16
+ie64_digit:
 	sub.q r31, r31, #8
 	store.q r18, 0(r31)
 	move.q r18, r1
@@ -889,55 +1223,60 @@ runtime.ie64_digit:
 	jsr isdigit
 	move.q r2, r1
 	move.q r1, r18
-	bne r2, r0, .Lruntime.204
-.Lruntime.197:
+	bne r2, r0, .L232
+.L225:
 	sext.l r2, r1
 	li r3, #97
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.199
-.Lruntime.198:
+	blt r2, r3, .L227
+.L226:
 	sext.l r2, r1
 	li r3, #122
 	sext.l r3, r3
-	ble r2, r3, .Lruntime.203
-.Lruntime.199:
+	ble r2, r3, .L231
+.L227:
 	sext.l r2, r1
 	li r3, #65
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.201
-.Lruntime.200:
+	blt r2, r3, .L229
+.L228:
 	sext.l r2, r1
 	li r3, #90
 	sext.l r3, r3
-	ble r2, r3, .Lruntime.202
-.Lruntime.201:
-	li r1, #-1
+	ble r2, r3, .L230
+.L229:
+	move.l r1, #0xffffffff
+	movt r1, #0xffffffff
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-.Lruntime.202:
+.L230:
 	sub.l r1, r1, #55
 	sext.l r1, r1
 	move.q r1, r1
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-.Lruntime.203:
+.L231:
 	sub.l r1, r1, #87
 	sext.l r1, r1
 	move.q r1, r1
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-.Lruntime.204:
+.L232:
 	sub.l r1, r1, #48
 	sext.l r1, r1
 	move.q r1, r1
 	load.q r18, 0(r31)
 	add.q r31, r31, #8
 	rts
-align 16
-runtime.ie64_strtoull:
+.size ie64_digit,.-ie64_digit
+.section .text,"ax"
+.local ie64_strtoull
+.type ie64_strtoull,@function
+.align 16
+ie64_strtoull:
 	sub.q r31, r31, #72
 	store.q r18, 16(r31)
 	store.q r19, 24(r31)
@@ -953,9 +1292,9 @@ runtime.ie64_strtoull:
 	move.q r24, r5
 	lea r30, 0(r31)
 	store.q r20, (r30)
-.Lruntime.206:
+.L234:
 	move.q r1, r18
-.Lruntime.207:
+.L235:
 	move.q r19, r1
 	load.b r1, (r1)
 	sext.b r1, r1
@@ -968,149 +1307,149 @@ runtime.ie64_strtoull:
 	move.q r1, r19
 	move.q r19, r1
 	add.q r1, r1, #1
-	beq r4, r0, .Lruntime.209
-.Lruntime.208:
+	beq r4, r0, .L237
+.L236:
 	move.q r21, r3
 	move.q r20, r2
-	bra .Lruntime.207
-.Lruntime.209:
+	bra .L235
+.L237:
 	move.q r1, r19
 	move.q r21, r3
-.Lruntime.210:
+.L238:
 	add.q r19, r1, #2
-	bne r21, r0, .Lruntime.219
-.Lruntime.211:
+	bne r21, r0, .L247
+.L239:
 	load.b r2, (r1)
 	sext.b r2, r2
-	and.q r2, r2, #0xffffffff
+	move.l r2, r2
 	li r3, #48
-	and.q r3, r3, #0xffffffff
-	beq r2, r3, .Lruntime.213
-.Lruntime.212:
+	move.l r3, r3
+	beq r2, r3, .L241
+.L240:
 	li r22, #10
-	bra .Lruntime.227
-.Lruntime.213:
+	bra .L255
+.L241:
 	add.q r2, r1, #1
 	load.b r2, (r2)
 	sext.b r2, r2
-	and.q r2, r2, #0xffffffff
+	move.l r2, r2
 	li r3, #120
-	and.q r3, r3, #0xffffffff
-	beq r2, r3, .Lruntime.215
-.Lruntime.214:
+	move.l r3, r3
+	beq r2, r3, .L243
+.L242:
 	add.q r2, r1, #1
 	load.b r2, (r2)
 	sext.b r2, r2
-	and.q r2, r2, #0xffffffff
+	move.l r2, r2
 	li r3, #88
-	and.q r3, r3, #0xffffffff
-	bne r2, r3, .Lruntime.217
-.Lruntime.215:
+	move.l r3, r3
+	bne r2, r3, .L245
+.L243:
 	move.q r20, r1
 	add.q r1, r1, #2
 	load.b r1, (r1)
 	sext.b r1, r1
 	and.q r1, r1, #0xff
 	sext.l r1, r1
-	jsr runtime.ie64_digit
+	jsr ie64_digit
 	move.q r2, r1
 	move.q r1, r20
 	sext.l r2, r2
 	li r3, #0
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.217
-.Lruntime.216:
+	blt r2, r3, .L245
+.L244:
 	move.q r20, r1
 	add.q r1, r1, #2
 	load.b r1, (r1)
 	sext.b r1, r1
 	and.q r1, r1, #0xff
 	sext.l r1, r1
-	jsr runtime.ie64_digit
+	jsr ie64_digit
 	move.q r2, r1
 	move.q r1, r20
 	sext.l r2, r2
 	li r3, #16
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.218
-.Lruntime.217:
+	blt r2, r3, .L246
+.L245:
 	li r22, #8
-	bra .Lruntime.227
-.Lruntime.218:
+	bra .L255
+.L246:
 	li r22, #16
 	move.q r1, r19
-	bra .Lruntime.227
-.Lruntime.219:
-	and.q r2, r21, #0xffffffff
+	bra .L255
+.L247:
+	move.l r2, r21
 	li r3, #16
-	and.q r3, r3, #0xffffffff
-	bne r2, r3, .Lruntime.226
-.Lruntime.220:
+	move.l r3, r3
+	bne r2, r3, .L254
+.L248:
 	load.b r2, (r1)
 	sext.b r2, r2
-	and.q r2, r2, #0xffffffff
+	move.l r2, r2
 	li r3, #48
-	and.q r3, r3, #0xffffffff
-	bne r2, r3, .Lruntime.226
-.Lruntime.221:
+	move.l r3, r3
+	bne r2, r3, .L254
+.L249:
 	add.q r2, r1, #1
 	load.b r2, (r2)
 	sext.b r2, r2
-	and.q r2, r2, #0xffffffff
+	move.l r2, r2
 	li r3, #120
-	and.q r3, r3, #0xffffffff
-	beq r2, r3, .Lruntime.223
-.Lruntime.222:
+	move.l r3, r3
+	beq r2, r3, .L251
+.L250:
 	add.q r2, r1, #1
 	load.b r2, (r2)
 	sext.b r2, r2
-	and.q r2, r2, #0xffffffff
+	move.l r2, r2
 	li r3, #88
-	and.q r3, r3, #0xffffffff
-	bne r2, r3, .Lruntime.226
-.Lruntime.223:
+	move.l r3, r3
+	bne r2, r3, .L254
+.L251:
 	move.q r20, r1
 	add.q r1, r1, #2
 	load.b r1, (r1)
 	sext.b r1, r1
 	and.q r1, r1, #0xff
 	sext.l r1, r1
-	jsr runtime.ie64_digit
+	jsr ie64_digit
 	move.q r2, r1
 	move.q r1, r20
 	sext.l r2, r2
 	li r3, #0
 	sext.l r3, r3
-	blt r2, r3, .Lruntime.226
-.Lruntime.224:
+	blt r2, r3, .L254
+.L252:
 	move.q r20, r1
 	add.q r1, r1, #2
 	load.b r1, (r1)
 	sext.b r1, r1
 	and.q r1, r1, #0xff
 	sext.l r1, r1
-	jsr runtime.ie64_digit
+	jsr ie64_digit
 	move.q r2, r1
 	move.q r1, r20
 	sext.l r2, r2
 	li r3, #16
 	sext.l r3, r3
-	bge r2, r3, .Lruntime.226
-.Lruntime.225:
+	bge r2, r3, .L254
+.L253:
 	move.q r1, r19
-.Lruntime.226:
+.L254:
 	move.l r22, r21
-.Lruntime.227:
-	and.q r20, r22, #0xffffffff
-.Lruntime.228:
+.L255:
+	move.l r20, r22
+.L256:
 	li r19, #0
-.Lruntime.229:
+.L257:
 	move.q r21, r1
 	load.b r1, (r1)
 	sext.b r1, r1
 	and.q r1, r1, #0xff
 	sext.l r1, r1
-	jsr runtime.ie64_digit
+	jsr ie64_digit
 	move.q r5, r24
 	move.q r4, r23
 	move.l r3, r22
@@ -1119,49 +1458,49 @@ runtime.ie64_strtoull:
 	sext.l r6, r2
 	li r7, #0
 	sext.l r7, r7
-	blt r6, r7, .Lruntime.238
-.Lruntime.230:
+	blt r6, r7, .L266
+.L258:
 	sext.l r6, r2
 	sext.l r7, r3
-	bge r6, r7, .Lruntime.237
-.Lruntime.231:
-	and.q r2, r2, #0xffffffff
+	bge r6, r7, .L265
+.L259:
+	move.l r2, r2
 	sub.q r6, r4, r2
 	divu.q r6, r6, r20
-	bhi r19, r6, .Lruntime.234
-.Lruntime.232:
+	bhi r19, r6, .L262
+.L260:
 	load.l r6, (r5)
 	sext.l r6, r6
-	bne r6, r0, .Lruntime.235
-.Lruntime.233:
+	bne r6, r0, .L263
+.L261:
 	mulu.q r6, r20, r19
 	add.q r19, r2, r6
-	bra .Lruntime.235
-.Lruntime.234:
+	bra .L263
+.L262:
 	li r2, #1
 	store.l r2, (r5)
-.Lruntime.235:
+.L263:
 	add.q r1, r1, #1
-.Lruntime.236:
+.L264:
 	move.l r22, r3
 	move.q r24, r5
 	move.q r23, r4
-	bra .Lruntime.229
-.Lruntime.237:
+	bra .L257
+.L265:
 	load.q r20, 0(r31)
-	bra .Lruntime.239
-.Lruntime.238:
+	bra .L267
+.L266:
 	load.q r20, 0(r31)
-.Lruntime.239:
+.L267:
 	li r2, #0
-	beq r20, r2, .Lruntime.243
-.Lruntime.240:
-	bne r18, r1, .Lruntime.242
-.Lruntime.241:
+	beq r20, r2, .L271
+.L268:
+	bne r18, r1, .L270
+.L269:
 	move.q r1, r18
-.Lruntime.242:
+.L270:
 	store.q r1, (r20)
-.Lruntime.243:
+.L271:
 	move.q r1, r19
 	load.q r18, 16(r31)
 	load.q r19, 24(r31)
@@ -1172,7 +1511,11 @@ runtime.ie64_strtoull:
 	load.q r24, 64(r31)
 	add.q r31, r31, #72
 	rts
-align 16
+.size ie64_strtoull,.-ie64_strtoull
+.section .text,"ax"
+.global strtoull
+.type strtoull,@function
+.align 16
 strtoull:
 	sub.q r31, r31, #40
 	store.q r18, 8(r31)
@@ -1186,10 +1529,10 @@ strtoull:
 	lea r2, 0(r31)
 	li r1, #0
 	store.l r1, (r2)
-.Lruntime.245:
+.L273:
 	move.q r18, r21
 	move.q r1, r21
-.Lruntime.246:
+.L274:
 	move.q r21, r3
 	move.q r19, r1
 	load.b r1, (r1)
@@ -1203,72 +1546,74 @@ strtoull:
 	move.q r1, r19
 	move.q r19, r1
 	add.q r1, r1, #1
-	beq r4, r0, .Lruntime.248
-.Lruntime.247:
+	beq r4, r0, .L276
+.L275:
 	move.q r20, r2
-	bra .Lruntime.246
-.Lruntime.248:
+	bra .L274
+.L276:
 	move.q r30, r19
 	move.q r19, r1
 	move.q r1, r30
 	move.q r20, r2
 	move.q r21, r18
-.Lruntime.249:
+.L277:
 	load.b r2, (r1)
 	sext.b r2, r2
-	and.q r4, r2, #0xffffffff
+	move.l r4, r2
 	li r5, #45
-	and.q r5, r5, #0xffffffff
-	beq r4, r5, .Lruntime.253
-.Lruntime.250:
-	and.q r2, r2, #0xffffffff
+	move.l r5, r5
+	beq r4, r5, .L281
+.L278:
+	move.l r2, r2
 	li r4, #43
-	and.q r4, r4, #0xffffffff
-	beq r2, r4, .Lruntime.252
-.Lruntime.251:
+	move.l r4, r4
+	beq r2, r4, .L280
+.L279:
 	move.q r19, r21
 	li r18, #0
-	bra .Lruntime.255
-.Lruntime.252:
+	bra .L283
+.L280:
 	move.q r1, r19
-	bra .Lruntime.254
-.Lruntime.253:
+	bra .L282
+.L281:
 	move.q r1, r19
-.Lruntime.254:
+.L282:
 	move.q r19, r21
-.Lruntime.255:
+.L283:
 	move.q r21, r1
 	sext.l r3, r3
 	move.q r1, r21
 	move.q r2, r20
-	li r4, #-1
+	move.l r4, #0xffffffff
+	movt r4, #0xffffffff
 	lea r5, 0(r31)
-	jsr runtime.ie64_strtoull
+	jsr ie64_strtoull
 	li r2, #0
-	beq r20, r2, .Lruntime.258
-.Lruntime.256:
+	beq r20, r2, .L286
+.L284:
 	load.q r2, (r20)
-	bne r2, r21, .Lruntime.258
-.Lruntime.257:
+	bne r2, r21, .L286
+.L285:
 	store.q r19, (r20)
-.Lruntime.258:
-	beq r18, r0, .Lruntime.261
-.Lruntime.259:
+.L286:
+	beq r18, r0, .L289
+.L287:
 	lea r2, 0(r31)
 	load.l r2, (r2)
 	sext.l r2, r2
-	bne r2, r0, .Lruntime.261
-.Lruntime.260:
+	bne r2, r0, .L289
+.L288:
 	li r2, #0
 	sub.q r1, r2, r1
-.Lruntime.261:
+.L289:
 	lea r2, 0(r31)
 	load.l r2, (r2)
 	sext.l r2, r2
-	beq r2, r0, .Lruntime.263
-.Lruntime.262:
-	li r1, #-1
-.Lruntime.263:
+	beq r2, r0, .L291
+.L290:
+	move.l r1, #0xffffffff
+	movt r1, #0xffffffff
+.L291:
 	move.q r1, r1
 	load.q r18, 8(r31)
 	load.q r19, 16(r31)
@@ -1276,7 +1621,11 @@ strtoull:
 	load.q r21, 32(r31)
 	add.q r31, r31, #40
 	rts
-align 16
+.size strtoull,.-strtoull
+.section .text,"ax"
+.global strtoll
+.type strtoll,@function
+.align 16
 strtoll:
 	sub.q r31, r31, #40
 	store.q r18, 8(r31)
@@ -1290,10 +1639,10 @@ strtoll:
 	lea r2, 0(r31)
 	li r1, #0
 	store.l r1, (r2)
-.Lruntime.265:
+.L293:
 	move.q r18, r21
 	move.q r1, r21
-.Lruntime.266:
+.L294:
 	move.q r21, r3
 	move.q r19, r1
 	load.b r1, (r1)
@@ -1307,68 +1656,70 @@ strtoll:
 	move.q r1, r19
 	move.q r19, r1
 	add.q r1, r1, #1
-	beq r4, r0, .Lruntime.268
-.Lruntime.267:
+	beq r4, r0, .L296
+.L295:
 	move.q r20, r2
-	bra .Lruntime.266
-.Lruntime.268:
+	bra .L294
+.L296:
 	move.q r30, r19
 	move.q r19, r1
 	move.q r1, r30
 	move.q r20, r2
 	move.q r21, r18
-.Lruntime.269:
+.L297:
 	load.b r2, (r1)
 	sext.b r2, r2
-	and.q r4, r2, #0xffffffff
+	move.l r4, r2
 	li r5, #45
-	and.q r5, r5, #0xffffffff
-	beq r4, r5, .Lruntime.273
-.Lruntime.270:
-	and.q r2, r2, #0xffffffff
+	move.l r5, r5
+	beq r4, r5, .L301
+.L298:
+	move.l r2, r2
 	li r4, #43
-	and.q r4, r4, #0xffffffff
-	beq r2, r4, .Lruntime.272
-.Lruntime.271:
+	move.l r4, r4
+	beq r2, r4, .L300
+.L299:
 	move.q r19, r21
 	li r18, #0
-	bra .Lruntime.275
-.Lruntime.272:
+	bra .L303
+.L300:
 	move.q r1, r19
-	bra .Lruntime.274
-.Lruntime.273:
+	bra .L302
+.L301:
 	move.q r1, r19
-.Lruntime.274:
+.L302:
 	move.q r19, r21
-.Lruntime.275:
+.L303:
 	move.q r21, r1
-	bne r18, r0, .Lruntime.277
-.Lruntime.276:
-	li r4, #9223372036854775807
-	bra .Lruntime.278
-.Lruntime.277:
-	li r4, #0x8000000000000000
-.Lruntime.278:
+	bne r18, r0, .L305
+.L304:
+	move.l r4, #0xffffffff
+	movt r4, #0x7fffffff
+	bra .L306
+.L305:
+	move.l r4, #0x00000000
+	movt r4, #0x80000000
+.L306:
 	sext.l r3, r3
 	move.q r1, r21
 	move.q r2, r20
 	lea r5, 0(r31)
-	jsr runtime.ie64_strtoull
+	jsr ie64_strtoull
 	li r2, #0
-	beq r20, r2, .Lruntime.281
-.Lruntime.279:
+	beq r20, r2, .L309
+.L307:
 	load.q r2, (r20)
-	bne r2, r21, .Lruntime.281
-.Lruntime.280:
+	bne r2, r21, .L309
+.L308:
 	store.q r19, (r20)
-.Lruntime.281:
+.L309:
 	lea r2, 0(r31)
 	load.l r2, (r2)
 	sext.l r2, r2
-	bne r2, r0, .Lruntime.288
-.Lruntime.282:
-	bne r18, r0, .Lruntime.284
-.Lruntime.283:
+	bne r2, r0, .L316
+.L310:
+	bne r18, r0, .L312
+.L311:
 	move.q r1, r1
 	load.q r18, 8(r31)
 	load.q r19, 16(r31)
@@ -1376,15 +1727,17 @@ strtoll:
 	load.q r21, 32(r31)
 	add.q r31, r31, #40
 	rts
-.Lruntime.284:
-	li r2, #0x8000000000000000
-	beq r1, r2, .Lruntime.286
-.Lruntime.285:
+.L312:
+	move.l r2, #0x00000000
+	movt r2, #0x80000000
+	beq r1, r2, .L314
+.L313:
 	neg.q r1, r1
-	bra .Lruntime.287
-.Lruntime.286:
-	li r1, #0x8000000000000000
-.Lruntime.287:
+	bra .L315
+.L314:
+	move.l r1, #0x00000000
+	movt r1, #0x80000000
+.L315:
 	move.q r1, r1
 	load.q r18, 8(r31)
 	load.q r19, 16(r31)
@@ -1392,14 +1745,16 @@ strtoll:
 	load.q r21, 32(r31)
 	add.q r31, r31, #40
 	rts
-.Lruntime.288:
-	bne r18, r0, .Lruntime.290
-.Lruntime.289:
-	li r1, #9223372036854775807
-	bra .Lruntime.291
-.Lruntime.290:
-	li r1, #0x8000000000000000
-.Lruntime.291:
+.L316:
+	bne r18, r0, .L318
+.L317:
+	move.l r1, #0xffffffff
+	movt r1, #0x7fffffff
+	bra .L319
+.L318:
+	move.l r1, #0x00000000
+	movt r1, #0x80000000
+.L319:
 	move.q r1, r1
 	load.q r18, 8(r31)
 	load.q r19, 16(r31)
@@ -1407,7 +1762,11 @@ strtoll:
 	load.q r21, 32(r31)
 	add.q r31, r31, #40
 	rts
-align 16
+.size strtoll,.-strtoll
+.section .text,"ax"
+.global strtoul
+.type strtoul,@function
+.align 16
 strtoul:
 	sub.q r31, r31, #8
 	sext.l r3, r3
@@ -1415,7 +1774,11 @@ strtoul:
 	move.q r1, r1
 	add.q r31, r31, #8
 	rts
-align 16
+.size strtoul,.-strtoul
+.section .text,"ax"
+.global strtol
+.type strtol,@function
+.align 16
 strtol:
 	sub.q r31, r31, #8
 	sext.l r3, r3
@@ -1423,12 +1786,16 @@ strtol:
 	move.q r1, r1
 	add.q r31, r31, #8
 	rts
-align 16
-runtime.ie64_swap:
-.Lruntime.295:
+.size strtol,.-strtol
+.section .text,"ax"
+.local ie64_swap
+.type ie64_swap,@function
+.align 16
+ie64_swap:
+.L323:
 	li r4, #0
-	beq r3, r4, .Lruntime.297
-.Lruntime.296:
+	beq r3, r4, .L325
+.L324:
 	load.b r5, (r1)
 	load.b r6, (r2)
 	move.q r4, r1
@@ -1438,10 +1805,14 @@ runtime.ie64_swap:
 	add.q r2, r2, #1
 	store.b r5, (r4)
 	sub.q r3, r3, #1
-	bra .Lruntime.295
-.Lruntime.297:
+	bra .L323
+.L325:
 	rts
-align 16
+.size ie64_swap,.-ie64_swap
+.section .text,"ax"
+.global qsort
+.type qsort,@function
+.align 16
 qsort:
 	sub.q r31, r31, #72
 	store.q r18, 16(r31)
@@ -1456,21 +1827,21 @@ qsort:
 	lea r30, 0(r31)
 	store.q r2, (r30)
 	li r3, #2
-	bhi r3, r2, .Lruntime.310
-.Lruntime.299:
+	bhi r3, r2, .L338
+.L327:
 	li r3, #0
-	beq r24, r3, .Lruntime.310
-.Lruntime.300:
+	beq r24, r3, .L338
+.L328:
 	li r18, #1
-.Lruntime.301:
-	bls r2, r18, .Lruntime.310
-.Lruntime.302:
+.L329:
+	bls r2, r18, .L338
+.L330:
 	move.q r19, r18
-.Lruntime.303:
+.L331:
 	move.q r20, r1
 	li r1, #0
-	beq r18, r1, .Lruntime.308
-.Lruntime.304:
+	beq r18, r1, .L336
+.L332:
 	move.q r21, r18
 	sub.q r18, r18, #1
 	mulu.q r1, r24, r18
@@ -1489,31 +1860,31 @@ qsort:
 	sext.l r4, r4
 	li r5, #0
 	sext.l r5, r5
-	ble r4, r5, .Lruntime.307
-.Lruntime.305:
+	ble r4, r5, .L335
+.L333:
 	move.q r21, r3
 	move.q r3, r3
-	jsr runtime.ie64_swap
+	jsr ie64_swap
 	move.q r4, r22
 	move.q r3, r21
 	move.q r1, r20
-.Lruntime.306:
+.L334:
 	move.q r22, r4
 	move.q r24, r3
-	bra .Lruntime.303
-.Lruntime.307:
+	bra .L331
+.L335:
 	move.q r24, r3
 	load.q r2, 0(r31)
-	bra .Lruntime.309
-.Lruntime.308:
+	bra .L337
+.L336:
 	load.q r2, 0(r31)
-.Lruntime.309:
+.L337:
 	move.q r18, r19
 	move.q r1, r20
 	move.q r19, r18
 	add.q r18, r18, #1
-	bra .Lruntime.301
-.Lruntime.310:
+	bra .L329
+.L338:
 	load.q r18, 16(r31)
 	load.q r19, 24(r31)
 	load.q r20, 32(r31)
@@ -1523,7 +1894,11 @@ qsort:
 	load.q r24, 64(r31)
 	add.q r31, r31, #72
 	rts
-align 16
+.size qsort,.-qsort
+.section .text,"ax"
+.global bsearch
+.type bsearch,@function
+.align 16
 bsearch:
 	sub.q r31, r31, #56
 	store.q r18, 0(r31)
@@ -1535,11 +1910,11 @@ bsearch:
 	store.q r24, 48(r31)
 	move.q r23, r4
 	move.q r24, r5
-.Lruntime.312:
+.L340:
 	move.q r22, r3
 	li r3, #0
-	beq r22, r3, .Lruntime.319
-.Lruntime.313:
+	beq r22, r3, .L347
+.L341:
 	lsr.q r18, r22, #1
 	mulu.q r19, r23, r18
 	move.q r21, r2
@@ -1553,25 +1928,25 @@ bsearch:
 	move.q r2, r21
 	move.q r6, r1
 	move.q r1, r20
-	beq r6, r0, .Lruntime.318
-.Lruntime.314:
+	beq r6, r0, .L346
+.L342:
 	sext.l r6, r6
 	li r7, #0
 	sext.l r7, r7
-	blt r6, r7, .Lruntime.316
-.Lruntime.315:
+	blt r6, r7, .L344
+.L343:
 	add.q r6, r18, #1
 	mulu.q r7, r4, r6
 	add.q r2, r7, r2
 	sub.q r3, r3, r6
-	bra .Lruntime.317
-.Lruntime.316:
+	bra .L345
+.L344:
 	move.q r3, r18
-.Lruntime.317:
+.L345:
 	move.q r24, r5
 	move.q r23, r4
-	bra .Lruntime.312
-.Lruntime.318:
+	bra .L340
+.L346:
 	add.q r1, r19, r2
 	move.q r1, r1
 	load.q r18, 0(r31)
@@ -1583,7 +1958,7 @@ bsearch:
 	load.q r24, 48(r31)
 	add.q r31, r31, #56
 	rts
-.Lruntime.319:
+.L347:
 	li r1, #0
 	load.q r18, 0(r31)
 	load.q r19, 8(r31)
@@ -1594,9 +1969,65 @@ bsearch:
 	load.q r24, 48(r31)
 	add.q r31, r31, #56
 	rts
-align 8
-runtime.ie64_heap_limit:
+.size bsearch,.-bsearch
+.section .text,"ax"
+.global __ie64_clz32
+.type __ie64_clz32,@function
+.align 16
+__ie64_clz32:
+.L349:
+	li r2, #0
+	li r3, #-2147483648
+.L350:
+	beq r3, r0, .L353
+.L351:
+	and.l r4, r1, r3
+	bne r4, r0, .L353
+.L352:
+	add.l r2, r2, #1
+	lsr.l r3, r3, #1
+	bra .L350
+.L353:
+	sext.l r1, r2
+	move.q r1, r1
+	rts
+.size __ie64_clz32,.-__ie64_clz32
+.section .text,"ax"
+.global __ie64_clz64
+.type __ie64_clz64,@function
+.align 16
+__ie64_clz64:
+.L355:
+	li r2, #0
+	move.l r3, #0x00000000
+	movt r3, #0x80000000
+.L356:
+	li r4, #0
+	beq r3, r4, .L359
+.L357:
+	and.q r4, r1, r3
+	li r5, #0
+	bne r4, r5, .L359
+.L358:
+	add.l r2, r2, #1
+	lsr.q r3, r3, #1
+	bra .L356
+.L359:
+	sext.l r1, r2
+	move.q r1, r1
+	rts
+.size __ie64_clz64,.-__ie64_clz64
+.section .data,"aw"
+.local ie64_heap_limit
+.type ie64_heap_limit,@object
+.align 8
+ie64_heap_limit:
 	dc.q 585728
-align 8
-runtime.ie64_heap_cursor:
+.size ie64_heap_limit,8
+.section .bss,"aw"
+.local ie64_heap_cursor
+.type ie64_heap_cursor,@object
+.align 8
+ie64_heap_cursor:
 	ds.b 8
+.size ie64_heap_cursor,8

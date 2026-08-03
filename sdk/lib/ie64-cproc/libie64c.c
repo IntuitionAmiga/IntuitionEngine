@@ -5,6 +5,49 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ie64.h>
+
+_Noreturn void __ie64_terminate(int status)
+{
+	(void)status;
+	__builtin_ie64_halt();
+	__builtin_unreachable();
+}
+
+typedef void (*ie64_array_function)(void);
+
+extern ie64_array_function __preinit_array_start[];
+extern ie64_array_function __preinit_array_end[];
+extern ie64_array_function __init_array_start[];
+extern ie64_array_function __init_array_end[];
+extern ie64_array_function __fini_array_start[];
+extern ie64_array_function __fini_array_end[];
+
+void __libc_init_array(void)
+{
+	ie64_array_function *function;
+
+	for (function = __preinit_array_start; function < __preinit_array_end; ++function)
+		(*function)();
+	for (function = __init_array_start; function < __init_array_end; ++function)
+		(*function)();
+}
+
+void __libc_fini_array(void)
+{
+	ie64_array_function *function = __fini_array_end;
+
+	while (function != __fini_array_start) {
+		--function;
+		(*function)();
+	}
+}
+
+_Noreturn void exit(int status)
+{
+	__libc_fini_array();
+	__ie64_terminate(status);
+}
 
 /* Host ctype headers may expose these as function-like macros. This library
  * supplies the functions, so their names must remain available for definitions. */
@@ -385,4 +428,27 @@ void *bsearch(const void *key, const void *base, size_t count, size_t size, int 
 		else { items += (half + 1) * size; count -= half + 1; }
 	}
 	return NULL;
+}
+int __ie64_clz32(unsigned int value)
+{
+	int count = 0;
+	unsigned int bit = 1U << 31;
+
+	while (bit && !(value & bit)) {
+		++count;
+		bit >>= 1;
+	}
+	return count;
+}
+
+int __ie64_clz64(unsigned long value)
+{
+	int count = 0;
+	unsigned long bit = 1UL << 63;
+
+	while (bit && !(value & bit)) {
+		++count;
+		bit >>= 1;
+	}
+	return count;
 }

@@ -476,6 +476,18 @@ func TestIE64Asm_DCQ(t *testing.T) {
 	assertBytes(t, bin, 0, expected, "dc.q")
 }
 
+func TestIE64Asm_DCQDecimalFullWidth(t *testing.T) {
+	src := `
+		dc.q 18446744073709551615, -9223372036854775808
+`
+	bin := assembleString(t, src)
+	assertLen(t, bin, 16, "dc.q full-width decimal")
+	expected := make([]byte, 16)
+	binary.LittleEndian.PutUint64(expected, ^uint64(0))
+	binary.LittleEndian.PutUint64(expected[8:], uint64(1)<<63)
+	assertBytes(t, bin, 0, expected, "dc.q full-width decimal")
+}
+
 func TestIE64Asm_DSB(t *testing.T) {
 	src := `
 		ds.b 16

@@ -1,3 +1,10 @@
+.global abi_narrow
+.global abi_fp
+.global abi_spilled_float
+.global abi_call_c_spilled_float
+.global abi_call_c_spilled_double
+.global abi_call_variadic_overflow
+
 abi_narrow:
 	and.q r28, r31, #15
 	li r29, #8
@@ -106,7 +113,8 @@ abi_call_c_spilled_double:
 abi_call_variadic_overflow:
 	sub.q r31, r31, #40
 	li r1, #1
-	move.q r2, #abi_variadic_pair+0
+	move.l r2, #lo32(abi_variadic_pair)
+	movt r2, #hi32(abi_variadic_pair)
 	li r3, #2
 	li r4, #3
 	li r5, #4
@@ -115,7 +123,8 @@ abi_call_variadic_overflow:
 	store.q r28, 0(r31)
 	li r28, #7
 	store.q r28, 8(r31)
-	move.q r28, #abi_variadic_wide+0
+	move.l r28, #lo32(abi_variadic_wide)
+	movt r28, #hi32(abi_variadic_wide)
 	store.q r28, 16(r31)
 	li r28, #8
 	store.q r28, 24(r31)

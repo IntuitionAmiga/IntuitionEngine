@@ -1,12 +1,13 @@
-# IE64 bare-metal C toolchain ABI
+# IE64 bare-metal C toolchain
 
 ## Scope
 
-This is the frozen v1 ABI for `ie64-unknown-none`. It produces one flat
-`.ie64` image for direct execution at `PROG_START` (`0x1000`). It is neither
-the IntuitionOS ABI in `IE64_ABI.md` nor a hosted C environment. There is no
-ELF, relocation format, dynamic linking, system call dependency, formatted
-I/O, thread support, locale or SIMD ABI.
+This is the V2 `ie64-unknown-none` toolchain. Compilation produces ELF64
+relocatable objects and deterministic static archives; the static linker
+produces a flat `.ie64` image for direct execution at `PROG_START` (`0x1000`).
+It is neither the IntuitionOS ABI in `IE64_ABI.md` nor a hosted C environment.
+There is no dynamic linking, operating-system service dependency, thread
+support or speculative position-independent ABI.
 
 The architectural sources are `IE64_ISA.md` and `architecture.md`. The SDK
 assembly convenience includes are not ABI authority.
@@ -16,7 +17,9 @@ assembly convenience includes are not ABI authority.
 The ABI is LP64 and little-endian. `char` is signed. `_Bool`, `char`, signed
 and unsigned `char` have size/alignment 1; `short` 2/2; `int` 4/4; `long` and
 `long long` 8/8; pointers 8/8; `float` 4/4; `double` 8/8; and `wchar_t` is
-unsigned 32-bit. Enums use `int`. `long double` and C `_Atomic` are rejected.
+unsigned 32-bit. Enums use `int`. `long double` uses the same IEEE binary64
+representation and ABI as `double`. `_BitInt` is supported through 64 bits.
+C `_Atomic` uses the conservative library model described below.
 
 An aggregate uses its largest member alignment, capped at 8, and rounds its
 size up to that alignment. Bit-fields use cproc's recorded allocation rules;
@@ -56,68 +59,58 @@ result, and advances by eight bytes.
 
 ## Image and runtime
 
-`ie64-cproc -o program.ie64 source.c source2.c routine.s` compiles and links
-one flat image. It accepts `-I`, `-D`, `-E`, `-S`, `-c`, `-o`, and
-`-nostdlib`. `-S` and `-c` both produce linkable IE64 assembly, not object
-files. With several C inputs they write one `.s` beside each source; a single
-`-o` is rejected. `-E`, `-S`, and `-c` accept only C inputs. Final links accept
-C and linkable assembly inputs.
+`ie64-cproc -o program.ie64 source.c source2.c routine.s library.a` compiles
+and links one flat image. `-E` preprocesses, `-S` emits IE64 assembly, and
+`-c` emits one reusable ELF object per input. Link mode accepts C, assembly,
+object and archive inputs. The driver supports the include, macro, dependency,
+library and runtime-selection options listed by `--help`; unsupported
+meaning-changing options are diagnosed.
 
-The development driver resolves its executable and searches that directory
-and each parent for a sibling `IntuitionEngine/sdk`. It never derives the SDK
-from the current directory. The first matching sibling supplies these files:
+`-O0` disables optional load elimination, `-O1` enables load elimination,
+and `-O2` additionally enables target-supported if-conversion. `-O3` is an
+explicit alias for the full `-O2` pipeline until QBE gains a stronger
+optimisation pass. The default is `-O2`. QBE's mandatory SSA, control-flow,
+scheduling and register-allocation passes run at every level because later
+lowering depends on their normal forms.
 
-| Mode | Required SDK paths |
-| --- | --- |
-| `-E`, `-S`, `-c` | `include/` |
-| final `-nostdlib` link | `include/`, `bin/ie64asm` |
-| ordinary final link | `include/`, `bin/ie64asm`, `lib/ie64-cproc/crt0.s`, `lib/ie64-cproc/libie64c.s` |
+The installed driver resolves its executable and locates `cproc-qbe`, QBE,
+the assembler, linker and sysroot relative to that path. `--sysroot` selects
+an explicit root. Sibling checkout discovery is a development fallback only.
+Normal compilation uses cproc's integrated preprocessor and never invokes a
+host preprocessor.
 
-An ordinary link validates all required paths before starting a compiler
-subprocess. `-nostdlib` never requires either runtime file. Installed layout
-discovery is not part of v1.
+Ordinary links add `crt0.o`, `libc.a`, `libm.a` and `libatomic.a`.
+`-nostdlib` omits all automatic runtime inputs, `-nodefaultlibs` retains the
+CRT only, and `-nostartfiles` retains default libraries only. The static
+linker resolves strong, weak and common symbols, lazily extracts Unix archive
+members, retains ordered constructor and destructor arrays, and applies the
+V2 RELA relocations defined in `IE64_ABI_V2.md`.
 
-The ordinary driver link order is `crt0.s`, generated C units, supplied
-assembly units, and `libie64c.s`. It emits `__ie64_heap_start` after all input.
-The image must fit `[0x1000, 0x8F000)`. `[0x8F000, 0x9F000)` is a full
-descending 64 KiB stack and `R31` begins at `0x9F000`. Bare-metal execution
-therefore needs `CR_RAM_SIZE_BYTES >= 0x9F000`.
-
-`crt0.s` establishes this stack, checks the RAM-size precondition, calls
-`main`, and halts on return. On failed precondition it sets `R1` to one and
-halts before `main`. `-nostdlib` supplies no CRT or library: its input must
-provide executable code at `PROG_START` and any required checks itself.
-
-Linkable units have no `org` that resets the cursor to `PROG_START`; a forward
-`org` is allowed only below `0x8F000`. The driver invokes `ie64asm -Werror`.
+The `baremetal-low` image must fit `[0x1000,0x8F000)`. The interval
+`[0x8F000,0x9F000)` is a descending 64 KiB stack and `R31` begins at
+`0x9F000`. Startup rejects `CR_RAM_SIZE_BYTES < 0x9F000`, clears BSS, runs
+Picolibc initialisers, calls `main`, and passes its status to `exit`.
 
 ## Headers and library
 
-The SDK supplies `assert.h`, `stdbool.h`, `stddef.h`, `stdint.h`, `stdarg.h`,
-`stdalign.h`, `stdnoreturn.h`, `limits.h`, `ctype.h`, `string.h`, `stdlib.h`,
-and `ie64.h`. The partial C library exports exactly the declarations in the
-last three headers:
+The sysroot is built from the recorded Picolibc IE branch and supplies the
+applicable freestanding C23 headers and library interfaces. This includes
+formatted memory and stream I/O, portable string and conversion routines,
+libm, `<stdbit.h>`, `<stdckdint.h>`, `memset_explicit`, sized deallocation and
+a reclaiming allocator over the linker-defined heap. `errno` is
+process-global and the V2 libc is not thread-safe.
 
-- `string.h`: `memchr`, `memcmp`, `memcpy`, `memmove`, `memset`, `strcat`,
-  `strchr`, `strcmp`, `strcpy`, `strlen`, `strncat`, `strncmp`, and `strncpy`.
-- `ctype.h`: `isalnum`, `isalpha`, `isblank`, `iscntrl`, `isdigit`, `isgraph`,
-  `islower`, `isprint`, `ispunct`, `isspace`, `isupper`, `isxdigit`, `tolower`,
-  and `toupper`.
-- `stdlib.h`: `abs`, `labs`, `llabs`, `strtol`, `strtoul`, `strtoll`,
-  `strtoull`, `qsort`, `bsearch`, `malloc`, `calloc`, `realloc`, and `free`.
+`stdin`, `stdout` and `stderr` use weak hooks from `<ie64/platform.h>`.
+Applications may replace individual console, file, clock and termination
+hooks. The default file and monotonic-clock hooks return `ENOSYS`; console
+seeking returns `ESPIPE`. The platform exposes opaque 64-bit handles rather
+than POSIX descriptors, so `fdopen` and `fileno` are not advertised.
 
-The remaining standard headers provide their corresponding freestanding types
-and macros only. There is no formatted I/O, environment, locale, file, thread,
-process or hosted termination interface. `ctype` arguments must be
-representable as `unsigned char`. `strto*` supports C11 bases and `endptr`;
-range errors return the applicable limit and there is no `errno`.
-
-The allocator is an 8-byte-aligned bump allocator over
-`[__ie64_heap_start, 0x8F000)`. Zero-size allocation and allocation failure
-return null. `calloc` detects multiplication overflow. `realloc` preserves the
-lesser old/new byte count; `free` never releases storage.
-
-`assert` evaluates once and halts on false; `NDEBUG` suppresses evaluation.
+`atomic_flag` uses the architectural 64-bit exchange operation. Other atomic
+objects use 64 aligned locks from `libatomic.a`, indexed by
+`(object_address >> 3) & 63`. Loads, stores and read-modify-write operations
+hold the selected lock. All accepted memory orders are conservatively
+strengthened to sequential consistency.
 
 ## Machine facilities
 

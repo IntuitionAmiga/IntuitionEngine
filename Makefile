@@ -366,10 +366,10 @@ AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
-.PHONY: ie32asm ie64asm ie64dis ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets aros-iewarp-library iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos cputest-musashi
+.PHONY: ie32asm ie64asm ie64dis ie64ld ie64-cproc ie64-ar ie64-ranlib ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets aros-iewarp-library iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos cputest-musashi dist-ie64-toolchain-linux-amd64
 
 # Default target builds everything
-all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis
+all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis ie64ld ie64-cproc ie64-ar ie64-ranlib
 	@echo "Build complete! VM in $(BIN_DIR)/, tools in $(SDK_BIN_DIR)/"
 	@$(MAKE) list
 
@@ -923,6 +923,26 @@ ie64asm: setup
 	@$(MKDIR) -p $(SDK_BIN_DIR)
 	@mv ie64asm $(SDK_BIN_DIR)/
 	@echo "IE64 assembler build complete"
+
+# Build the IE64 V2 static linker
+ie64ld: setup
+	@echo "Building IE64 static linker..."
+	@$(GO) build $(GO_FLAGS) -o ie64ld ./cmd/ie64ld/
+	@$(MKDIR) -p $(SDK_BIN_DIR)
+	@mv ie64ld $(SDK_BIN_DIR)/
+	@echo "IE64 static linker build complete"
+
+ie64-cproc: setup
+	@$(GO) build $(GO_FLAGS) -o $(SDK_BIN_DIR)/ie64-cproc ./cmd/ie64-cproc/
+
+ie64-ar: setup
+	@$(GO) build $(GO_FLAGS) -o $(SDK_BIN_DIR)/ie64-ar ./cmd/ie64-ar/
+
+ie64-ranlib: setup
+	@$(GO) build $(GO_FLAGS) -o $(SDK_BIN_DIR)/ie64-ranlib ./cmd/ie64-ranlib/
+
+dist-ie64-toolchain-linux-amd64:
+	@bash ./scripts/dist-ie64-toolchain-linux-amd64.sh
 
 # Build the IE32-to-IE64 converter
 ie32to64: setup

@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -59,6 +60,14 @@ func TestIE64CProcSmokeImageDefaultJIT(t *testing.T) {
 	runIE64CProcImage(t, "IE64_TOOLCHAIN_IMAGE", ie64CProcSmokeResult)
 }
 
+func TestIE64CProcOptimisationImageDefaultJIT(t *testing.T) {
+	for level := 0; level <= 3; level++ {
+		t.Run(fmt.Sprintf("O%d", level), func(t *testing.T) {
+			runIE64CProcImage(t, fmt.Sprintf("IE64_TOOLCHAIN_O%d_IMAGE", level), ie64CProcSmokeResult)
+		})
+	}
+}
+
 func TestIE64CProcABIImageDefaultJIT(t *testing.T) {
 	runIE64CProcImage(t, "IE64_TOOLCHAIN_ABI_IMAGE", 0x4142495041535345)
 }
@@ -94,6 +103,22 @@ func TestIE64CProcAtomicMisalignedImageDefaultJIT(t *testing.T) {
 
 func TestIE64CProcAtomicApertureImageDefaultJIT(t *testing.T) {
 	runIE64CProcImage(t, "IE64_TOOLCHAIN_ATOMIC_APERTURE_IMAGE", 0x41544f4d4641554c)
+}
+
+func TestIE64CProcAtomicImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_ATOMIC_IMAGE", 0x41544f4d50415353)
+}
+
+func TestIE64CProcAtomicInterfaceImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_ATOMIC_INTERFACE_IMAGE", 0x41544f4d494e5446)
+}
+
+func TestIE64CProcAtomicCollisionAndReadOnlyImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_ATOMIC_COLLISION_IMAGE", 0x41544f4d434f4c4c)
+}
+
+func TestIE64CProcPicolibcImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_PICOLIBC_IMAGE", 0x5049434f50415353)
 }
 
 func TestIE64CProcAssertImageDefaultJIT(t *testing.T) {

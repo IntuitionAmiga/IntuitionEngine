@@ -850,11 +850,11 @@ func (p *exprParser) parseExprAtom() (int64, error) {
 			p.pos++
 		}
 		numStr := strings.ReplaceAll(p.input[start:p.pos], "_", "")
-		val, err := strconv.ParseInt(numStr, 10, 64)
+		val, err := strconv.ParseUint(numStr, 10, 64)
 		if err != nil {
 			return 0, fmt.Errorf("invalid decimal number: %s", p.input[start:p.pos])
 		}
-		return val, nil
+		return int64(val), nil
 	}
 
 	// Symbol (label, equate, set, or narg)
@@ -3416,9 +3416,11 @@ func (a *IE64Assembler) resolveLabel(name string) (uint32, error) {
 func main() {
 	listMode := false
 	verbose := false
+	objectMode := false
 	var inputFile string
 	var outFile string
 	var includePaths []string
+	defines := make(map[string]uint64)
 	asm := NewIE64Assembler()
 
 	args := os.Args[1:]
@@ -3426,6 +3428,8 @@ func main() {
 		arg := args[i]
 		if arg == "-list" {
 			listMode = true
+		} else if arg == "-c" || arg == "--object" {
+			objectMode = true
 		} else if arg == "-v" {
 			verbose = true
 		} else if arg == "-o" {
@@ -3451,6 +3455,7 @@ func main() {
 				os.Exit(1)
 			}
 			asm.Predefine(name, val)
+			defines[name] = val
 		} else if strings.HasPrefix(arg, "-D") {
 			name, val, err := parseCommandLineDefine(arg[2:])
 			if err != nil {
@@ -3458,6 +3463,7 @@ func main() {
 				os.Exit(1)
 			}
 			asm.Predefine(name, val)
+			defines[name] = val
 		} else if arg == "-I" {
 			i++
 			if i >= len(args) {
@@ -3469,11 +3475,11 @@ func main() {
 			includePaths = append(includePaths, arg[2:])
 		} else if strings.HasPrefix(arg, "-") {
 			fmt.Fprintf(os.Stderr, "Unknown option: %s\n", arg)
-			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-o output] [-Werror] [-Wno-category] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-c|--object] [-v] [-list] [-o output] [-Werror] [-Wno-category] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
 			os.Exit(1)
 		} else if inputFile != "" {
 			fmt.Fprintf(os.Stderr, "Error: multiple input files specified\n")
-			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-o output] [-Werror] [-Wno-category] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
+			fmt.Fprintf(os.Stderr, "Usage: ie64asm [-c|--object] [-v] [-list] [-o output] [-Werror] [-Wno-category] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
 			os.Exit(1)
 		} else {
 			inputFile = arg
@@ -3481,7 +3487,7 @@ func main() {
 	}
 
 	if inputFile == "" {
-		fmt.Fprintf(os.Stderr, "Usage: ie64asm [-v] [-list] [-o output] [-Werror] [-Wno-category] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
+		fmt.Fprintf(os.Stderr, "Usage: ie64asm [-c|--object] [-v] [-list] [-o output] [-Werror] [-Wno-category] [-I dir]... [-D NAME[=VALUE]]... input.asm\n")
 		os.Exit(1)
 	}
 
@@ -3496,7 +3502,12 @@ func main() {
 	asm.verbose = verbose
 	asm.SetListingMode(listMode)
 
-	binary, err := asm.Assemble(string(source))
+	var binary []byte
+	if objectMode {
+		binary, err = AssembleIE64Object(string(source), inputFile, includePaths, defines)
+	} else {
+		binary, err = asm.Assemble(string(source))
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Assembly error: %v\n", err)
 		os.Exit(1)
@@ -3516,7 +3527,11 @@ func main() {
 
 	// Write output
 	if outFile == "" {
-		outFile = strings.TrimSuffix(inputFile, filepath.Ext(inputFile)) + ".ie64"
+		ext := ".ie64"
+		if objectMode {
+			ext = ".o"
+		}
+		outFile = strings.TrimSuffix(inputFile, filepath.Ext(inputFile)) + ext
 	}
 	if err := os.WriteFile(outFile, binary, 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error writing output file: %v\n", err)

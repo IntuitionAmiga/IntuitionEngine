@@ -7,6 +7,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/intuitionamiga/IntuitionEngine/internal/ie64link"
+	"github.com/intuitionamiga/IntuitionEngine/internal/ie64obj"
 )
 
 func TestIE64CProcCRTIsLinkableAndUsesFrozenStack(t *testing.T) {
@@ -25,14 +28,40 @@ func TestIE64CProcCRTIsLinkableAndUsesFrozenStack(t *testing.T) {
 		t.Fatal("crt0.s does not read CR_RAM_SIZE_BYTES")
 	}
 
-	image, err := NewIE64Assembler().Assemble("org 0x1000\n" + source + "\nmain:\n halt\n")
+	crtData, err := AssembleIE64Object(source, "crt0.s", nil, nil)
 	if err != nil {
-		t.Fatalf("assemble CRT composition: %v", err)
+		t.Fatalf("assemble CRT object: %v", err)
 	}
-	if len(image) != 96 {
-		t.Fatalf("CRT composition length = %d, want 96 bytes", len(image))
+	crtObject, err := ie64obj.Parse(crtData)
+	if err != nil {
+		t.Fatalf("parse CRT object: %v", err)
 	}
-	if !bytes.Equal(image[:8], encodeInstr(OP64_MOVE, 31, SIZE_L, 1, 0, 0, 0x9f000)) {
-		t.Fatalf("first instruction does not initialise R31 to 0x9f000: % x", image[:8])
+	supportData, err := AssembleIE64Object(`.section .text,"ax"
+.global main
+.global __libc_init_array
+.global exit
+main:
+    halt
+__libc_init_array:
+    rts
+exit:
+    halt
+`, "support.s", nil, nil)
+	if err != nil {
+		t.Fatalf("assemble CRT support object: %v", err)
+	}
+	supportObject, err := ie64obj.Parse(supportData)
+	if err != nil {
+		t.Fatalf("parse CRT support object: %v", err)
+	}
+	result, err := ie64link.Link([]ie64link.Input{
+		{Name: "crt0.o", Object: crtObject},
+		{Name: "support.o", Object: supportObject},
+	}, ie64link.Options{Entry: "_start"})
+	if err != nil {
+		t.Fatalf("link CRT composition: %v", err)
+	}
+	if !bytes.Equal(result.Image[:8], encodeInstr(OP64_MOVE, 31, SIZE_L, 1, 0, 0, 0x9f000)) {
+		t.Fatalf("first instruction does not initialise R31 to 0x9f000: % x", result.Image[:8])
 	}
 }

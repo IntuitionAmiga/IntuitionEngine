@@ -391,5 +391,7 @@ assert_no_nested_external_git_checkouts
 assert_ab3d2_prepares_embed_before_build
 assert_install_runtime_destdir
 assert_dist_layout_skips_non_runtime_archives
+assert_phony ie64-cproc
+assert_makefile_contains '^all:.*ie64ld.*ie64-cproc.*ie64-ar.*ie64-ranlib'
 
 echo "Makefile checks passed"
