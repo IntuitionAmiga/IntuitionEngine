@@ -42,8 +42,6 @@ verify_checkout cproc "${cproc_dir}" "${CPROC_REVISION}"
 verify_checkout Picolibc "${picolibc_dir}" "${PICOLIBC_REVISION}"
 [[ "$(git -C "${picolibc_dir}" branch --show-current)" == ie ]] ||
     fail "Picolibc must be on branch ie"
-[[ "$(git -C "${picolibc_dir}" rev-parse --abbrev-ref '@{upstream}' 2>/dev/null || true)" == origin/ie ]] ||
-    fail "Picolibc branch ie must track origin/ie"
 [[ "$(git -C "${picolibc_dir}" remote get-url origin)" == \
     https://github.com/IntuitionAmiga/picolibc ]] ||
     fail "Picolibc origin is not the canonical repository"
