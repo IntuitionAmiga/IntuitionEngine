@@ -1,3 +1,5 @@
+//go:build !js
+
 package main
 
 import (
@@ -61,12 +63,20 @@ func TestIE64CProcABIImageDefaultJIT(t *testing.T) {
 	runIE64CProcImage(t, "IE64_TOOLCHAIN_ABI_IMAGE", 0x4142495041535345)
 }
 
+func TestIE64CProcCrossUnitImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_CROSS_IMAGE", 0x43524f5353504153)
+}
+
 func TestIE64CProcLibraryImageDefaultJIT(t *testing.T) {
 	runIE64CProcImage(t, "IE64_TOOLCHAIN_LIB_IMAGE", 0x4c49425041535345)
 }
 
 func TestIE64CProcBuiltinImageDefaultJIT(t *testing.T) {
 	runIE64CProcImage(t, "IE64_TOOLCHAIN_BUILTIN_IMAGE", 0x4255494c54494e53)
+}
+
+func TestIE64CProcMMUImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_MMU_IMAGE", 0x4d4d555041535345)
 }
 
 func TestIE64CProcHaltImageDefaultJIT(t *testing.T) {

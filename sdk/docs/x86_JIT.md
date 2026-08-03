@@ -98,6 +98,8 @@ x87-helper rows under the same contract.
 | `jit_x86_dispatch_wasm.go` | `js && wasm` | Enables js/wasm x86 JIT dispatch when wasm SIMD support is available |
 | `jit_x86_wasm_emit_test.go` | none | wazero-backed block, driver, region, manifest and x87 coverage tests for the shared x86 wasm builder |
 | `jit_x86_runtime_wasm_js_test.go` | `js && wasm` | Node-run js/wasm x86 runtime parity and region-promotion tests |
+| `jit_x86_wasm_simd_js_test.go` | `js && wasm` | js/wasm SIMD capability tests for emitted x86 modules |
+| `jit_x86_wasm_node_test.go` | none | Host-side Node acceptance tests for emitted x86 wasm blocks, chains, loop regions and x87 parity |
 | `jit_x86_dispatch_stub.go` | all other platforms | Fallback stubs for unsupported platforms |
 | `x86_jit_benchmark_test.go` | `amd64 && linux` | ALU/Memory/Mixed/String benchmark suite with Interpreter/JIT variants |
 

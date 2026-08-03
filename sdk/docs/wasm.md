@@ -167,8 +167,8 @@ reference surface. The wasm build changes some observable host and device
 behaviour as described above, including RAM sizing, VBlank visibility, file
 storage and unavailable desktop integrations. Subject to those limits, a
 `.bas` or `.ie*` programme that runs on the native VM can run on the browser
-VM. Hot IE64 and supported M68K code can use their wasm JITs; the other CPUs
-remain interpreted.
+VM. Hot IE64, supported M68K code, and supported x86 code can use their wasm
+JITs; IE32, Z80 and 6502 remain interpreted.
 
 ## Testing
 
@@ -177,9 +177,9 @@ remain interpreted.
 - Layer B (build gate): `make test-wasm-build` builds the package for js/wasm
   both plain (Vulkan excluded by `!js`) and with `-tags novulkan`.
 - Layer C (runtime): `make test-wasm-node` runs the selected `TestWasmJIT_`,
-  `TestX86WasmJIT_` and `TestWasmFileBridge_` js/wasm tests under Node via the
-  repo-local runner (`tools/wasm/go_js_wasm_exec`). The runner exposes the
-  module memory as `__goMem`, matching the demo page. See
+  `TestX86WasmJIT_`, `TestX86WasmSIMD_` and `TestWasmFileBridge_` js/wasm tests
+  under Node via the repo-local runner (`tools/wasm/go_js_wasm_exec`). The
+  runner exposes the module memory as `__goMem`, matching the demo page. See
   [`IE64_JIT.md`](IE64_JIT.md) for the IE64 wasm JIT contract and native
   differential-test command. Wasm-only RAM tests are not selected by this
   target.

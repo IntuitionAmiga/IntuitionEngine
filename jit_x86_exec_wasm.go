@@ -118,9 +118,7 @@ func (rt *x86WasmJITRuntime) cacheStore(pc uint32, slot int) {
 }
 
 func (rt *x86WasmJITRuntime) cacheClear(pc uint32) {
-	idx := pc & (x86WasmDriverCacheEntries - 1)
-	e := rt.pcCache[idx*8 : idx*8+8]
-	clear(e)
+	x86WasmDropDriverCacheEntry(rt.pcCache, x86WasmDriverCacheEntries-1, pc)
 }
 
 func (rt *x86WasmJITRuntime) pruneInvalidatedBlocks() int {
@@ -213,7 +211,11 @@ func (rt *x86WasmJITRuntime) runBlock(block *x86WasmJITBlock) int {
 	ctx.ChainCount = 0
 	ctx.ChainCycles = 0
 	ctx.ChainTicks = 0
-	ctx.ChainBudget = x86WasmChainBudget
+	if cpu.x86BudgetActive {
+		ctx.ChainBudget = 1
+	} else {
+		ctx.ChainBudget = x86WasmChainBudget
+	}
 	ctx.NeedIOFallback = 0
 	ctx.NeedInval = 0
 	ctx.ExitReason = x86JITExitNone
@@ -271,7 +273,12 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 	cpu.syncJITRegsFromNamed()
 	cpu.syncJITSegRegsFromNamed()
 	bounded := cpu.x86BudgetActive
+	yieldCheck := uint32(0)
 	for cpu.Running() && !cpu.Halted {
+		yieldCheck++
+		if yieldCheck&0xFFF == 0 {
+			hostCooperativeYield()
+		}
 		if cpu.debugHandleBreakInJIT(uint64(cpu.EIP)) {
 			break
 		}
@@ -358,11 +365,14 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				cpu.x86JitCache.Invalidate()
 				rt.blocks = map[uint32]*x86WasmJITBlock{}
 				clear(cpu.x86JitCodeBM)
-				clear(rt.pcCache)
+				x86WasmResetDriverCache(rt.pcCache, &rt.nextSlot)
 				x86ClearRTSCache(ctx)
 			} else {
 				x86InvalidateSMCRange(cpu.x86JitCache, cpu.x86JitCodeBM, ctx)
 				rt.pruneInvalidatedBlocks()
+				if len(rt.blocks) == 0 {
+					x86WasmResetDriverCache(rt.pcCache, &rt.nextSlot)
+				}
 			}
 			ctx.NeedInval = 0
 			ctx.InvalAddr = 0

@@ -4,7 +4,10 @@
 
 package main
 
-import "testing"
+import (
+	"encoding/binary"
+	"testing"
+)
 
 func TestX86SMC_SharedPageBitmapSurvivesRangeInval(t *testing.T) {
 	cache := NewCodeCache()
@@ -137,5 +140,50 @@ func TestX86SMC_PruneAuxBlockCacheDropsReplacedEntries(t *testing.T) {
 	}
 	if len(aux) != 0 {
 		t.Fatalf("aux cache still contains replaced entry: %#v", aux)
+	}
+}
+
+func TestX86SMC_WasmDriverCacheDropKeepsCollidingLiveEntry(t *testing.T) {
+	const mask = uint32(0x0F)
+	pcCache := make([]byte, (mask+1)*8)
+	store := func(pc, slot uint32) {
+		off := int((pc & mask) << 3)
+		binary.LittleEndian.PutUint32(pcCache[off:off+4], pc)
+		binary.LittleEndian.PutUint32(pcCache[off+4:off+8], slot)
+	}
+	read := func(pc uint32) (tag, slot uint32) {
+		off := int((pc & mask) << 3)
+		return readLE32(pcCache, uint32(off)), readLE32(pcCache, uint32(off+4))
+	}
+
+	store(0x110, 7)
+	x86WasmDropDriverCacheEntry(pcCache, mask, 0x100)
+	if tag, slot := read(0x110); tag != 0x110 || slot != 7 {
+		t.Fatalf("colliding live entry cleared: tag=%#x slot=%d", tag, slot)
+	}
+
+	x86WasmDropDriverCacheEntry(pcCache, mask, 0x110)
+	if tag, slot := read(0x110); tag != 0 || slot != 0 {
+		t.Fatalf("owner entry not cleared: tag=%#x slot=%d", tag, slot)
+	}
+}
+
+func TestX86SMC_WasmDriverCacheResetRewindsSlots(t *testing.T) {
+	pcCache := make([]byte, 16)
+	binary.LittleEndian.PutUint32(pcCache[0:4], 0x100)
+	binary.LittleEndian.PutUint32(pcCache[4:8], 3)
+	binary.LittleEndian.PutUint32(pcCache[8:12], 0x200)
+	binary.LittleEndian.PutUint32(pcCache[12:16], 4)
+	nextSlot := 9
+
+	x86WasmResetDriverCache(pcCache, &nextSlot)
+
+	for i, b := range pcCache {
+		if b != 0 {
+			t.Fatalf("pcCache[%d]=%#x want 0", i, b)
+		}
+	}
+	if nextSlot != 0 {
+		t.Fatalf("nextSlot=%d want 0", nextSlot)
 	}
 }

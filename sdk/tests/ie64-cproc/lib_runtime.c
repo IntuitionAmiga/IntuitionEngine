@@ -19,7 +19,7 @@ main(void)
 	long values[5] = {4, 1, 5, 2, 3};
 	long key = 4;
 	char *end;
-	unsigned char *p, *z, *grown;
+	unsigned char *p, *z, *grown, *shrunk;
 	void *released, *after_release;
 	unsigned int allocations = 0;
 
@@ -49,6 +49,13 @@ main(void)
 	|| strtoul("077!", &end, 0) != 63 || *end != '!'
 	|| strtoll("123", 0, 10) != 123 || strtoull("ff", 0, 16) != 255)
 		return 6;
+	if (strtol("999999999999999999999", &end, 10) != 0x7fffffffffffffffL
+	|| *end || strtol("-999999999999999999999", &end, 10)
+		!= (-0x7fffffffffffffffL - 1) || *end
+	|| strtoul("999999999999999999999", &end, 10)
+		!= 0xffffffffffffffffUL || *end
+	|| strtoull("xyz", &end, 10) != 0 || end[0] != 'x')
+		return 20;
 	qsort(values, 5, sizeof values[0], long_compare);
 	if (values[0] != 1 || values[1] != 2 || values[2] != 3
 	|| values[3] != 4 || values[4] != 5) {
@@ -59,6 +66,9 @@ main(void)
 	}
 	if (*(long *)bsearch(&key, values, 5, sizeof values[0], long_compare) != 4)
 		return 19;
+	key = 9;
+	if (bsearch(&key, values, 5, sizeof values[0], long_compare))
+		return 22;
 	p = malloc(3); z = calloc(4, 2);
 	if (!p || !z || ((uintptr_t)p & 7) || ((uintptr_t)z & 7))
 		return 8;
@@ -68,9 +78,13 @@ main(void)
 	grown = realloc(p, 16);
 	if (!grown || grown[0] != 1 || grown[1] != 2 || grown[2] != 3)
 		return 10;
-	if (malloc(0) || calloc((size_t)-1, 2) || realloc(grown, 0))
+	shrunk = realloc(grown, 2);
+	if (!shrunk || shrunk[0] != 1 || shrunk[1] != 2)
+		return 21;
+	if (malloc(0) || calloc(0, 2) || calloc(2, 0)
+	|| calloc((size_t)-1, 2) || realloc(shrunk, 0))
 		return 11;
-	free(0); free(z); free(grown);
+	free(0); free(z); free(shrunk);
 	if (abs(-3) != 3 || labs(-4) != 4 || llabs(-5) != 5)
 		return 12;
 	released = malloc(8);

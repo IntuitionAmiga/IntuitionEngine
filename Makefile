@@ -785,7 +785,7 @@ test-wasm-build:
 # (tools/wasm/go_js_wasm_exec) exposes the module memory as __goMem, which
 # the wasm JIT runtime needs, mirroring the demo page.
 test-wasm-node:
-	GOOS=js GOARCH=wasm GOEXPERIMENT=none $(GO) test -exec="$(CURDIR)/tools/wasm/go_js_wasm_exec" -tags "novulkan headless" -run 'TestWasm(JIT_|SIMD_)|TestX86WasmJIT_|TestWasmFileBridge_' -count=1 .
+	GOOS=js GOARCH=wasm GOEXPERIMENT=none $(GO) test -exec="$(CURDIR)/tools/wasm/go_js_wasm_exec" -tags "novulkan headless" -run 'TestWasm(JIT_|SIMD_)|TestX86Wasm(JIT_|SIMD_)|TestWasmFileBridge_' -count=1 .
 
 test-wasm: test-wasm-build test-wasm-node
 
@@ -2646,7 +2646,7 @@ help:
 	@echo "  novulkan         - Build without Vulkan (software Voodoo only)"
 	@echo "  headless         - Build without display/audio (CI/testing)"
 	@echo "  headless-novulkan - Fully portable CGO_ENABLED=0 build"
-	@echo "  wasm             - Build the browser demo (js/wasm, interpreter-only IE64 BASIC)"
+	@echo "  wasm             - Build the browser demo (js/wasm, IE64 BASIC machine with wasm JIT backends where available)"
 	@echo "  wasm-profile     - Browser demo build with symbols for devtools profiling (do not deploy)"
 	@echo "  wasm-deploy      - Build the browser demo, then netlify deploy --prod on success"
 	@echo "  test-wasm-build  - Verify the package compiles and links for js/wasm"

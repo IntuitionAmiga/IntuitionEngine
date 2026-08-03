@@ -2,7 +2,10 @@
 
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func runX86WasmNodeInterpreter(t *testing.T, startPC uint32, setup func(*CPU_X86), code []byte) *CPU_X86 {
 	t.Helper()
@@ -38,7 +41,18 @@ func runX86WasmNodeJIT(t *testing.T, startPC uint32, setup func(*CPU_X86), code 
 	if setup != nil {
 		setup(cpu)
 	}
-	cpu.X86ExecuteJIT()
+	done := make(chan struct{})
+	go func() {
+		cpu.X86ExecuteJIT()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		rt := cpu.x86GetWasmRuntime()
+		t.Fatalf("x86 wasm jit timed out (EIP=%#x EAX=%#x ECX=%#x EDX=%#x Flags=%#x blocks=%d)",
+			cpu.EIP, cpu.EAX, cpu.ECX, cpu.EDX, cpu.Flags, len(rt.blocks))
+	}
 	rt := cpu.x86GetWasmRuntime()
 	if rt == nil {
 		t.Fatal("x86 wasm runtime was not retained")
@@ -77,6 +91,53 @@ func TestX86WasmJIT_Node_EndToEndParity(t *testing.T) {
 	}
 }
 
+func TestX86WasmJIT_Node_BoundedDispatchHonoursInstructionBudget(t *testing.T) {
+	const startPC = uint32(0x1000)
+	code := []byte{
+		0xB8, 0x01, 0x00, 0x00, 0x00, // MOV EAX,1
+		0xBB, 0x02, 0x00, 0x00, 0x00, // MOV EBX,2
+		0xF4,
+	}
+
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	cpu.memory = adapter.GetMemory()
+	cpu.x86JitEnabled = true
+	cpu.x86JitPersist = true
+	copy(cpu.memory[startPC:], code)
+	cpu.EIP = startPC
+	cpu.running.Store(true)
+	cpu.Halted = false
+	cpu.x86BudgetActive = true
+	cpu.x86InstrBudget = 1
+
+	done := make(chan struct{})
+	go func() {
+		cpu.X86ExecuteJIT()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("bounded x86 wasm jit timed out (EIP=%#x EAX=%#x EBX=%#x budget=%d)",
+			cpu.EIP, cpu.EAX, cpu.EBX, cpu.x86InstrBudget)
+	}
+
+	if got := cpu.x86InstrBudget; got != 0 {
+		t.Fatalf("budget = %d, want 0", got)
+	}
+	if got := cpu.EAX; got != 1 {
+		t.Fatalf("EAX = %#x, want 1", got)
+	}
+	if got := cpu.EBX; got != 0 {
+		t.Fatalf("EBX = %#x, want 0 after one retirement", got)
+	}
+	if cpu.Halted {
+		t.Fatal("bounded execution ran through HLT")
+	}
+}
+
 func TestX86WasmJIT_Node_RegionPromotionParity(t *testing.T) {
 	const startPC = uint32(0x1000)
 	mem := make([]byte, 0x1100)
@@ -89,29 +150,44 @@ func TestX86WasmJIT_Node_RegionPromotionParity(t *testing.T) {
 		0xEB, 0x0D, // -> 0x1020
 	})
 	copy(mem[0x1020:], []byte{
-		0x4A,       // DEC EDX
-		0x75, 0xDD, // -> 0x1000
+		0x42,       // INC EDX
+		0xEB, 0x0D, // -> 0x1030
+	})
+	copy(mem[0x1030:], []byte{
 		0xF4, // HLT
 	})
-	code := mem[startPC : 0x1023+1]
+	code := mem[startPC:0x1031]
 	setup := func(cpu *CPU_X86) {
 		cpu.EAX = 1
 		cpu.ECX = 2
-		cpu.EDX = 5
+		cpu.EDX = 3
 	}
 
-	oldRegions := x86RegionPromotionEnabled
-	oldThresholds := x86TierController.Thresholds
-	x86RegionPromotionEnabled = true
-	x86TierController.Thresholds.PromoteAtExecCount = 1
-	x86TierController.Thresholds.RegionMinBlocks = 3
-	t.Cleanup(func() {
-		x86RegionPromotionEnabled = oldRegions
-		x86TierController.Thresholds = oldThresholds
-	})
-
 	interp := runX86WasmNodeInterpreter(t, startPC, setup, code)
-	jit, rt := runX86WasmNodeJIT(t, startPC, setup, code)
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	cpu.memory = adapter.GetMemory()
+	cpu.x86JitEnabled = true
+	cpu.x86JitPersist = true
+	copy(cpu.memory[startPC:], code)
+	cpu.EIP = startPC
+	cpu.running.Store(true)
+	cpu.Halted = false
+	setup(cpu)
+	if err := cpu.initX86JIT(); err != nil {
+		t.Fatalf("init x86 wasm jit: %v", err)
+	}
+	rt := cpu.x86GetWasmRuntime()
+	if rt == nil {
+		t.Fatal("x86 wasm runtime was not retained")
+	}
+	promoted := rt.promoteRegion(startPC)
+	if promoted == nil {
+		t.Fatal("promoted entry block missing")
+	}
+	cpu.X86ExecuteJIT()
+	jit := cpu
 	entry := rt.blocks[startPC]
 	if entry == nil {
 		t.Fatal("promoted entry block missing")
