@@ -324,6 +324,12 @@ func amd64MOV_mem_imm32(cb *CodeBuffer, base byte, disp int32, val uint32) {
 	cb.Emit32(val)
 }
 
+// amd64MOV_mem_imm8 emits MOV BYTE [base + disp32], imm8.
+func amd64MOV_mem_imm8(cb *CodeBuffer, base byte, disp int32, val byte) {
+	emitMemOp(cb, false, 0xC6, 0, base, disp) // /0 for MOV imm8
+	cb.EmitBytes(val)
+}
+
 // amd64CMP_mem32_imm0 emits CMP DWORD [base + disp32], 0.
 // Encoding: 0x83 /7 mem imm8 (sign-extended imm8 of 0x00 vs 32-bit mem).
 func amd64CMP_mem32_imm0(cb *CodeBuffer, base byte, disp int32) {

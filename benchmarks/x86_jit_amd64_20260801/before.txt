@@ -1,0 +1,19 @@
+# item: amd64 x86 JIT parity baseline
+# git_ref: detached HEAD f5b0beb6
+# cpu: Intel(R) Xeon(R) W-11955M CPU @ 2.60GHz
+# governor: powersave
+# GOAMD64: v3
+# GOEXPERIMENT: simd
+# tags: headless
+# benchtime: 1s
+# count: 5
+BenchmarkX86JIT_ALU_JIT-16       3123  379222 ns/op  237.3 MIPS_host  90004 instructions/op
+BenchmarkX86JIT_ALU_JIT-16       3142  379359 ns/op  237.3 MIPS_host  90004 instructions/op
+BenchmarkX86JIT_ALU_JIT-16       3163  379781 ns/op  237.0 MIPS_host  90004 instructions/op
+BenchmarkX86JIT_ALU_JIT-16       3108  378952 ns/op  237.5 MIPS_host  90004 instructions/op
+BenchmarkX86JIT_ALU_JIT-16       3166  380532 ns/op  236.5 MIPS_host  90004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16    2847  420047 ns/op  142.9 MIPS_host  60004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16    2731  436308 ns/op  137.5 MIPS_host  60004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16    2820  430946 ns/op  139.2 MIPS_host  60004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16    2851  420786 ns/op  142.6 MIPS_host  60004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16    2799  421771 ns/op  142.3 MIPS_host  60004 instructions/op

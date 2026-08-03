@@ -289,7 +289,7 @@ flowchart LR
 flowchart TB
     HOST["Host runtime<br/>main.go flags, memory sizing,<br/>debug monitor, Lua/IEScript"]
     EXEC["Guest execution<br/>ProgramExecutor + CoprocessorManager<br/>IE32, IE64, M68K, Z80, 6502, x86"]
-    JIT["JIT dispatch<br/>IE64: amd64/arm64/wasm<br/>M68K: amd64/arm64/wasm<br/>6502, Z80, x86: amd64"]
+    JIT["JIT dispatch<br/>IE64: amd64/arm64/wasm<br/>M68K: amd64/arm64/wasm<br/>6502, Z80: amd64<br/>x86: amd64/linux-arm64/wasm"]
     BUS["MachineBus<br/>host-sized RAM, profile clamps,<br/>MapIO / MapIOByte / MapIO64,<br/>ioPageBitmap fast path"]
     MEM["Memory discovery<br/>SYSINFO_TOTAL_RAM_LO/HI<br/>SYSINFO_ACTIVE_RAM_LO/HI<br/>IE64 CR_RAM_SIZE_BYTES"]
     OS["OS and loader shims<br/>EmuTOS + GEMDOS/XBIOS<br/>AROS + DOS/audio DMA<br/>Boot HostFS"]
@@ -565,13 +565,13 @@ never emitted unless the host supports them.
 | Windows arm64 | IE64, M68K | IE64 and M68K dispatch; other non-IE64 cores use stubs |
 | macOS amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
 | macOS arm64 | IE64, M68K | IE64 and M68K dispatch plus Darwin arm64 JIT write-protect helpers |
-| Browser (js/wasm) | IE64, M68K (wasm bytecode backends) | `jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go` |
+| Browser (js/wasm) | IE64, M68K and x86 (wasm bytecode backends) | `jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_x86_dispatch_wasm.go` |
 
 On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles. IE64 and M68K have arm64 backends; the other guest cores remain interpreter-only.
 
 On js/wasm the native backends are absent because the browser gives Go no
-executable memory. IE64 and M68K use separate wasm bytecode backends instead;
-see the backend sections below. IE32, 6502, Z80 and x86 interpret in the
+executable memory. IE64, M68K and x86 use separate wasm bytecode backends
+instead; see the backend sections below. IE32, 6502 and Z80 interpret in the
 browser.
 
 ### M68020 JIT Backends

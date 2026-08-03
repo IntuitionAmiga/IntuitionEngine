@@ -942,8 +942,8 @@ func TestX86WasmCompileBlockModule_AddSubFeedConditionals(t *testing.T) {
 	if got := readU32(ctxAddr + x86CtxOffRetPC); got != 0x124 {
 		t.Fatalf("RetPC=%#x want %#x", got, uint32(0x124))
 	}
-	if got := readU32(flagsAddr) & x86VisibleFlagsMask; got != (x86FlagOF | x86FlagSF | x86FlagPF) {
-		t.Fatalf("Flags=%#x want %#x", got, uint32(x86FlagOF|x86FlagSF|x86FlagPF))
+	if got := readU32(flagsAddr) & x86VisibleFlagsMask; got != (x86FlagOF | x86FlagSF | x86FlagPF | x86FlagAF) {
+		t.Fatalf("Flags=%#x want %#x", got, uint32(x86FlagOF|x86FlagSF|x86FlagPF|x86FlagAF))
 	}
 }
 
@@ -1049,8 +1049,8 @@ func TestX86WasmCompileBlockModule_Group1ImmediateAndIncDecFeedConditionals(t *t
 	if got := readU32(ctxAddr + x86CtxOffRetPC); got != 0x129 {
 		t.Fatalf("RetPC=%#x want %#x", got, uint32(0x129))
 	}
-	if got := readU32(flagsAddr) & x86VisibleFlagsMask; got != (x86FlagOF | x86FlagSF | x86FlagPF) {
-		t.Fatalf("Flags=%#x want %#x", got, uint32(x86FlagOF|x86FlagSF|x86FlagPF))
+	if got := readU32(flagsAddr) & x86VisibleFlagsMask; got != (x86FlagOF | x86FlagSF | x86FlagPF | x86FlagAF) {
+		t.Fatalf("Flags=%#x want %#x", got, uint32(x86FlagOF|x86FlagSF|x86FlagPF|x86FlagAF))
 	}
 }
 

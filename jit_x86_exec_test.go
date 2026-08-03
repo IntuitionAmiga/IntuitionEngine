@@ -2471,6 +2471,56 @@ func TestX86JIT_X87ExtendedRegisterFormsAreAdmitted(t *testing.T) {
 	}
 }
 
+func TestX86JIT_X87RegisterStackTagParity(t *testing.T) {
+	tests := []struct {
+		name  string
+		code  []byte
+		setup func(*CPU_X86)
+	}{
+		{
+			name: "fld_sti_copies_zero_tag",
+			code: []byte{0xD9, 0xC1, 0xF4}, // FLD ST(1); HLT
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.push(0)
+				cpu.FPU.push(1.25)
+			},
+		},
+		{
+			name: "fstp_sti_copies_zero_tag",
+			code: []byte{0xDD, 0xD9, 0xF4}, // FSTP ST(1); HLT
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.push(2.5)
+				cpu.FPU.push(0)
+			},
+		},
+		{
+			name: "direct_arithmetic_reclassifies_zero_result",
+			code: []byte{0xD8, 0xE1, 0xF4}, // FSUB ST(0), ST(1); HLT
+			setup: func(cpu *CPU_X86) {
+				cpu.FPU.push(1.25)
+				cpu.FPU.push(1.25)
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jit := runX86JITProgramWithSetup(t, 0x1000, tt.setup, tt.code...)
+			interp := runX86InterpreterProgramWithSetup(t, 0x1000, tt.setup, tt.code...)
+			if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+				t.Fatalf("FSW = 0x%04X, want 0x%04X", got, want)
+			}
+			if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+				t.Fatalf("FTW = 0x%04X, want 0x%04X", got, want)
+			}
+			for i := range jit.FPU.regs {
+				if got, want := jit.FPU.regs[i], interp.FPU.regs[i]; got != want {
+					t.Fatalf("FPU physical register %d = %v, want %v", i, got, want)
+				}
+			}
+		})
+	}
+}
+
 func TestX86JIT_X87HelperFormsMatchInterpreter(t *testing.T) {
 	// F2XM1 is deliberately not an SSE operation.  Its compiled-prefix miss
 	// must take the decoded helper path and retain the interpreter's status and

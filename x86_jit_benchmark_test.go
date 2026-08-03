@@ -17,7 +17,7 @@
 // Keep raw before/after samples with the reviewed change. Host speedups are
 // not portable across CPU model, governor, Go version or JIT workload mix.
 
-//go:build amd64 && linux
+//go:build (amd64 || arm64) && linux
 
 package main
 

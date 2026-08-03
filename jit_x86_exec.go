@@ -175,7 +175,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// MMIO status spin loops dominate demo wait time. Handle the common
 		// MOV/TEST/Jcc-back pattern directly so JIT-enabled execution doesn't
 		// bounce through one-instruction fallbacks for every poll.
-		if cpu.tryFastMMIOPollLoopJIT() {
+		if !bounded && cpu.tryFastMMIOPollLoopJIT() {
 			continue
 		}
 
@@ -302,10 +302,10 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			}
 
 			// Patch chain slots bidirectionally -- only for compatible register maps
-			if x86BlockChainingEnabled && block.chainEntry != 0 {
+			if !bounded && x86BlockChainingEnabled && block.chainEntry != 0 {
 				x86PatchCompatibleChainsTo(cpu.x86JitCache, block)
 			}
-			if x86BlockChainingEnabled {
+			if !bounded && x86BlockChainingEnabled {
 				for i := range block.chainSlots {
 					slot := &block.chainSlots[i]
 					if target := cpu.x86JitCache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
@@ -357,14 +357,14 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// the running block — without that gate, a Tier-2 callee could
 		// chain back into a Tier-1 caller (or vice versa) with mapped
 		// guest registers reading the wrong host registers.
-		if x86RTSChainingEnabled && block.chainEntry != 0 {
+		if !bounded && x86RTSChainingEnabled && block.chainEntry != 0 {
 			ctx.RTSCache1PC = ctx.RTSCache0PC
 			ctx.RTSCache1Addr = ctx.RTSCache0Addr
 			ctx.RTSCache1RegMap = ctx.RTSCache0RegMap
 			ctx.RTSCache0PC = uint32(block.startPC)
 			ctx.RTSCache0Addr = block.chainEntry
 			ctx.RTSCache0RegMap = x86RegMapToUint64(block.regMap)
-		} else if !x86RTSChainingEnabled {
+		} else {
 			ctx.RTSCache0PC = 0
 			ctx.RTSCache0Addr = 0
 			ctx.RTSCache0RegMap = 0
@@ -413,7 +413,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// in jit_x86_shadow_parity_test.go); the outer-loop budget
 		// subtraction then catches up on the next iteration.
 		if bounded {
-			ctx.ChainBudget = 1
+			ctx.ChainBudget = 0
 		} else {
 			ctx.ChainBudget = 65536
 		}
@@ -450,7 +450,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		if executed == 0 {
 			if ctx.ChainCount > 0 {
 				executed = uint64(ctx.ChainCount)
-			} else {
+			} else if ctx.NeedIOFallback == 0 {
 				executed = uint64(block.instrCount)
 			}
 		}
@@ -567,8 +567,24 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			}
 			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
 			block.ioBails++ // profile counter for promotion decisions
-			if fastCount, ok := cpu.tryFastMMIOWriteFallbackJIT(); ok {
-				executed += fastCount
+			if !bounded {
+				if fastCount, ok := cpu.tryFastMMIOWriteFallbackJIT(); ok {
+					executed += fastCount
+				} else {
+					cpu.syncJITRegsToNamed()
+					var stepT0 time.Time
+					if perfAcctOn {
+						stepT0 = time.Now()
+					}
+					cpu.x86RenormalizeFPUBoundary()
+					cpu.Step()
+					if perfAcctOn {
+						cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
+					}
+					diagFallbackInstr++
+					executed++
+					cpu.syncJITRegsFromNamed()
+				}
 			} else {
 				cpu.syncJITRegsToNamed()
 				var stepT0 time.Time
@@ -818,14 +834,6 @@ func (cpu *CPU_X86) setReg8ForFallback(useJITRegs bool, idx byte, value byte) {
 	cpu.jitRegs[regIdx] = (cpu.jitRegs[regIdx] &^ mask) | (uint32(value) << shift)
 }
 
-func x86JITReg8Index(idx byte) (int, uint) {
-	idx &= 7
-	if idx < 4 {
-		return int(idx), 0
-	}
-	return int(idx - 4), 8
-}
-
 func (cpu *CPU_X86) hasPendingX86Interrupt() bool {
 	return cpu.nmiPending.Load() || (cpu.irqPending.Load() && cpu.IF())
 }
@@ -861,7 +869,7 @@ func (cpu *CPU_X86) x86RunInterpreter() {
 		if yieldCheck&0xFFF == 0 {
 			hostCooperativeYield()
 		}
-		if cpu.tryFastMMIOPollLoop() {
+		if !bounded && cpu.tryFastMMIOPollLoop() {
 			continue
 		}
 		cpu.x86RenormalizeFPUBoundary()

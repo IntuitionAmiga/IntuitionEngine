@@ -1,0 +1,19 @@
+# item: amd64 x86 JIT parity current worktree
+# base_ref: f5b0beb6
+# cpu: Intel(R) Xeon(R) W-11955M CPU @ 2.60GHz
+# governor: powersave
+# GOAMD64: v3
+# GOEXPERIMENT: simd
+# tags: headless
+# benchtime: 1s
+# count: 5
+BenchmarkX86JIT_ALU_JIT-16       3043  380787 ns/op  236.4 MIPS_host  90004 instructions/op
+BenchmarkX86JIT_ALU_JIT-16       3177  379286 ns/op  237.3 MIPS_host  90004 instructions/op
+BenchmarkX86JIT_ALU_JIT-16       3130  379956 ns/op  236.9 MIPS_host  90004 instructions/op
+BenchmarkX86JIT_ALU_JIT-16       3150  380070 ns/op  236.8 MIPS_host  90004 instructions/op
+BenchmarkX86JIT_ALU_JIT-16       3145  379856 ns/op  236.9 MIPS_host  90004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16    2896  416094 ns/op  144.2 MIPS_host  60004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16    2882  416045 ns/op  144.2 MIPS_host  60004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16    2899  414599 ns/op  144.7 MIPS_host  60004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16    2894  414891 ns/op  144.6 MIPS_host  60004 instructions/op
+BenchmarkX86JIT_Memory_JIT-16    2809  417508 ns/op  143.7 MIPS_host  60004 instructions/op

@@ -85,6 +85,36 @@ func TestX86JIT_FPU_FSTP_STi_NonZeroTop(t *testing.T) {
 	}
 }
 
+func TestX86JIT_FPU_FSTP_STi_CopiesExactTagClass(t *testing.T) {
+	setup := func(cpu *CPU_X86) {
+		cpu.FPU.Reset()
+		cpu.FPU.setTop(5)
+		cpu.FPU.regs[5] = 0.0
+		cpu.FPU.setTag(5, x87TagZero)  // ST(0)
+		cpu.FPU.regs[7] = 1.5
+		cpu.FPU.setTag(7, x87TagValid) // ST(2)
+	}
+
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, 0xDD, 0xDA, 0xF4)      // FSTP ST(2); HLT
+	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, 0xDD, 0xDA, 0xF4)
+
+	if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
+		t.Fatalf("FTW=%04X want %04X", got, want)
+	}
+	if got, want := jit.FPU.FSW, interp.FPU.FSW; got != want {
+		t.Fatalf("FSW=%04X want %04X", got, want)
+	}
+	if got, want := jit.FPU.regs[7], interp.FPU.regs[7]; got != want {
+		t.Fatalf("phys7=%f want %f", got, want)
+	}
+	if got, want := jit.FPU.getTag(7), interp.FPU.getTag(7); got != want {
+		t.Fatalf("tag(7)=%d want %d", got, want)
+	}
+	if got, want := jit.FPU.getTag(0), interp.FPU.getTag(0); got != want {
+		t.Fatalf("tag(0)=%d want %d", got, want)
+	}
+}
+
 func TestX86JIT_FPU_DDReg2IsNotNativeFST(t *testing.T) {
 	// This project's interpreter deliberately leaves DD /2 register forms as
 	// no-ops. A native FST ST(i) here would create a JIT-only guest ISA.

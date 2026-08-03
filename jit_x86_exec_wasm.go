@@ -300,7 +300,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				cpu.syncJITRegsFromNamed()
 			}
 		}
-		if cpu.tryFastMMIOPollLoopJIT() {
+		if !bounded && cpu.tryFastMMIOPollLoopJIT() {
 			continue
 		}
 		pc := cpu.EIP
@@ -395,7 +395,7 @@ func (cpu *CPU_X86) x86RunInterpreter() {
 		if yieldCheck&0xFFF == 0 {
 			hostCooperativeYield()
 		}
-		if cpu.tryFastMMIOPollLoop() {
+		if !bounded && cpu.tryFastMMIOPollLoop() {
 			continue
 		}
 		cpu.x86RenormalizeFPUBoundary()

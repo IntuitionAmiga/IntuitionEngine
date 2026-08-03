@@ -362,7 +362,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-x86-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries test-ie64-toolchain ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-iedoom-timedemo
+.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-x86-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries test-ie64-toolchain ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-bench-baseline x86-bench-after x86-bench-compare x86-iedoom-timedemo
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -460,6 +460,27 @@ bench-compare:
 	tee "$(BENCH_DIR)/benchstat.txt" < "$$tmp" || status=$$?; \
 	$(RM) -f "$$tmp"; \
 	exit $$status
+
+# x86 benchmark wrappers over the generic bench-* flow. These keep the
+# accepted workload selection stable across amd64 and native Linux/ARM64
+# hosts while leaving placement policy and BENCH_ITEM caller-owned.
+x86-bench-baseline:
+	@$(MAKE) bench-baseline \
+		BENCH_REGEX='BenchmarkX86JIT_' \
+		BENCH_TAGS='headless' \
+		BENCH_PKG='.'
+
+x86-bench-after:
+	@$(MAKE) bench-after \
+		BENCH_REGEX='BenchmarkX86JIT_' \
+		BENCH_TAGS='headless' \
+		BENCH_PKG='.'
+
+x86-bench-compare:
+	@$(MAKE) bench-compare \
+		BENCH_REGEX='BenchmarkX86JIT_' \
+		BENCH_TAGS='headless' \
+		BENCH_PKG='.'
 
 test-makefile:
 	@bash ./scripts/test-makefile.sh

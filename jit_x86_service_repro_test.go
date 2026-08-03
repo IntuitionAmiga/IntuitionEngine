@@ -3,7 +3,6 @@
 package main
 
 import (
-	"fmt"
 	"math"
 	"os"
 	"testing"
@@ -99,9 +98,7 @@ func TestX86JIT_ServiceParityWindows(t *testing.T) {
 	const window = 50
 	for cp := 1; cp <= 2000; cp++ {
 		x86ShadowStepBudget(t, interp, false, window, 20*time.Second)
-		fmt.Printf("cp %d interp ok EIP=%08X\n", cp, interp.EIP)
 		x86ShadowStepBudget(t, jit, true, window, 20*time.Second)
-		fmt.Printf("cp %d jit ok EIP=%08X\n", cp, jit.EIP)
 
 		interpBytes, interpSum := x86CanonicalStateHash(interp)
 		jitBytes, jitSum := x86CanonicalStateHash(jit)

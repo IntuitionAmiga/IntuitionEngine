@@ -280,6 +280,9 @@ type x86JITDynamicCycle struct {
 func x86JITDynamicCycles(instrs []X86JITInstr) []x86JITDynamicCycle {
 	var forms []x86JITDynamicCycle
 	for _, ji := range instrs {
+		if ji.opcode >= 0x100 {
+			continue // dynamic string accounting applies only to 1-byte opcodes
+		}
 		width := uint32(4)
 		if ji.prefixes&x86PrefOpSize != 0 {
 			width = 2
@@ -333,8 +336,12 @@ func x86FPUHelperPayloadFor(ji X86JITInstr, memory []byte, cs uint16) (x86FPUHel
 		ModRM:    ji.modrm,
 		Prefixes: ji.prefixes,
 		Length:   uint8(ji.length),
+		Width:    x86FPUHelperAccessWidthFromOpcode(byte(ji.opcode), ji.modrm),
 	}
 	copy(p.Bytes[:], memory[ji.opcodePC:ji.opcodePC+uint32(ji.length)])
+	if seg, ok := x86FPUHelperSegmentFromPayload(p); ok {
+		p.Segment = seg
+	}
 	return p, true
 }
 

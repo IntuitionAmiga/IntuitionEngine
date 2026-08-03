@@ -554,22 +554,43 @@ go test -tags headless -run='^$' -bench 'BenchmarkX86JIT_(ALU|Mixed)_JIT' -bench
 
 ### Bounded Shadow Parity
 
-The amd64 shadow suite runs the canonical rotozoomer, ANTIC plasma and linked
+The shadow suite now runs on every live x86 JIT backend: amd64, Linux/ARM64
+and js/wasm. It drives the canonical rotozoomer, ANTIC plasma and linked
 IEDoom image in four 50,000-instruction windows through both interpreter and
 JIT paths. Each checkpoint compares register and segment state, EIP, EFLAGS,
-cycles, all physical x87 registers, FCW/FSW/FTW, FIP/FCS/FDP/FDS/FOP, and a
-SHA-256 digest of guest backing memory. Headless tests do not create a video
-device, so device-specific framebuffer or audio hashes require a separate
-deterministic device fixture.
+cycles, all physical x87 registers, FCW/FSW/FTW, FIP/FCS/FDP/FDS/FOP, a
+SHA-256 digest of guest backing memory, a framebuffer hash, and a VideoChip
+debug-snapshot hash. The fixture maps a deterministic VideoChip onto the test
+bus and keys VBlank visibility from guest cycles rather than wall clock, so
+display waits remain reproducible across interpreter and native dispatch.
+
+The checked bounded parity gate is `make test-x86-jit-parity`. It runs the
+focused amd64 manifest and x87 parity tests, the amd64 bounded demo shadow
+parity workloads, the website x86 demo-distribution check, the browser wasm
+SIMD instantiation probe, the host-side wasm builder coverage rows, the real
+js/wasm build and Node runtime gates, and the bounded Linux/ARM64 x87,
+manifest and demo shadow-parity sweep under `qemu-aarch64`.
 
 ---
 
 ## Benchmark Results
 
-The checked benchmark harness is `x86_jit_benchmark_test.go`. Run it through
-the normal host environment with `GOEXPERIMENT=simd`, retain raw samples, and
-compare matched baseline and worktree runs. Host MIPS and speedups are not
-portable across CPU model, governor, Go version or workload mix.
+The checked benchmark harness is `x86_jit_benchmark_test.go`. It builds on
+native Linux amd64 and Linux arm64 hosts. Run it through the normal host
+environment with `GOEXPERIMENT=simd`, retain raw samples, and compare matched
+baseline and worktree runs. Host MIPS and speedups are not portable across CPU
+model, governor, Go version or workload mix.
+
+The generic benchmark capture flow is wrapped for x86 by
+`make x86-bench-baseline`, `make x86-bench-after`, and
+`make x86-bench-compare`. These pin the x86 benchmark regex, package and
+headless tag while leaving `BENCH_ITEM`, `BENCH_TIME`, `BENCH_COUNT`,
+`BENCH_LAUNCH` and `BENCH_GOEXPERIMENT` caller-owned.
+
+The checked-in retained-performance evidence is currently amd64-only. It is the
+reviewed gate for retained amd64-specific optimisations. Linux/ARM64 still uses
+QEMU for correctness coverage only until the same benchmark and timedemo
+workflow are run on real hardware.
 
 The latest reviewable matched samples are in
 `benchmarks/x86_jit_amd64_20260801/`. On the recorded Intel Xeon W-11955M,
@@ -588,6 +609,17 @@ is observed. The current amd64 JIT record is 23,026 ms from tic 1 through
 tic 350 on the recorded Xeon W-11955M; see
 `benchmarks/x86_jit_amd64_20260801/iedoom_timedemo.md`. This is one host's
 completion record, not a portable speed claim.
+
+### Linux/ARM64 Performance Acceptance
+
+Linux/ARM64 correctness is gated under `qemu-aarch64` by
+`make test-x86-jit-parity`, but QEMU is not treated as a performance oracle.
+Real ARM64 acceptance remains pending until the same timedemo and
+`BENCH_LAUNCH` workflow are run on native Linux/ARM64 hardware and their raw
+samples are retained beside the result. Use `make x86-bench-baseline`,
+`make x86-bench-after`, `make x86-bench-compare`, and
+`make x86-iedoom-timedemo` on the ARM64 host. Until then the tree advertises
+correctness coverage for ARM64, not measured performance parity.
 
 ---
 
@@ -663,7 +695,6 @@ single-instance IPC.
 
 ### Deferred
 
-- ARM64 chaining and region promotion
 - AVX2 bulk memory for REP STOS/MOVS (VMOVDQU 32-byte loops)
 - Jcc two-way chain slots (taken + not-taken for inter-block conditional branches)
 - Loop memory-check hoisting for linear base+stride patterns

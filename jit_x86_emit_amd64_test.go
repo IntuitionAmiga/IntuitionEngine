@@ -1723,7 +1723,7 @@ func TestX86JIT_SHLDCLZeroPreservesFlags(t *testing.T) {
 	}
 }
 
-func TestX86JIT_DoubleShiftOpSizePrefixFallsBack(t *testing.T) {
+func TestX86JIT_DoubleShiftOpSizePrefixCompilesDirect(t *testing.T) {
 	r := newX86JITTestRig(t)
 	r.cpu.memory[0x1000] = 0x66
 	r.cpu.memory[0x1001] = 0x0F
@@ -1736,31 +1736,31 @@ func TestX86JIT_DoubleShiftOpSizePrefixFallsBack(t *testing.T) {
 		t.Fatal("x86ScanBlock returned 0 instructions")
 	}
 	block, err := x86CompileBlock(instrs, 0x1000, r.execMem, r.cpu.memory)
-	if err == nil {
-		t.Fatalf("operand-size SHRD compiled to block %#v, want fallback", block)
+	if err != nil {
+		t.Fatalf("operand-size SHRD compile error = %v", err)
 	}
-	if err.Error() != "no instructions compiled" {
-		t.Fatalf("compile error = %v, want no instructions compiled", err)
+	if block == nil || block.execAddr == 0 {
+		t.Fatalf("operand-size SHRD compiled to empty block %#v", block)
 	}
 }
 
-func TestX86JIT_FallbackBeforeOpSizeDoubleShiftPreservesPriorFlags(t *testing.T) {
+func TestX86JIT_OpSizeDoubleShiftWritesAXAndCapturesFlags(t *testing.T) {
 	r := newX86JITTestRig(t)
-	r.cpu.EAX = 0xFFFFFFFF
+	r.cpu.EAX = 0xDEADBEEF
 	r.cpu.EDX = 1
-	r.cpu.EBX = 5
 
 	r.compileAndRun(t, 0x1000,
-		0x01, 0xD0, // ADD EAX, EDX ; EAX=0, CF=1
-		0x66, 0x0F, 0xAC, 0xD0, 0x01, // SHRD AX, DX, 1; fallback boundary
-		0x29, 0xD3, // SUB EBX, EDX; must not shadow ADD before fallback
+		0x66, 0x0F, 0xAC, 0xD0, 0x01, // SHRD AX, DX, 1
 	)
 
-	if r.cpu.EIP != 0x1002 {
-		t.Fatalf("EIP = %#x, want fallback boundary %#x", r.cpu.EIP, uint32(0x1002))
+	if r.cpu.EIP != 0x1005 {
+		t.Fatalf("EIP = %#x, want %#x after direct SHRD", r.cpu.EIP, uint32(0x1005))
+	}
+	if got, want := r.cpu.EAX, uint32(0xDEADDF77); got != want {
+		t.Fatalf("EAX = %#x, want %#x", got, want)
 	}
 	if r.cpu.Flags&x86FlagCF == 0 {
-		t.Fatalf("CF cleared at fallback boundary, flags=%#x", r.cpu.Flags)
+		t.Fatalf("CF not captured from operand-size SHRD, flags=%#x", r.cpu.Flags)
 	}
 }
 
@@ -1911,8 +1911,9 @@ func TestX86JIT_AMD64CoverageManifest(t *testing.T) {
 		if row.amd64 != x86JITCoverageDirect && row.amd64 != x86JITCoverageFPUHelper {
 			t.Fatalf("%s: invalid amd64 coverage path %q", row.form, row.amd64)
 		}
-		if row.wasm != x86JITCoverageUnavailable {
-			t.Fatalf("%s: unavailable wasm backend must not claim partial coverage", row.form)
+		if row.wasm != x86JITCoverageDirect && row.wasm != x86JITCoverageFPUHelper &&
+			row.wasm != x86JITCoverageUnavailable {
+			t.Fatalf("%s: invalid wasm coverage path %q", row.form, row.wasm)
 		}
 
 		for i := range r.cpu.memory[pc : pc+32] {

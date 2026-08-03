@@ -223,7 +223,7 @@ for target in \
   iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets \
   arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-release-rom basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
   test-makefile test-cross test-cross-binaries test-x86-jit-parity ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
-  test-x86-harte test-x86-harte-short release-verify x64-live-sdk-tools iedoom iedoom-ie86 iedoom-ie68 x86-iedoom-timedemo; do
+  test-x86-harte test-x86-harte-short release-verify x64-live-sdk-tools iedoom iedoom-ie86 iedoom-ie68 x86-bench-baseline x86-bench-after x86-bench-compare x86-iedoom-timedemo; do
   assert_phony "$target"
   assert_target_exists "$target"
 done
@@ -271,6 +271,15 @@ assert_var IEDOOM_WAD DOOM1.WAD
 assert_var IEDOOM_TIMED_IE86 build/iedoom_timedemo.ie86
 assert_var IEDOOM_TIMED_SCRIPT bench/measure_timedemo.ies
 assert_makefile_contains '^iedoom: iedoom-ie86 iedoom-ie68'
+assert_recipe_contains x86-bench-baseline "BENCH_REGEX='BenchmarkX86JIT_'"
+assert_recipe_contains x86-bench-baseline "BENCH_TAGS='headless'"
+assert_recipe_contains x86-bench-baseline "BENCH_PKG='\\.'"
+assert_recipe_contains x86-bench-after "BENCH_REGEX='BenchmarkX86JIT_'"
+assert_recipe_contains x86-bench-after "BENCH_TAGS='headless'"
+assert_recipe_contains x86-bench-after "BENCH_PKG='\\.'"
+assert_recipe_contains x86-bench-compare "BENCH_REGEX='BenchmarkX86JIT_'"
+assert_recipe_contains x86-bench-compare "BENCH_TAGS='headless'"
+assert_recipe_contains x86-bench-compare "BENCH_PKG='\\.'"
 assert_recipe_contains x86-iedoom-timedemo 'IE_NO_IPC=1'
 assert_recipe_contains x86-iedoom-timedemo '-script-owned-term'
 assert_recipe_contains x86-iedoom-timedemo '-script "bench/measure_timedemo\.ies"'
