@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -27,8 +29,28 @@ func TestHostSDKPublicHeaderContract(t *testing.T) {
 			t.Fatalf("public header mentions removed private header %q", forbidden)
 		}
 	}
-	if !strings.Contains(text, "#define IE_COPROC_BASE 0x0f2340u") {
-		t.Fatal("public header has an incorrect coprocessor MMIO base")
+	defineRE := regexp.MustCompile(`(?m)^#define ([A-Z0-9_]+) 0x([0-9a-fA-F]+)u$`)
+	defines := make(map[string]uint64)
+	for _, match := range defineRE.FindAllStringSubmatch(text, -1) {
+		value, err := strconv.ParseUint(match[2], 16, 64)
+		if err != nil {
+			t.Fatalf("parse %s: %v", match[1], err)
+		}
+		defines[match[1]] = value
+	}
+	for name, want := range map[string]uint64{
+		"IE_VIDEO_CTRL":      VIDEO_CTRL,
+		"IE_INPUT_TERM_OUT":  TERM_OUT,
+		"IE_AUDIO_BASE":      AUDIO_CTRL,
+		"IE_FILE_BASE":       FILE_IO_BASE,
+		"IE_EXEC_BASE":       EXEC_BASE,
+		"IE_COPROC_BASE":     COPROC_BASE,
+		"IE_NET_SOCKET_BASE": HOST_SOCKET_BASE,
+		"IE_VOODOO_BASE":     VOODOO_BASE,
+	} {
+		if got, ok := defines[name]; !ok || got != want {
+			t.Errorf("public header %s = 0x%X, want executable-source value 0x%X", name, got, want)
+		}
 	}
 }
 

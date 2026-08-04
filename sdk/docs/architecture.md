@@ -37,7 +37,7 @@ flowchart LR
         PB["profile_bounds.go<br/>profile visible-RAM clamps"]
         DBG["Debug monitor<br/>breakpoints, watchpoints,<br/>CPU-local and whole-machine snapshots"]
         LUA["ScriptEngine<br/>Lua / IEScript"]
-        SDK["SDK tools<br/>ie32asm, ie64asm, ie64dis,<br/>ie32to64, test generators"]
+        SDK["Host SDK and tools<br/>assemblers, converters, IE64 C compiler,<br/>linker, archive tools, headers"]
     end
 
     subgraph EXECUTION["Guest execution"]
@@ -461,7 +461,7 @@ flowchart LR
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
 | Audio | SoundChip/SFX, PSG/AY, SN76489, SID x3, TED, POKEY/SAP, AHX, MOD, WAV, MIDI/MUS | `audio_chip.go`, `sfx_trigger.go`, `psg_engine.go`, `sn76489_chip.go`, `sid_engine.go`, `ted_engine.go`, `pokey_engine.go`, `ahx_player.go`, `mod_player.go`, `wav_player.go`, `midi_player.go` | `main.go` maps chip/player MMIO and registers sample tickers/mixers into SoundChip; register-mapped players share `PlayerControlState` for staged playback requests |
 | OS integration | EmuTOS, AROS, GEMDOS/XBIOS, M68K DOS bridge, Paula-style DMA | `emutos_loader.go`, `aros_loader.go`, `gemdos_intercept.go`, `aros_dos_intercept.go`, `aros_audio_dma.go` | OS profiles install their intercept MMIO and loader state during boot/reset; flat M68K mode installs the host-backed DOS bridge directly |
-| Tooling | Assemblers, disassembler, transpiler, generators | `assembler/`, `internal/ie64meta/`, `cmd/gen_ie64_opmeta/`, `cmd/ie32to64/`, `cmd/gen_m68k_cputest/`, `cmd/gen_interp6502/` | Makefile builds SDK tools into `sdk/bin/`; IE64 opcode constants and name tables are generated from metadata |
+| Tooling | Assemblers, disassembler, converters, IE64 C compiler, linker, archive tools, generators, and public headers | `assembler/`, `cmd/ie32to64/`, `cmd/ie64-cproc/`, `cmd/ie64ld/`, `cmd/ie64-ar/`, `cmd/ie64-ranlib/`, `internal/ie64meta/`, `internal/ie64obj/`, `internal/ie64link/`, `internal/ie64archive/`, `sdk/include/intuitionengine.h` | Makefile builds individual SDK tools and the Linux x86-64 Host SDK. The Host SDK combines first-party tools, IE64 C runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation |
 
 ### Internal Ownership Notes
 
@@ -912,6 +912,13 @@ AppArmor profile grants the standard audio abstraction and read access to the
 PipeWire configuration required by this route. This is a live-image host
 backend choice; it does not change the guest audio devices or their MMIO
 contracts.
+
+The Linux x86-64 Host SDK packages `ie32asm`, `ie32to64`, `ie64asm`,
+`ie64dis`, `ie64-cproc`, `ie64ld`, `ie64-ar`, `ie64-ranlib`, QBE, cproc-qbe,
+the IE64 runtime and libraries, public assembly includes,
+`intuitionengine.h`, and user documentation. The x64 live image stages that
+archive and its SHA-256 file under `SDK/Toolchains`; the former per-platform
+`SDK/Tools` tree and standalone IE64 toolchain archive are not staged.
 
 Browser builds use an IE64 WebAssembly bytecode JIT for supported MMU-off
 integer, FP32, and FP64 blocks, with interpreter fallback and

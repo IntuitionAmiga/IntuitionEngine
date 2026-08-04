@@ -3404,6 +3404,58 @@ and left untouched. The refman source and publish trees remain render inputs
 only for this pass.
 Disposition: KEEP.
 
+ID: SDK-DOC-0094
+Status: FIXED
+Document: `sdk/docs/architecture.md` and Host SDK public header.
+Section: Complete architecture diagram, subsystem matrix, build profiles, and
+public hardware definitions.
+Claim: The Host SDK tool inventory and its target-selected C hardware header
+match the tools and MMIO addresses implemented by source on disk.
+Purpose judgement: The architecture manual is the user-facing system inventory,
+while `intuitionengine.h` is a shipped programming contract. Both must describe
+the current Host SDK without moving tooling material into either CPU ISA manual.
+Canonical sources checked: `scripts/dist-host-sdk-linux-amd64.sh`,
+`build_x64_ie_img.sh`, `program_executor_constants.go`,
+`file_io_constants.go`, the assembly includes, `main.go`, and
+`sdk/include/intuitionengine.h`.
+Runnable verification: `go test -tags headless -run
+'TestHostSDKPublicHeaderContract|TestHostSDKAssemblyIncludeInventory|TestSDKArchitectureSourceInventoryGoldenMatchesSource|TestSDKArchitectureManualCoverageMatchesSourceInventory|TestSDKCompanionDocs'
+.`
+Observed result: The public C header now maps File I/O to `0xF2200` and the
+Program Executor to `0xF2320`, matching executable source, assembly includes,
+and the architecture memory map. The architecture diagram and tooling matrix
+now include the compiler, linker, archive tools, public header, and consolidated
+Linux x86-64 Host SDK. The live-image payload contract identifies the Host SDK
+archive and checksum under `SDK/Toolchains` and excludes the retired payloads.
+Action: Corrected both public constants, added structured source-value checks,
+updated `architecture.md`, and added empirical architecture facts.
+Notes: IE64 and IE32 ISA semantics did not change; compiler, linker, archive,
+and distribution behaviour remains outside those processor manuals.
+Disposition: KEEP.
+
+ID: SDK-DOC-0095
+Status: FIXED
+Document: All five shipped PDFs and render manifest.
+Section: Final PDF render gate.
+Claim: The render manifest covers every root Go input and critical manual,
+inventory, ledger, renderer, and PDF path, and every recorded hash matches the
+current file on disk.
+Purpose judgement: A green documentation test is insufficient if the checksum
+manifest omits a new source file or retains hashes from an earlier render.
+Canonical sources checked: `sdk/docs/verify/SDK_DOC_PDF_RENDER_MANIFEST.sha256`,
+root Go files, the five manuals and PDFs, empirical inventories, ledger, and PDF
+render scripts.
+Runnable verification: `go test -tags headless -run
+TestSDKDocPDFRenderManifestMatchesCurrentInputs .` and `sha256sum -c
+sdk/docs/verify/SDK_DOC_PDF_RENDER_MANIFEST.sha256`.
+Observed result: The new gate rejects missing root Go files and stale hashes;
+the final manifest is refreshed only after the final five-PDF render.
+Action: Added a checksum-and-coverage regression test and repeated the final
+render-manifest workflow.
+Notes: This gate is expected to fail after source/manual changes and before the
+final render-manifest refresh. It must pass after rendering before completion.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
