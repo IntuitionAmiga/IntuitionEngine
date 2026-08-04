@@ -54,10 +54,14 @@ mkdir -p "${stage}/bin" "${stage}/include" \
     "${stage}/lib/ie64-unknown-none" "${stage}/share/ie64/docs" \
     "${stage}/share/ie64/licenses"
 # The Picolibc install supplies the C and machine headers.  The IE64 SDK
-# contributes only the public builtin declarations and assembler constants;
+# contributes the public builtin declarations, assembler constants, and the
+# compiler-builtin compatibility headers Picolibc intentionally omits;
 # copying sdk/include wholesale would leak headers and assets for every other
 # Intuition Engine target into this package.
-install -m 0644 "${root_dir}/sdk/include/ie64.h" "${stage}/include/ie64.h"
+for header in float.h stdalign.h stdarg.h stdatomic.h stdbool.h stddef.h ie64.h; do
+    install -m 0644 "${root_dir}/sdk/include/${header}" \
+        "${stage}/include/${header}"
+done
 install -m 0644 "${root_dir}/sdk/include/ie64.inc" "${stage}/include/ie64.inc"
 
 go build -trimpath -o "${stage}/bin/ie64-cproc" "${root_dir}/cmd/ie64-cproc"
