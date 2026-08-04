@@ -53,7 +53,12 @@ build_dir="${work_dir}/picolibc-build"
 mkdir -p "${stage}/bin" "${stage}/include" \
     "${stage}/lib/ie64-unknown-none" "${stage}/share/ie64/docs" \
     "${stage}/share/ie64/licenses"
-cp -a "${root_dir}/sdk/include/." "${stage}/include/"
+# The Picolibc install supplies the C and machine headers.  The IE64 SDK
+# contributes only the public builtin declarations and assembler constants;
+# copying sdk/include wholesale would leak headers and assets for every other
+# Intuition Engine target into this package.
+install -m 0644 "${root_dir}/sdk/include/ie64.h" "${stage}/include/ie64.h"
+install -m 0644 "${root_dir}/sdk/include/ie64.inc" "${stage}/include/ie64.inc"
 
 go build -trimpath -o "${stage}/bin/ie64-cproc" "${root_dir}/cmd/ie64-cproc"
 go build -trimpath -tags ie64 -o "${stage}/bin/ie64asm" "${root_dir}/assembler"
@@ -125,6 +130,10 @@ meson setup "${build_dir}" "${picolibc_dir}" --prefix=/ \
     --cross-file="${work_dir}/cross.ini" "${picolibc_options[@]}"
 meson compile -C "${build_dir}"
 DESTDIR="${stage}" meson install -C "${build_dir}"
+# Picolibc's generated specs use an absolute install prefix.  DESTDIR then
+# mirrors that prefix below the staging root; it is not part of the sysroot
+# and must not be shipped.
+rm -rf "${stage}/tmp"
 install -m 0644 "${stage}/lib/libc.a" "${stage}/lib/ie64-unknown-none/libc.a"
 install -m 0644 "${stage}/lib/libm.a" "${stage}/lib/ie64-unknown-none/libm.a"
 rm -f "${stage}/lib/libc.a" "${stage}/lib/libm.a" "${stage}/lib/libg.a" \
@@ -140,7 +149,6 @@ rm -f "${stage}/lib/libc.a" "${stage}/lib/libm.a" "${stage}/lib/libg.a" \
     "${root_dir}/sdk/lib/ie64-cproc/libatomic.c"
 "${stage}/bin/ie64-ar" rcs "${stage}/lib/ie64-unknown-none/libatomic.a" \
     "${work_dir}/libatomic.o"
-install -m 0644 "${root_dir}/sdk/include/ie64.inc" "${stage}/include/ie64.inc"
 install -m 0644 "${root_dir}/sdk/toolchain/README.md" "${stage}/share/ie64/docs/README.md"
 install -m 0644 "${root_dir}/sdk/docs/IE64_ABI_V2.md" \
     "${stage}/share/ie64/docs/IE64_ABI_V2.md"
