@@ -63,6 +63,9 @@ for header in float.h stdalign.h stdarg.h stdatomic.h stdbool.h stddef.h ie64.h;
         "${stage}/include/${header}"
 done
 install -m 0644 "${root_dir}/sdk/include/ie64.inc" "${stage}/include/ie64.inc"
+mkdir -p "${stage}/include/ie64"
+install -m 0644 "${root_dir}/sdk/include/ie64/platform.h" \
+    "${stage}/include/ie64/platform.h"
 
 go build -trimpath -o "${stage}/bin/ie64-cproc" "${root_dir}/cmd/ie64-cproc"
 go build -trimpath -tags ie64 -o "${stage}/bin/ie64asm" "${root_dir}/assembler"
