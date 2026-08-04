@@ -3,9 +3,15 @@ set -euo pipefail
 
 root=$1
 [[ -x "${root}/bin/ie64-cproc" ]] || { echo 'missing installed driver' >&2; exit 1; }
-for document in README.md IE64_ABI_V3.md IE64_C23_FEATURE_MATRIX.md; do
+for document in README.md IE64_ISA.md architecture.md; do
     [[ -f "${root}/share/ie64/docs/${document}" ]] || {
         echo "missing installed toolchain documentation: ${document}" >&2
+        exit 1
+    }
+done
+for document in IE64_ABI_V3.md IE64_C23_FEATURE_MATRIX.md; do
+    [[ ! -e "${root}/share/ie64/docs/${document}" ]] || {
+        echo "internal toolchain document is installed: ${document}" >&2
         exit 1
     }
 done

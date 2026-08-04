@@ -50,10 +50,9 @@ output controls. `-o -` writes preprocessed text or the linked image to
 standard output.
 
 Select a relocated or alternate sysroot with
-`ie64-cproc --sysroot /path/to/toolchain`. See `IE64_ABI_V3.md`,
-`IE64_ISA.md`, and `architecture.md` in `share/ie64/docs` for the ABI and
-machine contracts. The executable C23 feature matrix is
-`IE64_C23_FEATURE_MATRIX.md` in that same directory.
+`ie64-cproc --sysroot /path/to/toolchain`. See `IE64_ISA.md` and
+`architecture.md` in `share/ie64/docs` for the instruction and machine
+contracts.
 
 ## Scope
 

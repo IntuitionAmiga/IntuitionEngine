@@ -152,10 +152,6 @@ rm -f "${stage}/lib/libc.a" "${stage}/lib/libm.a" "${stage}/lib/libg.a" \
 "${stage}/bin/ie64-ar" rcs "${stage}/lib/ie64-unknown-none/libatomic.a" \
     "${work_dir}/libatomic.o"
 install -m 0644 "${root_dir}/sdk/toolchain/README.md" "${stage}/share/ie64/docs/README.md"
-install -m 0644 "${root_dir}/sdk/docs/IE64_ABI_V3.md" \
-    "${stage}/share/ie64/docs/IE64_ABI_V3.md"
-install -m 0644 "${root_dir}/sdk/docs/IE64_C23_FEATURE_MATRIX.md" \
-    "${stage}/share/ie64/docs/IE64_C23_FEATURE_MATRIX.md"
 install -m 0644 "${root_dir}/sdk/docs/IE64_ISA.md" \
     "${stage}/share/ie64/docs/IE64_ISA.md"
 install -m 0644 "${root_dir}/sdk/docs/architecture.md" \
