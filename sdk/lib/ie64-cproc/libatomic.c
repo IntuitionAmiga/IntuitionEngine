@@ -4,7 +4,7 @@
 #include <ie64/platform.h>
 #include "atomic_orders.h"
 
-/* This table and hash are part of the IE64 bare-metal ABI V2. */
+/* This table and hash are part of the IE64 bare-metal ABI V3. */
 alignas(8) volatile uint64_t __ie64_atomic_locks[64];
 alignas(8) static volatile uint64_t __ie64_atomic_fence_word;
 

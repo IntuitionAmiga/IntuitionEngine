@@ -44,6 +44,38 @@ func TestCommandOutputDashWritesStdout(t *testing.T) {
 	}
 }
 
+func TestCopyOutputDashWritesStdout(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source")
+	if err := os.WriteFile(source, []byte("object bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdout := os.Stdout
+	os.Stdout = w
+	err = copyOutput(source, "-")
+	os.Stdout = oldStdout
+	if closeErr := w.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "object bytes" {
+		t.Fatalf("stdout = %q", got)
+	}
+}
+
 func TestParsePublicModesAndTarget(t *testing.T) {
 	for _, args := range [][]string{
 		{"-E", "input.c"},
@@ -229,7 +261,7 @@ func TestBuildPlacesUserLibrariesBeforeDefaultLibraries(t *testing.T) {
 	userIndex := strings.Index(got, userLib)
 	defaultIndex := strings.Index(got, defaultLib)
 	if userIndex < 0 || defaultIndex < 0 || userIndex > defaultIndex {
-		t.Fatalf("user library follows default runtime library:\n%s", got)
+		t.Fatalf("user library does not precede compiler default libraries:\n%s", got)
 	}
 }
 

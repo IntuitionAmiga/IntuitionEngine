@@ -13,7 +13,7 @@ import (
 const ie64CProcSmokeResultAddress = 0x00080000
 const ie64CProcSmokeResult = uint64(0x494536344350524f)
 
-func runIE64CProcImageWithRAM(t *testing.T, environment string, expected, activeRAM, interruptVector uint64) *CPU64 {
+func runIE64CProcImageWithRAM(t *testing.T, environment string, expected, activeRAM uint64) *CPU64 {
 	t.Helper()
 	imagePath := os.Getenv(environment)
 	if imagePath == "" {
@@ -26,7 +26,6 @@ func runIE64CProcImageWithRAM(t *testing.T, environment string, expected, active
 	bus := NewMachineBus()
 	bus.ApplyProfileVisibleCeiling(activeRAM)
 	cpu := NewCPU64(bus)
-	cpu.interruptVector = interruptVector
 	if err := cpu.LoadFlatProgramBytes(image); err != nil {
 		t.Fatalf("load toolchain smoke image: %v", err)
 	}
@@ -53,7 +52,7 @@ func runIE64CProcImageWithRAM(t *testing.T, environment string, expected, active
 
 func runIE64CProcImage(t *testing.T, environment string, expected uint64) {
 	t.Helper()
-	runIE64CProcImageWithRAM(t, environment, expected, uint64(DEFAULT_MEMORY_SIZE), 0)
+	runIE64CProcImageWithRAM(t, environment, expected, uint64(DEFAULT_MEMORY_SIZE))
 }
 
 func TestIE64CProcSmokeImageDefaultJIT(t *testing.T) {
@@ -76,6 +75,10 @@ func TestIE64CProcCrossUnitImageDefaultJIT(t *testing.T) {
 	runIE64CProcImage(t, "IE64_TOOLCHAIN_CROSS_IMAGE", 0x43524f5353504153)
 }
 
+func TestIE64CProcCustomSectionImageDefaultJIT(t *testing.T) {
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_CUSTOM_SECTION_IMAGE", 0x53454354494f4e53)
+}
+
 func TestIE64CProcLibraryImageDefaultJIT(t *testing.T) {
 	runIE64CProcImage(t, "IE64_TOOLCHAIN_LIB_IMAGE", 0x4c49425041535345)
 }
@@ -93,8 +96,7 @@ func TestIE64CProcHaltImageDefaultJIT(t *testing.T) {
 }
 
 func TestIE64CProcInterruptImageDefaultJIT(t *testing.T) {
-	runIE64CProcImageWithRAM(t, "IE64_TOOLCHAIN_INTERRUPT_IMAGE",
-		0x494e545250415353, uint64(DEFAULT_MEMORY_SIZE), 0x70000)
+	runIE64CProcImage(t, "IE64_TOOLCHAIN_INTERRUPT_IMAGE", 0x494e545250415353)
 }
 
 func TestIE64CProcAtomicMisalignedImageDefaultJIT(t *testing.T) {
@@ -130,7 +132,7 @@ func TestIE64CProcAssertFailureImageDefaultJIT(t *testing.T) {
 }
 
 func TestIE64CProcStartupRejectsLowRAMDefaultJIT(t *testing.T) {
-	cpu := runIE64CProcImageWithRAM(t, "IE64_TOOLCHAIN_IMAGE", 0, 0x9efff, 0)
+	cpu := runIE64CProcImageWithRAM(t, "IE64_TOOLCHAIN_IMAGE", 0, 0x9efff)
 	if cpu.regs[1] != 1 {
 		t.Fatalf("low-RAM startup R1 = %#x, want %#x (PC=%#x SP=%#x)",
 			cpu.regs[1], uint64(1), cpu.PC, cpu.regs[31])

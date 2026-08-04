@@ -50,6 +50,31 @@ message:
 	}
 }
 
+func TestIE64ObjectAssemblerPreservesCustomSectionFlags(t *testing.T) {
+	src := `.section .fastcode,"ax"
+.global fast_function
+.type fast_function,@function
+fast_function:
+    halt
+.section .settings,"aw"
+.global setting
+.type setting,@object
+setting:
+    dc.q 1
+`
+	data, err := AssembleIE64Object(src, "sections.s", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, err := ie64obj.Parse(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(obj.Sections) != 2 || obj.Sections[0].Flags != ie64obj.SHFAlloc|ie64obj.SHFExecInstr || obj.Sections[1].Flags != ie64obj.SHFAlloc|ie64obj.SHFWrite {
+		t.Fatalf("sections = %#v", obj.Sections)
+	}
+}
+
 func TestIE64ObjectAssemblerLegacySourceLivesInText(t *testing.T) {
 	data, err := AssembleIE64Object("entry:\n dc.q 1\n", "legacy.s", nil, nil)
 	if err != nil {

@@ -1,19 +1,19 @@
-# IE64 bare-metal C ABI V2
+# IE64 bare-metal C ABI V3
 
-This document defines the `ie64-unknown-none` C ABI used by the V2 static
+This document defines the `ie64-unknown-none` C ABI used by the V3 static
 toolchain. The canonical instruction and machine contracts are
 [`IE64_ISA.md`](IE64_ISA.md) and [`architecture.md`](architecture.md). Those
 documents take precedence if this ABI document conflicts with the machine.
 
-V2 retains the V1 LP64, little-endian data model and calling convention from
-[`IE64_ABI.md`](IE64_ABI.md). It does not reserve an image-base register and
+V3 retains the documented LP64, little-endian data model and calling convention
+for the freestanding compiler suite. It does not reserve an image-base register and
 does not add an IntuitionOS runtime contract.
 
 ## Objects and images
 
 Compilation produces ELF64 little-endian `ET_REL` objects with machine value
-`EM_IE64` (`0x4945`) and `e_flags` equal to `EF_IE64_ABI_V2` (`2`). Relocation
-records use RELA addends. V2 defines `R_IE64_NONE`, `R_IE64_ABS64`,
+`EM_IE64` (`0x4945`) and `e_flags` equal to `EF_IE64_ABI_V3` (`3`). Relocation
+records use RELA addends. V3 defines `R_IE64_NONE`, `R_IE64_ABS64`,
 `R_IE64_ABS32`, `R_IE64_PC32`, `R_IE64_LO32` and `R_IE64_HI32`. Relocation
 number 1 remains reserved for the existing IntuitionOS relative relocation.
 
@@ -23,10 +23,10 @@ stack, places the heap between BSS and `0x8f000`, and requires visible RAM to
 reach at least `0x9f000`. File-backed data and BSS must remain below the stack
 reservation.
 
-An input `.interrupt_vector` section is executable and is placed at the
-MMU-off interrupt address `0x70000`. Its payload must end before the stack
-reservation. The fixed placement does not move `__heap_start`; the linker
-rejects an ordinary low-memory layout that overlaps the vector.
+The V3 linker has no synthetic fixed interrupt section. Interrupt handlers
+are ordinary linked functions. A program that needs a programmable timer
+handler must establish the documented MMU, CR7 interrupt vector and ERET path
+before enabling the timer.
 
 ## Startup and shutdown
 
@@ -51,6 +51,6 @@ because the architecture has no stable monotonic clock interface, the default
 monotonic hook return `ENOSYS`.
 
 The default console hooks use canonical terminal MMIO. The default termination
-hook preserves its status and halts. V2 intentionally provides no `fdopen` or
+hook preserves its status and halts. V3 intentionally provides no `fdopen` or
 `fileno` interface because the platform ABI has handles rather than a file
 descriptor namespace.

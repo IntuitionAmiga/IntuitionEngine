@@ -35,7 +35,43 @@ type objectSectionSource struct {
 	lines        []string
 }
 
-// AssembleIE64Object assembles one source unit as an IE64 V2 ELF relocatable object.
+func parseObjectSectionDirective(rest string) (string, string, error) {
+	parts := splitOperands(rest)
+	if len(parts) == 0 {
+		return "", "", fmt.Errorf(".section requires a name")
+	}
+	if len(parts) > 2 {
+		return "", "", fmt.Errorf(".section accepts only a name and flags")
+	}
+	name := strings.Trim(strings.TrimSpace(parts[0]), "\"")
+	if name == "" {
+		return "", "", fmt.Errorf(".section requires a name")
+	}
+	flags := ""
+	if len(parts) == 2 {
+		flags = strings.Trim(strings.TrimSpace(parts[1]), "\"")
+	}
+	return name, flags, nil
+}
+
+func objectSectionFlags(spec string) (uint64, error) {
+	var flags uint64
+	for _, flag := range spec {
+		switch flag {
+		case 'a':
+			flags |= ie64obj.SHFAlloc
+		case 'w':
+			flags |= ie64obj.SHFWrite
+		case 'x':
+			flags |= ie64obj.SHFExecInstr
+		default:
+			return 0, fmt.Errorf("unsupported section flag %q", flag)
+		}
+	}
+	return flags, nil
+}
+
+// AssembleIE64Object assembles one source unit as an IE64 V3 ELF relocatable object.
 func AssembleIE64Object(source, sourceName string, includePaths []string, defines map[string]uint64) ([]byte, error) {
 	probe := NewIE64Assembler()
 	probe.basePath = filepath.Dir(sourceName)
@@ -62,7 +98,7 @@ func AssembleIE64Object(source, sourceName string, includePaths []string, define
 	preGlobals := map[string]string{}
 	preSectionIDs := map[string]int{".text": 1}
 	nextPreSectionID := 1
-	for _, raw := range lines {
+	for lineNo, raw := range lines {
 		clean := strings.TrimSpace(stripComment(raw))
 		fields := strings.Fields(clean)
 		if len(fields) == 0 {
@@ -71,7 +107,11 @@ func AssembleIE64Object(source, sourceName string, includePaths []string, define
 		head := strings.ToLower(fields[0])
 		if strings.HasPrefix(head, ".section") {
 			rest := strings.TrimSpace(clean[len(fields[0]):])
-			preSection = strings.Trim(strings.TrimSpace(strings.Split(rest, ",")[0]), "\"")
+			name, _, err := parseObjectSectionDirective(rest)
+			if err != nil {
+				return nil, fmt.Errorf("%s:%d: %v", sourceName, lineNo+1, err)
+			}
+			preSection = name
 			if _, ok := preSectionIDs[preSection]; !ok {
 				nextPreSectionID++
 				preSectionIDs[preSection] = nextPreSectionID
@@ -137,17 +177,23 @@ func AssembleIE64Object(source, sourceName string, includePaths []string, define
 		}
 		return name
 	}
-	sectionFor := func(name string) *objectSectionSource {
+	sectionFor := func(name, sectionFlagSpec string) (*objectSectionSource, error) {
 		if s := byName[name]; s != nil {
-			return s
+			if sectionFlagSpec == "" {
+				return s, nil
+			}
+			flags, err := objectSectionFlags(sectionFlagSpec)
+			if err != nil {
+				return nil, err
+			}
+			if s.flags != flags {
+				return nil, fmt.Errorf("section %s has conflicting flags", name)
+			}
+			return s, nil
 		}
 		s := &objectSectionSource{name: name, align: 1}
 		switch name {
 		case ".text":
-			s.typ = ie64obj.SHTProgBits
-			s.flags = ie64obj.SHFAlloc | ie64obj.SHFExecInstr
-			s.align = 8
-		case ".interrupt_vector":
 			s.typ = ie64obj.SHTProgBits
 			s.flags = ie64obj.SHFAlloc | ie64obj.SHFExecInstr
 			s.align = 8
@@ -162,17 +208,32 @@ func AssembleIE64Object(source, sourceName string, includePaths []string, define
 			s.flags = ie64obj.SHFAlloc | ie64obj.SHFWrite
 		default:
 			s.typ = ie64obj.SHTProgBits
-			if strings.HasPrefix(name, ".init_array.") || strings.HasPrefix(name, ".fini_array.") {
+			if sectionFlagSpec != "" {
+				flags, err := objectSectionFlags(sectionFlagSpec)
+				if err != nil {
+					return nil, err
+				}
+				s.flags = flags
+			} else if strings.HasPrefix(name, ".init_array.") || strings.HasPrefix(name, ".fini_array.") {
 				s.flags = ie64obj.SHFAlloc | ie64obj.SHFWrite
 			} else {
 				s.flags = ie64obj.SHFAlloc
+			}
+		}
+		if sectionFlagSpec != "" && (name == ".text" || name == ".rodata" || name == ".data" || name == ".bss" || name == ".preinit_array" || name == ".init_array" || name == ".fini_array" || name == ".fini_array_onexit") {
+			flags, err := objectSectionFlags(sectionFlagSpec)
+			if err != nil {
+				return nil, err
+			}
+			if s.flags != flags {
+				return nil, fmt.Errorf("section %s has conflicting flags", name)
 			}
 		}
 		byName[name] = s
 		sections = append(sections, s)
 		scopeID++
 		sectionFallbacks[name] = fmt.Sprintf("__ie64_object_scope_%d", scopeID)
-		return s
+		return s, nil
 	}
 	for lineNo, raw := range lines {
 		clean := strings.TrimSpace(stripComment(raw))
@@ -183,17 +244,22 @@ func AssembleIE64Object(source, sourceName string, includePaths []string, define
 		head := strings.ToLower(fields[0])
 		if strings.HasPrefix(head, ".section") {
 			rest := strings.TrimSpace(clean[len(fields[0]):])
-			name := strings.TrimSpace(strings.Split(rest, ",")[0])
-			name = strings.Trim(name, "\"")
-			if name == "" {
-				return nil, fmt.Errorf("%s:%d: .section requires a name", sourceName, lineNo+1)
+			name, flags, err := parseObjectSectionDirective(rest)
+			if err != nil {
+				return nil, fmt.Errorf("%s:%d: %v", sourceName, lineNo+1, err)
 			}
-			current = sectionFor(name)
+			current, err = sectionFor(name, flags)
+			if err != nil {
+				return nil, fmt.Errorf("%s:%d: %v", sourceName, lineNo+1, err)
+			}
 			continue
 		}
 		switch head {
 		case ".text", ".rodata", ".data", ".bss":
-			current = sectionFor(head)
+			current, err = sectionFor(head, "")
+			if err != nil {
+				return nil, fmt.Errorf("%s:%d: %v", sourceName, lineNo+1, err)
+			}
 			continue
 		case ".global", ".globl", ".weak", ".local", ".hidden":
 			if len(fields) < 2 {

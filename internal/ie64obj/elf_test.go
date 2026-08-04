@@ -58,8 +58,8 @@ func TestWriteRelocatableSymbolsAndRELA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Flags != EFIE64ABIV2 {
-		t.Fatalf("flags = %#x, want %#x", parsed.Flags, EFIE64ABIV2)
+	if parsed.Flags != EFIE64ABIV3 {
+		t.Fatalf("flags = %#x, want %#x", parsed.Flags, EFIE64ABIV3)
 	}
 	if len(parsed.Sections) != 1 || len(parsed.Sections[0].Relocations) != 1 {
 		t.Fatalf("sections/relocations = %#v", parsed.Sections)
@@ -74,7 +74,7 @@ func TestWriteRelocatableSymbolsAndRELA(t *testing.T) {
 }
 
 func TestRejectReservedABIFlagBits(t *testing.T) {
-	obj := &Object{Flags: EFIE64ABIV2 | 0x10}
+	obj := &Object{Flags: EFIE64ABIV3 | 0x10}
 	if _, err := obj.Marshal(); err == nil {
 		t.Fatal("expected reserved e_flags rejection")
 	}

@@ -40,7 +40,7 @@ if ! make -C "${cproc_dir}" check-stage2; then
 fi
 
 if ! make -C "${root_dir}" ie64-cproc ie64asm ie64ld ie64-ar ie64-ranlib; then
-  fail "unable to build IntuitionEngine IE64 V2 host tools"
+  fail "unable to build IntuitionEngine IE64 V3 host tools"
 fi
 
 [[ -x "${driver}" ]] || fail \
@@ -55,6 +55,7 @@ image="${tmp_dir}/smoke.ie64"
 optimisation_images=()
 abi_image="${tmp_dir}/abi.ie64"
 cross_image="${tmp_dir}/cross.ie64"
+custom_section_image="${tmp_dir}/custom-section.ie64"
 lib_image="${tmp_dir}/lib.ie64"
 builtin_image="${tmp_dir}/builtin.ie64"
 mmu_image="${tmp_dir}/mmu.ie64"
@@ -86,6 +87,8 @@ done
   "${root_dir}/sdk/tests/ie64-cproc/cross_runtime_main.c" \
   "${root_dir}/sdk/tests/ie64-cproc/cross_runtime_a.c" \
   "${root_dir}/sdk/tests/ie64-cproc/cross_runtime_b.c"
+"${driver}" -o "${custom_section_image}" \
+  "${root_dir}/sdk/tests/ie64-cproc/custom_section_runtime.c"
 "${driver}" -o "${lib_image}" \
   "${root_dir}/sdk/tests/ie64-cproc/lib_runtime.c"
 "${driver}" -o "${builtin_image}" \
@@ -95,8 +98,7 @@ done
 "${driver}" -o "${halt_image}" \
   "${root_dir}/sdk/tests/ie64-cproc/halt_runtime.c"
 "${driver}" -o "${interrupt_image}" \
-  "${root_dir}/sdk/tests/ie64-cproc/interrupt_runtime.c" \
-  "${root_dir}/sdk/tests/ie64-cproc/interrupt_runtime.s"
+  "${root_dir}/sdk/tests/ie64-cproc/interrupt_runtime.c"
 "${driver}" -DFAULT_ADDRESS=0x82001 \
   -o "${atomic_misaligned_image}" \
   "${root_dir}/sdk/tests/ie64-cproc/atomic_fault_runtime.c"
@@ -156,7 +158,7 @@ exec "${picolibc_sysroot}/bin/ie64-cproc" --sysroot "${picolibc_sysroot}" "\${ar
 EOF
 cat >"${tmp_dir}/picolibc-ar" <<EOF
 #!/usr/bin/env sh
-if [ "\$#" -eq 1 ] && [ "\$1" = --version ]; then echo 'ie64-ar 2.0.0'; exit 0; fi
+if [ "\$#" -eq 1 ] && [ "\$1" = --version ]; then echo 'ie64-ar 3.0.0'; exit 0; fi
 exec "${picolibc_sysroot}/bin/ie64-ar" "\$@"
 EOF
 cat >"${tmp_dir}/picolibc-cross.ini" <<EOF
@@ -178,7 +180,7 @@ c_args = ['-ffreestanding', '-fno-builtin']
 EOF
 chmod 0755 "${tmp_dir}/picolibc-cc" "${tmp_dir}/picolibc-ar"
 # shellcheck disable=SC1091
-source "${root_dir}/sdk/toolchain/ie64-v2-release-inputs.conf"
+source "${root_dir}/sdk/toolchain/ie64-v3-release-inputs.conf"
 read -r -a picolibc_options <<<"${PICOLIBC_OPTIONS}"
 meson setup "${picolibc_build}" "${picolibc_dir}" --prefix=/ \
   --cross-file="${tmp_dir}/picolibc-cross.ini" "${picolibc_options[@]}"
@@ -219,6 +221,7 @@ IE64_TOOLCHAIN_O2_IMAGE="${optimisation_images[2]}" \
 IE64_TOOLCHAIN_O3_IMAGE="${optimisation_images[3]}" \
 IE64_TOOLCHAIN_ABI_IMAGE="${abi_image}" \
 IE64_TOOLCHAIN_CROSS_IMAGE="${cross_image}" \
+IE64_TOOLCHAIN_CUSTOM_SECTION_IMAGE="${custom_section_image}" \
 IE64_TOOLCHAIN_LIB_IMAGE="${lib_image}" \
 IE64_TOOLCHAIN_BUILTIN_IMAGE="${builtin_image}" \
 IE64_TOOLCHAIN_MMU_IMAGE="${mmu_image}" \
@@ -232,6 +235,6 @@ IE64_TOOLCHAIN_ATOMIC_COLLISION_IMAGE="${atomic_collision_image}" \
 IE64_TOOLCHAIN_PICOLIBC_IMAGE="${picolibc_image}" \
 IE64_TOOLCHAIN_ASSERT_IMAGE="${assert_image}" \
 IE64_TOOLCHAIN_ASSERT_FAILURE_IMAGE="${assert_failure_image}" \
-  go test -tags headless -run '^TestIE64CProc(Smoke|Optimisation|ABI|CrossUnit|Library|Builtin|MMU|Halt|Interrupt|AtomicMisaligned|AtomicAperture|Atomic|AtomicInterface|AtomicCollisionAndReadOnly|Picolibc|Assert|AssertFailure)ImageDefaultJIT$|^TestIE64CProcStartupRejectsLowRAMDefaultJIT$' \
+  go test -tags headless -run '^TestIE64CProc(Smoke|Optimisation|ABI|CrossUnit|CustomSection|Library|Builtin|MMU|Halt|Interrupt|AtomicMisaligned|AtomicAperture|Atomic|AtomicInterface|AtomicCollisionAndReadOnly|Picolibc|Assert|AssertFailure)ImageDefaultJIT$|^TestIE64CProcStartupRejectsLowRAMDefaultJIT$' \
   -count=1 "${root_dir}"
 echo "test-ie64-toolchain: ABI, cross-unit, library, machine-facility, MMU, interrupt, atomic, Picolibc, assert and low-RAM images passed through the default IE64 JIT"

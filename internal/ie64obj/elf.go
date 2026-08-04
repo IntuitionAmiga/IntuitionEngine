@@ -1,4 +1,4 @@
-// Package ie64obj implements the frozen IE64 V2 relocatable object format.
+// Package ie64obj implements the frozen IE64 V3 relocatable object format.
 package ie64obj
 
 import (
@@ -9,8 +9,10 @@ import (
 )
 
 const (
-	EMIE64       = 0x4945
-	EFIE64ABIV2  = 0x00000002
+	EMIE64 = 0x4945
+	// EFIE64ABIV3 identifies the V3 compiler ABI. Earlier objects must be rebuilt.
+	// The ELF machine value remains the IE64 machine value.
+	EFIE64ABIV3  = 0x00000003
 	RNone        = 0
 	RRelative64  = 1
 	RABS64       = 2
@@ -112,9 +114,12 @@ func validAlign(a uint64) bool { return a == 0 || a&(a-1) == 0 }
 func (o *Object) Marshal() ([]byte, error) {
 	flags := o.Flags
 	if flags == 0 {
-		flags = EFIE64ABIV2
+		flags = EFIE64ABIV3
 	}
-	if flags != EFIE64ABIV2 {
+	if flags != EFIE64ABIV3 {
+		if flags == 0x00000002 {
+			return nil, fmt.Errorf("stale IE64 compiler object: rebuild from source for ABI V3")
+		}
 		return nil, fmt.Errorf("unsupported IE64 ABI flags %#x", flags)
 	}
 	for i, s := range o.Sections {
@@ -264,13 +269,16 @@ type rawSection struct {
 	align, entsize   uint64
 }
 
-// Parse validates and decodes an IE64 V2 relocatable object.
+// Parse validates and decodes an IE64 V3 relocatable object.
 func Parse(data []byte) (*Object, error) {
 	if len(data) < 64 || !bytes.Equal(data[:4], []byte{0x7f, 'E', 'L', 'F'}) || data[4] != 2 || data[5] != 1 || binary.LittleEndian.Uint16(data[16:]) != 1 || binary.LittleEndian.Uint16(data[18:]) != EMIE64 {
 		return nil, fmt.Errorf("not an IE64 ELF64 little-endian relocatable object")
 	}
 	flags := binary.LittleEndian.Uint32(data[48:])
-	if flags != EFIE64ABIV2 {
+	if flags != EFIE64ABIV3 {
+		if flags == 0x00000002 {
+			return nil, fmt.Errorf("stale IE64 compiler object: rebuild from source for ABI V3")
+		}
 		return nil, fmt.Errorf("unsupported IE64 ABI flags %#x", flags)
 	}
 	shoff := binary.LittleEndian.Uint64(data[40:])

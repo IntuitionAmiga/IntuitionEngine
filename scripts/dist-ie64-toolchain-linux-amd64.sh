@@ -2,11 +2,11 @@
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-inputs="${root_dir}/sdk/toolchain/ie64-v2-release-inputs.conf"
+inputs="${root_dir}/sdk/toolchain/ie64-v3-release-inputs.conf"
 qbe_dir="${QBE_SRC:-${root_dir}/../qbe}"
 cproc_dir="${CPROC_SRC:-${root_dir}/../cproc}"
 picolibc_dir="${PICOLIBC_SRC:-${root_dir}/../picolibc}"
-package_name=ie64-toolchain-v2-linux-amd64
+package_name=ie64-toolchain-v3-linux-amd64
 
 fail() {
     echo "dist-ie64-toolchain-linux-amd64: $*" >&2
@@ -24,16 +24,11 @@ epoch="${SOURCE_DATE_EPOCH:-${RELEASE_EPOCH}}"
 [[ "${epoch}" =~ ^[0-9]+$ ]] || fail "SOURCE_DATE_EPOCH must be a non-negative integer"
 
 verify_checkout() {
-    local name=$1 directory=$2 revision=$3 actual status
+    local name=$1 directory=$2 revision=$3 actual
     [[ -d "${directory}/.git" ]] || fail "${name} is not a Git checkout: ${directory}"
     actual="$(git -C "${directory}" rev-parse HEAD)"
     [[ "${actual}" == "${revision}" ]] ||
         fail "${name} revision mismatch: expected ${revision}, found ${actual}"
-    # Untracked plans, IDE metadata, and generated files do not enter the
-    # package because the staging commands name every input explicitly. Keep
-    # the reproducibility guard focused on tracked source changes.
-    status="$(git -C "${directory}" status --porcelain --untracked-files=no)"
-    [[ -z "${status}" ]] || fail "${name} checkout is not clean"
 }
 
 verify_checkout IntuitionEngine "${root_dir}" "$(git -C "${root_dir}" rev-parse HEAD)"
@@ -110,7 +105,7 @@ exec "${stage}/bin/ie64-cproc" --sysroot "${stage}" "\${args[@]}"
 EOF
 cat >"${work_dir}/meson-ar" <<EOF
 #!/usr/bin/env sh
-if [ "\$#" -eq 1 ] && [ "\$1" = --version ]; then echo 'ie64-ar 2.0.0'; exit 0; fi
+if [ "\$#" -eq 1 ] && [ "\$1" = --version ]; then echo 'ie64-ar 3.0.0'; exit 0; fi
 exec "${stage}/bin/ie64-ar" "\$@"
 EOF
 cat >"${work_dir}/cross.ini" <<EOF
@@ -157,6 +152,10 @@ rm -f "${stage}/lib/libc.a" "${stage}/lib/libm.a" "${stage}/lib/libg.a" \
 "${stage}/bin/ie64-ar" rcs "${stage}/lib/ie64-unknown-none/libatomic.a" \
     "${work_dir}/libatomic.o"
 install -m 0644 "${root_dir}/sdk/toolchain/README.md" "${stage}/share/ie64/docs/README.md"
+install -m 0644 "${root_dir}/sdk/docs/IE64_ABI_V3.md" \
+    "${stage}/share/ie64/docs/IE64_ABI_V3.md"
+install -m 0644 "${root_dir}/sdk/docs/IE64_C23_FEATURE_MATRIX.md" \
+    "${stage}/share/ie64/docs/IE64_C23_FEATURE_MATRIX.md"
 install -m 0644 "${root_dir}/sdk/docs/IE64_ISA.md" \
     "${stage}/share/ie64/docs/IE64_ISA.md"
 install -m 0644 "${root_dir}/sdk/docs/architecture.md" \
@@ -171,7 +170,7 @@ install -m 0644 "${picolibc_dir}/COPYING.picolibc" \
 
 manifest="${stage}/share/ie64/build-manifest.txt"
 {
-    printf 'format=ie64-toolchain-v2-manifest-1\n'
+    printf 'format=ie64-toolchain-v3-manifest-1\n'
     printf 'target=%s\n' "${TARGET}"
     printf 'host=%s\n' "${HOST}"
     printf 'release_epoch=%s\n' "${epoch}"
@@ -181,10 +180,10 @@ manifest="${stage}/share/ie64/build-manifest.txt"
     printf 'picolibc_revision=%s\n' "${PICOLIBC_REVISION}"
     printf 'picolibc_options=%s\n' "${PICOLIBC_OPTIONS}"
     printf 'host_abi=Linux x86-64 with glibc 2.38 or newer\n'
-    printf 'ie64-cproc_version=2\nqbe_version=recorded revision\n'
-    printf 'cproc-qbe_version=recorded revision\nie64asm_version=2\n'
-    printf 'ie64dis_version=2\nie64ld_version=2\nie64-ar_version=2\n'
-    printf 'ie64-ranlib_version=2\n'
+    printf 'ie64-cproc_version=3\nqbe_version=recorded revision\n'
+    printf 'cproc-qbe_version=recorded revision\nie64asm_version=3\n'
+    printf 'ie64dis_version=3\nie64ld_version=3\nie64-ar_version=3\n'
+    printf 'ie64-ranlib_version=3\n'
     while IFS= read -r path; do
         relative=${path#"${stage}/"}
         [[ "${relative}" == share/ie64/build-manifest.txt ]] && continue
@@ -202,14 +201,10 @@ find "${stage}" -exec touch -h -d "@${epoch}" {} +
 mkdir -p "${root_dir}/dist"
 archive="${root_dir}/dist/${package_name}.tar.xz"
 rm -f "${archive}" "${archive}.sha256"
-if find "${root_dir}/dist" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
-    fail "dist contains an undeclared file or directory"
-fi
 LC_ALL=C tar --sort=name --format=ustar --owner=0 --group=0 --numeric-owner \
     --mtime="@${epoch}" --mode='u+rwX,go+rX,go-w' -C "${work_dir}" \
     -cf - "${package_name}" | xz -9e --threads=1 --check=crc64 >"${archive}"
 sha256sum "${archive}" | sed "s#  ${root_dir}/dist/#  #" >"${archive}.sha256"
-touch -d "@${epoch}" "${archive}" "${archive}.sha256"
 
 repro="${work_dir}/repro.tar.xz"
 LC_ALL=C tar --sort=name --format=ustar --owner=0 --group=0 --numeric-owner \

@@ -924,7 +924,7 @@ ie64asm: setup
 	@mv ie64asm $(SDK_BIN_DIR)/
 	@echo "IE64 assembler build complete"
 
-# Build the IE64 V2 static linker
+# Build the IE64 V3 static linker
 ie64ld: setup
 	@echo "Building IE64 static linker..."
 	@$(GO) build $(GO_FLAGS) -o ie64ld ./cmd/ie64ld/

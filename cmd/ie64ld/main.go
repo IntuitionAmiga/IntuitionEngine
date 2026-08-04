@@ -65,7 +65,12 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "ie64ld: %v\n", err)
 		return 1
 	}
-	if err := replaceFile(*output, result.Image, 0o755); err != nil {
+	if *output == "-" {
+		if _, err := os.Stdout.Write(result.Image); err != nil {
+			fmt.Fprintf(os.Stderr, "ie64ld: %v\n", err)
+			return 1
+		}
+	} else if err := replaceFile(*output, result.Image, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "ie64ld: %v\n", err)
 		return 1
 	}

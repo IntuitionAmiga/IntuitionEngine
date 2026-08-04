@@ -2,7 +2,7 @@
 
 ## Scope
 
-This is the V2 `ie64-unknown-none` toolchain. Compilation produces ELF64
+This is the V3 `ie64-unknown-none` toolchain. Compilation produces ELF64
 relocatable objects and deterministic static archives; the static linker
 produces a flat `.ie64` image for direct execution at `PROG_START` (`0x1000`).
 It is neither the IntuitionOS ABI in `IE64_ABI.md` nor a hosted C environment.
@@ -11,6 +11,11 @@ support or speculative position-independent ABI.
 
 The architectural sources are `IE64_ISA.md` and `architecture.md`. The SDK
 assembly convenience includes are not ABI authority.
+
+The executable language-support classification is in
+[`IE64_C23_FEATURE_MATRIX.md`](IE64_C23_FEATURE_MATRIX.md). Features outside
+that matrix are either diagnosed as unsupported or remain unrecognised; this
+toolchain does not silently accept and ignore them.
 
 ## Data layout
 
@@ -84,7 +89,7 @@ Ordinary links add `crt0.o`, `libc.a`, `libm.a` and `libatomic.a`.
 CRT only, and `-nostartfiles` retains default libraries only. The static
 linker resolves strong, weak and common symbols, lazily extracts Unix archive
 members, retains ordered constructor and destructor arrays, and applies the
-V2 RELA relocations defined in `IE64_ABI_V2.md`.
+V3 RELA relocations defined in `IE64_ABI_V3.md`.
 
 The `baremetal-low` image must fit `[0x1000,0x8F000)`. The interval
 `[0x8F000,0x9F000)` is a descending 64 KiB stack and `R31` begins at
@@ -98,7 +103,7 @@ applicable freestanding C23 headers and library interfaces. This includes
 formatted memory and stream I/O, portable string and conversion routines,
 libm, `<stdbit.h>`, `<stdckdint.h>`, `memset_explicit`, sized deallocation and
 a reclaiming allocator over the linker-defined heap. `errno` is
-process-global and the V2 libc is not thread-safe.
+process-global and the V3 libc is not thread-safe.
 
 `stdin`, `stdout` and `stderr` use weak hooks from `<ie64/platform.h>`.
 Applications may replace individual console, file, clock and termination

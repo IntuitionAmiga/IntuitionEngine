@@ -1,4 +1,4 @@
-// Package ie64link implements the fixed-layout IE64 V2 static linker.
+// Package ie64link implements the fixed-layout IE64 V3 static linker.
 package ie64link
 
 import (
@@ -14,11 +14,10 @@ import (
 )
 
 const (
-	ProgStart       = uint64(0x1000)
-	InterruptVector = uint64(0x70000)
-	StackLow        = uint64(0x8f000)
-	StackTop        = uint64(0x9f000)
-	HeapEnd         = StackLow
+	ProgStart = uint64(0x1000)
+	StackLow  = uint64(0x8f000)
+	StackTop  = uint64(0x9f000)
+	HeapEnd   = StackLow
 )
 
 type Input struct {
@@ -143,8 +142,10 @@ type definition struct {
 	common  bool
 }
 
-func sectionRank(name string) (int, error) {
+func sectionRank(name string, flags uint64, typ uint32) (int, error) {
 	switch {
+	case name == ".interrupt_vector":
+		return 0, fmt.Errorf("unsupported input section %s", name)
 	case name == ".text":
 		return 0, nil
 	case name == ".rodata":
@@ -161,10 +162,20 @@ func sectionRank(name string) (int, error) {
 		return 6, nil
 	case name == ".bss":
 		return 7, nil
-	case name == ".interrupt_vector":
-		return 8, nil
 	default:
-		return 0, fmt.Errorf("unsupported input section %s", name)
+		if flags&ie64obj.SHFAlloc == 0 {
+			return 0, fmt.Errorf("input section %s is not allocatable", name)
+		}
+		if flags&ie64obj.SHFExecInstr != 0 {
+			return 0, nil
+		}
+		if flags&ie64obj.SHFWrite != 0 {
+			if typ == ie64obj.SHTNoBits {
+				return 7, nil
+			}
+			return 6, nil
+		}
+		return 1, nil
 	}
 }
 
@@ -181,12 +192,15 @@ func Link(inputs []Input, opts Options) (*Result, error) {
 		if in.Object == nil {
 			return nil, fmt.Errorf("%s: nil object", in.Name)
 		}
-		if in.Object.Flags != 0 && in.Object.Flags != ie64obj.EFIE64ABIV2 {
+		if in.Object.Flags != ie64obj.EFIE64ABIV3 {
+			if in.Object.Flags == 0x00000002 {
+				return nil, fmt.Errorf("%s: stale IE64 compiler object: rebuild from source for ABI V3", in.Name)
+			}
 			return nil, fmt.Errorf("%s: unsupported IE64 ABI flags %#x", in.Name, in.Object.Flags)
 		}
 		for si, s := range in.Object.Sections {
 			sectionName := strings.Trim(s.Name, "\"")
-			rank, err := sectionRank(sectionName)
+			rank, err := sectionRank(sectionName, s.Flags, s.Type)
 			if err != nil {
 				return nil, fmt.Errorf("%s: %w", in.Name, err)
 			}
@@ -225,7 +239,6 @@ func Link(inputs []Input, opts Options) (*Result, error) {
 		return placed[i].priority < placed[j].priority
 	})
 	cursor := ProgStart
-	vectorCursor := InterruptVector
 	previousRank := -1
 	for i := range placed {
 		s := inputs[placed[i].input].Object.Sections[placed[i].section]
@@ -242,28 +255,14 @@ func Link(inputs []Input, opts Options) (*Result, error) {
 				a = 8
 			}
 		}
-		if placed[i].rank == 8 {
-			if cursor > InterruptVector {
-				return nil, fmt.Errorf("baremetal-low layout overlaps interrupt vector at 0x%x", InterruptVector)
-			}
-			vectorCursor = alignUp(vectorCursor, a)
-			placed[i].address = vectorCursor
-			placed[i].fileOffset = vectorCursor - ProgStart
-			vectorCursor += placed[i].size
-		} else {
-			cursor = alignUp(cursor, a)
-			placed[i].address = cursor
-			placed[i].fileOffset = cursor - ProgStart
-			cursor += placed[i].size
-		}
+		cursor = alignUp(cursor, a)
+		placed[i].address = cursor
+		placed[i].fileOffset = cursor - ProgStart
+		cursor += placed[i].size
 		previousRank = placed[i].rank
 	}
-	if cursor > StackLow || vectorCursor > StackLow {
-		end := cursor
-		if vectorCursor > end {
-			end = vectorCursor
-		}
-		return nil, fmt.Errorf("baremetal-low layout exceeds 0x%x by %d bytes", StackLow, end-StackLow)
+	if cursor > StackLow {
+		return nil, fmt.Errorf("baremetal-low layout exceeds 0x%x by %d bytes", StackLow, cursor-StackLow)
 	}
 	fileEnd := ProgStart
 	for _, p := range placed {
@@ -313,6 +312,9 @@ func Link(inputs []Input, opts Options) (*Result, error) {
 			if !ok {
 				return nil, fmt.Errorf("%s: symbol %s has invalid section", in.Name, s.Name)
 			}
+			if s.Value > p.size || s.Size > p.size-s.Value {
+				return nil, fmt.Errorf("%s: symbol %s range is outside section", in.Name, s.Name)
+			}
 			d := definition{input: ii, symbol: si, address: p.address + s.Value, weak: s.Bind == ie64obj.STBWeak}
 			if old, ok := defs[s.Name]; ok {
 				if !old.weak && !d.weak {
@@ -328,13 +330,6 @@ func Link(inputs []Input, opts Options) (*Result, error) {
 		}
 	}
 	commonStart := cursor
-	hasInterruptVector := false
-	for _, p := range placed {
-		if p.rank == 8 {
-			hasInterruptVector = true
-			break
-		}
-	}
 	commonNames := make([]string, 0, len(commons))
 	for name := range commons {
 		if _, ok := defs[name]; !ok {
@@ -345,9 +340,6 @@ func Link(inputs []Input, opts Options) (*Result, error) {
 	for _, name := range commonNames {
 		c := commons[name]
 		cursor = alignUp(cursor, c.align)
-		if hasInterruptVector && (cursor > InterruptVector || c.size > InterruptVector-cursor) {
-			return nil, fmt.Errorf("common symbol %s overlaps interrupt vector at 0x%x", name, InterruptVector)
-		}
 		defs[name] = definition{input: c.input, symbol: c.symbol, address: cursor, weak: c.weak, common: true}
 		delete(unresolved, name)
 		cursor += c.size

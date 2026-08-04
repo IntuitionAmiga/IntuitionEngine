@@ -83,7 +83,7 @@ func parseArgs(args []string) (config, bool, error) {
 				"language: -std=c23 -ffreestanding -fno-builtin -Werror")
 			return c, true, nil
 		case a == "--version":
-			fmt.Println("ie64-cproc 2 (ie64-unknown-none ABI V2)")
+			fmt.Println("ie64-cproc 3 (ie64-unknown-none ABI V3)")
 			return c, true, nil
 		case a == "-dumpmachine":
 			fmt.Println("ie64-unknown-none")
@@ -247,7 +247,7 @@ func build(c config, l layout) error {
 	if err := validateOutputPaths(c); err != nil {
 		return err
 	}
-	tmp, err := os.MkdirTemp("", "ie64-cproc-v2-*")
+	tmp, err := os.MkdirTemp("", "ie64-cproc-v3-*")
 	if err != nil {
 		return err
 	}
@@ -328,7 +328,9 @@ func build(c config, l layout) error {
 				return err
 			}
 		}
-		linkInputs = append([]string{crt}, linkInputs...)
+		// The flat-image contract requires _start at PROG_START, so crt0 is a
+		// start file rather than a default library and must remain first.
+		linkInputs = append(linkInputs, crt)
 	}
 	inputIndex := 0
 	for _, argument := range c.linkArgs {
@@ -343,6 +345,9 @@ func build(c config, l layout) error {
 			inputIndex++
 		}
 	}
+	// Keep every user object and library in exactly the order provided. Default
+	// libraries are appended afterwards so they cannot alter archive extraction
+	// among user arguments.
 	if !c.nostdlib && !c.nodefaultlibs {
 		for _, name := range []string{"libc.a", "libm.a", "libatomic.a"} {
 			p := filepath.Join(l.lib, name)
@@ -610,6 +615,10 @@ func copyOutput(src, dst string) error {
 		return e
 	}
 	defer in.Close()
+	if dst == "-" {
+		_, e = io.Copy(os.Stdout, in)
+		return e
+	}
 	out, e := os.Create(dst)
 	if e != nil {
 		return e

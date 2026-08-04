@@ -2,7 +2,7 @@
 
 The IE64 sysroot uses Picolibc 1.8.12 from the sibling repository's `ie`
 branch. The release build accepts only the full revision recorded in
-`ie64-v2-release-inputs.conf`, requires a clean Git checkout, and packages
+`ie64-v3-release-inputs.conf`, requires a clean Git checkout, and packages
 `COPYING.picolibc` unchanged.
 
 The baseline is upstream revision

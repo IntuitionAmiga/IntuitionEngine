@@ -50,6 +50,15 @@ check_forbidden 'cross-compile (is )?not possible' \
 check_forbidden 'osxcross' \
   'stale osxcross reference found in docs'
 
+rg -q 'IE64_C23_FEATURE_MATRIX\.md' sdk/docs/IE64_TOOLCHAIN.md || {
+  echo 'IE64 toolchain documentation does not link its C23 feature matrix' >&2
+  exit 1
+}
+if rg -n '—' sdk/docs/IE64_ABI_V3.md sdk/docs/IE64_C23_FEATURE_MATRIX.md sdk/docs/IE64_TOOLCHAIN.md; then
+  echo 'IE64 compiler documentation must use British English punctuation without em dashes' >&2
+  exit 1
+fi
+
 new_make_targets=(
   test
   vet

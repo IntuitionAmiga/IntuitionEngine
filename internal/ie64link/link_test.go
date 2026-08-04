@@ -10,6 +10,29 @@ import (
 	"github.com/intuitionamiga/IntuitionEngine/internal/ie64obj"
 )
 
+func linkV3(inputs []Input, opts Options) (*Result, error) {
+	for _, input := range inputs {
+		if input.Object != nil && input.Object.Flags == 0 {
+			input.Object.Flags = ie64obj.EFIE64ABIV3
+		}
+	}
+	return Link(inputs, opts)
+}
+
+func TestLinkRejectsStaleObject(t *testing.T) {
+	_, err := Link([]Input{{Name: "stale.o", Object: &ie64obj.Object{Flags: 2}}}, Options{})
+	if err == nil || !strings.Contains(err.Error(), "stale IE64 compiler object") {
+		t.Fatalf("Link stale object error = %v, want explicit rebuild diagnostic", err)
+	}
+}
+
+func TestLinkRejectsObjectWithoutV3Flag(t *testing.T) {
+	_, err := Link([]Input{{Name: "unmarked.o", Object: &ie64obj.Object{}}}, Options{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported IE64 ABI flags 0x0") {
+		t.Fatalf("Link unmarked object error = %v", err)
+	}
+}
+
 func TestLinkResolvesPC32AcrossObjects(t *testing.T) {
 	caller := &ie64obj.Object{
 		Sections: []ie64obj.Section{{Name: ".text", Type: ie64obj.SHTProgBits, Flags: ie64obj.SHFAlloc | ie64obj.SHFExecInstr, Align: 8, Data: make([]byte, 8), Relocations: []ie64obj.Relocation{{Symbol: 1, Type: ie64obj.RPC32}}}},
@@ -19,12 +42,12 @@ func TestLinkResolvesPC32AcrossObjects(t *testing.T) {
 		Sections: []ie64obj.Section{{Name: ".text", Type: ie64obj.SHTProgBits, Flags: ie64obj.SHFAlloc | ie64obj.SHFExecInstr, Align: 8, Data: make([]byte, 8)}},
 		Symbols:  []ie64obj.Symbol{{Name: "callee", Bind: ie64obj.STBGlobal, Type: ie64obj.STTFunc, Section: 1}},
 	}
-	result, err := Link([]Input{{Name: "caller.o", Object: caller}, {Name: "callee.o", Object: callee}}, Options{Entry: "callee"})
+	result, err := linkV3([]Input{{Name: "caller.o", Object: caller}, {Name: "callee.o", Object: callee}}, Options{Entry: "callee"})
 	if err == nil || !strings.Contains(err.Error(), "must resolve to 0x1000") {
 		t.Fatalf("displaced entry error = %v", err)
 	}
 	caller.Symbols = append(caller.Symbols, ie64obj.Symbol{Name: "_start", Bind: ie64obj.STBGlobal, Type: ie64obj.STTFunc, Section: 1})
-	result, err = Link([]Input{{Name: "caller.o", Object: caller}, {Name: "callee.o", Object: callee}}, Options{})
+	result, err = linkV3([]Input{{Name: "caller.o", Object: caller}, {Name: "callee.o", Object: callee}}, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +68,7 @@ func TestLinkAppliesRelative64(t *testing.T) {
 		}},
 		Symbols: []ie64obj.Symbol{{Name: "_start", Bind: ie64obj.STBGlobal, Type: ie64obj.STTFunc, Section: 1}},
 	}
-	result, err := Link([]Input{{Name: "relative.o", Object: obj}}, Options{})
+	result, err := linkV3([]Input{{Name: "relative.o", Object: obj}}, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +76,7 @@ func TestLinkAppliesRelative64(t *testing.T) {
 		t.Fatalf("RELATIVE64 value = %#x, want %#x", got, ProgStart+0x28)
 	}
 	obj.Sections[0].Relocations[0].Symbol = 1
-	if _, err := Link([]Input{{Name: "relative-symbol.o", Object: obj}}, Options{}); err == nil || !strings.Contains(err.Error(), "nonzero symbol") {
+	if _, err := linkV3([]Input{{Name: "relative-symbol.o", Object: obj}}, Options{}); err == nil || !strings.Contains(err.Error(), "nonzero symbol") {
 		t.Fatalf("RELATIVE64 symbol error = %v", err)
 	}
 }
@@ -136,7 +159,7 @@ func TestLinkBSSAndBoundaries(t *testing.T) {
 		},
 		Symbols: []ie64obj.Symbol{{Name: "_start", Bind: ie64obj.STBGlobal, Type: ie64obj.STTFunc, Section: 1}},
 	}
-	result, err := Link([]Input{{Name: "a.o", Object: obj}}, Options{})
+	result, err := linkV3([]Input{{Name: "a.o", Object: obj}}, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,45 +171,37 @@ func TestLinkBSSAndBoundaries(t *testing.T) {
 	}
 }
 
-func TestLinkPlacesInterruptVectorWithoutMovingHeap(t *testing.T) {
-	obj := &ie64obj.Object{
-		Sections: []ie64obj.Section{
-			{Name: ".text", Type: ie64obj.SHTProgBits, Flags: ie64obj.SHFAlloc | ie64obj.SHFExecInstr, Align: 8, Data: make([]byte, 8)},
-			{Name: ".interrupt_vector", Type: ie64obj.SHTProgBits, Flags: ie64obj.SHFAlloc | ie64obj.SHFExecInstr, Align: 8, Data: bytes.Repeat([]byte{0xa5}, 8)},
-		},
-		Symbols: []ie64obj.Symbol{
-			{Name: "_start", Bind: ie64obj.STBGlobal, Type: ie64obj.STTFunc, Section: 1},
-			{Name: "interrupt_handler", Bind: ie64obj.STBGlobal, Type: ie64obj.STTFunc, Section: 2},
-		},
-	}
-	result, err := Link([]Input{{Name: "vectors.o", Object: obj}}, Options{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Symbols["interrupt_handler"] != InterruptVector {
-		t.Fatalf("interrupt handler = %#x, want %#x", result.Symbols["interrupt_handler"], InterruptVector)
-	}
-	if result.Symbols["__heap_start"] != ProgStart+8 {
-		t.Fatalf("heap start = %#x, want %#x", result.Symbols["__heap_start"], ProgStart+8)
-	}
-	if !bytes.Equal(result.Image[InterruptVector-ProgStart:InterruptVector-ProgStart+8], bytes.Repeat([]byte{0xa5}, 8)) {
-		t.Fatal("interrupt vector payload was not placed at the fixed address")
+func TestLinkRejectsRetiredInterruptVectorSection(t *testing.T) {
+	obj := &ie64obj.Object{Sections: []ie64obj.Section{{Name: ".interrupt_vector", Type: ie64obj.SHTProgBits, Align: 8, Data: make([]byte, 8)}}}
+	if _, err := linkV3([]Input{{Name: "retired-vector.o", Object: obj}}, Options{}); err == nil || !strings.Contains(err.Error(), "unsupported input section .interrupt_vector") {
+		t.Fatalf("retired interrupt-vector section error = %v", err)
 	}
 }
 
-func TestLinkRejectsCommonOverlapWithInterruptVector(t *testing.T) {
+func TestLinkPlacesCustomAllocatableSections(t *testing.T) {
+	obj := &ie64obj.Object{Sections: []ie64obj.Section{
+		{Name: ".fastcode", Type: ie64obj.SHTProgBits, Flags: ie64obj.SHFAlloc | ie64obj.SHFExecInstr, Align: 8, Data: make([]byte, 8)},
+		{Name: ".settings", Type: ie64obj.SHTProgBits, Flags: ie64obj.SHFAlloc | ie64obj.SHFWrite, Align: 8, Data: make([]byte, 8)},
+	}, Symbols: []ie64obj.Symbol{{Name: "_start", Bind: ie64obj.STBGlobal, Type: ie64obj.STTFunc, Section: 1}}}
+	result, err := linkV3([]Input{{Name: "custom.o", Object: obj}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Symbols["_start"] != ProgStart || len(result.Image) != 16 {
+		t.Fatalf("custom section result = %#v, image size %d", result.Symbols, len(result.Image))
+	}
+}
+
+func TestLinkRejectsSymbolOutsideSection(t *testing.T) {
 	obj := &ie64obj.Object{
-		Sections: []ie64obj.Section{
-			{Name: ".text", Type: ie64obj.SHTProgBits, Flags: ie64obj.SHFAlloc | ie64obj.SHFExecInstr, Align: 8, Data: make([]byte, 8)},
-			{Name: ".interrupt_vector", Type: ie64obj.SHTProgBits, Flags: ie64obj.SHFAlloc | ie64obj.SHFExecInstr, Align: 8, Data: make([]byte, 8)},
-		},
+		Sections: []ie64obj.Section{{Name: ".text", Type: ie64obj.SHTProgBits, Align: 8, Data: make([]byte, 8)}},
 		Symbols: []ie64obj.Symbol{
-			{Name: "_start", Bind: ie64obj.STBGlobal, Type: ie64obj.STTFunc, Section: 1},
-			{Name: "oversized", Bind: ie64obj.STBGlobal, Section: ie64obj.SHNCommon, Value: 8, Size: InterruptVector - ProgStart},
+			{Name: "_start", Bind: ie64obj.STBGlobal, Section: 1},
+			{Name: "past-end", Bind: ie64obj.STBGlobal, Section: 1, Value: 8, Size: 1},
 		},
 	}
-	if _, err := Link([]Input{{Name: "common-vector.o", Object: obj}}, Options{}); err == nil || !strings.Contains(err.Error(), "common symbol oversized overlaps interrupt vector") {
-		t.Fatalf("common/vector overlap error = %v", err)
+	if _, err := linkV3([]Input{{Name: "bad-symbol.o", Object: obj}}, Options{}); err == nil || !strings.Contains(err.Error(), "symbol past-end range is outside section") {
+		t.Fatalf("out-of-range symbol error = %v", err)
 	}
 }
 
@@ -210,7 +225,7 @@ func TestLinkRejectsRelocationCrossingSectionBoundary(t *testing.T) {
 				},
 				Symbols: []ie64obj.Symbol{{Name: "_start", Bind: ie64obj.STBGlobal, Type: ie64obj.STTFunc, Section: 1}},
 			}
-			if _, err := Link([]Input{{Name: "crossing.o", Object: obj}}, Options{}); err == nil || !strings.Contains(err.Error(), "relocation outside section .text") {
+			if _, err := linkV3([]Input{{Name: "crossing.o", Object: obj}}, Options{}); err == nil || !strings.Contains(err.Error(), "relocation outside section .text") {
 				t.Fatalf("cross-section relocation error = %v", err)
 			}
 		})
@@ -221,12 +236,12 @@ func TestLinkRejectsDuplicateAndUnresolved(t *testing.T) {
 	def := func() *ie64obj.Object {
 		return &ie64obj.Object{Sections: []ie64obj.Section{{Name: ".text", Type: ie64obj.SHTProgBits, Align: 8, Data: make([]byte, 8)}}, Symbols: []ie64obj.Symbol{{Name: "_start", Bind: ie64obj.STBGlobal, Section: 1}}}
 	}
-	if _, err := Link([]Input{{Name: "a.o", Object: def()}, {Name: "b.o", Object: def()}}, Options{}); err == nil || !strings.Contains(err.Error(), "duplicate") {
+	if _, err := linkV3([]Input{{Name: "a.o", Object: def()}, {Name: "b.o", Object: def()}}, Options{}); err == nil || !strings.Contains(err.Error(), "duplicate") {
 		t.Fatalf("duplicate error = %v", err)
 	}
 	u := def()
 	u.Symbols = append(u.Symbols, ie64obj.Symbol{Name: "missing", Bind: ie64obj.STBGlobal, Section: ie64obj.SHNUndef})
-	if _, err := Link([]Input{{Name: "u.o", Object: u}}, Options{}); err == nil || !strings.Contains(err.Error(), "undefined symbol missing") {
+	if _, err := linkV3([]Input{{Name: "u.o", Object: u}}, Options{}); err == nil || !strings.Contains(err.Error(), "undefined symbol missing") {
 		t.Fatalf("undefined error = %v", err)
 	}
 }
@@ -241,7 +256,7 @@ func TestLinkOrdersAndValidatesCallableArrays(t *testing.T) {
 		{Name: ".fini_array.10", Type: ie64obj.SHTProgBits, Align: 4, Data: bytes.Repeat([]byte{0x10}, 8)},
 		{Name: ".fini_array", Type: ie64obj.SHTProgBits, Align: 8, Data: bytes.Repeat([]byte{0xff}, 8)},
 	}, Symbols: []ie64obj.Symbol{{Name: "_start", Bind: ie64obj.STBGlobal, Section: 1}}}
-	r, e := Link([]Input{{Name: "arrays.o", Object: obj}}, Options{})
+	r, e := linkV3([]Input{{Name: "arrays.o", Object: obj}}, Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -257,7 +272,7 @@ func TestLinkOrdersAndValidatesCallableArrays(t *testing.T) {
 	bad := *obj
 	bad.Sections = append([]ie64obj.Section(nil), obj.Sections...)
 	bad.Sections[1].Align = 16
-	if _, e := Link([]Input{{Name: "bad.o", Object: &bad}}, Options{}); e == nil || !strings.Contains(e.Error(), "invalid alignment") {
+	if _, e := linkV3([]Input{{Name: "bad.o", Object: &bad}}, Options{}); e == nil || !strings.Contains(e.Error(), "invalid alignment") {
 		t.Fatalf("alignment error = %v", e)
 	}
 }
@@ -268,7 +283,7 @@ func TestLinkCollapsesAbsentInitArrayAfterPreinit(t *testing.T) {
 		{Name: ".preinit_array", Type: ie64obj.SHTProgBits, Align: 8, Data: make([]byte, 8)},
 		{Name: ".data", Type: ie64obj.SHTProgBits, Align: 32, Data: make([]byte, 8)},
 	}, Symbols: []ie64obj.Symbol{{Name: "_start", Bind: ie64obj.STBGlobal, Section: 1}}}
-	r, err := Link([]Input{{Name: "preinit-only.o", Object: obj}}, Options{})
+	r, err := linkV3([]Input{{Name: "preinit-only.o", Object: obj}}, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +296,7 @@ func TestLinkCollapsesAbsentInitArrayAfterPreinit(t *testing.T) {
 
 func TestLinkCoalescesCommonSymbols(t *testing.T) {
 	obj := &ie64obj.Object{Sections: []ie64obj.Section{{Name: ".text", Type: ie64obj.SHTProgBits, Align: 8, Data: make([]byte, 8)}}, Symbols: []ie64obj.Symbol{{Name: "_start", Bind: ie64obj.STBGlobal, Section: 1}, {Name: "shared", Bind: ie64obj.STBGlobal, Section: ie64obj.SHNCommon, Value: 16, Size: 24}}}
-	r, e := Link([]Input{{Name: "common.o", Object: obj}}, Options{})
+	r, e := linkV3([]Input{{Name: "common.o", Object: obj}}, Options{})
 	if e != nil {
 		t.Fatal(e)
 	}
