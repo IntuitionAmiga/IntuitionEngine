@@ -7,7 +7,7 @@
 ; Compare coproc_caller_x86.asm as its matching pair and the other CPU ports for their
 ; real addressing differences.
 ;
-include "ie86.inc"
+%include "ie86.inc"
 
     bits 32
     org 0x320000

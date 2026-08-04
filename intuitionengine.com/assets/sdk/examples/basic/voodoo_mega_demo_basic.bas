@@ -1,6 +1,11 @@
-1 REM IE64 BASIC VOODOO MEGA DEMO - PURE RUN AOT PORT OF IE32 DEMO
-2 REM PURE BASIC ONLY - NO INLINE MACHINE CODE
-10 SineTable=MEMALLOC(4096,4096):ProjectionTable=MEMALLOC(12288,4096):StarData=MEMALLOC(4096,4096):MessageData=MEMALLOC(4096,4096):SidData=MEMALLOC(8192,4096):CommandBuffer=MEMALLOC(524288,4096)
+1 REM VOODOO MEGA DEMO: IE64 BASIC command-stream rendering on the Voodoo device
+2 REM Start with `go run . -basic -file-root .`, then LOAD this guest source and RUN.
+3 REM It reads Reggae_2.sid. Read allocation and MMIO constants, initial scene setup,
+4 REM the per-frame command construction, then the table-building subroutines.
+5 REM CommandBuffer stores register-value pairs in guest RAM so the program can submit
+6 REM each frame as one Voodoo command stream rather than interleaving scene work and MMIO.
+10 REM Allocate tables, scene state, SID data and the Voodoo command stream in guest RAM.
+11 SineTable=MEMALLOC(4096,4096):ProjectionTable=MEMALLOC(12288,4096):StarData=MEMALLOC(4096,4096):MessageData=MEMALLOC(4096,4096):SidData=MEMALLOC(8192,4096):CommandBuffer=MEMALLOC(524288,4096)
 15 AnimationTables=MEMALLOC(8192,4096):GlyphSpans=MEMALLOC(16384,4096):ProjectionResults=MEMALLOC(2883584,4096)
 20 QuarterSine=SineTable+2048:FontMasks=SineTable+3000:FontData=SineTable+3072:TwistXTable=AnimationTables:TwistYTable=AnimationTables+1024:WobbleTable=AnimationTables+2048:RainbowRedTable=AnimationTables+3072:RainbowGreenTable=AnimationTables+4096:RainbowBlueTable=AnimationTables+5120
 30 ScreenWidth=640:ScreenHeight=480:ScreenCentreX=320:ScreenCentreY=240:TunnelRadius=150:NearPlane=80:FarPlane=1000:FocalLength=200:TwistAmplitude=120:WorldOffset=600:ProjectionProductBias=360000:ProjectionResultBias=2048
@@ -8,7 +13,8 @@
 50 VoodooEnable=&HF8004:VoodooVideoDimensions=&HF8214:VoodooFbzMode=&HF8110:VoodooClipLeftRight=&HF8118:VoodooClipTopBottom=&HF811C:VoodooColourPath=&HF8104:VoodooClearColour=&HF81D8:VoodooFastFill=&HF8124:VoodooSwapBuffer=&HF8128
 60 VertexAX=&HF8008:VertexAY=&HF800C:VertexBX=&HF8010:VertexBY=&HF8014:VertexCX=&HF8018:VertexCY=&HF801C:StartRed=&HF8020:StartGreen=&HF8024:StartBlue=&HF8028:StartDepth=&HF802C:StartAlpha=&HF8030:TriangleCommand=&HF8080:ColourSelect=&HF8088
 65 CommandPointerRegister=&HF833C:CommandCountRegister=&HF8340:CommandSubmitRegister=&HF8344
-70 POKE32 VoodooEnable,1:POKE32 VoodooVideoDimensions,&H028001E0:POKE32 VoodooFbzMode,&H0770:POKE32 VoodooClipLeftRight,640:POKE32 VoodooClipTopBottom,480:POKE32 VoodooColourPath,0
+70 REM Configure the Voodoo target before submitting clear, triangle or swap commands.
+71 POKE32 VoodooEnable,1:POKE32 VoodooVideoDimensions,&H028001E0:POKE32 VoodooFbzMode,&H0770:POKE32 VoodooClipLeftRight,640:POKE32 VoodooClipTopBottom,480:POKE32 VoodooColourPath,0
 75 BLOAD "sdk/examples/assets/music/Reggae_2.sid",SidData:POKE32 &HF0E20,SidData:POKE32 &HF0E24,4790:POKE32 &HF0E28,5
 80 POKE32 VoodooClearColour,&HFF040410:POKE32 VoodooFastFill,0:GOSUB 3000:POKE32 VoodooSwapBuffer,1
 85 FrameCounter=0:ScrollCharacter=0:ScrollPixelOffset=0:BaseWobblePhase=0:WobbleRemainder=0:RandomSeed=54321
@@ -17,9 +23,9 @@
 110 FOR DataIndex=0 TO 447:READ DataValue:POKE8 FontData+DataIndex,DataValue:NEXT
 120 FOR DataIndex=0 TO 216:READ DataValue:POKE8 MessageData+DataIndex,DataValue:NEXT
 130 GOSUB 6000:GOSUB 6100:GOSUB 6600:GOSUB 6400:GOSUB 6500:GOSUB 6200
-140 REM AUDIO STARTED BEFORE TABLE SETUP
-150 REM KEEP MAIN LOOP ENTRY STABLE
-200 POKE32 VoodooClearColour,&HFF040410:POKE32 VoodooFastFill,0:GOSUB 3000:CommandCount=0
+140 REM The asset is staged before table construction; the following label begins frames.
+200 REM Start a new frame: clear the back buffer, queue the background, then reset count.
+201 POKE32 VoodooClearColour,&HFF040410:POKE32 VoodooFastFill,0:GOSUB 3000:CommandCount=0
 210 AnimationPhase=FrameCounter AND 255:TunnelOffsetX=PEEK32(TwistXTable+AnimationPhase*4):TunnelOffsetY=PEEK32(TwistYTable+AnimationPhase*4)
 230 FOR StarIndex=0 TO 255
 240 StarPointer=StarData+StarIndex*16:StarAngle=PEEK32(StarPointer):StarRadius=PEEK32(StarPointer+4):StarDepth=PEEK32(StarPointer+8):StarSpeed=PEEK32(StarPointer+12)
@@ -54,11 +60,12 @@
 421 GOTO 430
 422 TriangleSize=16:ColourRed=&H0400:ColourGreen=&H0800:ColourBlue=&H1000:GOTO 440
 430 TriangleSize=10:ColourRed=&H0300:ColourGreen=&H0500:ColourBlue=&H0A00
-440 REM COLOUR AND GEOMETRY USE THE IE64 COMMAND STREAM
+440 REM Queue colour and geometry writes; the device consumes them at line 530.
 450 FixedX=ScreenX*16:FixedY=ScreenY*16
 460 GOSUB 5600
 520 NEXT StarIndex
-530 GOSUB 4000:POKE32 CommandPointerRegister,CommandBuffer:POKE32 CommandCountRegister,CommandCount:POKE32 CommandSubmitRegister,2
+530 REM Finish scrolltext, submit the contiguous command stream, then request a swap.
+531 GOSUB 4000:POKE32 CommandPointerRegister,CommandBuffer:POKE32 CommandCountRegister,CommandCount:POKE32 CommandSubmitRegister,2
 540 POKE32 VoodooSwapBuffer,1
 550 FrameCounter=FrameCounter+1:ScrollPixelOffset=ScrollPixelOffset+ScrollSpeed:WobbleRemainder=WobbleRemainder+1-ScrollSpeed:IF ScrollPixelOffset<32 THEN 555
 551 ScrollPixelOffset=ScrollPixelOffset-32:ScrollCharacter=ScrollCharacter+1:WobbleRemainder=WobbleRemainder+32:IF ScrollCharacter>=MessageLength THEN ScrollCharacter=0

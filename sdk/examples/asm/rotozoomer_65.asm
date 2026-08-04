@@ -6,7 +6,7 @@
 ; Read data layout, initialisation, per-frame vectors, blitter submission and table
 ; generation in order. Compare the other ports only for real CPU addressing changes.
 ;
- include (demo runs at 640x480, not 1280x960).
+; Override SDK defaults because this demo runs at 640x480, not 1280x960.
 SCREEN_W         = 640
 SCREEN_H         = 480
 LINE_BYTES       = 2560          ; 640 * 4 bytes per scanline

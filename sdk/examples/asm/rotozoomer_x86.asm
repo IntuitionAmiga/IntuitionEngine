@@ -6,7 +6,7 @@
 ; Read data layout, initialisation, per-frame vectors, blitter submission and table
 ; generation in order. Compare the other ports only for real CPU addressing changes.
 ;
-include directive (not MASM's include).
+; NASM uses the %include directive rather than MASM's include.
 ;
 ; Override SDK defaults (1280x960) since this demo runs at 640x480.
 ; These must be %define'd BEFORE %include so ie86.inc skips them.

@@ -6,7 +6,8 @@
 ; Read data layout, initialisation, per-frame vectors, blitter submission and table
 ; generation in order. Compare the other ports only for real CPU addressing changes.
 ;
- include Future Crew's "Second Reality" (1993) and
+; The effect draws on familiar demo-scene rotozoomer presentations, including
+; Future Crew's "Second Reality" (1993) and
 ; Sanity's "Interference" (1995). On hardware without Mode7, this required
 ; hand-optimised inner loops. Here, the blitter does the heavy lifting,
 ; letting us achieve the effect at 640x480 with minimal CPU cost.

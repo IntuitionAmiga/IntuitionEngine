@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root=$1
-[[ "$(find "${root}" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')" == 'bin include lib share ' ]] || { echo 'invalid host SDK top-level layout' >&2; exit 1; }
+[[ "$(find "${root}" -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')" == 'bin examples include lib share ' ]] || { echo 'invalid host SDK top-level layout' >&2; exit 1; }
+! find "${root}/examples" -type f ! \( -name '*.asm' -o -name '*.bas' -o -name '*.c' \) -print -quit | grep -q . || { echo 'invalid host SDK example layout' >&2; exit 1; }
 expected_bins='cproc-qbe ie32asm ie32to64 ie64-ar ie64-cproc ie64-ranlib ie64asm ie64dis ie64ld qbe '
 [[ "$(find "${root}/bin" -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | tr '\n' ' ')" == "${expected_bins}" ]] || { echo 'invalid host SDK bin layout' >&2; exit 1; }
 expected_includes='ie32.inc ie64.inc ie65.inc ie68.inc ie80.inc ie86.inc intuitionengine.h '

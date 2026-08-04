@@ -7,7 +7,7 @@
 ; Compare coproc_service_68k.asm as its matching pair and the other CPU ports for their
 ; real addressing differences.
 ;
- include file provides convenience macros (coproc_start,
+; The ie68.inc include file provides convenience macros (coproc_start,
 ; coproc_enqueue) that expand to the required sequence of move.l writes.
 ; These macros make the M68K caller code significantly more compact than
 ; the 8-bit equivalents.

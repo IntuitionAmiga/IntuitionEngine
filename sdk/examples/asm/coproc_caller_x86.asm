@@ -7,7 +7,7 @@
 ; Compare coproc_service_x86.asm as its matching pair and the other CPU ports for their
 ; real addressing differences.
 ;
- include file provides convenience macros (coproc_start,
+; The ie86.inc include file provides convenience macros (coproc_start,
 ; coproc_enqueue) that expand to sequences of `mov dword [addr], value`
 ; writes. Register usage is conventional:
 ;
