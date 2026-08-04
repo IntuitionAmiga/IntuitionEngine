@@ -1,13 +1,5 @@
 ---
 title: "BASIC Programming Rules"
-sources:
-  - sdk/examples/asm/ehbasic_ie64.asm
-  - sdk/include/ehbasic_vars.inc
-  - sdk/include/ehbasic_expr.inc
-  - sdk/include/ehbasic_lineeditor.inc
-  - sdk/include/ehbasic_compiler_driver.inc
-  - sdk/include/ehbasic_strings.inc
-  - sdk/include/ehbasic_io.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

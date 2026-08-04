@@ -1,12 +1,5 @@
 ---
 title: "Voodoo 3D Rasteriser"
-sources:
-  - voodoo_constants.go
-  - video_voodoo.go
-  - registers.go
-  - sysinfo_mmio.go
-  - voodoo_software.go
-  - sdk/include/ehbasic_hw_voodoo.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

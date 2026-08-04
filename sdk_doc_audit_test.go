@@ -110,8 +110,8 @@ var sdkAuditLastModifiedDates = map[string]string{
 	"sdk/docs/IE64_ISA.md":     "2026-07-09",
 	"sdk/docs/IE32_ISA.md":     "2026-07-09",
 	"sdk/docs/iemon.md":        "2026-07-23",
-	"sdk/docs/iescript.md":     "2026-07-23",
-	"sdk/docs/architecture.md": "2026-07-31",
+	"sdk/docs/iescript.md":     "2026-08-04",
+	"sdk/docs/architecture.md": "2026-08-04",
 }
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
@@ -1841,8 +1841,11 @@ func TestSDKCompanionDocs_IEScriptJITCPUListIncludesX86(t *testing.T) {
 	for _, needle := range []string{
 		"Supported for m68k, z80, x86, 6502, and ie64",
 		"currently m68k, z80, x86, 6502, and ie64",
-		"x86, m68k, z80, and 6502 JIT backends are amd64 host paths",
-		"IE64 also has arm64 host paths as described in architecture.md",
+		"On amd64 desktop hosts all five listed CPU types have JIT backends",
+		"Linux arm64 provides IE64, M68K, and x86 JITs",
+		"Windows and macOS arm64 provide IE64 and M68K JITs",
+		"Browser builds provide IE64, M68K, and x86 WebAssembly JITs",
+		"x86 availability additionally requires WebAssembly SIMD",
 	} {
 		if !strings.Contains(doc, needle) {
 			t.Fatalf("iescript.md JIT API docs missing x86/platform detail: %s", needle)

@@ -1,15 +1,5 @@
 ---
 title: "One Effect, Six CPUs"
-sources:
-  - sdk/examples/asm/rotozoomer_ie64.asm
-  - sdk/examples/asm/rotozoomer.asm
-  - sdk/examples/asm/rotozoomer_65.asm
-  - sdk/examples/asm/rotozoomer_z80.asm
-  - sdk/examples/asm/rotozoomer_68k.asm
-  - sdk/examples/asm/rotozoomer_x86.asm
-  - rotozoomer_8bit_runtime_test.go
-  - cpu_m68k_mmio_test.go
-  - jit_x86_shadow_parity_test.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

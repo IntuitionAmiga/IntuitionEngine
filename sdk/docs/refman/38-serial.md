@@ -1,8 +1,5 @@
 ---
 title: "The Terminal Serial Stream"
-sources:
-  - registers.go
-  - terminal_io.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

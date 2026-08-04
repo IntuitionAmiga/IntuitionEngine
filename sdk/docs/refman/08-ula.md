@@ -1,10 +1,5 @@
 ---
 title: "The ULA Display"
-sources:
-  - ula_constants.go
-  - video_ula.go
-  - sdk/include/ehbasic_hw_video.inc
-  - sdk/include/ie64.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

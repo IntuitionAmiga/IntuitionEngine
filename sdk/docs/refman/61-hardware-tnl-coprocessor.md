@@ -1,16 +1,5 @@
 ---
 title: "Hardware TnL With The Coprocessor System"
-sources:
-  - ../mk64-ie/ie/coproc/ie_coproc.c
-  - ../mk64-ie/ie/coproc/ie_coproc.h
-  - ../mk64-ie/ie/coproc/tnl_proto.h
-  - ../mk64-ie/ie/coproc/tnl_service_ie64.asm
-  - ../mk64-ie/src/gfx/gfx_fast3d.c
-  - ../mk64-ie/ie/ie_gfx_svc_client.c
-  - ../mk64-ie/ie/coproc/gfx_svc_main.c
-  - ../mk64-ie/ie/coproc/coproc_layout.h
-  - coprocessor_constants.go
-  - coprocessor_manager.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

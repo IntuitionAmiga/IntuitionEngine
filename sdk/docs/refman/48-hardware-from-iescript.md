@@ -1,13 +1,5 @@
 ---
 title: "Driving The Hardware From IE Script"
-sources:
-  - sdk/scripts/rotozoomer_ies.ies
-  - script_engine.go
-  - debug_ioview.go
-  - video_chip.go
-  - midi_player.go
-  - script_rotozoomer_ies_test.go
-  - sdk/docs/refman/34-ie-script.md
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

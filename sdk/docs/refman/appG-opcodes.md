@@ -1,24 +1,5 @@
 ---
 title: "Per-CPU Opcode Quick Reference"
-sources:
-  - cpu_ie64.go
-  - fpu_ie64.go
-  - cpu_ie32.go
-  - cpu_six5go2.go
-  - cpu_z80_runner.go
-  - cpu_m68k.go
-  - cpu_x86.go
-  - debug_asm.go
-  - debug_disasm_ie64.go
-  - debug_disasm_ie64_opcodes_gen.go
-  - internal/ie64meta/table.go
-  - cpu_ie64_opcodes_gen.go
-  - assembler/ie64asm.go
-  - assembler/ie64asm_opcodes_gen.go
-  - assembler/ie64dis.go
-  - assembler/ie64dis_opcodes_gen.go
-  - internal/asm/ie64/assembler.go
-  - internal/asm/ie64/opcodes_gen.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

@@ -1,16 +1,5 @@
 ---
 title: "When BASIC Is Not Enough"
-sources:
-  - sdk/examples/basic/rotozoomer_basic.bas
-  - sdk/scripts/rotozoomer_ies.ies
-  - sdk/examples/asm/rotozoomer_ie64.asm
-  - sdk/examples/asm/rotozoomer.asm
-  - sdk/examples/asm/rotozoomer_gem.asm
-  - sdk/examples/asm/rotozoomer_aros_api.asm
-  - sdk/examples/asm/rotozoomer_aros_hw.asm
-  - debug_asm.go
-  - sdk/docs/refman/33-iemon.md
-  - sdk/docs/refman/34-ie-script.md
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

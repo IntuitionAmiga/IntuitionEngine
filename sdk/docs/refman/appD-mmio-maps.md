@@ -1,25 +1,5 @@
 ---
 title: "Per-Engine MMIO Maps"
-sources:
-  - registers.go
-  - video_chip.go
-  - audio_chip.go
-  - psg_constants.go
-  - sn76489_constants.go
-  - sid_constants.go
-  - pokey_constants.go
-  - ted_constants.go
-  - ted_video_constants.go
-  - vga_constants.go
-  - ula_constants.go
-  - antic_constants.go
-  - voodoo_constants.go
-  - mod_constants.go
-  - wav_constants.go
-  - midi_constants.go
-  - sfx_constants.go
-  - file_io_constants.go
-  - coprocessor_constants.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

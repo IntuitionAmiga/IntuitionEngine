@@ -525,12 +525,12 @@ x64-live-embed-assets: sdk-build emutos-release-rom aros-ie-live-inputs intuitio
 	@echo "x64 live embedded binary inputs are ready."
 
 .PHONY: x64-live
-x64-live: x86-64-v3 x64-live-demos wasm
+x64-live: x86-64-v3 x64-live-demos wasm dist-ie64-toolchain-linux-amd64
 	@echo "Building IE x64 live USB image..."
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh
 
 .PHONY: x64-live-rebuild-golden
-x64-live-rebuild-golden: x86-64-v3 x64-live-demos
+x64-live-rebuild-golden: x86-64-v3 x64-live-demos dist-ie64-toolchain-linux-amd64
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden
 
 .PHONY: x64-live-demos
@@ -539,7 +539,7 @@ x64-live-demos: x64-live-payload-check
 	@echo "x64 live demo payload inputs are ready."
 
 .PHONY: x64-live-payload-check
-x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer arosvision-live-tree x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-sdk-tools intuitionos iedoom
+x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer arosvision-live-tree x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-sdk-tools intuitionos iedoom dist-ie64-toolchain-linux-amd64
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --check-payload
 
 .PHONY: x64-live-sdk-tools

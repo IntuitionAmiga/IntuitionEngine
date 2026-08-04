@@ -1,19 +1,5 @@
 ---
 title: "Error Message Index"
-sources:
-  - sdk/examples/asm/ehbasic_ie64.asm
-  - sdk/include/ie64.inc
-  - sdk/include/ehbasic_compiler_driver.inc
-  - sdk/include/ehbasic_strings.inc
-  - file_io_constants.go
-  - media_loader_constants.go
-  - host_helper.go
-  - aros_host_socket_constants.go
-  - aros_host_socket.go
-  - coprocessor_constants.go
-  - cpu_ie64.go
-  - cpu_ie32.go
-  - program_executor.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

@@ -1,10 +1,5 @@
 ---
 title: "TED Audio"
-sources:
-  - ted_constants.go
-  - ted_engine.go
-  - ted_player.go
-  - sdk/include/ehbasic_hw_audio.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

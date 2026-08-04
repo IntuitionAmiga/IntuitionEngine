@@ -1,12 +1,5 @@
 ---
 title: "Coprocessor Positive Cookbook"
-sources:
-  - coprocessor_constants.go
-  - coprocessor_manager.go
-  - coproc_worker_6502.go
-  - sdk/include/ehbasic_hw_coproc.inc
-  - coprocessor_startmem_test.go
-  - coprocessor_asm_test.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

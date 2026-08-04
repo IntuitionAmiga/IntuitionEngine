@@ -1,13 +1,5 @@
 ---
 title: "The Rotozoomer In BASIC"
-sources:
-  - sdk/examples/basic/rotozoomer_basic.bas
-  - sdk/include/ehbasic_hw_video.inc
-  - sdk/include/ehbasic_file_io.inc
-  - sdk/include/ehbasic_hw_audio.inc
-  - video_chip.go
-  - sid_player.go
-  - ehbasic_test.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

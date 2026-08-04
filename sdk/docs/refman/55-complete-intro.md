@@ -1,12 +1,5 @@
 ---
 title: "Building A Complete Intro"
-sources:
-  - sdk/examples/basic/resonance.bas
-  - sdk/examples/basic/wobble_zoom.bas
-  - sdk/scripts/rotozoomer_ies.ies
-  - video_chip.go
-  - midi_player.go
-  - file_io.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

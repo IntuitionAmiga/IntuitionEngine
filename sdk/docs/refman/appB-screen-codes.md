@@ -1,10 +1,5 @@
 ---
 title: "Screen and Character Codes"
-sources:
-  - vga_constants.go
-  - ula_constants.go
-  - ted_video_constants.go
-  - antic_constants.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

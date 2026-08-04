@@ -1,9 +1,5 @@
 ---
 title: "Math and Derivative Helpers"
-sources:
-  - sdk/include/ehbasic_file_io.inc
-  - sdk/include/ehbasic_expr.inc
-  - sdk/include/ehbasic_strings.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

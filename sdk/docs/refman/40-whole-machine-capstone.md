@@ -1,11 +1,5 @@
 ---
 title: "Whole-Machine Capstone"
-sources:
-  - video_chip.go
-  - audio_chip.go
-  - file_io.go
-  - sdk/include/ehbasic_hw_coproc.inc
-  - sdk/include/ehbasic_file_io.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

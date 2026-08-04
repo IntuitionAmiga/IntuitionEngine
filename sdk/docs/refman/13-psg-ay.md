@@ -1,10 +1,5 @@
 ---
 title: "PSG and AY-3-8910"
-sources:
-  - psg_constants.go
-  - psg_engine.go
-  - psg_player.go
-  - sdk/include/ehbasic_hw_audio.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

@@ -1,18 +1,5 @@
 ---
 title: "Memory Model and MMIO Map"
-sources:
-  - registers.go
-  - machine_bus.go
-  - file_io_constants.go
-  - file_io.go
-  - sdk/include/ie64.inc
-  - sdk/include/ehbasic_expr.inc
-  - sdk/include/iexec.inc
-  - sdk/include/ehbasic_hw_system.inc
-  - sdk/include/ehbasic_hw_audio.inc
-  - sdk/include/ehbasic_hw_video.inc
-  - sdk/include/ehbasic_hw_voodoo.inc
-  - sdk/include/ehbasic_hw_coproc.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

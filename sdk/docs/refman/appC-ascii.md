@@ -1,8 +1,5 @@
 ---
 title: "ASCII and CHR$ Tables"
-sources:
-  - sdk/include/ehbasic_strings.inc
-  - sdk/include/ehbasic_io.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

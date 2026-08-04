@@ -1,9 +1,5 @@
 ---
 title: "The VGA Controller"
-sources:
-  - video_vga.go
-  - vga_constants.go
-  - sdk/include/ehbasic_hw_video.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

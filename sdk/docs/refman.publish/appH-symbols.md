@@ -14,13 +14,13 @@ chapter give the full story; this appendix is the cheat sheet.
 | Reset vector       | `$000000` (first instruction at start of RAM). |
 | `.ie64` image start | flat image copied at `PROG_START = $001000`; execution starts there. Oversized images are refused before memory or PC changes. |
 | In-machine assembly | `ASSEMBLE "name"` reads the matching assembly source, assembles at `PROG_START = $001000`, and writes `name.ie64`. |
+| Plain-image stack | `STACK_TOP = $09F000`; grows downward. |
 | Trap vector base   | `$000400` (`8`-byte entries, indexed by trap number). |
 | Supervisor stack   | grows down from `$0A0000`. |
-| User stack (`R31`) | grows down from BASIC's per-program stack region. |
-| Call ABI           | Arguments `R8`-`R15`; result `R8`; caller-saved `R1`-`R7`; callee-saved `R16`-`R30`; `R0 = 0`; `R31 = SP`. |
-| FPU regs           | `F0`-`F15`; FP32 values, with double operations using register pairs. `F0`-`F7` are argument / result registers by convention. |
+| BASIC stack (`R31`) | Dynamic reservation near the top of the low32 resident window, capped below `$10000000`. |
+| Call convention | Arguments `R8`-`R15`; result `R8`; caller-saved `R1`-`R7`; callee-saved `R16`-`R30`; stack aligned to `8` bytes. |
+| FPU regs           | `F0`-`F15`; FP32 values, with double operations using register pairs. `F0`-`F7` are argument and result registers by convention. |
 | BASIC text / variables | Dynamic IE64 BASIC arena, discovered through BASIC state pointers. |
-| BASIC stack       | Dynamic IE64 BASIC reservation near the top of the low32 resident window, capped below `$10000000`. |
 
 ## H.2 IE32
 

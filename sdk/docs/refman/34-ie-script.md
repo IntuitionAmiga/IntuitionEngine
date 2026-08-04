@@ -1,14 +1,5 @@
 ---
 title: "IE Script - Scripted Control and Live Debugging"
-sources:
-  - script_engine.go
-  - script_batching_test.go
-  - debug_monitor.go
-  - debug_commands.go
-  - debug_monitor_media_freeze_test.go
-  - feature_scripting.go
-  - debug_ioview.go
-  - debug_ioview_read.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

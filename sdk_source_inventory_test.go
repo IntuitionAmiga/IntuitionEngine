@@ -521,12 +521,12 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		evidence string
 	}{
 		{"Linux amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` build tags"},
-		{"Linux arm64 | IE64, M68K", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false"},
+		{"Linux arm64 | IE64, M68K, x86", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and `jit_x86_dispatch_arm64.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false"},
 		{"Windows amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` build tags"},
 		{"Windows arm64 | IE64, M68K", "`jit_dispatch.go` and `jit_m68k_dispatch_arm64.go` arm64 Windows tags plus other-core stubs"},
 		{"macOS amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, amd64 per-core dispatch files"},
 		{"macOS arm64 | IE64, M68K", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and Darwin arm64 JIT write-protect helpers"},
-		{"Browser (js/wasm) | IE64, M68K (wasm bytecode backends)", "`jit_exec_wasm.go`, `jit_wasm_runtime.go`, and `jit_m68k_dispatch_wasm.go`"},
+		{"Browser (js/wasm) | IE64, M68K and x86 (wasm bytecode backends)", "`jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, and `jit_x86_dispatch_wasm.go`"},
 	} {
 		facts = append(facts, sdkSourceFact{
 			Surface:  "Architecture",
@@ -580,6 +580,8 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"Retained hardware-compositor layer textures are enabled by default and can be disabled with IE_VIDEO_RETAINED_LAYERS=0.", "`video_backend_ebiten.go` retained upload/geometry cache and `video_backend_ebiten_retained_test.go`"},
 		{"Browser builds use an IE64 WebAssembly bytecode JIT for supported MMU-off integer, FP32, and FP64 blocks, with interpreter fallback and IE64_WASM_JIT=0 as the runtime disable switch.", "`jit_exec_wasm.go` dispatcher gate, `jit_wasm_runtime.go` `wasmJITEnabled`, and `jit_wasm_ie64_emit.go` `wasmSupportedOpcode`"},
 		{"The IE64 wasm JIT executes FP32 FMOD and transcendental operations, and FP64 DMOD and transcendental operations, through helper exits that apply the processor FPU operation and resume the compiled block.", "`jit_wasm_ie64_emit.go` helper-exit opcode cases, `jit_wasm_runtime.go` helper dispatch, and `jit_helper_dispatch.go` `HELPER_FTRANS`/`HELPER_DTRANS`"},
+		{"Linux arm64 x86 executes a verified direct subset and resumes remaining forms through the interpreter.", "`jit_x86_dispatch_arm64.go` activation, `jit_x86_emit_arm64.go` direct lowering and guarded exits, and `jit_x86_exec_arm64.go` interpreter resume"},
+		{"The x86 wasm JIT requires its executable coverage manifest, WebAssembly SIMD, the Go memory export, and X86_WASM_JIT not equal to 0; otherwise x86 continues in the interpreter.", "`jit_x86_dispatch_wasm.go` coverage gate and `jit_x86_exec_wasm.go` `x86WasmJITEnabled`"},
 		{"The x64 live image gives Oto an unreachable PulseAudio server so it selects ALSA, and pipewire-alsa carries that stream into PipeWire.", "`build_x64_ie_img.sh` launch wrapper `PULSE_SERVER`, `pipewire-alsa` package list, and AppArmor audio/PipeWire rules; `x64_live_test.go` launcher contract coverage"},
 		{"M68020 JIT backends are available on amd64 and arm64 Linux, Windows and macOS, plus js/wasm; the wasm backend requires __goMem and M68K_WASM_JIT=0 disables it.", "`jit_m68k_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and `jit_m68k_dispatch_wasm.go` build and activation gates"},
 		{"The M68020 JIT shares an untagged scanner, admission rules, CCR liveness, region formation and tier policy while keeping native and wasm lowering target-specific.", "`jit_m68k_common.go`, `jit_m68k_admission.go`, `jit_m68k_ccr_liveness.go`, `jit_m68k_region_form.go`, `jit_m68k_policy.go`, and per-target dispatch/emitter files"},

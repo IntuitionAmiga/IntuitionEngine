@@ -1,16 +1,5 @@
 ---
 title: "IE Mon - the Machine Monitor"
-sources:
-  - debug_commands.go
-  - debug_monitor.go
-  - debug_reverse_epoch.go
-  - debug_reverse_epoch_test.go
-  - debug_overlay.go
-  - debug_monitor_media_freeze_test.go
-  - debug_asm.go
-  - debug_ioview.go
-  - debug_ioview_read.go
-  - internal/asm/ie64/assembler.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

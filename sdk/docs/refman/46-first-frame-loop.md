@@ -1,12 +1,5 @@
 ---
 title: "Your First Frame Loop"
-sources:
-  - sdk/include/ehbasic_hw_video.inc
-  - sdk/include/ehbasic_hw_audio.inc
-  - sdk/include/ehbasic_file_io.inc
-  - video_chip.go
-  - registers.go
-  - sdk/docs/refman/41-interrupts-raster-polling.md
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

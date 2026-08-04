@@ -1,12 +1,5 @@
 ---
 title: "MOD Playback"
-sources:
-  - mod_constants.go
-  - mod_player.go
-  - mod_replayer.go
-  - mod_engine.go
-  - sdk/include/ehbasic_hw_audio.inc
-  - sdk/include/ehbasic_expr.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

@@ -1,13 +1,5 @@
 ---
 title: "Assets, ROM Data, And Build Hygiene"
-sources:
-  - ../mk64-ie/IE-PORT-NOTES.md
-  - ../mk64-ie/ie/ie_pack.h
-  - ../mk64-ie/ie/ie_memory_layout.h
-  - ../mk64-ie/ie/ie_platform_asset.c
-  - ../mk64-ie/tests/test_pack_ie68.py
-  - ../mk64-ie/ie/pack_ie68.py
-  - ../mk64-ie/ie/coproc/coproc_layout.h
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

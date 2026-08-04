@@ -1,9 +1,5 @@
 ---
 title: "TED Video"
-sources:
-  - ted_video_constants.go
-  - video_ted.go
-  - sdk/include/ehbasic_hw_video.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

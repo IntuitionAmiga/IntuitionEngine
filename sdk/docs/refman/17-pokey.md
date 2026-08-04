@@ -1,10 +1,5 @@
 ---
 title: "POKEY"
-sources:
-  - pokey_constants.go
-  - pokey_engine.go
-  - pokey_player.go
-  - sdk/include/ehbasic_hw_audio.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

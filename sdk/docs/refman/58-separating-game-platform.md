@@ -1,18 +1,5 @@
 ---
 title: "Separating Game Code From Platform Code"
-sources:
-  - ../mk64-ie/IE-PORT-NOTES.md
-  - ../mk64-ie/src/platform/platform.h
-  - ../mk64-ie/src/gfx/gfx_rendering_api.h
-  - ../mk64-ie/src/gfx/gfx_window_manager_api.h
-  - ../mk64-ie/src/audio/audio_api.h
-  - ../mk64-ie/ie/ie_platform_asset.c
-  - ../mk64-ie/ie/ie_platform_audio.c
-  - ../mk64-ie/ie/ie_platform_input.c
-  - ../mk64-ie/ie/ie_platform_save.c
-  - ../mk64-ie/ie/ie_platform_time.c
-  - ../mk64-ie/ie/ie_gfx_svc_client.c
-  - ../mk64-ie/ie/ie_audio_svc_client.c
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

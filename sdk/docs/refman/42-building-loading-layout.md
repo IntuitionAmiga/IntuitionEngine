@@ -1,20 +1,5 @@
 ---
 title: "Building, Loading, and Laying Out Programmes"
-sources:
-  - program_executor.go
-  - cpu_ie64.go
-  - cpu_ie32.go
-  - cpu_6502_runner.go
-  - cpu_z80_runner.go
-  - cpu_m68k.go
-  - cpu_x86.go
-  - coprocessor_constants.go
-  - sdk/include/ie64.inc
-  - sdk/include/ie32.inc
-  - sdk/include/ie65.inc
-  - sdk/include/ie80.inc
-  - sdk/include/ie68.inc
-  - sdk/include/ie86.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -101,7 +86,7 @@ on. Use `d` after entry to prove what the bytes mean.
 
 | CPU | Normal image entry | Stack rule |
 |-----|--------------------|------------|
-| IE64 | `$001000` for flat images | `R31` starts at the IE64 stack area; use `MEMALLOC` for shared buffers. |
+| IE64 | `$001000` for flat images | Plain images start with `R31 = STACK_TOP = $09F000`; BASIC uses a dynamic stack. |
 | IE32 | `$001000` for ordinary programme bytes | Stack grows down from `$09F000`. |
 | 6502 | `$0600` for the normal runner; `$0000` for coprocessor worker images | Stack page is `$0100` to `$01FF`. |
 | Z80 | `$0000` for the normal runner and coprocessor worker images | Use `SP` explicitly in machine code. |

@@ -1,10 +1,5 @@
 ---
 title: "The SID Family"
-sources:
-  - sid_constants.go
-  - sid_engine.go
-  - audio_chip.go
-  - sdk/include/ehbasic_hw_audio.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

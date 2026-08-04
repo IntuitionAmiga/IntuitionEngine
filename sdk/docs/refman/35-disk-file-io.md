@@ -1,16 +1,5 @@
 ---
 title: "Disk and File I/O"
-sources:
-  - file_io_constants.go
-  - file_io.go
-  - machine_bus.go
-  - sdk/examples/asm/ehbasic_ie64.asm
-  - sdk/include/ehbasic_compiler_driver.inc
-  - sdk/include/ehbasic_file_io.inc
-  - sdk/include/ie64.inc
-  - sdk/include/ie32.inc
-  - sdk/include/ie68.inc
-  - sdk/include/ie86.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

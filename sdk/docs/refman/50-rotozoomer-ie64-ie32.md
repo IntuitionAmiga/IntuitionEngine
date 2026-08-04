@@ -1,12 +1,5 @@
 ---
 title: "The Rotozoomer In IE64 And IE32"
-sources:
-  - sdk/examples/asm/rotozoomer_ie64.asm
-  - sdk/examples/asm/rotozoomer.asm
-  - sdk/include/ie64.inc
-  - sdk/include/ie32.inc
-  - assembler_examples_test.go
-  - cmd/ie32to64/testdata/rotozoomer_ie64_expected.asm
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

@@ -1,12 +1,5 @@
 ---
 title: "ANTIC and GTIA"
-sources:
-  - antic_constants.go
-  - video_antic.go
-  - antic_modes.go
-  - antic_dlist.go
-  - antic_pmg.go
-  - sdk/include/ehbasic_hw_video.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

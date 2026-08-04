@@ -1,13 +1,5 @@
 ---
 title: "Audio Architecture Overview"
-sources:
-  - audio_chip.go
-  - sfx_constants.go
-  - midi_constants.go
-  - midi_engine.go
-  - midi_player.go
-  - media_loader_constants.go
-  - sdk/include/ehbasic_hw_audio.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

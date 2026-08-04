@@ -1,13 +1,5 @@
 ---
 title: "Processor Timing, Traps, and Exceptions"
-sources:
-  - cpu_ie64.go
-  - cpu_ie32.go
-  - cpu_six5go2.go
-  - cpu_z80_runner.go
-  - cpu_m68k.go
-  - cpu_x86.go
-  - registers.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

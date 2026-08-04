@@ -1,10 +1,5 @@
 ---
 title: "The AHX Engine"
-sources:
-  - ahx_constants.go
-  - ahx_engine.go
-  - ahx_player.go
-  - sdk/include/ehbasic_hw_audio.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

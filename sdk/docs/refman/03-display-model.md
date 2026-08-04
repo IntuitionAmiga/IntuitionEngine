@@ -1,18 +1,5 @@
 ---
 title: "Display Model Overview"
-sources:
-  - video_compositor.go
-  - video_chip.go
-  - video_vga.go
-  - video_ted.go
-  - ted_video_constants.go
-  - video_antic.go
-  - antic_constants.go
-  - video_ula.go
-  - ula_constants.go
-  - video_voodoo.go
-  - voodoo_constants.go
-  - sdk/include/ehbasic_hw_video.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

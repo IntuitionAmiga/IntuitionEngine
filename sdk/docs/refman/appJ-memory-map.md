@@ -1,12 +1,5 @@
 ---
 title: "Full Memory Map"
-sources:
-  - registers.go
-  - sdk/include/ie64.inc
-  - sdk/include/ie32.inc
-  - voodoo_constants.go
-  - ula_constants.go
-  - vga_constants.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

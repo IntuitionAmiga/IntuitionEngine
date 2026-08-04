@@ -1,18 +1,5 @@
 ---
 title: "BASIC Language Vocabulary"
-sources:
-  - sdk/include/ehbasic_tokens.inc
-  - sdk/include/ehbasic_tokenizer.inc
-  - sdk/include/ehbasic_exec.inc
-  - sdk/include/ehbasic_expr.inc
-  - sdk/include/ehbasic_strings.inc
-  - sdk/include/ehbasic_io.inc
-  - sdk/include/ehbasic_vars.inc
-  - sdk/include/ehbasic_lineeditor.inc
-  - sdk/include/ehbasic_compiler_driver.inc
-  - sdk/include/ehbasic_file_io.inc
-  - sdk/include/ehbasic_hw_system.inc
-  - sdk/examples/asm/ehbasic_ie64.asm
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

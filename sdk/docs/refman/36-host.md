@@ -1,10 +1,5 @@
 ---
 title: "The HOST Command"
-sources:
-  - host_helper.go
-  - host_helper_status.go
-  - sdk/include/ehbasic_hw_host.inc
-  - registers.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

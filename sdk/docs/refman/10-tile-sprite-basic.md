@@ -1,12 +1,5 @@
 ---
 title: "Tile and Sprite Layers from BASIC"
-sources:
-  - sdk/include/ehbasic_hw_video.inc
-  - sdk/include/ehbasic_hw_voodoo.inc
-  - antic_pmg.go
-  - ted_video_constants.go
-  - ula_constants.go
-  - vga_constants.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

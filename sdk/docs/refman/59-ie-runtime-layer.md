@@ -1,17 +1,5 @@
 ---
 title: "The IE Runtime Layer"
-sources:
-  - ../mk64-ie/ie/ie_runtime.c
-  - ../mk64-ie/ie/game.ld
-  - ../mk64-ie/ie/loader_main.c
-  - ../mk64-ie/ie/ie_memory_layout.h
-  - ../mk64-ie/ie/ie_pack.h
-  - ../mk64-ie/ie/ie_mmio.h
-  - ../mk64-ie/ie/ie_platform_asset.c
-  - ../mk64-ie/ie/ie_platform_log.c
-  - ../mk64-ie/ie/ie_platform_time.c
-  - ../mk64-ie/ie/pack_ie68.py
-  - ../mk64-ie/ie/coproc/coproc_layout.h
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

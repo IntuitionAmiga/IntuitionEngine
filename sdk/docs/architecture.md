@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-07-31*
+*Last modified: 2026-08-04*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -850,11 +850,17 @@ helper exit. The finite valid-tag register `FADD`, `FMUL`, `FSUB`, `FSUBR`,
 `FDIV` and `FDIVR` forms are directly lowered; every tag transition and
 exceptional result resumes through that helper.
 
+Linux arm64 x86 executes a verified direct subset and resumes remaining forms
+through the interpreter.
+
 The js/wasm backend publishes the manifest-backed direct and canonical x87
 helper families through imported guest memory, a WebAssembly table driver,
 native chaining, loop regions and conditional region promotion. Public
 availability is all-or-nothing: when wasm SIMD support is missing the complete
 x86 wasm JIT stays unavailable and x86 interpretation continues normally.
+The x86 wasm JIT requires its executable coverage manifest, WebAssembly SIMD,
+the Go memory export, and `X86_WASM_JIT` not equal to `0`; otherwise x86
+continues in the interpreter.
 
 Memory accesses at runtime-computed addresses go through a page-safety and I/O
 bitmap check on the fast path. Native stack and word emitters (`PUSH`/`POP` r32,
@@ -872,7 +878,8 @@ the interpreter.
 
 Runtime switches are `X86_JIT_CHAINS` (default on), `X86_JIT_REGIONS` (default
 off), `X86_JIT_RTS` (default off), `X86_JIT_STATS` (profiling, default off), the
-shared `IE_PERF_ACCT` accounting, and the shared `IE_SIMD` kill switch. Region
+browser-only `X86_WASM_JIT` switch, shared `IE_PERF_ACCT` accounting, and the
+shared `IE_SIMD` kill switch. Region
 formation is experimental and must be enabled explicitly. Unsupported or
 guard-failing instructions leave through the normal interpreter fallback, so
 these switches change execution strategy rather than guest-visible x86
@@ -892,7 +899,7 @@ build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
 | `novulkan` | `-tags novulkan` | Voodoo uses the software backend and does not require the Vulkan SDK. Guest Voodoo registers remain mapped. |
 | `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
 | `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
-| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE64 uses a WebAssembly bytecode JIT for supported MMU-off integer, FP32, and FP64 blocks, with interpreter fallback for unsupported instructions; the other CPU cores interpret. `IE64_WASM_JIT=0` disables the browser JIT. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
+| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE64, M68K, and x86 use WebAssembly bytecode JIT backends for supported instruction blocks, with interpreter fallback for unsupported instructions. `IE64_WASM_JIT=0`, `M68K_WASM_JIT=0`, and `X86_WASM_JIT=0` disable the corresponding browser backend; x86 also requires WebAssembly SIMD. IE32, 6502, and Z80 interpret. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
 
 Headless stubs should be treated as backend substitutes, not as a different
 machine model. A test can still write video or audio MMIO and inspect guest

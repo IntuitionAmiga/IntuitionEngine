@@ -1,15 +1,5 @@
 ---
 title: "Network Sockets"
-sources:
-  - aros_host_socket_constants.go
-  - aros_host_socket.go
-  - host_socket_mapping.go
-  - sdk/include/ie64.inc
-  - sdk/include/ie32.inc
-  - sdk/include/ie65.inc
-  - sdk/include/ie80.inc
-  - sdk/include/ie68.inc
-  - sdk/include/ie86.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

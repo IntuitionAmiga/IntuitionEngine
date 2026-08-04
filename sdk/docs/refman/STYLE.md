@@ -28,6 +28,39 @@ documentation is wrong unless the code itself is being changed in the
 same pass and verified. Record the exact files checked in
 `verify/CLAIM_LEDGER.txt`.
 
+## Current IE-Native Workflow Exclusion Pass
+
+This pass audits the changes after `cfd0956a` without expanding the
+book beyond its defining workflow: developing on IE for IE. Execute it
+in reader order over Chapters 25, 41, 42, and 56, then Appendices H and
+L and the claim ledger. Finish with focused checks, strict publication,
+and PDF generation.
+
+BASIC, IE Mon, in-machine IE64 assembly, PEEK and POKE, direct MMIO,
+and IE Script are the permitted reader paths. A language or tool which
+cannot be entered, built, and used from inside IE does not belong in
+reader-facing chapters. Do not document prepared C images, a C ABI, C
+runtime startup, C interrupt handlers, compiler suites, intermediate
+formats, external build workflows, or externally produced binaries.
+
+The only reader-visible correction from this commit range is the
+IE-native assembly symbol `STACK_TOP = $09F000`. Keep that exact value
+in the IE64 chapter, the programme-layout chapter, and Appendix H. Keep
+IE64 BASIC's dynamic stack distinct from the fixed plain-image stack.
+
+Publishable chapter and appendix front matter may contain the title
+only. Do not put source lists, implementation files, repository paths,
+or their filenames in chapter front matter or reader prose. Keep all
+author-verification provenance in `verify/CLAIM_LEDGER.txt` only. The
+canonical manuscript and the published guide must both remain
+self-contained.
+
+Adversarially check the external compiler work, JIT work, packaging,
+website changes, and companion-document changes against the code on
+disk, then record the exclusion decision in the ledger. None of those
+implementation or external workflow details belongs in the PRG unless
+IE later gains a complete in-machine reader path for them.
+
 ## Current Rotozoomer Source-Consistency Editorial Pass
 
 This pass audits every commit after `6e319b10` and the current tracked

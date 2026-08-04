@@ -1,22 +1,5 @@
 ---
 title: "MIDI/MUS, Live MIDI, and RawlandMini GM Synth"
-sources:
-  - midi_constants.go
-  - midi_live.go
-  - midi_parser.go
-  - midi_engine.go
-  - midi_player.go
-  - media_loader.go
-  - media_loader_constants.go
-  - runtime_status.go
-  - sdk/include/ehbasic_hw_audio.inc
-  - sdk/include/ehbasic_tokens.inc
-  - sdk/include/ie64.inc
-  - sdk/include/ie32.inc
-  - sdk/include/ie65.inc
-  - sdk/include/ie68.inc
-  - sdk/include/ie80.inc
-  - sdk/include/ie86.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

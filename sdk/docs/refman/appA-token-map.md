@@ -1,11 +1,5 @@
 ---
 title: "IE64 BASIC Keyword Abbreviations and Token Map"
-sources:
-  - sdk/examples/asm/ehbasic_ie64.asm
-  - sdk/include/ehbasic_tokens.inc
-  - sdk/include/ehbasic_tokenizer.inc
-  - sdk/include/ehbasic_exec.inc
-  - sdk/include/ehbasic_compiler_driver.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

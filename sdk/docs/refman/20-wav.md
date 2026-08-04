@@ -1,10 +1,5 @@
 ---
 title: "WAV Sample Player"
-sources:
-  - wav_constants.go
-  - wav_player.go
-  - wav_parser.go
-  - wav_engine.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

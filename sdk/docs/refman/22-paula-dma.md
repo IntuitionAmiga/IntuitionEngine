@@ -1,8 +1,5 @@
 ---
 title: "Paula DMA Engine"
-sources:
-  - aros_audio_constants.go
-  - aros_audio_dma.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

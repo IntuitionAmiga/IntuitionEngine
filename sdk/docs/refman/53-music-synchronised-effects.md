@@ -1,12 +1,5 @@
 ---
 title: "Music-Synchronised Effects"
-sources:
-  - sdk/examples/basic/resonance.bas
-  - resonance_test.go
-  - sid_resonance_test.go
-  - midi_player.go
-  - registers.go
-  - sdk/docs/refman/21-midi-mus.md
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

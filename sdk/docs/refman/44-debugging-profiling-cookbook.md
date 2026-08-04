@@ -1,15 +1,5 @@
 ---
 title: "Debugging and Profiling Cookbook"
-sources:
-  - debug_commands.go
-  - debug_monitor.go
-  - debug_monitor_media_freeze_test.go
-  - debug_access.go
-  - debug_ioview.go
-  - debug_ioview_read.go
-  - script_engine.go
-  - perf_accounting.go
-  - perf_accounting_subsys.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

@@ -1,23 +1,5 @@
 ---
 title: "Per-CPU Symbol Index"
-sources:
-  - sdk/include/ie64.inc
-  - sdk/include/ie32.inc
-  - sdk/include/ie65.inc
-  - sdk/include/ie80.inc
-  - sdk/include/ie68.inc
-  - sdk/include/ie86.inc
-  - cpu_ie64.go
-  - program_executor.go
-  - sdk/include/ehbasic_compiler_driver.inc
-  - cpu_ie32.go
-  - cpu_six5go2.go
-  - cpu_z80_runner.go
-  - cpu_m68k.go
-  - cpu_x86.go
-  - voodoo_constants.go
-  - registers.go
-  - sysinfo_mmio.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
@@ -35,13 +17,13 @@ chapter give the full story; this appendix is the cheat sheet.
 | Reset vector       | `$000000` (first instruction at start of RAM). |
 | `.ie64` image start | flat image copied at `PROG_START = $001000`; execution starts there. Oversized images are refused before memory or PC changes. |
 | In-machine assembly | `ASSEMBLE "name"` reads the matching assembly source, assembles at `PROG_START = $001000`, and writes `name.ie64`. |
+| Plain-image stack | `STACK_TOP = $09F000`; grows downward. |
 | Trap vector base   | `$000400` (`8`-byte entries, indexed by trap number). |
 | Supervisor stack   | grows down from `$0A0000`. |
-| User stack (`R31`) | grows down from BASIC's per-program stack region. |
-| Call ABI           | Arguments `R8`-`R15`; result `R8`; caller-saved `R1`-`R7`; callee-saved `R16`-`R30`; `R0 = 0`; `R31 = SP`. |
-| FPU regs           | `F0`-`F15`; FP32 values, with double operations using register pairs. `F0`-`F7` are argument / result registers by convention. |
+| BASIC stack (`R31`) | Dynamic reservation near the top of the low32 resident window, capped below `$10000000`. |
+| Call convention | Arguments `R8`-`R15`; result `R8`; caller-saved `R1`-`R7`; callee-saved `R16`-`R30`; stack aligned to `8` bytes. |
+| FPU regs           | `F0`-`F15`; FP32 values, with double operations using register pairs. `F0`-`F7` are argument and result registers by convention. |
 | BASIC text / variables | Dynamic IE64 BASIC arena, discovered through BASIC state pointers. |
-| BASIC stack       | Dynamic IE64 BASIC reservation near the top of the low32 resident window, capped below `$10000000`. |
 
 ## H.2 IE32
 

@@ -1,13 +1,5 @@
 ---
 title: "Native IE Audio Instead Of RSP-Style Mixing"
-sources:
-  - ../mk64-ie/ie/ie_platform_audio.c
-  - ../mk64-ie/ie/ie_audio_svc_client.c
-  - ../mk64-ie/ie/coproc/audio_svc_main.c
-  - ../mk64-ie/ie/coproc/audio_svc_proto.h
-  - ../mk64-ie/src/audio/audio_api.h
-  - ../mk64-ie/ie/ie_mmio.h
-  - ../mk64-ie/IE-PORT-NOTES.md
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

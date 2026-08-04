@@ -1,8 +1,5 @@
 ---
 title: "VideoChip"
-sources:
-  - video_chip.go
-  - video_compositor.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

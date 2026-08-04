@@ -1,12 +1,5 @@
 ---
 title: "From Floating Point To Tables"
-sources:
-  - sdk/examples/basic/rotozoomer_basic.bas
-  - sdk/examples/asm/rotozoomer_ie64.asm
-  - sdk/examples/asm/rotozoomer.asm
-  - sdk/examples/asm/rotozoomer_68k.asm
-  - sdk/examples/asm/rotozoomer_x86.asm
-  - rotozoomer_tables_test.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

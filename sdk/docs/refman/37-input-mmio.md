@@ -1,11 +1,5 @@
 ---
 title: "Keyboard, Mouse, Controllers, and Time of Day"
-sources:
-  - registers.go
-  - terminal_io.go
-  - mouse_mapping.go
-  - relative_mouse_capture.go
-  - input_gamepad.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

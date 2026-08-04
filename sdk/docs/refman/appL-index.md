@@ -1,17 +1,5 @@
 ---
 title: "Index"
-sources:
-  - sdk/docs/refman/00-Preface.md
-  - sdk/docs/refman/02-basic-vocabulary.md
-  - sdk/docs/refman/25-ie64.md
-  - sdk/docs/refman/appF-math.md
-  - sdk/docs/refman/appG-opcodes.md
-  - sdk/docs/refman/33-iemon.md
-  - sdk/docs/refman/34-ie-script.md
-  - sdk/docs/refman/35-disk-file-io.md
-  - sdk/docs/refman/39-network-sockets.md
-  - sdk/docs/refman/appD-mmio-maps.md
-  - sdk/docs/refman/appJ-memory-map.md
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

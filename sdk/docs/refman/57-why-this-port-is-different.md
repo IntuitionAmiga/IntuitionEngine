@@ -1,19 +1,5 @@
 ---
 title: "Why This Port Is Different"
-sources:
-  - ../mk64-ie/IE-PORT-NOTES.md
-  - ../mk64-ie/src/platform/platform.h
-  - ../mk64-ie/ie/ie_runtime.c
-  - ../mk64-ie/ie/game.ld
-  - ../mk64-ie/ie/coproc/ie_coproc.c
-  - ../mk64-ie/ie/coproc/ie_coproc.h
-  - ../mk64-ie/ie/coproc/tnl_service_ie64.asm
-  - ../mk64-ie/ie/ie_gfx_voodoo.c
-  - ../mk64-ie/ie/ie_platform_audio.c
-  - ../mk64-ie/ie/ie_gfx_svc_client.c
-  - ../mk64-ie/ie/ie_audio_svc_client.c
-  - ../mk64-ie/ie/coproc/gfx_svc_main.c
-  - ../mk64-ie/ie/coproc/audio_svc_main.c
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

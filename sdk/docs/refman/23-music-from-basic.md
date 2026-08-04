@@ -1,15 +1,5 @@
 ---
 title: "Music from BASIC and from each CPU"
-sources:
-  - midi_constants.go
-  - midi_player.go
-  - media_loader_constants.go
-  - media_loader.go
-  - sdk/include/ehbasic_hw_audio.inc
-  - cpu_six5go2.go
-  - cpu_z80_runner.go
-  - cpu_x86_runner.go
-  - cpu_chip_matrix_test.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

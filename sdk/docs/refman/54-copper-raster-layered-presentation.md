@@ -1,13 +1,5 @@
 ---
 title: "Copper, Raster Bands, And Layered Presentation"
-sources:
-  - sdk/examples/basic/resonance.bas
-  - sdk/examples/asm/rotating_cube_copper_68k.asm
-  - sdk/include/ehbasic_hw_system.inc
-  - video_chip.go
-  - ehbasic_test.go
-  - psg_hardening_test.go
-  - sdk/docs/refman/04-videochip.md
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

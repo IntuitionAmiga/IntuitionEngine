@@ -1,10 +1,5 @@
 ---
 title: "SoundChip and SFX"
-sources:
-  - audio_chip.go
-  - sfx_constants.go
-  - sfx_trigger.go
-  - sdk/include/ehbasic_hw_audio.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

@@ -1,13 +1,5 @@
 ---
 title: "Block Diagrams"
-sources:
-  - video_compositor.go
-  - audio_chip.go
-  - machine_bus.go
-  - coprocessor_constants.go
-  - coprocessor_manager.go
-  - aros_host_socket_constants.go
-  - host_socket_mapping.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

@@ -1,10 +1,5 @@
 ---
 title: "Coprocessor and Cross-CPU Calls"
-sources:
-  - coprocessor_constants.go
-  - sdk/include/ehbasic_hw_coproc.inc
-  - media_loader_constants.go
-  - registers.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

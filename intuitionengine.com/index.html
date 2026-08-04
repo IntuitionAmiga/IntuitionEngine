@@ -1118,7 +1118,7 @@ SOUND STOP</code></pre>
           <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
         </div>
-        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos, and a JIT that hands your hot IE64 and 68020 code to the browser's own engine, so <code>RUN AOT</code> is fast in the tab too; the other four CPUs run at interpreter speed there. The live image bundles worked examples in BASIC, assembly and C. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
+        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos. IE64, 68020 and x86 code can use WebAssembly JITs, with x86 JIT compilation available when the browser supports WebAssembly SIMD; IE32, Z80 and 6502 run through their interpreters. The live image bundles worked examples in BASIC, assembly and C, together with the IE64 C toolchain. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
       </div>
     </section>
 
@@ -1251,7 +1251,7 @@ SOUND STOP</code></pre>
                 <th>CPU view</th>
                 <th>Programme form</th>
                 <th>Hardware contract</th>
-                <th>amd64 execution</th>
+                <th>x86-64 execution</th>
               </tr>
             </thead>
             <tbody>
@@ -1304,14 +1304,14 @@ SOUND STOP</code></pre>
         <article class="card" style="margin-top: 1rem">
           <span class="kicker">IE64 CPU</span>
           <h3>The native 64-bit core</h3>
-          <p>A 64-bit RISC load-store CPU with 32 general-purpose registers (R0 hardwired to zero), fixed 8-byte instructions and a 16-register control bank. Integer branches compare registers directly, so there is no flags register. JIT-compiled on x86-64 and ARM64.</p>
+          <p>A 64-bit RISC load-store CPU with 32 general-purpose registers (R0 hardwired to zero), fixed 8-byte instructions and a 16-register control bank. Integer branches compare registers directly, so there is no flags register. The live image JIT-compiles it to x86-64, while the browser build compiles hot blocks to WebAssembly.</p>
           <p>The FPU adds 16 IEEE-754 registers, single precision with double precision on even and odd pairs. A six-level paged MMU brings address translation, page-level access control and supervisor access guards, with a hardware trap-frame stack that preserves the fault-control registers across nested traps, so a handler survives a second fault without saving them by hand. Six sequentially-consistent 64-bit atomics, compare-and-swap, exchange, fetch-and-add and the bitwise operations, each act as a full memory barrier: the lock-free backbone for six CPUs on one bus. IntuitionOS and BASIC AOT both target it.</p>
         </article>
 
         <article class="card" style="margin-top: 1rem">
           <span class="kicker">JIT</span>
           <h3>Five CPUs compiled to native code</h3>
-          <p>On x86-64 hosts, five of the six CPUs, IE64, M68K, x86, Z80 and 6502, compile guest code to native machine code as it runs; only IE32 stays interpreted. On ARM64 hosts IE64 and M68K run JIT-compiled too, with Z80 also native on ARM64 Linux, and in the browser build IE64 and M68K tier to WebAssembly through the browser's own engine. The compilers carry per-CPU floating-point paths, including the M68K 68881 and the x86 x87, detect self-modifying code and recompile the affected blocks, and drop back to interpreter-equivalent helpers when a block cannot stay native, resuming only when the architectural state still matches.</p>
+          <p>In the live image, IE64, M68K, x86, Z80 and 6502 compile guest code to x86-64 machine code as it runs; only IE32 stays interpreted. In the browser, IE64, M68K and x86 have WebAssembly JITs; the x86 JIT requires WebAssembly SIMD. Unsupported instructions return to the relevant interpreter with the guest state preserved. The compilers handle self-modifying code and include CPU-specific floating-point paths such as the M68K 68881 and x86 x87.</p>
           <p>Even with the paged MMU enabled, IE64 code stays JIT-compiled: the dispatcher keys native blocks by translation state, and data, stack, floating-point and control-flow accesses that need address translation take a helper exit and resume in native code instead of bailing the whole block.</p>
         </article>
       </div>
@@ -1599,7 +1599,7 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
             <tbody>
               <tr>
                 <td>SoundChip and SFX</td>
-                <td><code>0xF0A80</code> FLEX, SID2/SID3 FLEX windows, SFX ext <code>0xF2600-0xF29FF</code></td>
+                <td><code>0xF0A80</code> FLEX, SID2/SID3 FLEX ranges, SFX ext <code>0xF2600-0xF29FF</code></td>
                 <td>Ten FLEX synth channels, 32 SFX sample-trigger channels, square/pulse, triangle, sine, noise, sawtooth, nine noise algorithms, ADSR, sweep, PWM, hard sync, ring modulation, signed 8-bit DAC input, global filter, overdrive, reverb, limiter, and block-rendered mixer output.</td>
               </tr>
               <tr>
@@ -1823,8 +1823,8 @@ dbg.close()</code></pre>
     <section id="tooling" class="band">
       <div class="wrap">
         <div class="section-head">
-          <h2>IE64 BASIC and the assembly toolchain</h2>
-          <p>IE64 BASIC runs on the native 64-bit core. The same stored programme can run through the interpreter, compile ahead-of-time to native IE64 machine code and run at once, write itself out as a standalone .ie64 image, or transpile to readable IE64 assembly that you can inspect, edit and assemble back. Typed BASIC also drives MMIO, waits for video, runs the blitter, starts music and calls coprocessor workers.</p>
+          <h2>IE64 BASIC, C and assembly</h2>
+          <p>IE64 BASIC runs on the native 64-bit core. The same stored programme can run through the interpreter, compile ahead-of-time to native IE64 machine code and run at once, write itself out as a standalone <code>.ie64</code> image, or transpile to readable IE64 assembly that you can inspect, edit and assemble again. The separate bare-metal C toolchain compiles C, assembly, ELF objects and static archives into the same flat <code>.ie64</code> programme format. BASIC and C can both reach the machine's MMIO hardware.</p>
         </div>
 
         <div class="table-wrap">
@@ -1899,13 +1899,27 @@ SOUND PLAY "SONG.MID"</code></pre>
           </article>
           <article class="card">
             <h3>SDK and debug tools</h3>
-            <p>The live image bundles the SDK tools, <code>ie32asm</code>, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie32to64</code> and <code>m68kto64</code>, with a checksum manifest, and IE Mon supplies the debugger.</p>
+            <p>The live image bundles <code>ie32asm</code>, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie32to64</code> and <code>m68kto64</code>, with a checksum manifest. It also carries the packaged IE64 C toolchain under <code>SDK/Toolchains</code>. IE Mon supplies the debugger.</p>
+          </article>
+          <article class="card">
+            <span class="kicker">C</span>
+            <h3>C on five CPUs</h3>
+            <p>C is not limited to IE64. You can use any freestanding C compiler that targets 68020, Z80, 6502 or 32-bit x86, provided you link or convert its output to the flat image format expected by that CPU: <code>.ie68</code>, <code>.ie80</code>, <code>.ie65</code> or <code>.ie86</code>. The SDK supplies the hardware definitions; IE32 is the only CPU without a C compiler target.</p>
+            <p><code>ie64-cproc</code> is a freestanding C23 toolchain for the <code>ie64-unknown-none</code> target. It uses cproc, QBE and Picolibc, with the V3 IE64 ABI, scalar floating point, static archives and C atomics. It is not a hosted POSIX environment and does not provide dynamic linking, threads or C++.</p>
+            <pre class="code-panel"><code>ie64-cproc -o demo.ie64 demo.c</code></pre>
+            <p>Copy <code>demo.ie64</code> to the machine's file area, then type this at the BASIC prompt:</p>
+            <pre class="code-panel"><code>RUN "demo.ie64"</code></pre>
+            <p>The Linux x86-64 package requires glibc 2.38 or newer and includes <code>ie64-cproc</code>, QBE, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie64ld</code>, <code>ie64-ar</code>, <code>ie64-ranlib</code>, headers and the bare-metal libraries.</p>
+            <div class="actions">
+              <a class="button" href="assets/ie64-toolchain-v3-linux-amd64.tar.xz" download>Download the x86-64 host toolchain</a>
+              <a class="button secondary" href="assets/ie64-toolchain-v3-linux-amd64.tar.xz.sha256" download>SHA-256 checksum</a>
+            </div>
           </article>
           <article class="card">
             <span class="kicker">Assembly</span>
             <h3>Native assembly for all six CPUs</h3>
             <p>Every CPU has its own hardware-definition include, so you write assembly straight against the machine: <code>ie32.inc</code> and <code>ie64.inc</code> for the IE cores, and <code>ie65.inc</code>, <code>ie68.inc</code>, <code>ie80.inc</code> and <code>ie86.inc</code> for the 6502, M68K, Z80 and x86. IE32 and IE64 use their own assemblers, <code>ie32asm</code> and <code>ie64asm</code>; the retro cores use the standard ca65, vasm and NASM.</p>
-            <p><code>ie64dis</code> disassembles IE64, and <code>ie32to64</code> and <code>m68kto64</code> translate IE32 and M68K source towards IE64 (<code>m68kto64</code> is still in development). Every tool is a single self-contained binary that runs on Linux, Windows and macOS, on x86-64 and ARM64.</p>
+            <p><code>ie64dis</code> disassembles IE64, and <code>ie32to64</code> and <code>m68kto64</code> translate IE32 and M68K source towards IE64 (<code>m68kto64</code> is still in development). The live image carries the standalone SDK tools with the examples and manuals they support.</p>
           </article>
         </div>
       </div>
@@ -1915,7 +1929,7 @@ SOUND PLAY "SONG.MID"</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>Manuals and register maps</h2>
-          <p>Five manuals and the reference-guide bundle, each answering one question. Every ISA table, monitor command, IEScript call and MMIO map is written down, including the Part VIII full game-port case study.</p>
+          <p>Five manuals and the reference-guide bundle, each with a specific job. Every ISA table, monitor command, IEScript call and MMIO map is written down, including the Part VIII full game-port case study.</p>
         </div>
         <div class="doc-list">
           <article class="card">

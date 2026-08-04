@@ -1,16 +1,5 @@
 ---
 title: "Interrupts, Raster Timing, and Polling"
-sources:
-  - bus_interrupt_sink.go
-  - registers.go
-  - antic_constants.go
-  - antic_dlist.go
-  - video_chip.go
-  - video_ted.go
-  - video_ula.go
-  - cpu_wait_mmio.go
-  - cpu_ie64.go
-  - cpu_m68k.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

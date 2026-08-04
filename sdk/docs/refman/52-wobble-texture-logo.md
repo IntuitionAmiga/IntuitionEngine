@@ -1,11 +1,5 @@
 ---
 title: "Wobble, Texture Building, And Logo Motion"
-sources:
-  - sdk/examples/basic/wobble_zoom.bas
-  - ehbasic_splash_wobble_test.go
-  - ehbasic_aot_test.go
-  - video_chip.go
-  - sdk/include/ehbasic_hw_video.inc
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

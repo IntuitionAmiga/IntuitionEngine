@@ -1,14 +1,5 @@
 ---
 title: "Fast3D To Voodoo"
-sources:
-  - ../mk64-ie/src/gfx/gfx_pc.c
-  - ../mk64-ie/src/gfx/gfx_fast3d.c
-  - ../mk64-ie/src/gfx/gfx_rendering_api.h
-  - ../mk64-ie/ie/ie_gfx_voodoo.c
-  - ../mk64-ie/ie/ie_mmio.h
-  - ../mk64-ie/tests/test_gfx_voodoo.c
-  - ../mk64-ie/ie/ie_gfx_svc_client.c
-  - ../mk64-ie/ie/coproc/gfx_svc_main.c
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.

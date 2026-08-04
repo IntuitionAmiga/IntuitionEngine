@@ -1,15 +1,5 @@
 ---
 title: "A Larger Whole-Machine Example"
-sources:
-  - sdk/include/ehbasic_hw_video.inc
-  - sdk/include/ehbasic_hw_audio.inc
-  - sdk/include/ehbasic_hw_coproc.inc
-  - sdk/include/ehbasic_file_io.inc
-  - registers.go
-  - video_chip.go
-  - audio_chip.go
-  - file_io.go
-  - coprocessor_manager.go
 ---
 
 Copyright (c) 2026 Zayn Otley. All rights reserved.
