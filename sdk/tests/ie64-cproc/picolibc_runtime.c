@@ -1,5 +1,5 @@
 #include <errno.h>
-#include <ie64/platform.h>
+#include <intuitionengine.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdbit.h>

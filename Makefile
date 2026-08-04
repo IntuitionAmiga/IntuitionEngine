@@ -525,12 +525,12 @@ x64-live-embed-assets: sdk-build emutos-release-rom aros-ie-live-inputs intuitio
 	@echo "x64 live embedded binary inputs are ready."
 
 .PHONY: x64-live
-x64-live: x86-64-v3 x64-live-demos wasm dist-ie64-toolchain-linux-amd64
+x64-live: x86-64-v3 x64-live-demos wasm dist-host-sdk-linux-amd64
 	@echo "Building IE x64 live USB image..."
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh
 
 .PHONY: x64-live-rebuild-golden
-x64-live-rebuild-golden: x86-64-v3 x64-live-demos dist-ie64-toolchain-linux-amd64
+x64-live-rebuild-golden: x86-64-v3 x64-live-demos dist-host-sdk-linux-amd64
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden
 
 .PHONY: x64-live-demos
@@ -539,37 +539,8 @@ x64-live-demos: x64-live-payload-check
 	@echo "x64 live demo payload inputs are ready."
 
 .PHONY: x64-live-payload-check
-x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer arosvision-live-tree x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-sdk-tools intuitionos iedoom dist-ie64-toolchain-linux-amd64
+x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer arosvision-live-tree x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-companion-pdfs intuitionos iedoom dist-host-sdk-linux-amd64
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --check-payload
-
-.PHONY: x64-live-sdk-tools
-x64-live-sdk-tools:
-	@echo "Building live SDK host tools..."
-	@rm -rf "$(X64_LIVE_DIR)/sdk-tools"
-	@$(MKDIR) -p "$(X64_LIVE_DIR)/sdk-tools"
-	@set -e; \
-	old_ifs="$$IFS"; \
-	for spec in \
-		linux:amd64:linux-x64: \
-		linux:arm64:linux-arm64: \
-		darwin:amd64:macos-x64: \
-		darwin:arm64:macos-arm64: \
-		windows:amd64:windows-x64:.exe \
-		windows:arm64:windows-arm64:.exe; do \
-		IFS=:; set -- $$spec; IFS="$$old_ifs"; \
-		goos="$$1"; goarch="$$2"; platform="$$3"; ext="$${4:-}"; \
-		outdir="$(X64_LIVE_DIR)/sdk-tools/$$platform"; \
-		echo "== SDK tools $$goos/$$goarch =="; \
-		$(MKDIR) -p "$$outdir"; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -buildvcs=false -o "$$outdir/ie32asm$$ext" assembler/ie32asm.go; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -buildvcs=false -tags ie64 -o "$$outdir/ie64asm$$ext" ./assembler; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -buildvcs=false -tags ie64dis -o "$$outdir/ie64dis$$ext" ./assembler; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -buildvcs=false -o "$$outdir/ie32to64$$ext" ./cmd/ie32to64/; \
-		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch $(GO) build $(GO_FLAGS) -buildvcs=false -o "$$outdir/m68kto64$$ext" ./cmd/m68kto64/; \
-	done
-	@set -e; \
-	cd "$(X64_LIVE_DIR)/sdk-tools"; \
-	find . -type f ! -name SHA256SUMS.txt -print0 | LC_ALL=C sort -z | xargs -0 sha256sum > SHA256SUMS.txt
 
 .PHONY: x64-live-refman-pdfs
 x64-live-refman-pdfs:
@@ -722,7 +693,8 @@ WASM_GOENV    := GOOS=js GOARCH=wasm GOEXPERIMENT=none
 # subtree (Demos/{ie32,ie64,m68k,z80,m6502,x86}), so the browser disk has the
 # same content and CPU-sorted layout. Only the Demos subtree is mirrored, not
 # the Systems/Docs/SDK/Coproc siblings. MANIFEST is a recursive list of the
-# relative paths the browser preloads over HTTP.
+# relative paths the browser preloads over HTTP. Download-only release
+# archives remain website assets, but must not enter this disk volume.
 WEB_DEMOS_DIR := intuitionengine.com/assets/Demos
 IESHARE_DEMOS := $(X64_LIVE_DIR)/work/ieshare-payload/Demos
 
@@ -747,7 +719,7 @@ web-demos:
 	@cp -a sdk/examples/assets intuitionengine.com/assets/sdk/examples/ 2>/dev/null || true
 	@# Recursive manifest of the whole document-root assets folder (relative
 	@# paths), which is the BASIC disk volume the browser preloads over HTTP.
-	@(cd intuitionengine.com/assets && find . -type f ! -name MANIFEST ! -name '.gitkeep' ! -iname 'README.TXT' ! -iname 'mariokart*' | sed 's|^\./||' | LC_ALL=C sort) > intuitionengine.com/assets/MANIFEST
+	@(cd intuitionengine.com/assets && find . -type f ! -name MANIFEST ! -name '.gitkeep' ! -iname 'README.TXT' ! -iname 'mariokart*' ! -name 'intuition-engine-host-sdk-linux-amd64.tar.xz*' | sed 's|^\./||' | LC_ALL=C sort) > intuitionengine.com/assets/MANIFEST
 	@echo "  $$(grep -vc '^$$' intuitionengine.com/assets/MANIFEST 2>/dev/null || echo 0) file(s) in the assets disk volume"
 
 wasm: setup web-demos
@@ -943,6 +915,17 @@ ie64-ranlib: setup
 
 dist-ie64-toolchain-linux-amd64:
 	@bash ./scripts/dist-ie64-toolchain-linux-amd64.sh
+
+.PHONY: dist-host-sdk-linux-amd64 test-host-sdk test-host-sdk-external
+dist-host-sdk-linux-amd64:
+	@bash ./scripts/dist-host-sdk-linux-amd64.sh
+
+test-host-sdk: dist-host-sdk-linux-amd64
+	@bash ./scripts/test-host-sdk-header.sh
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; tar -xf dist/intuition-engine-host-sdk-linux-amd64.tar.xz -C "$$tmp"; bash ./scripts/test-installed-host-sdk.sh "$$tmp/intuition-engine-host-sdk-linux-amd64"
+
+test-host-sdk-external:
+	@bash ./scripts/test-host-sdk-external.sh
 
 # Build the IE32-to-IE64 converter
 ie32to64: setup

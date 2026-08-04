@@ -30,8 +30,6 @@ Demos/x86/iedoom.ie86
 Demos/x86/rotozoomer_x86.ie86
 Demos/z80/robocop_intro_z80.ie80
 Demos/z80/rotozoomer_z80.ie80
-ie64-toolchain-v3-linux-amd64.tar.xz
-ie64-toolchain-v3-linux-amd64.tar.xz.sha256
 rotozoomer-social.jpg
 rotozoomtexture.raw
 sdk/examples/assets/Hawkeye-Loader.ahx

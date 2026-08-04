@@ -5,7 +5,7 @@
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ie64.h>
+#include <intuitionengine.h>
 
 _Noreturn void __ie64_terminate(int status)
 {

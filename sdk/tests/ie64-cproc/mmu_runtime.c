@@ -1,4 +1,4 @@
-#include <ie64.h>
+#include <intuitionengine.h>
 #include <stdint.h>
 
 #define RESULT ((volatile uint64_t *)0x80000)

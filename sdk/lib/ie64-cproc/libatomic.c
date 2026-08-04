@@ -1,7 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
-#include <ie64.h>
-#include <ie64/platform.h>
+#include <intuitionengine.h>
 #include "atomic_orders.h"
 
 /* This table and hash are part of the IE64 bare-metal ABI V3. */

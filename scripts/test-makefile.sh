@@ -223,7 +223,7 @@ for target in \
   iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets \
   arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-release-rom basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
   test-makefile test-cross test-cross-binaries test-x86-jit-parity ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
-  test-x86-harte test-x86-harte-short release-verify x64-live-sdk-tools iedoom iedoom-ie86 iedoom-ie68 x86-bench-baseline x86-bench-after x86-bench-compare x86-iedoom-timedemo; do
+  test-x86-harte test-x86-harte-short release-verify dist-host-sdk-linux-amd64 test-host-sdk test-host-sdk-external iedoom iedoom-ie86 iedoom-ie68 x86-bench-baseline x86-bench-after x86-bench-compare x86-iedoom-timedemo; do
   assert_phony "$target"
   assert_target_exists "$target"
 done
@@ -257,7 +257,9 @@ assert_target_exists x64-live-sdk-companion-pdfs
 assert_phony x64-live-sdk-companion-pdfs
 assert_makefile_contains '^x64-live-payload-check:.*x64-live-refman-pdfs'
 assert_makefile_contains '^x64-live-payload-check:.*x64-live-sdk-companion-pdfs'
-assert_makefile_contains '^x64-live-payload-check:.*x64-live-sdk-tools'
+assert_makefile_contains '^x64-live-payload-check:.*dist-host-sdk-linux-amd64'
+assert_makefile_not_contains '^x64-live-payload-check:.*x64-live-sdk-tools'
+assert_makefile_not_contains '^x64-live-payload-check:.*dist-ie64-toolchain-linux-amd64'
 assert_makefile_contains '^x64-live-payload-check:.*iedoom'
 assert_makefile_contains '^x64-live-payload-check:.*arosvision-live-tree'
 assert_makefile_contains '^x64-live-sdk-companion-pdfs:.*x64-live-refman-pdfs'
@@ -291,12 +293,8 @@ assert_var AROS_LIVE_DIR '$(AROSVISION_PROBE_DIR)'
 assert_recipe_contains x64-live 'AROS_RELEASE_DIR="build/arosvision".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh'
 assert_recipe_contains x64-live-rebuild-golden 'AROS_RELEASE_DIR="build/arosvision".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh --rebuild-golden'
 assert_recipe_contains x64-live-payload-check 'AROS_RELEASE_DIR="build/arosvision".*CHOCOLATE_DOOM_DIR="\.\./chocolate-doom" IEDOOM_IE86="build/iedoom\.ie86" IEDOOM_IE68="build/iedoom\.ie68" IEDOOM_WAD="DOOM1\.WAD" \./build_x64_ie_img\.sh --check-payload'
-assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch go build .*assembler/ie32asm\.go'
-assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch go build .*-tags ie64 .*\./assembler'
-assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch go build .*-tags ie64dis .*\./assembler'
-assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch go build .*cmd/ie32to64/'
-assert_recipe_contains x64-live-sdk-tools 'GOOS=\$goos GOARCH=\$goarch go build .*cmd/m68kto64/'
-assert_recipe_contains x64-live-sdk-tools 'SHA256SUMS\.txt'
+assert_recipe_contains dist-host-sdk-linux-amd64 'dist-host-sdk-linux-amd64\.sh'
+assert_recipe_contains web-demos "! -name 'intuition-engine-host-sdk-linux-amd64\\.tar\\.xz\\*'"
 assert_recipe_contains iedoom-ie86 'cd "\.\./chocolate-doom" && sh src/iedoom_build\.sh "build/iedoom\.ie86"'
 assert_recipe_contains iedoom-ie68 'cd "\.\./chocolate-doom" && sh src/iedoom_build_m68k\.sh "build/iedoom\.ie68"'
 assert_var AROSVISION_SOURCE ../AROSVision

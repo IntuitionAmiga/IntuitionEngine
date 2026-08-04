@@ -49,11 +49,10 @@ HOST_HELPER_BINARY="${WORK_DIR}/intuitionengine-host-helper"
 ROOT_PART_IMG="${WORK_DIR}/root-partition.ext4"
 PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"
 REFMAN_PDF_DIR="${SCRIPT_DIR}/sdk/docs/refman.publish/pdf"
-SDK_TOOLS_BUILD_DIR="${LIVE_OUT_DIR}/sdk-tools"
-SDK_TOOLS_README_TEMPLATE="${SCRIPT_DIR}/sdk/tools/README.md"
-IE64_TOOLCHAIN_NAME="ie64-toolchain-v3-linux-amd64"
-IE64_TOOLCHAIN_ARCHIVE="${SCRIPT_DIR}/dist/${IE64_TOOLCHAIN_NAME}.tar.xz"
-IE64_TOOLCHAIN_SHA256="${IE64_TOOLCHAIN_ARCHIVE}.sha256"
+HOST_SDK_NAME="intuition-engine-host-sdk-linux-amd64"
+HOST_SDK_ARCHIVE="${SCRIPT_DIR}/dist/${HOST_SDK_NAME}.tar.xz"
+HOST_SDK_SHA256="${HOST_SDK_ARCHIVE}.sha256"
+IESHARE_SDK_RESERVE_BYTES="${IESHARE_SDK_RESERVE_BYTES:-67108864}"
 SDK_COMPANION_PDFS=(
     "${SCRIPT_DIR}/sdk/docs/IE64_ISA.pdf"
     "${SCRIPT_DIR}/sdk/docs/IE32_ISA.pdf"
@@ -328,33 +327,11 @@ check_live_payload_inputs() {
         payload_require_file "${SCRIPT_DIR}/sdk/include/${include}" "make sdk-build" "SDK include ${include}"
     done
 
-    payload_require_file "$SDK_TOOLS_README_TEMPLATE" "tracked source file" "SDK tools README template"
-    payload_require_file "${SDK_TOOLS_BUILD_DIR}/SHA256SUMS.txt" "make x64-live-sdk-tools" "SDK host tools checksum manifest"
-    local sdk_tool_platform sdk_tool_name sdk_tool_ext
-    for sdk_tool_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64 windows-arm64; do
-        if [[ ! -d "${SDK_TOOLS_BUILD_DIR}/${sdk_tool_platform}" ]]; then
-            log_error "Required SDK host tools directory missing: ${SDK_TOOLS_BUILD_DIR}/${sdk_tool_platform}"
-            log_error "Producer: make x64-live-sdk-tools"
-            exit 1
-        fi
-        sdk_tool_ext=""
-        if [[ "$sdk_tool_platform" == windows-* ]]; then
-            sdk_tool_ext=".exe"
-        fi
-        for sdk_tool_name in ie32asm ie64asm ie64dis ie32to64 m68kto64; do
-            payload_require_file "${SDK_TOOLS_BUILD_DIR}/${sdk_tool_platform}/${sdk_tool_name}${sdk_tool_ext}" "make x64-live-sdk-tools" "SDK host tool ${sdk_tool_platform}/${sdk_tool_name}${sdk_tool_ext}"
-        done
-    done
-    if ! (cd "$SDK_TOOLS_BUILD_DIR" && sha256sum -c SHA256SUMS.txt); then
-        log_error "SDK host tools checksum validation failed: ${SDK_TOOLS_BUILD_DIR}/SHA256SUMS.txt"
-        log_error "Producer: make x64-live-sdk-tools"
-        exit 1
-    fi
-    payload_require_file "$IE64_TOOLCHAIN_ARCHIVE" "make dist-ie64-toolchain-linux-amd64" "IE64 C toolchain archive"
-    payload_require_file "$IE64_TOOLCHAIN_SHA256" "make dist-ie64-toolchain-linux-amd64" "IE64 C toolchain checksum"
-    if ! (cd "$(dirname "$IE64_TOOLCHAIN_ARCHIVE")" && sha256sum -c "$(basename "$IE64_TOOLCHAIN_SHA256")"); then
-        log_error "IE64 C toolchain checksum validation failed: ${IE64_TOOLCHAIN_SHA256}"
-        log_error "Producer: make dist-ie64-toolchain-linux-amd64"
+    payload_require_file "$HOST_SDK_ARCHIVE" "make dist-host-sdk-linux-amd64" "host SDK archive"
+    payload_require_file "$HOST_SDK_SHA256" "make dist-host-sdk-linux-amd64" "host SDK checksum"
+    if ! (cd "$(dirname "$HOST_SDK_ARCHIVE")" && sha256sum -c "$(basename "$HOST_SDK_SHA256")"); then
+        log_error "host SDK checksum validation failed: ${HOST_SDK_SHA256}"
+        log_error "Producer: make dist-host-sdk-linux-amd64"
         exit 1
     fi
 
@@ -439,32 +416,10 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/SDK/Include/ie64.inc" "make sdk-build" "staged IE64 include"
     payload_require_file "${payload_root}/SDK/Include/ie64_fp.inc" "make sdk-build" "staged IE64 floating-point include"
     payload_require_file "${payload_root}/SDK/Include/ie65.cfg" "make sdk-build" "staged 6502 linker configuration"
-    payload_require_file "${payload_root}/SDK/Tools/README.md" "build_x64_ie_img.sh stage_share_payload" "staged SDK tools README"
-    payload_require_file "${payload_root}/SDK/Tools/SHA256SUMS.txt" "make x64-live-sdk-tools" "staged SDK host tools checksum manifest"
-    payload_require_file "${payload_root}/SDK/Toolchains/${IE64_TOOLCHAIN_NAME}.tar.xz" "make dist-ie64-toolchain-linux-amd64" "staged IE64 C toolchain archive"
-    payload_require_file "${payload_root}/SDK/Toolchains/${IE64_TOOLCHAIN_NAME}.tar.xz.sha256" "make dist-ie64-toolchain-linux-amd64" "staged IE64 C toolchain checksum"
-    local sdk_tool_platform sdk_tool_name sdk_tool_ext
-    for sdk_tool_platform in linux-x64 linux-arm64 macos-x64 macos-arm64 windows-x64 windows-arm64; do
-        if [[ ! -d "${payload_root}/SDK/Tools/${sdk_tool_platform}" ]]; then
-            log_error "Required staged SDK host tools directory missing: ${payload_root}/SDK/Tools/${sdk_tool_platform}"
-            log_error "Producer: build_x64_ie_img.sh stage_share_payload"
-            exit 1
-        fi
-        sdk_tool_ext=""
-        if [[ "$sdk_tool_platform" == windows-* ]]; then
-            sdk_tool_ext=".exe"
-        fi
-        for sdk_tool_name in ie32asm ie64asm ie64dis ie32to64 m68kto64; do
-            payload_require_file "${payload_root}/SDK/Tools/${sdk_tool_platform}/${sdk_tool_name}${sdk_tool_ext}" "make x64-live-sdk-tools" "staged SDK host tool ${sdk_tool_platform}/${sdk_tool_name}${sdk_tool_ext}"
-        done
-    done
-    if ! (cd "${payload_root}/SDK/Tools" && sha256sum -c SHA256SUMS.txt); then
-        log_error "Staged SDK host tools checksum validation failed: ${payload_root}/SDK/Tools/SHA256SUMS.txt"
-        log_error "Producer: build_x64_ie_img.sh stage_share_payload"
-        exit 1
-    fi
-    if ! (cd "${payload_root}/SDK/Toolchains" && sha256sum -c "${IE64_TOOLCHAIN_NAME}.tar.xz.sha256"); then
-        log_error "Staged IE64 C toolchain checksum validation failed: ${payload_root}/SDK/Toolchains/${IE64_TOOLCHAIN_NAME}.tar.xz.sha256"
+    payload_require_file "${payload_root}/SDK/Toolchains/${HOST_SDK_NAME}.tar.xz" "make dist-host-sdk-linux-amd64" "staged host SDK archive"
+    payload_require_file "${payload_root}/SDK/Toolchains/${HOST_SDK_NAME}.tar.xz.sha256" "make dist-host-sdk-linux-amd64" "staged host SDK checksum"
+    if ! (cd "${payload_root}/SDK/Toolchains" && sha256sum -c "${HOST_SDK_NAME}.tar.xz.sha256"); then
+        log_error "Staged host SDK checksum validation failed: ${payload_root}/SDK/Toolchains/${HOST_SDK_NAME}.tar.xz.sha256"
         log_error "Producer: build_x64_ie_img.sh stage_share_payload"
         exit 1
     fi
@@ -478,14 +433,13 @@ verify_staged_share_payload() {
         log_error "Expected: SDK contains include files and source examples only"
         exit 1
     fi
-    if find "${payload_root}/SDK" -type f -name '*.md' ! -path "${payload_root}/SDK/Tools/README.md" | grep -q .; then
+    if find "${payload_root}/SDK" -type f -name '*.md' | grep -q .; then
         log_error "Forbidden live payload content: Markdown staged under SDK"
-        log_error "Expected: only SDK/Tools/README.md is staged as Markdown under SDK"
+        log_error "Expected: SDK contains source examples, includes and the host SDK archive only"
         exit 1
     fi
-    if find "${payload_root}/SDK" -type f -name 'SHA256SUMS.txt' ! -path "${payload_root}/SDK/Tools/SHA256SUMS.txt" | grep -q .; then
-        log_error "Forbidden live payload content: unexpected SHA256SUMS.txt staged under SDK"
-        log_error "Expected: only SDK/Tools/SHA256SUMS.txt is staged as a checksum manifest under SDK"
+    if [[ -e "${payload_root}/SDK/Tools" || -e "${payload_root}/SDK/Toolchains/ie64-toolchain-v3-linux-amd64.tar.xz" ]]; then
+        log_error "Forbidden legacy SDK payload staged"
         exit 1
     fi
 
@@ -563,7 +517,6 @@ stage_share_payload() {
     local docs_dir="${payload_root}/Docs"
     local refman_docs_dir="${docs_dir}/IEProgRefGuide"
     local sdk_dir="${payload_root}/SDK"
-    local sdk_tools_dir="${sdk_dir}/Tools"
     local sdk_toolchains_dir="${sdk_dir}/Toolchains"
     local systems_dir="${payload_root}/Systems"
     local aros_system_dir="${systems_dir}/AROS"
@@ -638,7 +591,7 @@ PY
         "$aros_system_dir/Libs" "$aros_demos_dir" "$emutos_demos_dir" \
         "$intuitionos_system_dir/Boot" \
         "$docs_dir" "$refman_docs_dir" "$sdk_dir/Include" "$sdk_dir/Examples/asm" \
-        "$sdk_dir/Examples/basic" "$sdk_dir/Examples/c" "$sdk_tools_dir" "$sdk_toolchains_dir"
+        "$sdk_dir/Examples/basic" "$sdk_dir/Examples/c" "$sdk_toolchains_dir"
     if [[ -d "$C64_MUSIC_SOURCE" ]]; then
         rsync -a --delete "${C64_MUSIC_SOURCE}/" "${music_dir}/C64Music/"
     else
@@ -753,9 +706,19 @@ PY
     cp -f "${SCRIPT_DIR}"/sdk/examples/basic/*.bas "$sdk_dir/Examples/basic/"
     cp -f "${SCRIPT_DIR}"/sdk/examples/c/*.c "$sdk_dir/Examples/c/"
     cp -a "${SCRIPT_DIR}/sdk/examples/assets" "$sdk_dir/Examples/"
-    cp -a "${SDK_TOOLS_BUILD_DIR}/." "$sdk_tools_dir/"
-    cp -f "$SDK_TOOLS_README_TEMPLATE" "$sdk_tools_dir/README.md"
-    cp -f "$IE64_TOOLCHAIN_ARCHIVE" "$IE64_TOOLCHAIN_SHA256" "$sdk_toolchains_dir/"
+    local sdk_bytes available_bytes sdk_budget sdk_tmp
+    sdk_bytes=$(( $(stat -c '%s' "$HOST_SDK_ARCHIVE") + $(stat -c '%s' "$HOST_SDK_SHA256") ))
+    available_bytes=$(df -B1 --output=avail "$payload_root" | tail -n 1 | tr -d ' ')
+    sdk_budget=$(( available_bytes - IESHARE_SDK_RESERVE_BYTES ))
+    if (( sdk_budget < 0 || sdk_bytes > sdk_budget )); then
+        log_error "Host SDK exceeds IESHARE payload budget: need ${sdk_bytes}, budget ${sdk_budget}"
+        exit 1
+    fi
+    sdk_tmp=$(mktemp -d "${WORK_DIR}/host-sdk-check.XXXXXX")
+    tar -xf "$HOST_SDK_ARCHIVE" -C "$sdk_tmp"
+    bash "${SCRIPT_DIR}/scripts/test-installed-host-sdk.sh" "$sdk_tmp/${HOST_SDK_NAME}"
+    rm -rf "$sdk_tmp"
+    cp -f "$HOST_SDK_ARCHIVE" "$HOST_SDK_SHA256" "$sdk_toolchains_dir/"
     cp -f "${REFMAN_PDF_DIR}"/*.pdf "$refman_docs_dir/"
     cp -f "${SDK_COMPANION_PDFS[@]}" "$docs_dir/"
 
@@ -847,7 +810,7 @@ Demos    Bare-metal Intuition Engine demos.
 IE       Intuition Engine runtime support files.
 Music    Music collections copied from the build host when available.
 Docs     Printable Programmer's Reference Guide PDFs.
-SDK      Reference include files, source examples, host SDK tools, and the IE64 C toolchain.
+SDK      Reference include files, source examples and the Linux x86-64 host SDK archive.
 Systems  Guest OS payloads.
 _build   AB3D2 runtime assets used by the AB3D2 IE68 demos.
 

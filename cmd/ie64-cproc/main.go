@@ -37,7 +37,7 @@ type linkArgument struct {
 	value   string
 	library bool
 }
-type layout struct{ bin, root, include, lib, cproc, qbe, asm, ld string }
+type layout struct{ bin, root, include, standardInclude, lib, cproc, qbe, asm, ld string }
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -72,6 +72,9 @@ func parseArgs(args []string) (config, bool, error) {
 	}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if isTargetSelectionOption(a) {
+			return c, false, errors.New("IE_TARGET_* definitions are reserved for ie64-cproc")
+		}
 		switch {
 		case a == "--help":
 			fmt.Println("usage: ie64-cproc [options] file...\n" +
@@ -135,6 +138,9 @@ func parseArgs(args []string) (config, bool, error) {
 			if e != nil {
 				return c, false, e
 			}
+			if (a == "-D" || a == "-U") && isTargetSelection(v) {
+				return c, false, errors.New("IE_TARGET_* definitions are reserved for ie64-cproc")
+			}
 			c.cppArgs = append(c.cppArgs, a, v)
 		case a == "-MF" || a == "-MT":
 			v, e := take(&i)
@@ -193,6 +199,18 @@ func parseArgs(args []string) (config, bool, error) {
 	return c, false, nil
 }
 
+func isTargetSelectionOption(arg string) bool {
+	return (strings.HasPrefix(arg, "-D") || strings.HasPrefix(arg, "-U")) && len(arg) > 2 && isTargetSelection(arg[2:])
+}
+
+func isTargetSelection(value string) bool {
+	name := value
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	return strings.HasPrefix(name, "IE_TARGET_")
+}
+
 func findLayout(sysroot string) (layout, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -208,6 +226,10 @@ func findLayout(sysroot string) (layout, error) {
 		root = sysroot
 	}
 	l := layout{bin: bin, root: root, include: filepath.Join(root, "include"), lib: filepath.Join(root, "lib", "ie64-unknown-none")}
+	l.standardInclude = filepath.Join(l.lib, "include")
+	if _, err := os.Stat(l.standardInclude); err != nil {
+		l.standardInclude = l.include
+	}
 	l.cproc = filepath.Join(bin, "cproc-qbe")
 	l.qbe = filepath.Join(bin, "qbe")
 	l.asm = filepath.Join(bin, "ie64asm")
@@ -225,6 +247,10 @@ func findLayout(sysroot string) (layout, error) {
 	}
 	l.include = filepath.Join(l.root, "include")
 	l.lib = filepath.Join(l.root, "lib", "ie64-unknown-none")
+	l.standardInclude = filepath.Join(l.lib, "include")
+	if _, err := os.Stat(l.standardInclude); err != nil {
+		l.standardInclude = l.include
+	}
 	l.cproc = filepath.Join(parent, "cproc", "cproc-qbe")
 	l.qbe = filepath.Join(parent, "qbe", "qbe")
 	l.asm = filepath.Join(ie, "sdk", "bin", "ie64asm")
@@ -500,7 +526,7 @@ func compileC(c config, l layout, input, assembly, tmp string, index int) error 
 }
 
 func cprocArgs(c config, l layout, input string) ([]string, error) {
-	args := []string{"-t", "ie64"}
+	args := []string{"-t", "ie64", "-D", "IE_TARGET_IE64=1"}
 	if c.werror {
 		args = append(args, "-Werror")
 	}
@@ -511,6 +537,7 @@ func cprocArgs(c config, l layout, input string) ([]string, error) {
 		}
 	}
 	if !nostdinc {
+		args = append(args, "-Y", l.standardInclude)
 		args = append(args, "-Y", l.include)
 	}
 	for i := 0; i < len(c.cppArgs); i++ {

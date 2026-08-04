@@ -53,14 +53,11 @@ mkdir -p "${stage}/bin" "${stage}/include" \
 # compiler-builtin compatibility headers Picolibc intentionally omits;
 # copying sdk/include wholesale would leak headers and assets for every other
 # Intuition Engine target into this package.
-for header in float.h stdalign.h stdarg.h stdatomic.h stdbool.h stddef.h ie64.h; do
+for header in float.h stdalign.h stdarg.h stdatomic.h stdbool.h stddef.h intuitionengine.h; do
     install -m 0644 "${root_dir}/sdk/include/${header}" \
         "${stage}/include/${header}"
 done
 install -m 0644 "${root_dir}/sdk/include/ie64.inc" "${stage}/include/ie64.inc"
-mkdir -p "${stage}/include/ie64"
-install -m 0644 "${root_dir}/sdk/include/ie64/platform.h" \
-    "${stage}/include/ie64/platform.h"
 
 go build -trimpath -o "${stage}/bin/ie64-cproc" "${root_dir}/cmd/ie64-cproc"
 go build -trimpath -tags ie64 -o "${stage}/bin/ie64asm" "${root_dir}/assembler"

@@ -1,5 +1,5 @@
 #include <stdint.h>
-#include <ie64.h>
+#include <intuitionengine.h>
 
 #define RESULT (*(volatile uint64_t *)(uintptr_t)0x80000)
 #define PASS 0x41544f4d50415353UL

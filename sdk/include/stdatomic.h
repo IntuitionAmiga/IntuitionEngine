@@ -3,7 +3,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <ie64.h>
+
+uint64_t __builtin_ie64_xchg(volatile uint64_t *, uint64_t);
 
 typedef enum {
 	memory_order_relaxed,

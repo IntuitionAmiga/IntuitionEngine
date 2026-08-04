@@ -190,7 +190,7 @@ install -m 0644 "${picolibc_sysroot}/lib/libc.a" \
   "${picolibc_sysroot}/lib/ie64-unknown-none/libc.a"
 install -m 0644 "${picolibc_sysroot}/lib/libm.a" \
   "${picolibc_sysroot}/lib/ie64-unknown-none/libm.a"
-install -m 0644 "${root_dir}/sdk/include/ie64.h" "${picolibc_sysroot}/include/ie64.h"
+install -m 0644 "${root_dir}/sdk/include/intuitionengine.h" "${picolibc_sysroot}/include/intuitionengine.h"
 "${picolibc_sysroot}/bin/ie64asm" -c -Werror \
   -o "${picolibc_sysroot}/lib/ie64-unknown-none/crt0.o" \
   "${root_dir}/sdk/lib/ie64-cproc/crt0.s"

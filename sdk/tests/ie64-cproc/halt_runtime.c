@@ -1,4 +1,4 @@
-#include <ie64.h>
+#include <intuitionengine.h>
 #include <stdint.h>
 
 int

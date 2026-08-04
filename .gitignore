@@ -66,6 +66,8 @@ AppDir/
 release/
 SHA256SUMS
 *.tar.xz
+!intuitionengine.com/assets/intuition-engine-host-sdk-linux-amd64.tar.xz
+!intuitionengine.com/assets/intuition-engine-host-sdk-linux-amd64.tar.xz.sha256
 *.zip
 
 # Cross-compilation sysroot

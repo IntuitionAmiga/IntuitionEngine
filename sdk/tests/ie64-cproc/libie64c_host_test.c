@@ -5,6 +5,7 @@ static unsigned char ie64_test_heap[128];
 
 #define IE64_HEAP_START (ie64_test_heap + 1)
 #define IE64_HEAP_LIMIT (ie64_test_heap + sizeof(ie64_test_heap))
+#define IE_TARGET_X86 1
 #define IE64_H
 #define __builtin_ie64_halt() __builtin_trap()
 #include "../../lib/ie64-cproc/libie64c.c"

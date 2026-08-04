@@ -1,4 +1,4 @@
-#include <ie64.h>
+#include <intuitionengine.h>
 
 #define RESULT ((volatile uint64_t *)0x80000)
 #define PAGE_SIZE 0x1000UL

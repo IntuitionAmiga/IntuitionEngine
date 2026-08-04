@@ -33,7 +33,7 @@ into `intuitionengine.com/assets/Demos/`. If it is absent, the target warns and
 keeps any existing browser demos. It also copies `sdk/examples/basic` and
 `sdk/examples/assets` under `assets/sdk/examples/`, then writes a recursive
 `assets/MANIFEST` of relative paths. Manifest entries form the disk volume the
-browser machine sees.
+browser machine sees; website download archives are deliberately excluded.
 
 ## Running
 

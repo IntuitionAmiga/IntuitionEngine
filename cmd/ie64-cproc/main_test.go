@@ -90,6 +90,46 @@ func TestParsePublicModesAndTarget(t *testing.T) {
 	}
 }
 
+func TestParseRejectsUserTargetSelection(t *testing.T) {
+	for _, args := range [][]string{
+		{"-DIE_TARGET_IE64=1", "input.c"},
+		{"-D", "IE_TARGET_M68K=1", "input.c"},
+		{"-UIE_TARGET_Z80", "input.c"},
+		{"-U", "IE_TARGET_6502", "input.c"},
+		{"-DIE_TARGET_X86", "input.c"},
+	} {
+		if _, _, err := parseArgs(args); err == nil {
+			t.Fatalf("parseArgs(%q) accepted user target selection", args)
+		}
+	}
+}
+
+func TestCprocArgsInjectsOnlyDriverTarget(t *testing.T) {
+	c, _, err := parseArgs([]string{"input.c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := cprocArgs(c, layout{include: "/sdk/include", standardInclude: "/sdk/lib/ie64-unknown-none/include"}, "input.c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsAdjacent(args, "-D", "IE_TARGET_IE64=1") {
+		t.Fatalf("missing driver target definition in %q", args)
+	}
+	if !containsAdjacent(args, "-Y", "/sdk/lib/ie64-unknown-none/include") || !containsAdjacent(args, "-Y", "/sdk/include") {
+		t.Fatalf("missing standard or public include path in %q", args)
+	}
+}
+
+func containsAdjacent(args []string, first, second string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == first && args[i+1] == second {
+			return true
+		}
+	}
+	return false
+}
+
 func TestParseOptimisationLevels(t *testing.T) {
 	defaultConfig, _, err := parseArgs([]string{"input.c"})
 	if err != nil || defaultConfig.optimisation != 2 {
