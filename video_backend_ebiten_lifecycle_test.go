@@ -259,6 +259,7 @@ func gateHardwareRetainedLayerSkipsUpload() error {
 		return fmt.Errorf("NewEbitenOutput: %w", err)
 	}
 	eo := out.(*EbitenOutput)
+	eo.crtRequested = false // This gate verifies the unfiltered compositor oracle.
 	eo.showStatusBar = false
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: srcW, Height: srcH, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("SetDisplayConfig: %w", err)
@@ -349,6 +350,7 @@ func gateHardwareNon16x9FillsStretchRect() error {
 		return fmt.Errorf("NewEbitenOutput: %w", err)
 	}
 	eo := out.(*EbitenOutput)
+	eo.crtRequested = false // This gate verifies the unfiltered compositor oracle.
 	eo.showStatusBar = false
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: dstW, Height: dstH, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("SetDisplayConfig: %w", err)
@@ -413,6 +415,7 @@ func gateHardwareNonIntegerScaleMatchesSoftwareFloor() error {
 		return fmt.Errorf("NewEbitenOutput: %w", err)
 	}
 	eo := out.(*EbitenOutput)
+	eo.crtRequested = false // This gate verifies the unfiltered compositor oracle.
 	eo.showStatusBar = false
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: dstW, Height: dstH, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("SetDisplayConfig: %w", err)
@@ -459,6 +462,7 @@ func gateHardwarePartialAlphaLayerReplacesLowerLayer() error {
 		return fmt.Errorf("NewEbitenOutput: %w", err)
 	}
 	eo := out.(*EbitenOutput)
+	eo.crtRequested = false // This gate verifies the unfiltered compositor oracle.
 	eo.showStatusBar = false
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: 2, Height: 1, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("SetDisplayConfig: %w", err)

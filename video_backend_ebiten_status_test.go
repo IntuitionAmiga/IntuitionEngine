@@ -60,6 +60,48 @@ func TestEbitenF11ActionSwapAndFullscreenLock(t *testing.T) {
 	}
 }
 
+func TestEbitenCRTRequestedByDefaultAndF7Decision(t *testing.T) {
+	out, err := NewEbitenOutput()
+	if err != nil {
+		t.Fatalf("NewEbitenOutput: %v", err)
+	}
+	eo := out.(*EbitenOutput)
+	if !eo.crtRequested || eo.crtState != crtFilterUninitialised {
+		t.Fatalf("new CRT state = requested:%v state:%v, want requested and uninitialised", eo.crtRequested, eo.crtState)
+	}
+	if decideEbitenF7Action(false) {
+		t.Fatal("F7 action fired without a just-pressed F7")
+	}
+	if !decideEbitenF7Action(true) {
+		t.Fatal("F7 action did not fire for a just-pressed F7")
+	}
+
+	eo.crtRequested = !eo.crtRequested
+	if eo.crtRequested {
+		t.Fatal("F7 transition did not disable requested CRT state")
+	}
+}
+
+func TestEbitenF7StillHasGuestScancodes(t *testing.T) {
+	if got := ebitenToSTScancode[ebiten.KeyF7]; got != 0x41 {
+		t.Fatalf("ST F7 scancode = 0x%02X, want 0x41", got)
+	}
+	if got := ebitenToAmigaRawkey[ebiten.KeyF7]; got != 0x56 {
+		t.Fatalf("Amiga F7 scancode = 0x%02X, want 0x56", got)
+	}
+}
+
+func TestStatusBarCacheKeyTracksCRTLegendState(t *testing.T) {
+	cpu := []statusToken{{name: "IE64", enabled: true}}
+	video := []statusToken{{name: "IEVID", enabled: true}}
+	audio := []statusToken{{name: "SID", enabled: false}}
+	on := ebitenStatusLegendTokens(false, false, ScaleAspectFit, true)
+	off := ebitenStatusLegendTokens(false, false, ScaleAspectFit, false)
+	if statusBarCacheKey(640, 44, cpu, video, audio, on) == statusBarCacheKey(640, 44, cpu, video, audio, off) {
+		t.Fatal("CRT legend state did not invalidate the status-bar cache")
+	}
+}
+
 func TestEbitenDisplayConfigLockFullscreenSticky(t *testing.T) {
 	eo := &EbitenOutput{}
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: 320, Height: 240, LockFullscreen: true}); err != nil {
@@ -80,7 +122,11 @@ func TestEbitenDisplayConfigLockFullscreenSticky(t *testing.T) {
 }
 
 func TestEbitenStatusLegendFullscreenLockAndScaleTokens(t *testing.T) {
-	normal := ebitenStatusLegendTokens(false, true, ScaleAspectFit)
+	normal := ebitenStatusLegendTokens(false, true, ScaleAspectFit, true)
+	crtIdx := statusTokenIndex(normal, "F7:CRT")
+	if crtIdx < 0 || !normal[crtIdx].enabled {
+		t.Fatalf("enabled CRT legend token missing or grey: %v", normal)
+	}
 	if statusTokenIndex(normal, "Shift+F11:Fullscreen/Windowed") < 0 {
 		t.Fatalf("normal legend missing fullscreen/windowed token: %v", statusTokenNames(normal))
 	}
@@ -88,12 +134,16 @@ func TestEbitenStatusLegendFullscreenLockAndScaleTokens(t *testing.T) {
 		t.Fatalf("scale-capable legend missing F11 scale token: %v", statusTokenNames(normal))
 	}
 
-	locked := ebitenStatusLegendTokens(true, true, ScaleStretchFill)
+	locked := ebitenStatusLegendTokens(true, true, ScaleStretchFill, false)
+	crtIdx = statusTokenIndex(locked, "F7:CRT")
+	if crtIdx < 0 || locked[crtIdx].enabled {
+		t.Fatalf("disabled CRT legend token missing or green: %v", locked)
+	}
 	if statusTokenIndex(locked, "Shift+F11:Fullscreen/Windowed") >= 0 {
 		t.Fatalf("locked legend should omit fullscreen/windowed token: %v", statusTokenNames(locked))
 	}
 
-	noScale := ebitenStatusLegendTokens(false, false, ScaleAspectFit)
+	noScale := ebitenStatusLegendTokens(false, false, ScaleAspectFit, true)
 	if statusTokenIndex(noScale, "F11:") >= 0 {
 		t.Fatalf("non-scale legend should omit F11 scale token: %v", statusTokenNames(noScale))
 	}
@@ -166,14 +216,14 @@ func TestStatusBar_CachedImageReusedAcrossFrames(t *testing.T) {
 	}
 
 	screen := ebiten.NewImage(320, 200)
-	eo.drawRuntimeStatusBar(screen)
+	eo.drawRuntimeStatusBar(screen, true)
 	first := eo.statusBarImage
 	firstKey := eo.statusBarKey
 	if first == nil {
 		t.Fatal("the status bar was not rendered")
 	}
 	for range 5 {
-		eo.drawRuntimeStatusBar(screen)
+		eo.drawRuntimeStatusBar(screen, true)
 	}
 	if eo.statusBarImage != first {
 		t.Fatal("the status bar image was rebuilt with nothing changed")
@@ -187,7 +237,7 @@ func TestStatusBar_CachedImageReusedAcrossFrames(t *testing.T) {
 		t.Fatalf("SetDisplayConfig: %v", err)
 	}
 	wide := ebiten.NewImage(640, 400)
-	eo.drawRuntimeStatusBar(wide)
+	eo.drawRuntimeStatusBar(wide, true)
 	if eo.statusBarImage == first {
 		t.Fatal("the status bar survived a resize, so it would be drawn at the wrong width")
 	}

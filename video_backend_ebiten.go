@@ -50,8 +50,14 @@ type EbitenOutput struct {
 	indexedUnsupported atomic.Bool
 	// statusBarImage caches the rendered overlay, rebuilt only when
 	// statusBarKey changes. Touched from Draw only.
-	statusBarImage     *ebiten.Image
-	statusBarKey       string
+	statusBarImage *ebiten.Image
+	statusBarKey   string
+	// presentation is the one reusable final image. Every selected route is
+	// composed here before it is copied or filtered onto the display.
+	presentation       *ebiten.Image
+	crtRequested       bool
+	crtState           crtFilterState
+	crtFilter          *crtFilter
 	firstFrameOnce     sync.Once
 	window             *ebiten.Image
 	width              int
@@ -219,6 +225,7 @@ func NewEbitenOutput() (VideoOutput, error) {
 		done:          make(chan struct{}),
 		doneOnce:      &sync.Once{},
 		showStatusBar: true,
+		crtRequested:  true,
 	}
 	// Browser build only: expose ieTypeText/ieKey so the demo page's text input
 	// can drive the guest keyboard on touch devices. No-op on native.
@@ -697,6 +704,9 @@ func (eo *EbitenOutput) Update() error {
 			eo.luaOverlay.Toggle()
 		}
 	}
+	if decideEbitenF7Action(inpututil.IsKeyJustPressed(ebiten.KeyF7)) {
+		eo.crtRequested = !eo.crtRequested
+	}
 
 	// F10: Hard reset - must be checked before the monitor input
 	// intercept so reset works even when the monitor is active.
@@ -997,6 +1007,12 @@ func decideEbitenF11Action(f11JustPressed, shiftPressed, lockFullscreen, scaleTo
 		return ebitenF11ActionToggleScale
 	}
 	return ebitenF11ActionNone
+}
+
+// decideEbitenF7Action is kept separate from input forwarding: F7 toggles the
+// host CRT filter and still reaches the guest through handleKeyboardInput.
+func decideEbitenF7Action(f7JustPressed bool) bool {
+	return f7JustPressed
 }
 
 var ebitenToSTScancode = map[ebiten.Key]uint8{
@@ -1551,6 +1567,12 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	// browser demo keeps its loading overlay up until this fires, because the
 	// canvas element exists long before anything has been drawn to it.
 	eo.firstFrameOnce.Do(hostSignalFirstFrame)
+	effectiveCRT := eo.crtRequested && eo.ensureCRTFilter()
+	presentation := eo.presentationImage(screen.Bounds().Dx(), screen.Bounds().Dy())
+	// Routes are mutually exclusive. Clearing the retained staging image keeps
+	// an overlay from inheriting guest, cursor, or status pixels from the
+	// previous route.
+	presentation.Clear()
 
 	// Defer screen-capture recording: reads pixels after all rendering is done
 	if eo.recorder != nil && eo.recorder.IsRecordingScreen() {
@@ -1567,37 +1589,25 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 
 	// When monitor is active, draw the overlay instead
 	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
-		eo.monitorOverlay.Draw(screen)
-		eo.frameCount.Add(1)
-		select {
-		case eo.vsyncChan <- struct{}{}:
-		default:
-		}
+		eo.monitorOverlay.Draw(presentation)
+		eo.finishPresentation(screen, presentation, effectiveCRT)
 		return
 	}
 	if eo.luaOverlay != nil && eo.luaOverlay.IsActive() {
-		eo.luaOverlay.Draw(screen)
-		eo.frameCount.Add(1)
-		select {
-		case eo.vsyncChan <- struct{}{}:
-		default:
-		}
+		eo.luaOverlay.Draw(presentation)
+		eo.finishPresentation(screen, presentation, effectiveCRT)
 		return
 	}
 	if eo.hostOverlay != nil && eo.hostOverlay.IsActive() {
-		eo.hostOverlay.Draw(screen)
-		eo.frameCount.Add(1)
-		select {
-		case eo.vsyncChan <- struct{}{}:
-		default:
-		}
+		eo.hostOverlay.Draw(presentation)
+		eo.finishPresentation(screen, presentation, effectiveCRT)
 		return
 	}
 
 	eo.bufferMutex.Lock()
 	usedHardware := eo.hwFrameID != 0
 	if usedHardware {
-		eo.drawHardwareCompositorLocked(screen)
+		eo.drawHardwareCompositorLocked(presentation)
 	} else {
 		if eo.window == nil {
 			eo.window = ebiten.NewImage(eo.width, eo.height)
@@ -1611,7 +1621,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	compositor := eo.compositor
 	eo.bufferMutex.Unlock()
 	if !usedHardware {
-		screen.DrawImage(eo.window, nil)
+		presentation.DrawImage(eo.window, nil)
 	}
 
 	// Draw software cursor when the system cursor is hidden (EmuTOS mode).
@@ -1624,11 +1634,58 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 		}
 		op := &ebiten.DrawImageOptions{}
 		op.GeoM.Translate(float64(mx), float64(my))
-		screen.DrawImage(cursorImage, op)
+		presentation.DrawImage(cursorImage, op)
 	}
 
 	if showStatusBar {
-		eo.drawRuntimeStatusBar(screen)
+		eo.drawRuntimeStatusBar(presentation, effectiveCRT)
+	}
+	eo.finishPresentation(screen, presentation, effectiveCRT)
+}
+
+// ensureCRTFilter lazily compiles once. A backend that cannot compile or run
+// Kage falls back for the rest of the session instead of attempting work every
+// frame, and the current Draw already observes the false effective state.
+func (eo *EbitenOutput) ensureCRTFilter() bool {
+	return eo.initialiseCRTFilter([]byte(zfastCRTShaderSource))
+}
+
+// initialiseCRTFilter keeps source selection at the construction boundary so
+// GPU fallback tests can use invalid Kage without changing process-wide state.
+func (eo *EbitenOutput) initialiseCRTFilter(source []byte) bool {
+	switch eo.crtState {
+	case crtFilterAvailable:
+		return true
+	case crtFilterFailed:
+		return false
+	}
+	eo.crtFilter = newCRTFilter(source)
+	if eo.crtFilter.err != nil {
+		eo.crtState = crtFilterFailed
+		fmt.Printf("Ebiten: CRT filter unavailable, using unfiltered presentation: %v\n", eo.crtFilter.err)
+		return false
+	}
+	eo.crtState = crtFilterAvailable
+	return true
+}
+
+func (eo *EbitenOutput) presentationImage(width, height int) *ebiten.Image {
+	if eo.presentation == nil || eo.presentation.Bounds().Dx() != width || eo.presentation.Bounds().Dy() != height {
+		if eo.presentation != nil {
+			eo.presentation.Deallocate()
+		}
+		eo.presentation = ebiten.NewImage(width, height)
+	}
+	return eo.presentation
+}
+
+func (eo *EbitenOutput) finishPresentation(screen, presentation *ebiten.Image, effectiveCRT bool) {
+	if effectiveCRT {
+		op := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy}
+		op.Images[0] = presentation
+		screen.DrawRectShader(presentation.Bounds().Dx(), presentation.Bounds().Dy(), eo.crtFilter.shader, op)
+	} else {
+		screen.DrawImage(presentation, nil)
 	}
 
 	eo.frameCount.Add(1)
@@ -1899,8 +1956,9 @@ func runtimeCPUStatusTokens(s runtimeStatusSnapshot) []statusToken {
 	}
 }
 
-func ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable bool, scaleMode PresentationScaleMode) []statusToken {
+func ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable bool, scaleMode PresentationScaleMode, crtEnabled bool) []statusToken {
 	tokens := []statusToken{
+		{name: "F7:CRT", enabled: crtEnabled},
 		{name: "F8:IE Script", enabled: false},
 		{name: "F9:IE Monitor", enabled: false},
 		{name: "F10:Reset", enabled: false},
@@ -1930,7 +1988,7 @@ func ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable bool, scaleMo
 // identical to the previous frame. The bar is now rendered once into an
 // offscreen image and re-rendered only when its content or the window geometry
 // changes.
-func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
+func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image, effectiveCRT bool) {
 	s := runtimeStatus.snapshot()
 
 	videoOn := s.video != nil && s.video.IsEnabled()
@@ -1977,7 +2035,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image) {
 		{name: "|", enabled: false},
 		{name: "VOODOO", enabled: voodooOn},
 	}
-	legendTokens := ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable, scaleMode)
+	legendTokens := ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable, scaleMode, effectiveCRT)
 
 	key := statusBarCacheKey(eo.width, barHeight, cpuTokens, videoTokens, audioTokens, legendTokens)
 	if eo.statusBarImage == nil || eo.statusBarKey != key ||
