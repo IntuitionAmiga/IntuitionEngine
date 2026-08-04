@@ -1,108 +1,12 @@
-; ============================================================================
-; ROTOZOOMER TUTORIAL: M68020 AND THE MODE7 BLITTER
-; M68020 Assembly for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
-; ============================================================================
+; Mode7 rotozoomer: M68020 guest code submits an affine texture map to the IE blitter.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    Motorola 68020
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
-; Audio Engine:  TED audio (Commodore Plus/4 music format)
-; Assembler:     vasmm68k_mot (VASM M68K, Motorola syntax)
-; Build:         vasmm68k_mot -Fbin -m68020 -o rotozoomer_68k.ie68 rotozoomer_68k.asm
-; Run:           ./bin/IntuitionEngine -68k rotozoomer_68k.ie68
-; Porting:       VideoChip/blitter MMIO is CPU-agnostic. See rotozoomer.asm (IE32),
-;                rotozoomer_z80.asm (Z80), rotozoomer_65.asm (6502) for other ports.
+; The frame path derives signed fixed-point origin and step vectors, renders into a
+; back buffer, then presents after the submission has completed. The Host SDK builds
+; this guest binary; it is not part of the runtime. Run it with `go run . -m68k <binary>`.
+; Read data layout, initialisation, per-frame vectors, blitter submission and table
+; generation in order. Compare the other ports only for real CPU addressing changes.
 ;
-; This tutorial follows the common affine mapping and the M68020 register and
-; addressing forms used to submit it.
-;
-; === WHAT THIS DEMO DOES ===
-; Displays a 256 by 256 checkerboard through a 640 by 480 affine mapping. The
-; texture dimensions are powers of two, so the supplied masks wrap coordinates.
-;
-; === AFFINE WORK SPLIT ===
-; The CPU computes an origin and four directional deltas. Mode7 applies them
-; to the 307,200 output positions and writes the destination buffer.
-;
-; === KEY TECHNIQUES DEMONSTRATED ===
-;
-; 1. Mode7 hardware blitter for affine texture mapping
-; 2. Pre-computed sine and reciprocal lookup tables
-; 3. 8.8 fixed-point fractional animation accumulators
-; 4. Alternating render buffers presented by changing VIDEO_FB_BASE at vblank
-; 5. Two-phase vsync Synchronisation
-; 6. Checkerboard texture generation via hardware BLIT FILL
-; 7. TED music playback (Commodore Plus/4 sound chip)
-;
-; === ARCHITECTURE OVERVIEW ===
-;
-;   +---------------------------------------------------------------+
-;   |                    MAIN LOOP                                  |
-;   |                                                               |
-;   |  +-------------+    +-------------+    +----------------+     |
-;   |  | compute     |--->| render      |--->| blit to front  |     |
-;   |  | frame params|    | Mode7       |    | (double buffer)|     |
-;   |  +-------------+    +-------------+    +----------------+     |
-;   |        ^                                       |              |
-;   |        |            +-------------+            |              |
-;   |        +------------| advance     |<-----------+              |
-;   |                     | animation   |   +-----------+           |
-;   |                     +-------------+<--| wait      |           |
-;   |                                       | vsync     |           |
-;   |                                       +-----------+           |
-;   +---------------------------------------------------------------+
-;
-;   CPU work per frame: ~50 instructions (table lookups + shifts)
-;   Blitter work per frame: 307,200 pixels (affine-mapped) + 307,200 pixels (copy)
-;   Audio: TED music runs independently via player subsystem
-;
-; === MEMORY MAP ===
-;
-;   Address      Size      Purpose
-;   ---------    --------  ------------------------------------------
-;   $001000      ~2 KB     Program code + data + tables
-;   $100000      1,228,800 VRAM (front buffer, 640x480x4 bytes)
-;   $600000      262,144   Texture (256x256x4 bytes, stride 1024)
-;   $900000      1,228,800 Back buffer (640x480x4 bytes)
-;   $FF0000      (stack)   Stack (grows downward)
-;
-;   Why these addresses?
-;   - VRAM at $100000: Fixed by hardware (VideoChip framebuffer)
-;   - Texture at $600000: Placed above VRAM end (~$22C000) with margin,
-;     below back buffer. Avoids any overlap with display memory.
-;   - Back buffer at $900000: Well above texture end (~$640000).
-;     Mode7 renders here off-screen, then BLIT COPY transfers the
-;     completed frame by changing VIDEO_FB_BASE during vblank.
-;
-; === AFFINE TRANSFORMATION MATH ===
-;
-; The Mode7 blitter maps screen pixels to texture coordinates using:
-;
-;   u(x,y) = u0 + du_col * x + du_row * y
-;   v(x,y) = v0 + dv_col * x + dv_row * y
-;
-; Where the 2x2 matrix [[du_col, du_row], [dv_col, dv_row]] is a
-; rotation-and-scale matrix:
-;
-;   | du_col  du_row |   |  CA  -SA |
-;   |                | = |          |
-;   | dv_col  dv_row |   |  SA   CA |
-;
-;   CA = cos(angle) * reciprocal(scale)
-;   SA = sin(angle) * reciprocal(scale)
-;
-; The (u0, v0) origin is offset to centre the rotation pivot at
-; the middle of the screen. All values are 16.16 fixed-point.
-;
-; === BUILD AND RUN ===
-;
-; Assemble:
-;   vasmm68k_mot -Fbin -m68020 -devpac -o assembler/rotozoomer_68k.ie68 assembler/rotozoomer_68k.asm
-;
-; Run:
-;   ./bin/IntuitionEngine -m68k assembler/rotozoomer_68k.ie68
-;
-; ============================================================================
+
 
                 include "ie68.inc"
 
@@ -140,7 +44,7 @@ TEX_STRIDE      equ     1024
 
 ; --- Animation Accumulator Increments (8.8 Fixed-Point) ---
 ;
-; WHY 8.8 FIXED-POINT ACCUMULATORS?
+; 8.8 FIXED-POINT ACCUMULATORS?
 ; We want smooth, non-integer stepping through lookup tables. BASIC uses
 ; floating-point increments (A+=0.03 for rotation, SI+=0.01 for zoom),
 ; but M68K integer code needs a fixed-point equivalent.
@@ -201,7 +105,7 @@ start:
                 move.l  #BACK_BUFFER_A,draw_fb
 
                 ; --- Start TED Music Playback ---
-                ; WHY TED?
+                ; TED?
                 ; Each Intuition Engine demo showcases a different audio chip.
                 ; The M68K rotozoomer uses the TED (Commodore Plus/4's sound
                 ; chip, the MOS 7360/8360). The TED has 2 square-wave channels
@@ -245,7 +149,7 @@ main_loop:
 ; ============================================================================
 ; Synchronises to the start of the vertical blanking interval.
 ;
-; WHY TWO PHASES?
+; TWO PHASES?
 ; A naive "wait until vblank bit is set" approach has a race condition:
 ; if we check during an ongoing vblank, we'll proceed immediately without
 ; waiting for the NEXT frame. Two-phase detection solves this:
@@ -310,7 +214,7 @@ load_texture:
 ; 5. Compute u0, v0 centreing offsets
 ; 6. Store all 6 parameters for render_mode7 to use
 ;
-; === WHY MULS.W IS SUFFICIENT ===
+; === MULS.W IS SUFFICIENT ===
 ; M68K's MULS.W gives signed 16x16 -> 32 in a single instruction.
 ; Our sine values range from -256 to +256 (fits in 16 bits signed).
 ; Our reciprocal values range from 320 to 1280 (fits in 16 bits unsigned).
@@ -379,7 +283,7 @@ compute_frame:
                 ext.l   d4
 
                 ; --- Look Up Reciprocal Zoom Factor ---
-                ; WHY A RECIPROCAL TABLE?
+                ; A RECIPROCAL TABLE?
                 ; The zoom effect uses: recip = round(256 / (0.5 + sin(i*2pi/256) * 0.3))
                 ;
                 ; The 0.5 base keeps the denominator always positive (never zero or
@@ -426,7 +330,7 @@ compute_frame:
                 ;   CA * 320 = CA * 256 + CA * 64 = (CA << 8) + (CA << 6)
                 ;   SA * 240 = SA * 256 - SA * 16 = (SA << 8) - (SA << 4)
                 ;
-                ; WHY SHIFTS INSTEAD OF MULS?
+                ; SHIFTS INSTEAD OF MULS?
                 ; CA and SA are 32-bit values (16.16 FP). MULS.W only handles
                 ; 16-bit operands, and the 32-bit values could exceed 16 bits.
                 ; Shift-and-add decomposition works on full 32-bit values.
@@ -506,7 +410,7 @@ compute_frame:
 ; All parameters are 16.16 fixed-point (high 16 bits = integer texels,
 ; low 16 bits = sub-texel fraction for smooth interpolation).
 ;
-; === WHY RENDER TO BACK BUFFER? ===
+; === RENDER TO BACK BUFFER? ===
 ; The Mode7 blit writes 307,200 pixels sequentially. If we wrote directly
 ; to the buffer currently being scanned out, the display would show the blit
 ; in progress. Rendering to the non-visible buffer and presenting it at vblank
@@ -604,13 +508,12 @@ swap_draw_buffer:
 ; ============================================================================
 ; Increments both 8.8 fixed-point accumulators and wraps them to 16 bits.
 ;
-; WHY 16-BIT WRAP (ANDI #$FFFF)?
+; 16-BIT WRAP (ANDI #$FFFF)?
 ; The accumulator is conceptually 8.8:
 ;   - Bits 15-8: integer part (table index 0-255)
 ;   - Bits 7-0:  fractional part (sub-index precision)
 ;
 ; Wrapping at $FFFF means the integer part wraps at 255->0, which
-; naturally cycles through the full 256-entry lookup table.
 ; The fractional part provides smooth sub-entry stepping: with
 ; ANGLE_INC=313 (=$139), the index advances by 1.22 entries per frame,
 ; giving rotation speed that isn't locked to integer table steps.
@@ -664,7 +567,7 @@ draw_fb:        dc.l    0
 ; ============================================================================
 ; Pre-computed sine values: round(sin(i * 2*pi / 256) * 256)
 ;
-; WHY PROPER SINE TABLES (NOT TRIANGLE-WAVE APPROXIMATION)?
+; PROPER SINE TABLES (NOT TRIANGLE-WAVE APPROXIMATION)?
 ; Earlier versions of this demo used a triangle-wave approximation:
 ; fast to compute but up to 29% error at 45 degrees, causing visible
 ; "diamond" distortion in the rotation (the texture appeared to deform
@@ -716,7 +619,7 @@ sine_table:
 ; ============================================================================
 ; Pre-computed zoom factors: round(256 / (0.5 + sin(i * 2*pi / 256) * 0.3))
 ;
-; WHY THIS FORMULA?
+; THIS FORMULA?
 ; The zoom effect oscillates smoothly between zoomed-in and zoomed-out.
 ; The formula creates a reciprocal of a sine-modulated base:
 ;
@@ -736,14 +639,12 @@ sine_table:
 ;
 ; VALUE RANGE: 320 to 1280 (always fits in unsigned 16-bit)
 ;
-; WHY PRE-COMPUTE?
+; PRE-COMPUTE?
 ; Division is one of the most expensive operations on M68K (and most CPUs).
-; DIVU.W takes ~140 cycles on 68000, compared to ~4 cycles for a table
 ; lookup. With 256 entries * 2 bytes = 512 bytes, the table is tiny.
 ;
 ; The zoom oscillation is driven by the scale_accum 8.8 accumulator,
 ; cycling through this table independently of the rotation angle.
-; The SCALE_INC of 104 (vs ANGLE_INC of 313) means the zoom cycles
 ; roughly 3x slower than the rotation, creating visually interesting
 ; non-repeating combinations.
 ; ============================================================================

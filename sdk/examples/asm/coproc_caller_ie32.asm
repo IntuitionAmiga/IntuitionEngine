@@ -1,96 +1,13 @@
-; ============================================================================
-; COPROCESSOR CALLER - INTER-CPU MAILBOX IPC REFERENCE
-; IE32 Assembly for IntuitionEngine - Multi-CPU Ring Buffer Communication
-; ============================================================================
+; Coprocessor mailbox caller: IE32 guest code that starts the matching worker, writes two operands to shared guest RAM, enqueues an add request and polls its ticket.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    IE32 (custom 32-bit RISC) - caller side
-; Video Chip:    None (terminal output only)
-; Audio Engine:  None
-; Assembler:     ie32asm (built-in IE32 assembler)
-; Build:         sdk/bin/ie32asm sdk/examples/asm/coproc_caller_ie32.asm
-;                sdk/bin/ie32asm sdk/examples/asm/coproc_service_ie32.asm
-; Run:           ./bin/IntuitionEngine -ie32 coproc_caller_ie32.iex
-;                    -coproc-svc coproc_service_ie32.iex
-; Porting:       Coprocessor MMIO is CPU-agnostic. Caller/service pairs can
-;                mix CPU cores (e.g. M68K caller + Z80 service). See
-;                coproc_caller_68k.asm, coproc_caller_z80.asm,
-;                coproc_caller_65.asm, coproc_caller_x86.asm for ports.
+; The caller and service communicate through shared guest RAM and coprocessor MMIO.
+; The Host SDK builds both guest binaries; it is not present at runtime. Read the
+; mailbox constants, initialisation, descriptor exchange and terminal path in order.
+; Run the caller with `go run . -ie32 -coproc-svc <service> <caller>`.
+; Compare coproc_service_ie32.asm as its matching pair and the other CPU ports for their
+; real addressing differences.
 ;
-; REFERENCE IMPLEMENTATION FOR THE INTUITION ENGINE SDK
-; This file is heavily commented to teach inter-processor communication
-; concepts on the IE32 custom CPU, with particular attention to the
-; mailbox ring buffer protocol.
-;
-; === WHAT THIS DEMO DOES ===
-; 1. Starts a coprocessor worker (another IE32 CPU running the service binary)
-; 2. Writes request data to shared memory (two operands: 10 and 20)
-; 3. Enqueues an "add" operation via the coprocessor mailbox registers
-; 4. Receives a ticket number for tracking the request
-; 5. Polls the ticket status until the coprocessor signals completion
-; 6. Reads the result (30) from the shared response buffer
-;
-; === WHY COPROCESSOR MAILBOX IPC ===
-; Multi-processor communication is one of the fundamental challenges in
-; computer architecture. When two CPUs share memory but run independently,
-; they need a protocol to exchange work requests and results without
-; corruption or deadlock.
-;
-; The IntuitionEngine's coprocessor subsystem uses a mailbox protocol
-; inspired by real-world multi-processor designs:
-;
-;   - Amiga (1985): The 68000 communicated with the copper and blitter
-;     via memory-mapped command registers. The CPU wrote parameters to
-;     specific addresses and the coprocessors acted on them autonomously.
-;
-;   - SNES SA-1 (1995): The SA-1 coprocessor shared ROM and RAM with
-;     the main 65816, communicating through hardware mailbox registers
-;     for synchronisation.
-;
-;   - Modern GPUs: The CPU submits command buffers to a ring buffer;
-;     the GPU processes them asynchronously and signals completion via
-;     fence values - essentially the same ticket-polling pattern used here.
-;
-; The protocol follows a simple sequence:
-;   1. CALLER writes parameters to shared memory
-;   2. CALLER writes ENQUEUE command to mailbox registers
-;   3. CALLER receives a ticket (monotonic counter)
-;   4. SERVICE detects the new entry, processes it, writes result
-;   5. CALLER polls ticket status until it reads COMPLETE
-;   6. CALLER reads result from shared memory
-;
-; This lock-free design means the caller and service never need to
-; agree on timing - the mailbox registers handle synchronisation.
-;
-; === IE32-SPECIFIC NOTES ===
-; The IE32 uses memory-mapped I/O with the @ prefix for absolute
-; addresses. However, the coprocessor registers are defined as
-; constants in ie32.inc, so we use STORE/LOAD with those symbols
-; directly. The IE32's register-rich design (20 GPRs) means we can
-; keep the ticket in register X across the poll loop without needing
-; stack saves.
-;
-; === MEMORY MAP ===
-;
-;   Address      Size      Purpose
-;   ---------    --------  ------------------------------------------
-;   0x001000     ~256B     Program code (this file)
-;   0x400000     256B      Service filename string (pre-loaded by host)
-;   0x410000     8B        Request data (two uint32: val1, val2)
-;   0x410100     4B        Response buffer (uint32 result)
-;   0xF00300+    (regs)    Coprocessor MMIO registers (ie32.inc)
-;
-; === BUILD AND RUN ===
-;
-; Assemble both caller and service:
-;   sdk/bin/ie32asm sdk/examples/asm/coproc_caller_ie32.asm
-;   sdk/bin/ie32asm sdk/examples/asm/coproc_service_ie32.asm
-;
-; Run:
-;   ./bin/IntuitionEngine -ie32 -coproc-svc coproc_service_ie32.iex coproc_caller_ie32.iex
-;
-; (c) 2024-2026 Zayn Otley - GPLv3 or later
-; ============================================================================
+
 
     .include "ie32.inc"
 

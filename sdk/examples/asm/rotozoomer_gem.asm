@@ -1,3 +1,6 @@
+; GEM ROTOZOOMER: an M68020 TOS guest application using AES/VDI and Mode7.
+; Build the .PRG with the Host SDK. GEM owns the desktop framebuffer, so redraws use
+; the current work rectangle rather than changing the VideoChip mode.
 ; ============================================================================
 ; ROTOZOOMER TUTORIAL: GEM, AES/VDI, AND THE MODE7 BLITTER
 ; M68020 TOS .PRG for EmuTOS

@@ -1,107 +1,12 @@
-; ============================================================================
-; ROTOZOOMER TUTORIAL: IE64 AND THE MODE7 BLITTER
-; IE64 Assembly for IntuitionEngine - VideoChip Mode 0 (640x480x32)
-; ============================================================================
+; Mode7 rotozoomer: IE64 guest code submits an affine texture map to the IE blitter.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    IE64 (custom 64-bit RISC)
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
-; Audio Engine:  SAP/POKEY (Atari 8-bit music format)
-; Assembler:     ie64asm (built-in IE64 assembler)
-; Build:         sdk/bin/ie64asm sdk/examples/asm/rotozoomer_ie64.asm
-; Run:           ./bin/IntuitionEngine -ie64 rotozoomer_ie64.ie64
-; Porting:       VideoChip/blitter MMIO is CPU-agnostic. See rotozoomer.asm (IE32),
-;                rotozoomer_68k.asm (M68K), rotozoomer_z80.asm (Z80) for other ports.
+; The frame path derives signed fixed-point origin and step vectors, renders into a
+; back buffer, then presents after the submission has completed. The Host SDK builds
+; this guest binary; it is not part of the runtime. Run it with `go run . -ie64 <binary>`.
+; Read data layout, initialisation, per-frame vectors, blitter submission and table
+; generation in order. Compare the other ports only for real CPU addressing changes.
 ;
-; This tutorial follows the common affine mapping, fixed-point animation, and
-; IE64 register-access path used by this implementation.
-;
-; === WHAT THIS DEMO DOES ===
-; Renders a 640 by 480 affine mapping from a 256 by 256 texture. This source
-; starts SAP playback separately, computes an origin and four deltas, renders
-; to one off-screen buffer, then presents that completed buffer at vblank.
-;
-; === WHY MODE7 HARDWARE BLITTER (NOT SOFTWARE RENDERING) ===
-; A 640x480 framebuffer is 307,200 pixels. Computing affine texture
-; coordinates per-pixel in software would require two multiplies, two adds,
-; and a texture fetch for each pixel. Instead, this source supplies the Mode7
-; origin and four deltas, then waits for the blitter to complete the operation.
-;
-; The useful distinction is between setup and sampling: the CPU writes an
-; affine matrix and origin, while the blitter performs the output-pixel loop.
-;
-; === THE AFFINE TRANSFORM (MATHEMATICAL FOUNDATION) ===
-;
-; For each output pixel at screen position (col, row), the texture
-; coordinates are:
-;
-;   u(col,row) = u0 + col * du_col + row * du_row
-;   v(col,row) = v0 + col * dv_col + row * dv_row
-;
-; Where the matrix [[du_col, du_row], [dv_col, dv_row]] encodes rotation
-; and scale, and (u0, v0) is the texture origin mapped to screen (0,0).
-;
-; For pure rotation by angle A with zoom factor Z:
-;
-;   du_col =  cos(A) * Z     (column step in U)
-;   dv_col =  sin(A) * Z     (column step in V)
-;   du_row = -sin(A) * Z     (row step in U = -dv_col, 90-degree rotation)
-;   dv_row =  cos(A) * Z     (row step in V =  du_col)
-;
-; The matrix [[CA, -SA], [SA, CA]] is a standard 2D rotation matrix.
-; Multiplying by the zoom factor Z scales the sampling stride.
-;
-; === ARCHITECTURE OVERVIEW ===
-;
-;   +---------------------------------------------------------------------+
-;   |                     MAIN LOOP                                       |
-;   |                                                                     |
-;   |  +--------------+    +--------------+    +-----------------+        |
-;   |  |  COMPUTE     |    |  RENDER      |    |  BLIT TO FRONT  |        |
-;   |  |  FRAME PARAMS|--->|  MODE7       |--->|  (double buffer)|        |
-;   |  |  (6 values)  |    |  (blitter)   |    |  BLIT COPY      |        |
-;   |  +--------------+    +--------------+    +-----------------+        |
-;   |        |                                        |                   |
-;   |        v                                        v                   |
-;   |  +--------------+                        +--------------+           |
-;   |  |  ADVANCE     |                        |  WAIT VSYNC  |           |
-;   |  |  ANIMATION   |<-----------------------|  (2-phase)   |           |
-;   |  |  accumulators|                        +--------------+           |
-;   |  +--------------+                                                   |
-;   +---------------------------------------------------------------------+
-;
-;   +---------------------------------------------------------------------+
-;   |              AUDIO SUBSYSTEM (runs independently)                   |
-;   |                                                                     |
-;   |  SAP music data -> POKEY Plus engine -> audio output                |
-;   |  CPU sets pointer + length + ctrl=5 at startup, then forgets it.    |
-;   +---------------------------------------------------------------------+
-;
-; === MEMORY MAP ===
-;
-;   Address     Size     Purpose
-;   -------     ----     -------
-;   0x001000    ~2KB     Program code (this file)
-;   0x09F000    ---      Stack top (grows downward)
-;   0x100000    1.2MB    VRAM front buffer (640x480x4 bytes)
-;   0x600000    256KB    Texture data (256x256 BGRA, stride 1024)
-;   0x900000    1.2MB    Back buffer for Mode7 render
-;   0xF0000+    ---      Hardware I/O registers (video, blitter, audio)
-;
-;   Texture (256x256 BGRA) is embedded via incbin from a pre-converted
-;   raw file (rotozoomtexture.raw, converted from rotozoomtexture.png).
-;   At startup, BLIT COPY transfers it from the code segment to TEXTURE_BASE.
-;
-; === BUILD AND RUN ===
-;
-;   Assemble:  sdk/bin/ie64asm assembler/rotozoomer_ie64.asm
-;   Run:       ./bin/IntuitionEngine -ie64 assembler/rotozoomer_ie64.ie64
-;
-; === DEMOSCENE CONTEXT ===
-; The rotozoomer is one of the most recognizable demoscene effects, dating
-; back to the early 1990s on Amiga and Atari ST. It demonstrates real-time
-; affine texture mapping -- rotating and scaling a texture in a single pass.
-; Classic examples include Future Crew's "Second Reality" (1993) and
+ include Future Crew's "Second Reality" (1993) and
 ; Sanity's "Interference" (1995). On hardware without Mode7, this required
 ; hand-optimised inner loops. Here, the blitter does the heavy lifting,
 ; letting us achieve the effect at 640x480 with minimal CPU cost.
@@ -167,7 +72,6 @@ TEX_STRIDE      equ 1024
 ;   This matches the BASIC version's `SI += 0.01` (radians per frame).
 ;   Derivation: 0.01 * (256 / 2*pi) * 256 = 104.4 -> 104
 ;   The 3:1 ratio between angle and scale speeds means the rotation
-;   completes 3 full cycles for every 1 zoom cycle, creating a visually
 ;   pleasing Lissajous-like pattern where the motion never exactly repeats.
 ANGLE_INC       equ 313
 SCALE_INC       equ 104
@@ -449,7 +353,7 @@ load_texture:
 ; Similarly, SA*240 using: 240 = 256 - 16, so SA*240 = SA<<8 - SA<<4.
 ; This avoids a multiply instruction and is a classic demoscene trick.
 ;
-; === IE64-SPECIFIC: WHY SIGN EXTENSION IS REQUIRED ===
+; === IE64-SPECIFIC: SIGN EXTENSION ===
 ;
 ; IE64's `load.l` instruction ZERO-extends the loaded 32-bit value into
 ; the 64-bit register. This is correct for unsigned values (like the
@@ -465,7 +369,7 @@ load_texture:
 ; wildly wrong for angles 128-255 (the negative half of the sine wave).
 ; The rotation would appear to "jump" at 180 degrees.
 ;
-; === IE64-SPECIFIC: WHY .q OPERATIONS FOR SHIFTS ===
+; === IE64-SPECIFIC: .q SHIFT OPERATIONS ===
 ;
 ; After `muls.l`, CA and SA are 32-bit signed values in 64-bit registers.
 ; Before performing the *320 and *240 decomposition via shifts, we must
@@ -560,7 +464,6 @@ compute_frame:
     asr.q   r11, r11, #32                  ; sign-extend SA to 64-bit
 
     ; CA * 320 = CA * (256 + 64) = (CA << 8) + (CA << 6)
-    ; Why shifts instead of multiply? Two shifts + add is faster than muls
     ; and avoids using extra registers. This decomposition works because
     ; 320 = 2^8 + 2^6. It's a classic strength-reduction optimization.
     lsl.q   r1, r10, #8                    ; CA * 256
@@ -645,7 +548,6 @@ compute_frame:
 ;
 ; TEX_W_MASK and TEX_H_MASK are both 255 (for a 256x256 texture).
 ; The blitter uses these for bitwise-AND wrapping, which is equivalent
-; to modulo 256 but much faster. This only works when the texture
 ; dimensions are powers of 2 -- a deliberate design choice.
 ;
 ; The blit renders to the current off-screen buffer, not directly to the
@@ -793,13 +695,11 @@ swap_draw_buffer:
 ; The 16-bit mask (0xFFFF) implements modular arithmetic:
 ;   - angle_accum wraps from 65535 back to 0 seamlessly
 ;   - This gives 256 complete revolutions of the angle index before
-;     the fractional part repeats exactly (65536 / 256 = 256 cycles)
 ;   - In practice, the non-integer increment (313) means the fractional
 ;     offset is different each revolution, so the animation never
 ;     visibly "clicks" to grid points
 ;
 ; The 3:1 ratio (313 vs 104) between angle and scale increments creates
-; a quasi-periodic Lissajous pattern: the rotation is 3x faster than
 ; the zoom oscillation, so the visual combination takes a long time to
 ; repeat (LCM of their periods), keeping the effect visually interesting
 ; over extended viewing.
@@ -846,7 +746,7 @@ draw_fb:        dc.l    0
 ; =============================================================================
 ; Pre-computed sine values: round(sin(i * 2*pi / 256) * 256)
 ;
-; === WHY PRE-COMPUTED SINE? ===
+; === PRE-COMPUTED SINE? ===
 ; Computing sin() at runtime requires Taylor series expansion, CORDIC, or
 ; polynomial approximation -- all expensive multi-instruction sequences.
 ; A 512-byte lookup table (256 entries * 2 bytes each) gives instant O(1)
@@ -860,7 +760,7 @@ draw_fb:        dc.l    0
 ;   - Index 0 = sin(0) = 0, Index 64 = sin(90deg) = 256 = 1.0
 ;   - cos(i) = sine_table[(i + 64) & 255]  (90-degree phase shift)
 ;
-; === WHY 256 ENTRIES? ===
+; === 256 ENTRIES? ===
 ; 256 is a power of 2, so wrapping via AND with 255 is a single
 ; instruction (no division/modulo needed). 256 entries give ~1.4-degree
 ; resolution, which is imperceptible at 60 fps -- the eye cannot
@@ -894,7 +794,7 @@ sine_table:
 ; =============================================================================
 ; Pre-computed zoom factors: round(256 / (0.5 + sin(i * 2*pi / 256) * 0.3))
 ;
-; === WHY A RECIPROCAL TABLE? ===
+; === A RECIPROCAL TABLE? ===
 ; We want the zoom level to oscillate smoothly over time. Using sine for
 ; the zoom directly (zoom = sin(scale_idx)) would include zero crossings,
 ; where the zoom hits 0 and the image collapses to a point. The reciprocal
@@ -920,12 +820,10 @@ sine_table:
 ;     (no sign extension needed, unlike the sine table)
 ;   - Indexed by scale_accum >> 8, same as the sine table
 ;
-; === WHY PRE-COMPUTE INSTEAD OF RUNTIME DIVISION? ===
+; === PRE-COMPUTE INSTEAD OF RUNTIME DIVISION? ===
 ; IE64 has no hardware divide instruction. Software division requires
-; an iterative shift-and-subtract loop (~30-50 cycles per division).
 ; A table lookup is a single load instruction. Since we only need 256
 ; possible zoom values (one per table entry), pre-computation is both
-; faster and simpler.
 ; =============================================================================
 recip_table:
     dc.w    512,505,497,490,484,477,471,464,458,453,447,441,436,431,426,421
@@ -961,7 +859,7 @@ texture_data:
 ; SAP (Slight Atari Player) files contain music data for the POKEY sound
 ; chip, the audio hardware of the Atari 400/800/XL/XE computers (1979-1992).
 ;
-; === WHY SAP/POKEY FOR THIS DEMO? ===
+; === SAP/POKEY FOR THIS DEMO? ===
 ; Each IntuitionEngine SDK demo showcases a different audio subsystem:
 ;   - M68K rotating cube:   SID  (Commodore 64, via 6502 CPU core)
 ;   - Z80 tunnel demo:      AY   (ZX Spectrum / Amstrad CPC)

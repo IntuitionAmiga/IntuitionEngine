@@ -1,6 +1,6 @@
 ; ============================================================================
 ; ULA ROTATING CUBE WITH AHX MUSIC - Pre-Calculated 3D Animation
-; 6502 Assembly for IntuitionEngine - ULA Display (256x192, attribute-based)
+; 6502 Assembly for Intuition Engine - ULA Display (256x192, attribute-based)
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -9,7 +9,7 @@
 ; Audio Engine:  AHX (Amiga tracker synthesis)
 ; Assembler:     ca65/ld65 (cc65 toolchain)
 ; Build:         make ie65asm SRC=sdk/examples/asm/ula_rotating_cube_65.asm
-; Run:           ./bin/IntuitionEngine -6502 ula_rotating_cube_65.ie65
+; Run:           go run . -m6502 ula_rotating_cube_65.ie65
 ; Porting:       ULA/AHX MMIO is CPU-agnostic. Port effort: rewrite the
 ;                ULA address calculation and line-drawing loop. Z80 port is
 ;                straightforward (similar register model). M68K simplifies
@@ -26,7 +26,7 @@
 ; butter-smooth rotation, freeing the 6502 to focus on the complex ULA
 ; address calculations.
 ;
-; === WHY ULA DISPLAY ARCHITECTURE ===
+; === ULA DISPLAY ARCHITECTURE ===
 ; The ZX Spectrum's ULA (Uncommitted Logic Array) was the custom chip that
 ; generated video output. Its most distinctive feature was a non-linear VRAM
 ; layout: consecutive screen rows are NOT at consecutive memory addresses.
@@ -47,10 +47,7 @@
 ; The 6502 has only three 8-bit registers (A, X, Y), no multiply or divide
 ; instructions, and a 256-byte zero page for fast access. The zero page
 ; is critical: instructions that access it are one byte shorter and one
-; cycle faster than absolute addressing. For a routine like plot_pixel
 ; called hundreds of times per frame, this adds up significantly:
-;   LDA $1234    ; Absolute: 3 bytes, 4 cycles
-;   LDA $12      ; Zero page: 2 bytes, 3 cycles
 ;
 ; ULA VRAM is accessed through the paged ULA address/data registers.
 ;
@@ -64,7 +61,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   make ie65asm SRC=sdk/examples/asm/ula_rotating_cube_65.asm
-;   ./bin/IntuitionEngine -6502 ula_rotating_cube_65.ie65
+;   go run . -m6502 ula_rotating_cube_65.ie65
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -193,7 +190,7 @@ main_loop:
 ; Configures the AHX audio engine with a pointer to the embedded tracker
 ; module and starts looped playback.
 ;
-; === WHY AHX? ===
+; === AHX? ===
 ; AHX (Abyss' Highest eXperience) is a tracker format from the Amiga
 ; demoscene that synthesises all sounds algorithmically from waveform
 ; definitions -- no PCM samples needed. This achieves remarkable compression:
@@ -302,7 +299,7 @@ main_loop:
 ; ============================================================================
 ; Fills the 768-byte attribute area with white INK on black PAPER ($07).
 ;
-; === WHY UNIFORM ATTRIBUTES? ===
+; === UNIFORM ATTRIBUTES? ===
 ; Each attribute byte controls an 8x8 pixel cell:
 ;   Bits 0-2: INK colour   (foreground)  -- 7 = white
 ;   Bits 3-5: PAPER colour (background)  -- 0 = black
@@ -394,7 +391,7 @@ main_loop:
 ; ============================================================================
 ; Draws a line from (line_x0, line_y0) to (line_x1, line_y1).
 ;
-; === WHY BRESENHAM? ===
+; === BRESENHAM? ===
 ; Bresenham's line algorithm (1962) is ideal for integer-only hardware:
 ; it uses only addition, subtraction, and bit shifts -- no multiplication
 ; or division required. For the 6502 with no MUL instruction, this is
@@ -581,7 +578,7 @@ main_loop:
 ; The X coordinate's low 3 bits select which bit within the byte to set.
 ; Bit 7 is leftmost, bit 0 is rightmost.
 ;
-; === WHY THIS LAYOUT? ===
+; === THIS LAYOUT? ===
 ; The ULA could generate these addresses with very few logic gates. A
 ; linear layout would have required a binary adder circuit. In 1982 every
 ; transistor counted, so Sinclair accepted this programmer-hostile scheme
@@ -692,7 +689,7 @@ cube_edges:
 ; ============================================================================
 ; 32 frames of animation, 8 vertices per frame.
 ;
-; === WHY PRE-CALCULATE? ===
+; === PRE-CALCULATE? ===
 ; Real-time 3D rotation requires sin/cos lookups and matrix multiplication.
 ; The 6502 has no multiply instruction, and the ULA's non-linear addressing
 ; already taxes the CPU budget. Instead, all 32 frames were computed offline:

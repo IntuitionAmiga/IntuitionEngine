@@ -1,34 +1,27 @@
-1 REM ============================================================================
-2 REM SPLASH WOBBLE DEMO - RAW RGBA SPLASH PLUS MIDI
-3 REM IE64 BASIC for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
-4 REM ============================================================================
-5 REM Run: bin/IntuitionEngine -basic
-6 REM      LOAD "sdk/examples/basic/splash_wobble.bas"
-7 REM      RUN
-8 REM
-9 REM MEMORY:
-10 REM   MEMALLOC(1228800,4096) front framebuffer (640x480x4)
-11 REM   MEMALLOC(235520,4096) splash source image (640x92x4)
-12 REM   MEMALLOC(1228800,4096) back framebuffer (640x480x4)
-13 REM ============================================================================
+1 REM SPLASH WOBBLE: IE64 BASIC, VideoChip mode 0 and a MIDI-backed raster effect
+2 REM Start the interpreter with `go run . -basic -file-root .`, then LOAD this
+3 REM guest source and RUN it. It needs splash_640x92.rgba and enjoythesilence.mid.
+4 REM Read the setup, file loading, static copy, then the per-scanline loop.
+5 REM The front buffer is displayed; the back buffer prevents half-drawn rows from
+6 REM becoming visible while the wobble is built.
 
-100 REM HARDWARE SETUP
+100 REM Allocate guest RAM and make FB the 640 by 480 RGBA framebuffer.
 110 FB=MEMALLOC(1228800,4096):SR=MEMALLOC(235520,4096):BB=MEMALLOC(1228800,4096)
 120 ST=2560:SW=640:SH=92:TP=194
 130 POKE32 &HF0004,0:POKE32 &HF0080,0:POKE32 &HF0084,FB
 140 POKE32 &HF0000,1
 
-200 REM LOAD SPLASH AND START MIDI
+200 REM Load disk-backed guest assets before the frame loop uses their addresses.
 210 BLOAD "sdk/examples/assets/splash_640x92.rgba",SR
 220 SOUND PLAY "sdk/examples/assets/music/enjoythesilence.mid"
 230 PRINT "MEDIA_TYPE=";PEEK32(&HF2310)
 
-300 REM STATIC CENTERED SPLASH
+300 REM Show one centred copy first, which makes asset or stride errors obvious.
 310 BLIT FILL FB,640,480,&H00000000,ST
 320 BLIT COPY SR,FB+TP*ST,SW,SH,ST,ST
 330 VSYNC
 
-400 REM WOBBLE LOOP
+400 REM Each frame shifts one source row, clips it to the display, then presents BB.
 410 T=0
 500 BLIT FILL BB,640,480,&H00000000,ST
 510 FOR Y=0 TO 91

@@ -1,6 +1,6 @@
 ; ============================================================================
 ; TED 121-COLOUR PLASMA DEMO - FULL PALETTE EXPLORATION
-; M68K Assembly for IntuitionEngine - TED Video + PSG+ Audio
+; M68K Assembly for Intuition Engine - TED Video + PSG+ Audio
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -9,7 +9,7 @@
 ; Audio Engine:  PSG+ (AY-3-8910 compatible, enhanced mode)
 ; Assembler:     vasmm68k_mot (VASM M68K, Motorola syntax)
 ; Build:         vasmm68k_mot -Fbin -m68020 -o ted_121_colors_68k.ie68 ted_121_colors_68k.asm
-; Run:           bin/IntuitionEngine -m68k ted_121_colors_68k.ie68
+; Run:           go run . -m68k ted_121_colors_68k.ie68
 ; Porting:       TED/PSG MMIO is CPU-agnostic. Port effort: rewrite sine
 ;                tables and loop structures for target CPU. 8-bit CPUs will
 ;                need optimised inner loops to maintain 60fps plasma update.
@@ -18,10 +18,9 @@
 ; 1. Displays a full-screen animated plasma effect using all 121 TED colours
 ; 2. Renders a rainbow-coloured title bar with cycling colours
 ; 3. Shows a smooth pixel-scrolling message with hardware XSCROLL
-; 4. Cycles the border through all 121 unique TED colours
 ; 5. Plays ZX Spectrum AY tracker music through the PSG+ audio subsystem
 ;
-; === WHY THE TED CHIP AND ITS 121-COLOUR PALETTE ===
+; === THE TED CHIP AND ITS 121-COLOUR PALETTE ===
 ;
 ; The Commodore Plus/4 (1984) used the TED (Text Editing Device) chip, which
 ; combined video, sound, and I/O in a single IC. While often overshadowed by
@@ -78,7 +77,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   vasmm68k_mot -Fbin -m68020 -o ted_121_colors_68k.ie68 ted_121_colors_68k.asm
-;   bin/IntuitionEngine -m68k ted_121_colors_68k.ie68
+;   go run . -m68k ted_121_colors_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -239,7 +238,6 @@ wait_vblank:
 ; ============================================================================
 ; Fills all 1000 character cells with the solid block character ($80).
 ; The plasma effect animates COLOUR RAM, not character shapes. Writing
-; 1000 colour bytes per frame is much faster than 8000 bitmap bytes.
 
 init_screen:
     lea     TED_VRAM_BASE,a0
@@ -386,7 +384,6 @@ render_plasma:
 ; ============================================================================
 ; UPDATE BORDER COLOUR
 ; ============================================================================
-; Cycles through all 121 unique TED colours. Hue cycles 0-15 first,
 ; then luminance increments 0-7. Rate: one change every 8 frames,
 ; completing a full cycle in ~17 seconds at 60 FPS.
 

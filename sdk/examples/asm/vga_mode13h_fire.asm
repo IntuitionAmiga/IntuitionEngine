@@ -1,6 +1,6 @@
 ; ============================================================================
 ; VGA MODE 13h FIRESTORM - PALETTE-CYCLED DOS INTRO EFFECT
-; IE32 Assembly for IntuitionEngine - VGA Mode 13h (320x200x256)
+; IE32 Assembly for Intuition Engine - VGA Mode 13h (320x200x256)
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -9,7 +9,7 @@
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
 ; Build:         sdk/bin/ie32asm sdk/examples/asm/vga_mode13h_fire.asm
-; Run:           ./bin/IntuitionEngine -ie32 vga_mode13h_fire.iex
+; Run:           go run . -ie32 vga_mode13h_fire.iex
 ; Porting:       VGA MMIO is CPU-agnostic. The fire algorithm is simple enough
 ;                to run on any CPU core, even 8-bit (6502/Z80).
 ;
@@ -19,7 +19,7 @@
 ; moving burner jets, palette-cycled during vertical blank, then copied into the
 ; visible 64K VGA aperture.
 ;
-; === WHY VGA MODE 13h (320x200x256 LINEAR) ===
+; === VGA MODE 13h (320x200x256 LINEAR) ===
 ; Mode 13h is the legendary "MCGA mode" -- the single most important graphics
 ; mode in PC gaming and demoscene history.  Introduced with the IBM PS/2's
 ; MCGA adapter in 1987 and adopted by VGA, it provides a dead-simple linear
@@ -44,7 +44,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   sdk/bin/ie32asm sdk/examples/asm/vga_mode13h_fire.asm
-;   ./bin/IntuitionEngine -ie32 vga_mode13h_fire.iex
+;   go run . -ie32 vga_mode13h_fire.iex
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -192,7 +192,7 @@ copy_to_vram:
 ;   Indices  64-179: Red through orange into yellow
 ;   Indices 180-255: Yellow to white-hot tips
 ;
-; === WHY PALETTE DESIGN MATTERS ===
+; === PALETTE DESIGN MATTERS ===
 ; The palette is rebuilt each frame with a small phase offset in the green and
 ; smoke-blue channels.  This gives shimmer without moving extra pixels.
 ; ============================================================================
@@ -286,7 +286,7 @@ setup_palette:
 ; with three moving burner jets.  The jets shape the flame without leaving dead
 ; gaps between them.
 ;
-; === WHY XOR-SHIFT PRNG ===
+; === XOR-SHIFT PRNG ===
 ; XOR-shift generators are ideal for demoscene effects: they are fast
 ; (three XOR + shift operations), require minimal state (a single 32-bit
 ; seed), and produce visually convincing randomness.  Perfect distribution
@@ -408,13 +408,13 @@ burner_heat:
 ; left and right.  The centre weighting keeps the flames tall while the side
 ; samples spread them into natural tongues.
 ;
-; === WHY BOTTOM-TO-TOP PROCESSING ===
+; === BOTTOM-TO-TOP PROCESSING ===
 ; Processing rows from bottom to top means each row reads from the row
 ; below (which has already been written this frame), allowing heat to
 ; propagate multiple rows upward within a single frame.  This makes the
 ; flames appear to rise more quickly and naturally.
 ;
-; === WHY CENTRE IS SAMPLED TWICE ===
+; === CENTRE IS SAMPLED TWICE ===
 ; Three samples divided by four cools too quickly, making the flame only a few
 ; pixels high.  Sampling the centre twice gives a true /4 average without
 ; needing a slow divide by 3.

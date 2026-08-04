@@ -1,78 +1,13 @@
-; ============================================================================
-; COPROCESSOR SERVICE - x86 WORKER SIDE OF INTER-CPU COMMUNICATION
-; NASM-style x86-32 syntax for IntuitionEngine - Headless coprocessor service
-; ============================================================================
+; Coprocessor mailbox service: x86 guest code that waits for mailbox entries, reads an add request from shared guest RAM, writes the response and advances the ring tail.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    x86-32 (Intel 386+ compatible, CISC with memory operands)
-; Video Chip:    None (headless coprocessor service)
-; Audio Engine:  None
-; Assembler:     ie32asm (built-in assembler, NASM-compatible x86 mode)
-; Build:         sdk/bin/ie32asm sdk/examples/asm/coproc_service_x86.asm
-; Run:           Used as -coproc-svc argument with a matching caller binary
-; Porting:       Same service implemented on all CPU cores. See
-;                coproc_service_ie32.asm (reference), coproc_service_65.asm,
-;                coproc_service_68k.asm, coproc_service_z80.asm.
+; The caller and service communicate through shared guest RAM and coprocessor MMIO.
+; The Host SDK builds both guest binaries; it is not present at runtime. Read the
+; mailbox constants, initialisation, descriptor exchange and terminal path in order.
+; Run the caller with `go run . -x86 -coproc-svc <service> <caller>`.
+; Compare coproc_caller_x86.asm as its matching pair and the other CPU ports for their
+; real addressing differences.
 ;
-; === WHAT THIS DEMO DOES ===
-; 1. Polls the shared-memory ring buffer for incoming request descriptors
-; 2. Dispatches on the op field (currently supports op=1: 32-bit add)
-; 3. Reads two uint32 operands from the request data pointer
-; 4. Performs a native 32-bit ADD with a memory source operand
-; 5. Writes the 32-bit result to the response data pointer
-; 6. Fills in the response descriptor (ticket echo, status, result length)
-; 7. Advances the ring tail pointer and loops back to poll
-;
-; === WHY COPROCESSOR MAILBOX IPC ===
-; This is the SERVICE side of the coprocessor mailbox protocol. The service
-; runs on a separate CPU core -- in this case an x86-32 -- and polls shared
-; memory for incoming commands from a caller running on a different CPU.
-; When a new request appears (head != tail), the service processes it and
-; writes the result back, then advances the tail to signal completion.
-;
-; The ring buffer acts as a hardware-neutral IPC channel: any CPU can be
-; the caller and any CPU can be the service, because they communicate
-; solely through memory-mapped addresses. This mirrors real coprocessor
-; architectures throughout computing history:
-;
-;   - Amiga: The 68000 writes command lists for the copper and blitter
-;     coprocessors, which execute them independently from shared chip RAM
-;   - SNES: The SA-1 coprocessor runs its own program from shared ROM,
-;     communicating via hardware registers
-;   - Modern GPUs: The CPU submits command buffers to a ring; the GPU
-;     processes them asynchronously and signals completion
-;
-; === x86-SPECIFIC NOTES ===
-; The x86 is a CISC architecture with memory-operand instructions, so
-; "add eax, [edi+4]" can load from memory and add in a single opcode.
-; This makes the x86 version particularly compact -- there is no need
-; for separate LOAD instructions before every ALU operation as on the
-; IE32 (load-store RISC) or the indirect-indexed gymnastics of the 6502.
-;
-; The MOVZX instruction zero-extends a byte to a 32-bit register, which
-; is exactly what we need for reading the 8-bit head and tail pointers
-; into 32-bit registers for comparison and arithmetic.
-;
-; EBX preserves the tail value across the processing path. ESI holds the
-; entry pointer. EBP holds the assigned ring base, seeded by the host at
-; worker entry so one image can serve either instance ring.
-;
-; === MEMORY MAP ===
-; $320000          Code entry point (WORKER_X86_BASE)
-; $790000          Mailbox base (MAILBOX_BASE)
-; $792000          Ring 8 head pointer (x86 is ring index 8, instance 0)
-; $792001          Ring 8 tail pointer
-; $792008+tail*32  Request entry descriptors (32 bytes each)
-; $792208+tail*16  Response descriptors (16 bytes each)
-;
-; === BUILD AND RUN ===
-; sdk/bin/ie32asm sdk/examples/asm/coproc_service_x86.asm
-; (loaded by a caller binary via COPROC_CMD_START)
-;
-; (c) 2024-2026 Zayn Otley - GPLv3 or later
-; ============================================================================
-
-%include "ie86.inc"
+include "ie86.inc"
 
     bits 32
     org 0x320000
@@ -96,7 +31,7 @@ LAYOUT_VER  equ 1                   ; COPROC_LAYOUT_VERSION
 ; MAIN POLL LOOP - Wait for Requests
 ; ============================================================================
 ;
-; WHY: The service spins on head != tail. The caller advances head when
+; The service spins on head != tail. The caller advances head when
 ; it enqueues a request; we advance tail when we finish processing one.
 ; MOVZX zero-extends the 8-bit head/tail bytes into 32-bit registers
 ; so the CMP instruction compares correctly.
@@ -135,7 +70,7 @@ main_loop:
 ; ENTRY ADDRESS COMPUTATION - Locate the Request Descriptor
 ; ============================================================================
 ;
-; WHY: Each entry is 32 bytes, so entry address = ENTRIES + tail * 32.
+; Each entry is 32 bytes, so entry address = ENTRIES + tail * 32.
 ; The x86 barrel shifter computes tail*32 in a single SHL instruction.
 ; We save tail in EBX before clobbering EAX with the address computation,
 ; since we need the original tail value later for the response descriptor
@@ -161,7 +96,7 @@ main_loop:
 ; EXTRACT REQUEST FIELDS AND COMPUTE - Read Pointers, Perform Addition
 ; ============================================================================
 ;
-; WHY: The x86 CISC architecture lets us load pointers directly from
+; The x86 CISC architecture lets us load pointers directly from
 ; memory using displacement addressing ([esi+16], [esi+24]). The actual
 ; add operation uses a memory source operand ([edi+4]) so we load val1
 ; into EAX, then add val2 from memory in a single instruction. This is
@@ -185,7 +120,7 @@ main_loop:
 ; WRITE RESPONSE DESCRIPTOR - Signal Completion to the Caller
 ; ============================================================================
 ;
-; WHY: The response descriptor tells the caller what happened. The x86
+; The response descriptor tells the caller what happened. The x86
 ; can write immediate values directly to memory with displacement
 ; addressing (e.g., "mov dword [eax+4], 2"), making the response
 ; construction very compact -- four MOV instructions fill all four fields.
@@ -205,7 +140,7 @@ main_loop:
 ; ADVANCE TAIL - Mark This Slot as Consumed
 ; ============================================================================
 ;
-; WHY: Incrementing tail modulo 16 frees this ring slot for reuse.
+; Incrementing tail modulo 16 frees this ring slot for reuse.
 ; We write only the low byte (AL) back to the tail pointer, since it
 ; is defined as a single byte in the ring buffer header.
 
@@ -221,7 +156,7 @@ main_loop:
 ; ERROR RESPONSE - Unknown Opcode Handler
 ; ============================================================================
 ;
-; WHY: If the caller sends an opcode we do not recognise, we must still
+; If the caller sends an opcode we do not recognise, we must still
 ; advance the tail (otherwise the ring would stall forever). We write
 ; status=3 (error) and resultCode=1 (unknown op) so the caller knows
 ; the request was rejected rather than silently lost.

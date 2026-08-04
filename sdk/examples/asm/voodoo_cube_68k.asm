@@ -1,6 +1,6 @@
 ; ============================================================================
 ; VOODOO CUBE - 3D Rotating Cube with Hardware Z-Buffering
-; M68K (68020) for IntuitionEngine - Voodoo 3D (640x480, triangle rasteriser)
+; M68K (68020) for Intuition Engine - Voodoo 3D (640x480, triangle rasteriser)
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -17,7 +17,7 @@
 ; (bottom), blue (left), yellow (right).  The Voodoo's hardware Z-buffer
 ; handles hidden-surface removal automatically -- no depth sorting needed.
 ;
-; === WHY A ROTATING CUBE ===
+; === A ROTATING CUBE ===
 ; The rotating 3D cube is the "Hello World" of 3D graphics, dating back to
 ; the early 1970s wireframe displays by Evans & Sutherland.  It teaches
 ; every fundamental concept of the 3D pipeline:
@@ -62,7 +62,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   vasmm68k_mot -Fbin -m68020 -devpac -o voodoo_cube_68k.ie68 voodoo_cube_68k.asm
-;   ./bin/IntuitionEngine -m68k voodoo_cube_68k.ie68
+;   go run . -m68k voodoo_cube_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -133,7 +133,7 @@ main_loop:
 ; draw_cube -- transform vertices, draw all 6 faces (12 triangles)
 ; ============================================================================
 ;
-; WHY draw order does not matter: the Z-buffer tests every pixel.  We could
+; draw order does not matter: the Z-buffer tests every pixel.  We could
 ; draw the faces in any sequence and still get correct occlusion.  The face
 ; colours use complementary pairs (red/cyan, green/magenta, blue/yellow) so
 ; opposite faces are always distinguishable.
@@ -234,7 +234,7 @@ draw_face:
 ; Input: D4/D5/D6 = vertex indices for A/B/C
 ;        face_r/g/b = triangle colour
 ;
-; WHY the Z offset: transformed Z values range from -CUBE_SIZE to +CUBE_SIZE.
+; the Z offset: transformed Z values range from -CUBE_SIZE to +CUBE_SIZE.
 ; The Z-buffer needs positive values, so we add CUBE_SIZE*2 and scale by 256
 ; to utilise the full depth precision.
 
@@ -306,7 +306,7 @@ draw_triangle:
 ; transform_vertices -- apply Y, X, Z rotations to all 8 cube vertices
 ; ============================================================================
 ;
-; WHY Y-X-Z order: different rotation orders produce different tumbling
+; Y-X-Z order: different rotation orders produce different tumbling
 ; patterns.  Y first (yaw) gives the most natural "spinning top" feel.
 
 transform_vertices:

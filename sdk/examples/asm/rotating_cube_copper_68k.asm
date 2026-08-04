@@ -1,11 +1,11 @@
 ; ============================================================================
 ; ROTATING CUBE + COPPER RAINBOW - 3D WIREFRAME WITH RASTER BAR BACKGROUND
-; M68020 assembly for IntuitionEngine - VGA 320x200, copper coprocessor
+; M68020 assembly for Intuition Engine - VGA 320x200, copper coprocessor
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
 ; Assembler:    vasmm68k_mot -Fbin -m68020 -devpac -o rotating_cube_copper_68k.ie68 rotating_cube_copper_68k.asm
-; Run:          IntuitionEngine -m68k rotating_cube_copper_68k.ie68
+; Run:          go run . -m68k rotating_cube_copper_68k.ie68
 ; Video mode:   VGA Mode 13h (320x200, 256 colours, linear framebuffer)
 ; Audio:        SID music via embedded 6502 CPU core
 ; Copper:       100-line animated rainbow gradient behind the scene
@@ -19,7 +19,7 @@
 ;   3. Animated rainbow raster bars using the copper coprocessor
 ;   4. SID music ("Edge of Disgrace" by Goto80) via the 6502 core
 ;
-; === WHY 3D WIREFRAME RENDERING ===
+; === 3D WIREFRAME RENDERING ===
 ; Real-time 3D wireframe rendering was one of the most impressive feats of
 ; early computer graphics. Elite (1984) on the BBC Micro rendered an entire
 ; 3D universe with just a 2 MHz 6502. The technique uses:
@@ -30,7 +30,7 @@
 ;   - Perspective projection: screen_x = (x * focal_length) / z + centre_x
 ;   - Line drawing via Bresenham's algorithm (integer arithmetic only)
 ;
-; === WHY COPPER RASTER BARS ===
+; === COPPER RASTER BARS ===
 ; On the Amiga (1985), the "copper" coprocessor could change hardware
 ; registers synchronised to the electron beam position. This enabled
 ; effects impossible with normal VGA hardware -- changing the background
@@ -86,7 +86,7 @@
 ; === BUILD AND RUN ===
 ;   vasmm68k_mot -Fbin -m68020 -devpac -o rotating_cube_copper_68k.ie68 \
 ;       sdk/examples/asm/rotating_cube_copper_68k.asm
-;   IntuitionEngine -m68k rotating_cube_copper_68k.ie68
+;   go run . -m68k rotating_cube_copper_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -147,7 +147,7 @@ start:
                 move.l  #STACK_TOP,sp
 
                 ; --- Enable IE VideoChip (required for copper coprocessor) ---
-                ; WHY: The copper is part of the IE video system, not the VGA.
+                ; The copper is part of the IE video system, not the VGA.
                 ; Without this, copper instructions silently do nothing.
                 move.l  #1,VIDEO_CTRL
 
@@ -183,7 +183,7 @@ start:
 ; ----------------------------------------------------------------------------
 main_loop:
                 ; --- Clear back buffer to colour index 1 ---
-                ; WHY index 1: The copper modifies palette entry 1 per scanline.
+                ; index 1: The copper modifies palette entry 1 per scanline.
                 ; Pixels with index 1 show the copper's current colour, creating
                 ; the rainbow gradient. Index 0 would not be affected.
                 bsr     clear_back_buffer
@@ -274,7 +274,7 @@ present_frame:
 ; ============================================================================
 ; DRAW CIRCULAR SCROLLER
 ; ============================================================================
-; WHY: Characters orbit the screen centre using polar-to-Cartesian conversion:
+; Characters orbit the screen centre using polar-to-Cartesian conversion:
 ;   x = centre_x + radius * cos(angle)
 ;   y = centre_y + radius * sin(angle)
 ; Each of the 12 visible characters is offset by CHAR_SPACING (21 angle units)
@@ -741,7 +741,7 @@ plot_pixel:
 ; ============================================================================
 ; BUILD COPPER LIST
 ; ============================================================================
-; WHY: Creates the copper program that executes during each frame. For each
+; Creates the copper program that executes during each frame. For each
 ; of 100 scanlines, the copper WAITs for the beam to reach that position,
 ; then writes new R/G/B values into palette entry 1. The actual colour
 ; values are placeholders here -- update_copper_colors fills them in each
@@ -801,7 +801,7 @@ build_copper_list:
 ; ============================================================================
 ; UPDATE COPPER COLOURS
 ; ============================================================================
-; WHY: Modifies the R/G/B values in the copper list each frame to animate
+; Modifies the R/G/B values in the copper list each frame to animate
 ; the rainbow gradient. The effect creates the illusion of a 3D "tube"
 ; surface using:
 ;
@@ -849,7 +849,7 @@ update_copper_colors:
 
                 ; --- Brightness (tube effect via sine wave) ---
                 move.l  d7,d1
-                lsl.l   #4,d1                   ; line * 16 (faster cycling)
+                lsl.l   #4,d1                   ; Convert the line index to a 16-byte record offset.
                 add.l   d6,d1                   ; Add animation phase
                 andi.l  #$FF,d1
 
@@ -1262,7 +1262,7 @@ scroll_msg_end:
 ; ============================================================================
 ; SID MUSIC DATA
 ; ============================================================================
-; WHY: The .SID file contains actual 6502 machine code -- the original C64
+; The .SID file contains actual 6502 machine code -- the original C64
 ; music player. The Intuition Engine's 6502 core executes it and intercepts
 ; SID register writes ($D400-$D418), remapping them to the native synth.
 ; "Edge of Disgrace" by Booze Design, music by Goto80.

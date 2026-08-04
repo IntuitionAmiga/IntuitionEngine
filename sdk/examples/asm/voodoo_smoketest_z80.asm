@@ -1,5 +1,11 @@
-; Minimal Z80 Voodoo access smoke test.
-; Exercises the documented 0xB0..0xB7 Voodoo port adapter.
+; Z80 Voodoo port-adapter smoke test.
+;
+; Target: Z80 guest with the Voodoo device enabled. The adapter exposes a
+; register offset through ports $B0-$B1 and a 32-bit little-endian value
+; through $B2-$B5; writing data byte 3 commits the register write.
+;
+; Assemble with the Host SDK's Z80 tools, then launch the resulting guest
+; binary with `go run . -z80 <binary>`. There are no guest-file assets.
 
     .include "ie80.inc"
 
@@ -11,6 +17,7 @@
     .org 0x0000
 
 start:
+    ; Enable Voodoo, clear the current back buffer, then present it.
     ld hl, VOODOO_ENABLE_OFF
     ld de, 0001h
     xor a
@@ -36,10 +43,12 @@ start:
     call voodoo_write32
 
 halt_loop:
+    ; HALT yields until the next interrupt while preserving device state.
     halt
     jr halt_loop
 
-; HL = Voodoo register offset, B:A:DE = little-endian dword.
+; Submit B:A:DE as a little-endian dword at the Voodoo offset in HL. B5 is
+; written last because that port commits the assembled value.
 voodoo_write32:
     xor a
 voodoo_write32_a:

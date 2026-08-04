@@ -1,6 +1,6 @@
 ; ============================================================================
 ; VGA MODE X CIRCLES - UNCHAINED PLANAR GRAPHICS WITH PAGE FLIPPING
-; IE32 Assembly for IntuitionEngine - VGA Mode X (320x240x256 Unchained)
+; IE32 Assembly for Intuition Engine - VGA Mode X (320x240x256 Unchained)
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -9,7 +9,7 @@
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
 ; Build:         sdk/bin/ie32asm sdk/examples/asm/vga_modex_circles.asm
-; Run:           ./bin/IntuitionEngine -ie32 vga_modex_circles.iex
+; Run:           go run . -ie32 vga_modex_circles.iex
 ; Porting:       VGA MMIO is CPU-agnostic. The Mode X plane selection and
 ;                page-flipping logic applies to any CPU core driving VGA.
 ;
@@ -21,7 +21,7 @@
 ; displayed while the other is being drawn, then they are swapped each
 ; frame.
 ;
-; === WHY VGA MODE X (320x240 UNCHAINED) ===
+; === VGA MODE X (320x240 UNCHAINED) ===
 ; Mode X was famously discovered and documented by Michael Abrash in his
 ; 1991 Dr. Dobb's Journal articles (later collected in the "Graphics
 ; Programming Black Book").  It is not a standard BIOS mode -- it is
@@ -57,7 +57,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   sdk/bin/ie32asm sdk/examples/asm/vga_modex_circles.asm
-;   ./bin/IntuitionEngine -ie32 vga_modex_circles.iex
+;   go run . -ie32 vga_modex_circles.iex
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -175,7 +175,6 @@ setup_palette:
     AND A, #0x3F
     STA @VGA_DAC_DATA
 
-    ; Green channel: faster ramp for teal highlights
     LDA X
     MUL A, #3
     AND A, #0x3F
@@ -200,9 +199,8 @@ setup_palette:
 ; ============================================================================
 ; Zeroes the back-buffer page in Mode X.  All four planes are enabled via
 ; Map Mask so a single byte write clears 4 pixels simultaneously, making
-; the clear operation 4x faster than clearing plane by plane.
 ;
-; === WHY PAGE SELECTION MATTERS ===
+; === PAGE SELECTION MATTERS ===
 ; VAR_PAGE tracks which page is currently displayed (front buffer).
 ; We clear the OTHER page (back buffer) before drawing into it.
 ; ============================================================================
@@ -235,7 +233,6 @@ clear_page:
 ; Draws 8 circles, each with a radius offset by 16 pixels from the
 ; previous one.  The base radius oscillates with the frame counter (masked
 ; to 0-127), so the circles appear to expand outward from the centre and
-; wrap around.  Each circle gets a distinct colour that also cycles with
 ; the frame counter, producing a kaleidoscopic rainbow animation.
 ; ============================================================================
 draw_circles:
@@ -282,7 +279,7 @@ draw_circles:
 ; the IE32.  The "decision" variable tracks accumulated error and determines
 ; whether to step diagonally or horizontally at each iteration.
 ;
-; === WHY BRESENHAM FOR CIRCLES ===
+; === BRESENHAM FOR CIRCLES ===
 ; Jack Bresenham's circle algorithm (1977) was designed for plotters and
 ; early raster displays where floating-point maths was prohibitively slow.
 ; It remains the standard approach for drawing circles in software
@@ -407,7 +404,7 @@ draw_circle:
 ; ============================================================================
 ; Input: A = x coordinate, B = y coordinate, D = colour index
 ;
-; === WHY MODE X PIXEL ADDRESSING IS DIFFERENT ===
+; === MODE X PIXEL ADDRESSING IS DIFFERENT ===
 ; In Mode X, the four VGA memory planes are unchained.  Each pixel is
 ; stored in one specific plane, determined by (x & 3).  The byte offset
 ; within that plane is y * 80 + x / 4.  Before writing, we must tell the
@@ -479,7 +476,7 @@ plot_pixel:
 ; address registers to make the newly completed page visible.  The page
 ; that was being displayed becomes the new back buffer for the next frame.
 ;
-; === WHY HARDWARE PAGE FLIPPING ===
+; === HARDWARE PAGE FLIPPING ===
 ; The CRTC start address registers tell the VGA where in VRAM to begin
 ; scanning out the display.  By changing this address, we can instantly
 ; switch which page is visible -- no data needs to be copied.  Combined

@@ -1,6 +1,6 @@
 ; ============================================================================
 ; IE64 BASIC - BASIC INTERPRETER ENTRY POINT AND REPL
-; IE64 Assembly for IntuitionEngine - Terminal I/O (serial console)
+; IE64 Assembly for Intuition Engine - Terminal I/O (serial console)
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -9,7 +9,7 @@
 ; Audio Engine:  All engines accessible via BASIC SOUND commands
 ; Assembler:     ie64asm (Intuition Engine IE64 assembler)
 ; Build:         sdk/bin/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
-; Run:           bin/IntuitionEngine -ie64 ehbasic_ie64.ie64
+; Run:           go run . -ie64 ehbasic_ie64.ie64
 ; Shortcut:      make basic (assembles, embeds, and builds with -basic flag)
 ; Porting:       IE64 BASIC is tightly coupled to IE64. The interpreter's
 ;                register conventions and MMIO addresses are IE64-specific.
@@ -24,7 +24,7 @@
 ; 6. Recognises RUN, LIST, and NEW as special immediate commands
 ; 7. Supports RUN "filename" to load and execute external BASIC programmes
 ;
-; === WHY BASIC INTERPRETERS ===
+; === BASIC INTERPRETERS ===
 ;
 ; BASIC (Beginner's All-purpose Symbolic Instruction Code) was the lingua
 ; franca of home computing from 1975 to 1995. Nearly every 8-bit computer
@@ -42,19 +42,18 @@
 ; hardware extension commands for the Intuition Engine's video, audio,
 ; and blitter subsystems.
 ;
-; === WHY TOKENISATION ===
+; === TOKENISATION ===
 ;
 ; When the user types a line like PRINT "HELLO", the interpreter does not
 ; store it as raw ASCII text. Instead, the tokeniser converts keywords into
 ; single-byte tokens (e.g., PRINT becomes 0x99). This has two benefits:
 ;
 ;   1. Memory savings: a 5-letter keyword becomes 1 byte
-;   2. Faster execution: the executor can dispatch on a single byte
 ;      via a jump table instead of string-comparing every keyword
 ;
 ; The REPL loop below orchestrates this: input -> tokenise -> store/execute.
 ;
-; === WHY THE REPL LOOP ===
+; === THE REPL LOOP ===
 ;
 ; The REPL pattern (Read-Eval-Print Loop) is the fundamental interaction
 ; model for interactive interpreters. Each iteration:
@@ -86,11 +85,11 @@
 ;
 ; === BUILD AND RUN ===
 ;   sdk/bin/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
-;   bin/IntuitionEngine -ie64 ehbasic_ie64.ie64
+;   go run . -ie64 ehbasic_ie64.ie64
 ;
 ; Or use the embedded build:
 ;   make basic
-;   bin/IntuitionEngine -basic
+;   go run . -basic
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

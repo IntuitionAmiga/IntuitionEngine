@@ -1,4 +1,6 @@
-/* ============================================================================
+/* AROS hardware-presentation rotozoomer: guest C using Mode7 and a bitmap lock.
+ * Keep the bitmap locked until the IE COPY blit has consumed its destination.
+ * ============================================================================
  * AROS ROTOZOOMER TUTORIAL: C and locked bitmap presentation
  * ============================================================================
  * This program opens a 640 by 480 CUSTOMSCREEN, renders the affine mapping

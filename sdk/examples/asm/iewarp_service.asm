@@ -1,13 +1,13 @@
-; iewarp_service.asm — IE64 coprocessor worker service for iewarp.library
+; iewarp_service.asm - IE64 coprocessor worker service for iewarp.library
 ;
 ; This program runs as an IE64 coprocessor worker, polling its ring buffer
 ; for operation requests from the M68K host. It dispatches each operation,
 ; writes the response, and advances the ring tail pointer.
 ;
 ; Ring buffer layout (at RING_BASE = MAILBOX_BASE + 5 * RING_STRIDE):
-;   +0x00: head (byte) — next write slot (producer / Go manager)
-;   +0x01: tail (byte) — next read slot (consumer / this worker)
-;   +0x02: capacity (byte) — ring depth (16)
+;   +0x00: head (byte) - next write slot (producer / Go manager)
+;   +0x01: tail (byte) - next read slot (consumer / this worker)
+;   +0x02: capacity (byte) - ring depth (16)
 ;   +0x08: request descriptors (16 × 32 bytes = 512 bytes)
 ;   +0x208: response descriptors (16 × 16 bytes = 256 bytes)
 ;
@@ -15,7 +15,7 @@
 ;   +0x00: ticket (u32)
 ;   +0x04: cpuType (u32)
 ;   +0x08: op (u32)
-;   +0x0C: flags (u32) — extra parameter (mask ptr, strides, etc.)
+;   +0x0C: flags (u32) - extra parameter (mask ptr, strides, etc.)
 ;   +0x10: reqPtr (u32)
 ;   +0x14: reqLen (u32)
 ;   +0x18: respPtr (u32)
@@ -23,7 +23,7 @@
 ;
 ; Response descriptor (16 bytes):
 ;   +0x00: ticket (u32)
-;   +0x04: status (u32) — 0=pending, 2=OK, 3=error
+;   +0x04: status (u32) - 0=pending, 2=OK, 3=error
 ;   +0x08: resultCode (u32)
 ;   +0x0C: respLen (u32)
 ;
@@ -144,7 +144,7 @@ CODEC_IMA_ADPCM   equ 1
     store.b r2, RING_ACK(r30)
 
 ; ============================================================================
-; Main poll loop — spin on head != tail
+; Main poll loop - spin on head != tail
 ; ============================================================================
 
 poll_loop:
@@ -229,11 +229,11 @@ poll_loop:
     move.l r8, #OP_SCROLL
     beq r11, r8, op_scroll
 
-    ; Unknown op — return error
+    ; Unknown op - return error
     bra op_error
 
 ; ============================================================================
-; Operation handlers — Memory primitives
+; Operation handlers - Memory primitives
 ; ============================================================================
 
 ; ── NOP ────────────────────────────────────────────────────────────
@@ -253,7 +253,7 @@ op_memcpy:
     and.l r8, r14, r7                     ; dst & 3
     bne r8, r0, memcpy_byte               ; not aligned
 
-    ; Both aligned — copy LONGs first
+    ; Both aligned - copy LONGs first
     move.l r16, r13                       ; r16 = remaining
     lsr.l r17, r16, #2                    ; r17 = count of LONGs
     beq r17, r0, memcpy_tail
@@ -376,7 +376,7 @@ memmove_fwd_loop:
     bra op_done_ok
 
 ; ============================================================================
-; Operation handlers — Graphics primitives
+; Operation handlers - Graphics primitives
 ; ============================================================================
 
 ; ── BLIT_COPY ──────────────────────────────────────────────────────
@@ -523,10 +523,10 @@ scale_col_loop:
 ; flags = srcStride|(dstStride<<16), or 0 for tightly packed
 ;
 ; Format codes (values >= 16 enable format-aware conversion):
-;   PIXFMT_RGBA32 = 16  (R,G,B,A — IE native)
+;   PIXFMT_RGBA32 = 16  (R,G,B,A - IE native)
 ;   PIXFMT_ARGB32 = 17  (A,R,G,B)
-;   PIXFMT_RGB24  = 18  (R,G,B — 3 bytes)
-;   PIXFMT_BGR24  = 19  (B,G,R — 3 bytes)
+;   PIXFMT_RGB24  = 18  (R,G,B - 3 bytes)
+;   PIXFMT_BGR24  = 19  (B,G,R - 3 bytes)
 ;   PIXFMT_BGRA32 = 20  (B,G,R,A)
 ;   PIXFMT_ABGR32 = 21  (A,B,G,R)
 ; Legacy: values 1-4 = BPP copy mode (backward compatible)
@@ -760,7 +760,7 @@ cvt_bgr24_to_rgba:
     bra op_done_ok
 
 cvt_unsupported:
-    ; Unsupported format pair — return error
+    ; Unsupported format pair - return error
     move.l r7, #STATUS_ERROR
     store.l r7, RESP_STATUS(r20)
     store.l r0, RESP_RESULT(r20)
@@ -770,7 +770,7 @@ cvt_unsupported:
 ; ── BLIT_ALPHA ─────────────────────────────────────────────────────
 ; Alpha template blend: per-pixel alpha modulates destination RGBA32.
 ; reqPtr = src (8-bit alpha template, one byte per pixel)
-; reqLen = width|(height<<16)  — width in PIXELS
+; reqLen = width|(height<<16)  - width in PIXELS
 ; respPtr = dst (RGBA32 framebuffer)
 ; respCap = srcMod|(dstStride<<16)
 ;
@@ -1046,7 +1046,7 @@ af_no_cross:
     bra af_edge_loop
 
 af_edges_done:
-    ; Sort intersections (insertion sort — usually very few)
+    ; Sort intersections (insertion sort - usually very few)
     move.l r18, #1                        ; i = 1
 af_sort_outer:
     bge r18, r22, af_fill_spans
@@ -1281,7 +1281,7 @@ pp_neg_pixel:
     bra op_done_ok
 
 ; ============================================================================
-; Operation handlers — Audio primitives
+; Operation handlers - Audio primitives
 ; ============================================================================
 
 ; ── AUDIO_MIX ──────────────────────────────────────────────────────
@@ -1559,7 +1559,7 @@ adpcm_step_update:
     bra adpcm_byte_loop
 
 ; ============================================================================
-; Operation handlers — Math primitives
+; Operation handlers - Math primitives
 ; ============================================================================
 
 ; ── FP_BATCH ───────────────────────────────────────────────────────
@@ -1810,7 +1810,7 @@ crc_zero_write_desc:
     bra advance_tail
 
 ; ============================================================================
-; Operation handlers — Rendering primitives
+; Operation handlers - Rendering primitives
 ; ============================================================================
 
 ; ── GRADIENT_FILL ──────────────────────────────────────────────────

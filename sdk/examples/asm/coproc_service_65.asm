@@ -1,75 +1,13 @@
-; ============================================================================
-; COPROCESSOR SERVICE - 6502 WORKER SIDE OF INTER-CPU COMMUNICATION
-; ca65/ld65 syntax for IntuitionEngine - Headless coprocessor service
-; ============================================================================
+; Coprocessor mailbox service: 6502 guest code that waits for mailbox entries, reads an add request from shared guest RAM, writes the response and advances the ring tail.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    MOS 6502 (8-bit, 16-bit address bus via CoprocBus32)
-; Video Chip:    None (headless coprocessor service)
-; Audio Engine:  None
-; Assembler:     ca65/ld65 (cc65 toolchain)
-; Build:         make ie65asm SRC=sdk/examples/asm/coproc_service_65.asm
-; Linker cfg:    ie65_service.cfg (auto-detected by SDK build)
-; Run:           Used as -coproc-svc argument with a matching caller binary
-; Porting:       Same service implemented on all CPU cores. See
-;                coproc_service_ie32.asm (reference), coproc_service_68k.asm,
-;                coproc_service_x86.asm, coproc_service_z80.asm.
+; The caller and service communicate through shared guest RAM and coprocessor MMIO.
+; The Host SDK builds both guest binaries; it is not present at runtime. Read the
+; mailbox constants, initialisation, descriptor exchange and terminal path in order.
+; Run the caller with `go run . -m6502 -coproc-svc <service> <caller>`.
+; Compare coproc_caller_65.asm as its matching pair and the other CPU ports for their
+; real addressing differences.
 ;
-; === WHAT THIS DEMO DOES ===
-; 1. Polls the shared-memory ring buffer for incoming request descriptors
-; 2. Dispatches on the op field (currently supports op=1: 32-bit add)
-; 3. Reads two uint32 operands from the request data pointer
-; 4. Performs a 4-byte carry-chained addition (the 6502 has no 32-bit ALU)
-; 5. Writes the 32-bit result to the response data pointer
-; 6. Fills in the response descriptor (ticket echo, status, result length)
-; 7. Advances the ring tail pointer and loops back to poll
-;
-; === WHY COPROCESSOR MAILBOX IPC ===
-; This is the SERVICE side of the coprocessor mailbox protocol. The service
-; runs on a separate CPU core -- in this case a 6502 -- and polls shared
-; memory for incoming commands from a caller running on a different CPU.
-; When a new request appears (head != tail), the service processes it and
-; writes the result back, then advances the tail to signal completion.
-;
-; The ring buffer acts as a hardware-neutral IPC channel: any CPU can be
-; the caller and any CPU can be the service, because they communicate
-; solely through memory-mapped addresses. This mirrors real coprocessor
-; architectures throughout computing history:
-;
-;   - Amiga: The 68000 writes command lists for the copper and blitter
-;     coprocessors, which execute them independently from shared memory
-;   - SNES: The SA-1 coprocessor (a second 65C816) runs its own program
-;     from shared ROM, communicating via hardware registers
-;   - Modern GPUs: The CPU submits command buffers to a ring; the GPU
-;     processes them asynchronously and signals completion
-;
-; === 6502-SPECIFIC NOTES ===
-; The 6502's 8-bit accumulator means every 32-bit operation becomes four
-; separate byte operations with carry propagation. The CoprocBus32 maps
-; the mailbox into the 6502's 16-bit address space starting at $2000,
-; so all ring buffer addresses fit within the $0000-$FFFF range.
-;
-; Zero page ($00-$0F) is used as scratch storage for computed pointers,
-; since the 6502's indirect addressing modes require zero-page operands.
-; This is a standard 6502 idiom -- zero page acts as a register file
-; extension for an architecture with very few registers.
-;
-; === MEMORY MAP ===
-; $0000-$00FF    Zero page (scratch pointers and temporaries)
-; $0000          Code entry point (reset vector targets here)
-; $2000          Mailbox base (mapped to bus MAILBOX_BASE)
-; $2300          Ring 1 head pointer (6502 is ring index 1)
-; $2301          Ring 1 tail pointer
-; $2308+tail*32  Request entry descriptors (32 bytes each)
-; $2508+tail*16  Response descriptors (16 bytes each)
-; $FFFC-$FFFD    Reset vector (points to $0000)
-;
-; === BUILD AND RUN ===
-; make ie65asm SRC=sdk/examples/asm/coproc_service_65.asm
-; (loaded by a caller binary via COPROC_CMD_START)
-;
-; (c) 2024-2026 Zayn Otley - GPLv3 or later
-; ============================================================================
+
 
 .include "ie65.inc"
 
@@ -101,7 +39,7 @@ LAYOUT_VER  = $01          ; COPROC_LAYOUT_VERSION
 ; ZERO PAGE SCRATCH - Pointer Storage
 ; ============================================================================
 ;
-; WHY: The 6502 indirect addressing mode (LDA (zp),Y) requires the base
+; The 6502 indirect addressing mode (LDA (zp),Y) requires the base
 ; address to live in zero page. We compute multi-byte addresses at runtime
 ; and store them here so we can use indirect-indexed addressing to reach
 ; ring buffer entries, request data, and response data.
@@ -126,7 +64,7 @@ ZP_TICKH    = $0F
 ; MAIN POLL LOOP - Wait for Requests
 ; ============================================================================
 ;
-; WHY: The service spins on head != tail. When the caller enqueues a
+; The service spins on head != tail. When the caller enqueues a
 ; request, it advances head. We detect this by comparing our cached tail
 ; against the current head value. This is a classic producer-consumer
 ; pattern where head is written by the producer (caller) and tail is
@@ -153,7 +91,7 @@ main_loop:
 ; ENTRY ADDRESS COMPUTATION - Locate the Request Descriptor
 ; ============================================================================
 ;
-; WHY: Each entry is 32 bytes, so entry address = ENTRIES_BASE + tail * 32.
+; Each entry is 32 bytes, so entry address = ENTRIES_BASE + tail * 32.
 ; The 6502 has no multiply instruction, so we shift left 5 times (ASL A)
 ; to compute tail * 32. The result is a 16-bit address built from the
 ; shifted value plus the entries base offset.
@@ -177,7 +115,7 @@ main_loop:
 ; OPCODE DISPATCH - Check Which Operation Was Requested
 ; ============================================================================
 ;
-; WHY: The op field at entry+8 tells us what computation to perform.
+; The op field at entry+8 tells us what computation to perform.
 ; Currently only op=1 (add two uint32 values) is supported. Any other
 ; opcode triggers the error response path.
 
@@ -193,7 +131,7 @@ op_ok:
 ; EXTRACT REQUEST FIELDS - Read Pointers from the Entry Descriptor
 ; ============================================================================
 ;
-; WHY: The entry descriptor contains pointers to the actual data buffers.
+; The entry descriptor contains pointers to the actual data buffers.
 ; reqPtr (entry+16) points to the input operands. respPtr (entry+24)
 ; points to where we write the result. ticket (entry+0) is an opaque
 ; value we must echo back in the response so the caller can match
@@ -232,7 +170,7 @@ op_ok:
 ; OP=1: 32-BIT ADDITION - Carry-Chained Byte-by-Byte Add
 ; ============================================================================
 ;
-; WHY: The 6502 is an 8-bit CPU with no 32-bit arithmetic. To add two
+; The 6502 is an 8-bit CPU with no 32-bit arithmetic. To add two
 ; uint32 values, we must add four pairs of bytes with carry propagation.
 ; CLC clears carry before byte 0, then ADC (add with carry) automatically
 ; chains the carry through bytes 1-3. This is the fundamental pattern for
@@ -278,7 +216,7 @@ op_ok:
 ; WRITE RESPONSE DESCRIPTOR - Signal Completion to the Caller
 ; ============================================================================
 ;
-; WHY: The response descriptor tells the caller what happened. It lives
+; The response descriptor tells the caller what happened. It lives
 ; in a separate array from the request entries (RESP_BASE + tail*16).
 ; We fill in four fields, each a little-endian uint32:
 ;   +0  ticket    -- echoed from the request so the caller can correlate
@@ -351,7 +289,7 @@ op_ok:
 ; ADVANCE TAIL - Mark This Slot as Consumed
 ; ============================================================================
 ;
-; WHY: The tail pointer is our read cursor into the ring. By advancing
+; The tail pointer is our read cursor into the ring. By advancing
 ; it modulo 16 (AND #$0F), we tell the caller that this slot is now free
 ; for reuse. The ring has 16 entries, so the mask wraps naturally.
 
@@ -368,7 +306,7 @@ op_ok:
 ; ERROR RESPONSE - Unknown Opcode Handler
 ; ============================================================================
 ;
-; WHY: If the caller sends an opcode we do not recognise, we must still
+; If the caller sends an opcode we do not recognise, we must still
 ; advance the tail (otherwise the ring would stall forever). We write
 ; status=3 (error) so the caller knows the request was rejected.
 
@@ -442,7 +380,7 @@ error_resp:
 ; RESET AND INTERRUPT VECTORS
 ; ============================================================================
 ;
-; WHY: The 6502 reads the reset vector at $FFFC-$FFFD on power-up.
+; The 6502 reads the reset vector at $FFFC-$FFFD on power-up.
 ; We point it to $0000 where our code begins. The IRQ/BRK vector is
 ; also set to $0000 since this service does not use interrupts.
 

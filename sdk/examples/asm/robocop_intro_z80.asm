@@ -1,6 +1,9 @@
+; RoboCop intro: Z80 guest code combines a masked blitter image, Copper bars and PSG+ playback.
+; The assembler embeds its artwork and AY tune, so `go run . -z80 <binary>` needs no guest file root.
+; Read device setup, data layout, per-frame animation and presentation in that order.
 ; ============================================================================
 ; ROBOCOP INTRO (Z80 PORT) - Blitter Sprite, Copper Rasterbars and PSG Music
-; Zilog Z80 assembly for IntuitionEngine - VideoChip + Copper + PSG audio
+; Zilog Z80 assembly for Intuition Engine - VideoChip + Copper + PSG audio
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -9,7 +12,7 @@
 ; Audio Engine:  PSG (AY-3-8910 compatible, PSG+ enhanced mode)
 ; Assembler:     vasmz80_std
 ; Build:         vasmz80_std -Fbin -o robocop_intro_z80.ie80 robocop_intro_z80.asm
-; Run:           ./IntuitionEngine -z80 robocop_intro_z80.ie80
+; Run:           go run . -z80 robocop_intro_z80.ie80
 ; Porting:       See robocop_intro.asm (IE32 reference), robocop_intro_65.asm
 ;                (6502), robocop_intro_68k.asm (M68K)
 ;
@@ -21,7 +24,7 @@
 ; 5. Renders a sine-wave scrolltext along the bottom of the screen
 ; 6. Animates copper bar colours each frame using a scrolling gradient
 ;
-; === WHY BLITTER IMAGE DISPLAY + COPPER EFFECTS ===
+; === BLITTER IMAGE DISPLAY + COPPER EFFECTS ===
 ; This demo recreates the style of classic 8-bit and 16-bit game intro
 ; screens -- specifically inspired by the Robocop (1988) home computer
 ; ports by Ocean Software. On machines like the ZX Spectrum and Amstrad
@@ -75,7 +78,7 @@
 ;
 ; === BUILD AND RUN ===
 ; Build:  vasmz80_std -Fbin -o robocop_intro_z80.ie80 robocop_intro_z80.asm
-; Run:    ./IntuitionEngine -z80 robocop_intro_z80.ie80
+; Run:    go run . -z80 robocop_intro_z80.ie80
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -465,7 +468,7 @@ compute_xy:
 update_bars:
     ; Derive a scroll offset from the sine table
     ld a,(frame_lo)
-    add a,a                     ; Faster scroll rate
+    add a,a                     ; Double the scroll phase.
     ld l,a
     ld h,>sin_x_lo
     ld e,(hl)

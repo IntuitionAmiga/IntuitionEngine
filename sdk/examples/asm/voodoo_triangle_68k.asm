@@ -1,6 +1,6 @@
 ; ============================================================================
 ; VOODOO TRIANGLE - Minimal 3DFX Triangle Rasterisation Demo
-; M68K (68020) for IntuitionEngine - Voodoo 3D (640x480, triangle rasteriser)
+; M68K (68020) for Intuition Engine - Voodoo 3D (640x480, triangle rasteriser)
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -17,7 +17,7 @@
 ; The scene is static; the frame is redrawn every vsync to demonstrate the
 ; Voodoo's double-buffered rendering pipeline.
 ;
-; === WHY TRIANGLE RASTERISATION ===
+; === TRIANGLE RASTERISATION ===
 ; The triangle is the fundamental primitive of all 3D rendering.  Every
 ; polygon -- quads, meshes, entire game worlds -- is ultimately decomposed
 ; into triangles before rasterisation.  The 3dfx Voodoo (1996) was the first
@@ -49,7 +49,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   vasmm68k_mot -Fbin -m68020 -devpac -o voodoo_triangle_68k.ie68 voodoo_triangle_68k.asm
-;   ./bin/IntuitionEngine -m68k voodoo_triangle_68k.ie68
+;   go run . -m68k voodoo_triangle_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -84,7 +84,7 @@ main_loop:
     ; ======================================================================
     ; Triangle 1: RED -- middle depth (Z = $800)
     ; ======================================================================
-    ; WHY: the red triangle sits between the green and blue in Z-space.
+    ; the red triangle sits between the green and blue in Z-space.
     ; Because the Z-buffer is enabled, draw order does not matter -- the
     ; hardware tests each pixel against the stored depth value.
     ; ======================================================================
@@ -115,7 +115,7 @@ main_loop:
     ; ======================================================================
     ; Triangle 2: GREEN -- closest (Z = $4CC, approx. 0.3)
     ; ======================================================================
-    ; WHY: lower Z = closer to the camera.  This triangle will obscure any
+    ; lower Z = closer to the camera.  This triangle will obscure any
     ; red or blue pixels it overlaps, regardless of draw order.
     ; ======================================================================
 
@@ -145,7 +145,7 @@ main_loop:
     ; ======================================================================
     ; Triangle 3: BLUE -- farthest (Z = $E66, approx. 0.9)
     ; ======================================================================
-    ; WHY: highest Z = farthest away.  Blue pixels only survive where they
+    ; highest Z = farthest away.  Blue pixels only survive where they
     ; are not covered by the red or green triangles.
     ; ======================================================================
 

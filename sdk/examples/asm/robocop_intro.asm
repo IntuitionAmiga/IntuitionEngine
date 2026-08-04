@@ -1,73 +1,9 @@
-; ============================================================================
-; ROBOCOP INTRO - Blitter Sprite, Copper Rasterbars and PSG Music Demo
-; IE32 assembly for IntuitionEngine - VideoChip + Copper + PSG audio
-; ============================================================================
+; RoboCop intro: IE32 guest code combines a masked blitter image, Copper bars and PSG+ playback.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    IE32 (custom 32-bit RISC)
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
-; Audio Engine:  PSG (AY-3-8910 compatible, PSG+ enhanced mode)
-; Assembler:     ie32asm
-; Build:         sdk/bin/ie32asm sdk/examples/asm/robocop_intro.asm
-; Run:           ./IntuitionEngine -ie32 robocop_intro.iex
-; Porting:       See robocop_intro_65.asm (6502), robocop_intro_68k.asm
-;                (M68K), robocop_intro_z80.asm (Z80)
-;
-; === WHAT THIS DEMO DOES ===
-; 1. Clears the screen to solid black using a blitter fill operation
-; 2. Loads and plays an AY-format music file (Robocop theme) via PSG+
-; 3. Programmes a 16-bar copper list for animated rasterbar colour cycling
-; 4. Moves a masked Robocop sprite along a sine/cosine Lissajous path
-; 5. Renders a sine-wave scrolltext along the bottom of the screen
-; 6. Animates copper bar colours each frame using a scrolling gradient
-;
-; === WHY BLITTER IMAGE DISPLAY + COPPER EFFECTS ===
-; This demo recreates the style of classic 8-bit and 16-bit game intro
-; screens -- specifically inspired by the Robocop (1988) home computer
-; ports by Ocean Software. On machines like the ZX Spectrum and Amstrad
-; CPC, the loading screen was often the player's first impression of a
-; game, and developers used every hardware trick available to make it
-; memorable.
-;
-; The copper coprocessor is analogous to the Amiga's copper -- a simple
-; programmable display coprocessor that can modify video registers at
-; specific scanline positions. This enables effects like colour gradient
-; bars, split-screen palettes, and per-scanline colour changes without
-; any CPU intervention. The 16 rainbow bars here cycle their colours each
-; frame, producing a flowing gradient wave reminiscent of demoscene
-; rasterbar effects from the late 1980s.
-;
-; The hardware blitter handles all pixel operations: clearing the previous
-; sprite position, drawing the masked sprite at its new location, and
-; rendering scrolltext characters. This frees the CPU to focus on
-; animation logic (sine table lookups, copper list updates) rather than
-; pushing individual pixels -- exactly the division of labour that made
-; the Amiga and Atari ST so effective for games and demos.
-;
-; === IE32-SPECIFIC NOTES ===
-; This is the reference implementation. IE32 is a 32-bit RISC architecture
-; with eight general-purpose registers (A-F, T, U) and direct memory-mapped
-; I/O. All hardware registers are accessed via absolute addresses in the
-; 0xF0000 I/O region. The IE32 can address the full 20-bit bus directly,
-; so no banking is required -- data (sprite, mask, music, font) is simply
-; appended after the code and referenced by label.
-;
-; === MEMORY MAP ===
-; 0x0000 - 0x1FF7   Program code (~8KB)
-; 0x2000 - 0x27FF   Sine/cosine lookup tables (256 entries each, 32-bit)
-; 0x2800 - 0x283F   Colour palette (16 entries, 32-bit BGRA)
-; 0x2840 - 0x2A83   Copper list (16 bars x 9 longwords + END marker)
-; 0x2A84 onwards     Sprite RGBA, mask, AY music, font and scrolltext data
-; 0x8800 - 0x880F   Runtime variables (frame counter, positions, scroll)
-; 0xF0000           I/O registers (video, blitter, copper, PSG)
-; 0x100000          VRAM start (640x480x4 = 1,228,800 bytes)
-;
-; === BUILD AND RUN ===
-; Build:  sdk/bin/ie32asm sdk/examples/asm/robocop_intro.asm
-; Run:    ./IntuitionEngine -ie32 robocop_intro.iex
-;
-; (c) 2024-2026 Zayn Otley - GPLv3 or later
-; ============================================================================
+; The sprite, mask, AY tune and font are embedded when the Host SDK assembles the
+; guest binary, so launch needs no guest file root: `go run . -ie32 <binary>`. Read
+; the device registers, data layout, initialisation, per-frame update and presentation
+; in that order. The other ports retain this data flow but use their own addressing.
 
 ; ----------------------------------------------------------------------------
 ; HARDWARE REGISTERS (I/O region at 0xF0000)
@@ -398,7 +334,7 @@ update_bars:
 
     ; Calculate global scroll offset from sine table
     LDC A                       ; C = frame
-    SHL C, #1                   ; faster scroll
+    SHL C, #1                   ; Double the scroll phase.
     AND C, #0xFF                ; wrap to 256 entries
     SHL C, #2                   ; * 4 bytes per entry
     ADD C, #SIN_X_ADDR          ; C = &sin_table[index]
@@ -1146,7 +1082,6 @@ data_cos_y:
 ; ----------------------------------------------------------------------------
 ; Colour palette for copper bars (16 entries, BGRA format)
 ; These colours form a rainbow gradient that the update_bars routine
-; cycles through each frame.
 ; ----------------------------------------------------------------------------
 data_palette:
 .word 0xFF101820

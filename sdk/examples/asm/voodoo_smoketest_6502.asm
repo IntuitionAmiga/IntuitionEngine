@@ -1,5 +1,12 @@
-; Minimal 6502 Voodoo access smoke test.
-; Exercises the documented $E000 banked Voodoo aperture.
+; 6502 Voodoo register-aperture smoke test.
+;
+; Target: 6502 guest with the Voodoo device enabled. The 6502 cannot address
+; the full Voodoo MMIO range directly, so it first selects the $F8 register
+; page through $F7F2, then uses the $E000 aperture. This is a useful starting
+; point for 6502 code that needs to submit Voodoo commands.
+;
+; Assemble with the Host SDK's ie65 tools, then launch the generated guest
+; binary with `go run . -m6502 <binary>`. There are no guest-file assets.
 
 .include "ie65.inc"
 
@@ -15,9 +22,12 @@ VSMOKE_SWAP         = VSMOKE_WINDOW + $128
 .segment "CODE"
 
 start:
+        ; Select the Voodoo register page before touching aperture offsets.
         lda #VSMOKE_REG_PAGE
         sta VSMOKE_BANK_HI
 
+        ; Enable the device, choose a clear colour, clear the back buffer and
+        ; request a swap. Each 32-bit register is written little-endian.
         lda #$01
         sta VSMOKE_ENABLE+0
         lda #$00
@@ -46,4 +56,5 @@ start:
         sta VSMOKE_SWAP+3
 
 forever:
+        ; Keep the guest alive so the submitted state remains observable.
         jmp forever

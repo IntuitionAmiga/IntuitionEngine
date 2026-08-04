@@ -1,3 +1,6 @@
+; VGA MODE 12H TUNNEL: IE32 planar video, palette setup and one-plane-at-a-time draws.
+; Assemble with the Host SDK and run `go run . -ie32 <binary>`.
+; The renderer writes plane bytes explicitly because Mode 12h stores four bitplanes.
 ; ============================================================================
 ; VGA MODE 12h PLANAR TUNNEL PLASMA
 ; IE32 Assembly for IntuitionEngine, VGA 640x480x16 planar graphics
@@ -8,7 +11,7 @@
 ; Audio Engine:  None
 ; Assembler:     ie32asm
 ; Build:         sdk/bin/ie32asm sdk/examples/asm/vga_mode12h_bars.asm
-; Run:           ./bin/IntuitionEngine -ie32 vga_mode12h_bars.iex
+; Run:           go run . -ie32 vga_mode12h_bars.iex
 ;
 ; This replaces the old static colour bars with a full-screen animated tunnel
 ; plasma.  The renderer fills all 480 scanlines every frame, one plane at a

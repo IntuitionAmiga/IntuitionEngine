@@ -1,75 +1,10 @@
-; ============================================================================
-; ROBOCOP INTRO (6502 PORT) - Blitter Sprite, Copper Rasterbars and PSG Music
-; cc65 assembly for IntuitionEngine - VideoChip + Copper + PSG audio
-; ============================================================================
+; RoboCop intro: 6502 guest code combines a masked blitter image, Copper bars and PSG+ playback.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    MOS 6502 (8-bit, extended banking)
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
-; Audio Engine:  PSG (AY-3-8910 compatible, PSG+ enhanced mode)
-; Assembler:     ca65/ld65 (cc65 toolchain)
-; Build:         make ie65asm SRC=sdk/examples/asm/robocop_intro_65.asm
-; Run:           ./IntuitionEngine -6502 robocop_intro_65.ie65
-; Porting:       See robocop_intro.asm (IE32 reference), robocop_intro_68k.asm
-;                (M68K), robocop_intro_z80.asm (Z80)
+; The assembler embeds the sprite, mask, AY tune and font in the guest binary, so
+; launch needs no guest file root: `go run . -m6502 <binary>`. The 6502 uses the
+; banked aperture for device registers and extended addresses for the blitter data.
+; Read data organisation, initialisation, per-frame update and presentation in order.
 ;
-; === WHAT THIS DEMO DOES ===
-; 1. Clears the screen to solid black using a blitter fill operation
-; 2. Loads and plays an AY-format music file (Robocop theme) via PSG+
-; 3. Programmes a 16-bar copper list for animated rasterbar colour cycling
-; 4. Moves a masked Robocop sprite along a sine/cosine Lissajous path
-; 5. Renders a sine-wave scrolltext along the bottom of the screen
-; 6. Animates copper bar colours each frame using a scrolling gradient
-;
-; === WHY BLITTER IMAGE DISPLAY + COPPER EFFECTS ===
-; This demo recreates the style of classic 8-bit and 16-bit game intro
-; screens -- specifically inspired by the Robocop (1988) home computer
-; ports by Ocean Software. On machines like the ZX Spectrum and Amstrad
-; CPC, the loading screen was often the player's first impression of a
-; game, and developers used every hardware trick available to make it
-; memorable.
-;
-; The copper coprocessor is analogous to the Amiga's copper -- a simple
-; programmable display coprocessor that can modify video registers at
-; specific scanline positions. This enables effects like colour gradient
-; bars, split-screen palettes, and per-scanline colour changes without
-; any CPU intervention. The 16 rainbow bars here cycle their colours each
-; frame, producing a flowing gradient wave reminiscent of demoscene
-; rasterbar effects from the late 1980s.
-;
-; The hardware blitter handles all pixel operations: clearing the previous
-; sprite position, drawing the masked sprite at its new location, and
-; rendering scrolltext characters. This frees the CPU to focus on
-; animation logic (sine table lookups, copper list updates) rather than
-; pushing individual pixels -- exactly the division of labour that made
-; the Amiga and Atari ST so effective for games and demos.
-;
-; === 6502-SPECIFIC NOTES ===
-; The 6502 is an 8-bit processor with a 16-bit address bus (64KB). All
-; 32-bit hardware register writes must be done one byte at a time. The
-; Intuition Engine extends the 6502's address space using a banking system:
-; data larger than 64KB (sprite, mask, music, font) is placed in extended
-; banks and referenced by 32-bit addresses that the blitter can access
-; directly. Sine/cosine tables are split into separate low-byte and
-; high-byte arrays for efficient 8-bit indexed lookup. A pre-computed
-; Y-address table avoids expensive runtime multiplication (y * 2560).
-; Helper macros from ie65.inc (SET_BLT_OP, SET_BLT_WIDTH, etc.) handle
-; the multi-byte register writes.
-;
-; === MEMORY MAP ===
-; Zero page ($00-$FF)    Working variables (frame counter, positions, temps)
-; BSS segment            Y-address lookup tables (480 entries x 3 bytes)
-; CODE segment           Program code
-; RODATA segment         Sine/cosine tables, palette, copper list, char table
-; BINDATA segment        Embedded sprite RGBA, mask, AY music, font data
-;
-; === BUILD AND RUN ===
-; Build:  make ie65asm SRC=sdk/examples/asm/robocop_intro_65.asm
-; Run:    ./IntuitionEngine -6502 robocop_intro_65.ie65
-;
-; (c) 2024-2026 Zayn Otley - GPLv3 or later
-; ============================================================================
-
 ; Override SDK defaults before include (demo runs at 640x480, not 1280x960).
 SCREEN_W        = 640
 SCREEN_H        = 480
@@ -509,7 +444,7 @@ main_loop:
 .proc update_bars
     ; Calculate scroll offset from sine table
     lda frame_lo
-    asl a                       ; Faster scroll
+    asl a                       ; Double the scroll phase.
     and #$FF
     tax
     lda sin_x_lo,x

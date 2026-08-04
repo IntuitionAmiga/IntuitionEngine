@@ -1,3 +1,6 @@
+; IE64 MANDELBROT: fixed-point rendering into alternating VideoChip framebuffers.
+; Assemble with the Host SDK, then run `go run . -ie64 <binary> -perf`.
+; Read the fixed-point domain, video setup, frame render, presentation and palette.
 ; ============================================================================
 ; Mandelbrot (IE64) - double-buffered screen renderer benchmark
 ; ============================================================================
@@ -15,7 +18,7 @@
 ;   sdk/bin/ie64asm -I sdk/include sdk/examples/asm/mandelbrot_ie64.asm
 ;
 ; Run:
-;   ./bin/IntuitionEngine -ie64 mandelbrot_ie64.ie64 -perf
+;   go run . -ie64 mandelbrot_ie64.ie64 -perf
 ;
 ; ============================================================================
 

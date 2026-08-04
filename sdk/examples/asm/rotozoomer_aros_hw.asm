@@ -1,3 +1,6 @@
+; AROS hardware-presentation rotozoomer: 68020 code using Mode7 and a locked bitmap.
+; The bitmap remains locked until the IE COPY blit finishes, so AROS cannot reuse it.
+; Compare the presentation phase with rotozoomer_aros_api.asm after reading shared setup.
 ; ============================================================================
 ; AROS ROTOZOOMER TUTORIAL: 68020 assembly and locked bitmap presentation
 ; ============================================================================

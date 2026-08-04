@@ -1,119 +1,12 @@
-; ============================================================================
-; ROTOZOOMER TUTORIAL: 6502 AND THE MODE7 BLITTER
-; IntuitionEngine SDK example
-; ============================================================================
+; Mode7 rotozoomer: 6502 guest code submits an affine texture map to the IE blitter.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    MOS 6502
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
-; Audio Engine:  SID (C64-style synthesis)
-; Assembler:     ca65/ld65 (cc65 toolchain)
-; Build:         make rotozoomer-65
-; Run:           go run . -file-root . -m6502 sdk/examples/prebuilt/rotozoomer_65.ie65
-; Porting:       VideoChip/blitter MMIO is CPU-agnostic. Compare with
-;                rotozoomer_z80.asm (Z80) for another 8-bit approach, or
-;                rotozoomer.asm (IE32) for a 32-bit approach.
+; The frame path derives signed fixed-point origin and step vectors, renders into a
+; back buffer, then presents after the submission has completed. The Host SDK builds
+; this guest binary; it is not part of the runtime. Run it with `go run . -file-root . -m6502 <binary>`.
+; Read data layout, initialisation, per-frame vectors, blitter submission and table
+; generation in order. Compare the other ports only for real CPU addressing changes.
 ;
-; === WHAT THIS DEMO DOES ===
-;
-; A 256 by 256 RGBA texture is loaded from disk. The 6502 computes a signed
-; 16.16 origin and four deltas, then Mode7 maps the texture to 640 by 480.
-; SID playback is started separately through the audio subsystem.
-;
-; === WHY MODE 7 HARDWARE BLITTER ===
-;
-; The 6502 has no multiply instruction, so `mul16_signed` supplies the
-; products needed by `compute_frame`. Mode7 then uses the resulting origin
-; and directional deltas to perform the output-pixel loop.
-;
-; === ARCHITECTURE OVERVIEW ===
-;
-;   ┌─────────────────────────────────────────────────────────────┐
-;   │                    MAIN LOOP                                │
-;   │                                                             │
-;   │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-;   │  │  COMPUTE    │───>│   RENDER    │───>│  PRESENT    │     │
-;   │  │  FRAME      │    │   MODE 7   │    │   FRAME     │     │
-;   │  │ (6 params)  │    │  (blitter)  │    │ (FB pointer)│     │
-;   │  └─────────────┘    └─────────────┘    └─────────────┘     │
-;   │        │                                      │             │
-;   │        │                               ┌──────┘             │
-;   │        │                               │                    │
-;   │  ┌─────────────┐    ┌─────────────┐    │                    │
-;   │  │  ADVANCE    │<───│  WAIT FOR   │<───┘                    │
-;   │  │  ANIMATION  │    │   VSYNC     │                         │
-;   │  └─────────────┘    └─────────────┘                         │
-;   └─────────────────────────────────────────────────────────────┘
-;
-; === MODE 7 AFFINE TRANSFORMATION ===
-;
-; The Mode 7 blitter samples a texture using these per-pixel equations:
-;
-;   u(x,y) = u0 + x * du_col + y * du_row
-;   v(x,y) = v0 + x * dv_col + y * dv_row
-;
-; For a pure rotation by angle A with zoom factor Z, the matrix is:
-;
-;   ┌ du_col  du_row ┐   ┌  cos(A)*Z   -sin(A)*Z ┐
-;   │                │ = │                         │
-;   └ dv_col  dv_row ┘   └  sin(A)*Z    cos(A)*Z  ┘
-;
-; And (u0, v0) centres the rotation on the texture:
-;
-;   u0 = texture_centre - du_col * (screen_w/2) + du_row * (screen_h/2)
-;   v0 = texture_centre - dv_col * (screen_w/2) - dv_row * (screen_h/2)
-;
-; The sign pattern in u0/v0 (subtract du_col*320, ADD du_row*240 for u0;
-; subtract BOTH for v0) comes from the rotation matrix being:
-;   du_row = -SA (negative sine), dv_row = CA (positive cosine).
-;
-; === MEMORY MAP ===
-;
-;   $000000 - $0000FF : Zero page (fast-access working variables)
-;   $000200 - $00EFFF : Program code + data (CODE and RODATA segments)
-;   $100000 - $14BFFF : VRAM front buffer (640 x 480 x 4 bytes = 1,228,800)
-;   $600000 - $6FFFFF : Texture data (256 x 256 x 4, stride 1024)
-;   $900000 - $9FFFFF : Back buffer (Mode 7 renders here first)
-;
-;   ┌──────────────────────────────────────────────────────┐
-;   │ $000000  Zero Page: angle_accum, scale_accum,        │
-;   │          var_ca, var_sa, var_u0, var_v0,              │
-;   │          mul_a, mul_b, mul_result, tmp32_*, sign_flag │
-;   ├──────────────────────────────────────────────────────┤
-;   │ $000200  CODE: main, compute_frame, mul16_signed,    │
-;   │          render_mode7, present_frame, etc.            │
-;   ├──────────────────────────────────────────────────────┤
-;   │ $100000  VRAM (front buffer) -- final display output  │
-;   ├──────────────────────────────────────────────────────┤
-;   │ $600000  Texture (256x256 RGBA, stride 1024)           │
-;   ├──────────────────────────────────────────────────────┤
-;   │ $900000  Back buffer (Mode 7 renders here)            │
-;   └──────────────────────────────────────────────────────┘
-;
-; === WHY DOUBLE BUFFERING ===
-;
-; The Mode 7 blitter writes 307,200 pixels to the destination buffer.
-; This source alternates two render buffers and writes VIDEO_FB_BASE after a
-; vblank edge. The selected buffer has completed Mode7 rendering before it is
-; presented. The texture begins at $600000; it is not the back buffer.
-;
-; === BUILD AND RUN ===
-;
-;   Build: make rotozoomer-65
-;   Run:   go run . -file-root . -m6502 sdk/examples/prebuilt/rotozoomer_65.ie65
-;
-; File I/O resolves this source's texture name beneath the guest file root.
-; Supplying `-file-root .` exposes sdk/examples/assets from the repository root.
-;
-; === DEPENDENCIES ===
-;
-;   - ie65.inc : Hardware register definitions and utility macros
-;   - WaksonsZak018.ay : PSG music file (AY format, embedded via .incbin)
-;   - cc65 toolchain (ca65 assembler, ld65 linker)
-;
-; ============================================================================
-
-; Override SDK defaults before include (demo runs at 640x480, not 1280x960).
+ include (demo runs at 640x480, not 1280x960).
 SCREEN_W         = 640
 SCREEN_H         = 480
 LINE_BYTES       = 2560          ; 640 * 4 bytes per scanline
@@ -191,16 +84,12 @@ SCALE_INC_HI     = >104          ; high byte = $00
 ; ZERO PAGE VARIABLES
 ; ============================================================================
 ;
-; WHY ZERO PAGE?
+; ZERO PAGE?
 ;
-; The 6502's zero page ($00-$FF) provides faster access than any other
 ; memory region. Zero-page instructions are one byte shorter (2 bytes
-; instead of 3 for absolute addressing) and one cycle faster. On a
 ; 1-2 MHz CPU where every cycle matters, this is significant.
 ;
 ; For example:
-;   LDA $0010    ; Zero page: 2 bytes, 3 cycles
-;   LDA $0200    ; Absolute:  3 bytes, 4 cycles
 ;
 ; We place ALL working variables here because this code is
 ; arithmetic-heavy: the multiply routine and 32-bit additions
@@ -294,7 +183,7 @@ draw_fb_hi:      .res 1          ; High address byte for the current render buff
     sta draw_fb_hi
 
     ; --- Start PSG music playback ---
-    ; WHY PSG MUSIC?
+    ; PSG MUSIC?
     ; The 6502 version uses PSG (AY-3-8910 / YM2149) because it is the
     ; native sound chip associated with 8-bit Z80/6502 platforms (ZX
     ; Spectrum, Amstrad CPC, MSX). The AY format (.ay) contains embedded
@@ -328,7 +217,7 @@ loop:
 ; ============================================================================
 ; Synchronises to the next vertical blanking interval before presentation.
 ;
-; WHY TWO PHASES?
+; TWO PHASES?
 ; A single "wait until vblank" could return immediately if we're already
 ; IN vblank (from the previous frame). The two-phase approach guarantees
 ; we wait for exactly one full frame:
@@ -414,7 +303,7 @@ loop:
 ; This is the standard 2D rotation matrix [[CA, -SA], [SA, CA]]
 ; combined with a zoom factor (the reciprocal table entry).
 ;
-; === WHY PROPER SINE TABLES ===
+; === PROPER SINE TABLES ===
 ;
 ; The sine table contains 256 entries computed as:
 ;   round(sin(i * 2*pi / 256) * 256)
@@ -423,7 +312,7 @@ loop:
 ; (360/256 = 1.40625 degrees per step). The values range from -256 to
 ; +256 in 8.8 fixed-point, where 256 represents 1.0.
 ;
-; === WHY A RECIPROCAL TABLE ===
+; === A RECIPROCAL TABLE ===
 ;
 ; The 6502 has NO divide instruction. To compute the zoom factor, we
 ; would need to divide: zoom = base_scale / (0.5 + sin(scale_idx)*0.3).
@@ -433,7 +322,7 @@ loop:
 ; The denominator oscillates between 0.2 and 0.8, giving zoom values
 ; from 320 to 1280 -- a 4:1 zoom range that creates the pulsing effect.
 ;
-; === WHY 0x800000 FOR TEXTURE CENTER ===
+; === 0x800000 FOR TEXTURE CENTER ===
 ;
 ; The Mode 7 blitter uses 16.16 fixed-point for texture coordinates.
 ; The texture is 256x256 pixels, so the centre is at pixel (128, 128).
@@ -457,7 +346,7 @@ loop:
     ; cos(angle) = sin(angle + 64) because 64 = 256/4 = 90 degrees.
     ; This identity lets us use a single sine table for both sin and cos.
     ;
-    ; WHY SPLIT TABLE ACCESS WITH BCS:
+    ; SPLIT TABLE ACCESS WITH BCS:
     ; The 6502 can only index up to 255 bytes from a base address with
     ; the LDA table,X addressing mode. Our sine table is 512 bytes
     ; (256 entries * 2 bytes each). After ASL A (multiply by 2 for word
@@ -572,7 +461,7 @@ loop:
     ;   u0         = 128.0 - 320*CA + 240*SA
     ;              = 0x800000 - CA*320 + SA*240
     ;
-    ; WHY SHIFT LOOPS FOR *320 AND *240:
+    ; SHIFT LOOPS FOR *320 AND *240:
     ; The 6502 has no barrel shifter and no multiply instruction.
     ; We decompose the multiplications using power-of-two shifts:
     ;   320 = 256 + 64 = (val << 8) + (val << 6)
@@ -596,7 +485,7 @@ loop:
     sta var_u0+3
 
     ; u0 -= CA*320 (subtract rotation contribution from columns)
-    ; WHY SEC/SBC FOR SUBTRACTION:
+    ; SEC/SBC FOR SUBTRACTION:
     ; The 6502 has no SUB instruction. Subtraction is done via SBC
     ; (Subtract with Carry). SEC sets the carry flag first, which
     ; acts as "no borrow" for the first byte. Subsequent SBC
@@ -695,7 +584,7 @@ loop:
 ; Computes a 32-bit value * 320 using shift-and-add decomposition:
 ;   val * 320 = val * 256 + val * 64 = (val << 8) + (val << 6)
 ;
-; WHY THIS DECOMPOSITION:
+; THIS DECOMPOSITION:
 ; 320 = 0x140 = 256 + 64. Both 256 and 64 are powers of two, so
 ; each "multiply" is just a left shift. The 6502 has no barrel
 ; shifter, so each shift is done one bit at a time via ASL/ROL.
@@ -822,13 +711,12 @@ loop:
 ; Computes a 32-bit value * 240 using shift-and-subtract:
 ;   val * 240 = val * 256 - val * 16 = (val << 8) - (val << 4)
 ;
-; WHY SUBTRACT INSTEAD OF ADD:
+; SUBTRACT INSTEAD OF ADD:
 ; 240 = 256 - 16. Both are powers of two, so we shift and subtract.
 ; An additive decomposition would be 240 = 128 + 64 + 32 + 16 =
 ; (val << 7) + (val << 6) + (val << 5) + (val << 4), requiring
 ; 7 + 6 + 5 + 4 = 22 shift iterations plus 3 additions.
 ; The subtractive approach needs only 0 + 4 = 4 shift iterations
-; plus 1 subtraction. Much faster.
 ; ============================================================================
 .proc compute_sa_240
     ; SA << 8 (byte shift -- zero iterations, just byte copy)
@@ -859,7 +747,7 @@ loop:
     bne :-
 
     ; SA*240 = (SA<<8) - (SA<<4)
-    ; WHY SEC/SBC: The 6502 subtraction pattern. SEC clears the
+    ; SEC/SBC: The 6502 subtraction pattern. SEC clears the
     ; borrow flag (carry=1 means "no borrow"). Each subsequent SBC
     ; propagates borrow automatically through carry.
     sec
@@ -940,14 +828,14 @@ loop:
 ;   3. Perform unsigned multiplication (mul16u)
 ;   4. If the signs differed (one negative, one positive), negate result
 ;
-; WHY SIGN-MAGNITUDE INSTEAD OF TWO'S COMPLEMENT MULTIPLY?
+; SIGN-MAGNITUDE INSTEAD OF TWO'S COMPLEMENT MULTIPLY?
 ; A two's complement multiply would need to handle sign extension at
 ; every partial product addition. The sign-magnitude approach is
 ; simpler: convert to positive, do unsigned math, fix the sign at the
 ; end. The overhead of up to 2 negations is small compared to the
 ; 16-iteration multiply loop.
 ;
-; WHY `sign_flag` VARIABLE INSTEAD OF A REGISTER?
+; `sign_flag` VARIABLE INSTEAD OF A REGISTER?
 ; The 6502 has only three registers: A (accumulator), X, and Y. All
 ; three are needed during the negation and multiply operations. There
 ; is literally no spare register to hold the sign. We use a zero-page
@@ -955,7 +843,7 @@ loop:
 ; Odd = one negative operand = negate result. Even = zero or two
 ; negatives = keep result positive.
 ;
-; WHY SEC; LDA #0; SBC FOR NEGATION?
+; SEC; LDA #0; SBC FOR NEGATION?
 ; The 6502 has no NEG instruction. Two's complement negation is
 ; computed as: -value = 0 - value. In 6502 idiom:
 ;   SEC          ; Set carry (no borrow)
@@ -1026,7 +914,7 @@ loop:
 ; ============================================================================
 ; Classic shift-and-add binary multiplication algorithm.
 ;
-; WHY SHIFT-AND-ADD:
+; SHIFT-AND-ADD:
 ; Binary multiplication works exactly like long multiplication in
 ; decimal, but simpler: each "digit" is 0 or 1, so each partial
 ; product is either 0 (skip) or the multiplicand (add).
@@ -1042,14 +930,13 @@ loop:
 ; exactly 16 times. The result can be up to 32 bits wide because
 ; the maximum product is 65535 * 65535 = 4,294,836,225.
 ;
-; WHY MSB-FIRST:
+; MSB-FIRST:
 ; We shift mul_a left and check the carry flag. The MSB (bit 15)
 ; comes out first into carry via the ROL instruction. The result
 ; is also shifted left each iteration, building up from the MSB.
 ; This avoids the need for a separate bit counter -- after 16
 ; shifts, all bits of mul_a have been consumed.
 ;
-; PERFORMANCE: 16 iterations * ~25 cycles = ~400 cycles per multiply.
 ; On a 1 MHz 6502, that's 0.4ms -- acceptable for 2 multiplies per frame.
 ; ============================================================================
 .proc mul16u
@@ -1123,7 +1010,7 @@ loop:
 ;   BLT_MODE7_DU_ROW = U step per row = -SA (32-bit)
 ;   BLT_MODE7_DV_ROW = V step per row = CA (32-bit)
 ;
-; WHY BYTE-BY-BYTE MODE 7 REGISTER WRITES:
+; BYTE-BY-BYTE MODE 7 REGISTER WRITES:
 ; The 6502 has 8-bit registers and 16-bit addresses, but the Mode 7
 ; registers are 32 bits wide. Each register is exposed as 4 consecutive
 ; byte-level MMIO addresses (e.g., BLT_MODE7_U0_0 through
@@ -1132,7 +1019,7 @@ loop:
 ; we must manually load each byte from zero page and store it to the
 ; corresponding MMIO address.
 ;
-; WHY THE ROTATION MATRIX IS [[CA, -SA], [SA, CA]]:
+; THE ROTATION MATRIX IS [[CA, -SA], [SA, CA]]:
 ; This is the standard 2D rotation matrix. CA = cos(angle)*zoom,
 ; SA = sin(angle)*zoom. The Mode 7 parameters map directly:
 ;   du_col = CA   (moving right in screen = moving in +cos direction in texture)
@@ -1203,7 +1090,7 @@ loop:
     sta BLT_MODE7_DV_COL_3
 
     ; --- Write du_row = -SA (U change per pixel moving down) ---
-    ; WHY SEC; LDA #0; SBC FOR NEGATION:
+    ; SEC; LDA #0; SBC FOR NEGATION:
     ; The 6502 has no NEG instruction. Two's complement negate is
     ; computed as 0 - value. SEC sets carry (no borrow), then each
     ; SBC subtracts the corresponding byte, propagating borrow
@@ -1281,7 +1168,7 @@ loop:
 ; Updates the 16-bit 8.8 fixed-point accumulators that drive the
 ; rotation angle and zoom scale.
 ;
-; WHY 8.8 FIXED-POINT ACCUMULATORS:
+; 8.8 FIXED-POINT ACCUMULATORS:
 ; Using a 16-bit accumulator with an 8-bit fractional part gives us
 ; sub-index precision. Each frame, we add the increment value. The
 ; fractional part accumulates until it overflows into the integer byte,
@@ -1295,7 +1182,7 @@ loop:
 ;   Frame 3: accum = $03AB, index = $03 (entry 3)
 ;   ...continuing with fractional accumulation...
 ;
-; WHY NATURAL 16-BIT WRAP:
+; NATURAL 16-BIT WRAP:
 ; When the 16-bit accumulator overflows past $FFFF, it wraps to $0000
 ; automatically. The ADC instruction adds the low byte; if it carries,
 ; the next ADC picks up that carry into the high byte. If the high
@@ -1345,7 +1232,7 @@ loop:
 ; Each entry is a 16-bit signed word: round(sin(i * 2*pi / 256) * 256).
 ; Values range from -256 to +256, representing -1.0 to +1.0 in 8.8 FP.
 ;
-; WHY PROPER SINE TABLES:
+; PROPER SINE TABLES:
 ; Using round(sin(i*2*pi/256)*256) gives true circular rotation.
 ; 256 entries = 360/256 = ~1.4 degree resolution, which is smooth
 ; enough that individual angle steps are invisible at 60fps.
@@ -1354,7 +1241,7 @@ loop:
 ; 2 bytes). Cosine is obtained by looking up sin(angle + 64), since
 ; 64 = 256/4 = 90 degrees.
 ;
-; WHY UNSIGNED REPRESENTATION IN NEGATIVE ENTRIES:
+; UNSIGNED REPRESENTATION IN NEGATIVE ENTRIES:
 ; cc65's .word directive interprets values as unsigned 16-bit. Negative
 ; values like -6 are stored as 65530 (0xFFFA) -- the two's complement
 ; unsigned equivalent. When loaded into registers and used in arithmetic,
@@ -1399,11 +1286,9 @@ sine_table:
 ; ============================================================================
 ; Precomputed zoom factors: round(256 / (0.5 + sin(i * 2*pi / 256) * 0.3))
 ;
-; WHY A RECIPROCAL TABLE:
+; A RECIPROCAL TABLE:
 ; The 6502 has no divide instruction. Computing zoom = base / denominator
-; would require a multi-byte software division routine (~500+ cycles).
 ; By precomputing all 256 possible zoom values, we replace the division
-; with a single table lookup (~10 cycles).
 ;
 ; The denominator (0.5 + sin(i)*0.3) oscillates between 0.2 and 0.8:
 ;   - At sin(i) = +1.0: denom = 0.5 + 0.3 = 0.8, zoom = 256/0.8 = 320
@@ -1464,7 +1349,7 @@ texture_filename:
 ; to PSG_PLAY_CTRL (bit 0 = start, bit 2 = loop), causing continuous
 ; playback.
 ;
-; WHY PSG AND NOT SID:
+; PSG AND NOT SID:
 ; The PSG (AY-3-8910 / YM2149) is the chip historically associated
 ; with 8-bit Z80 and 6502 platforms: ZX Spectrum 128, Amstrad CPC,
 ; MSX, and Atari ST. While the SID is the C64's chip (also 6502),

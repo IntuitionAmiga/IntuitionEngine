@@ -1,6 +1,9 @@
+; RoboCop intro: M68020 guest code combines a masked blitter image, Copper bars and PSG+ playback.
+; The assembler embeds its artwork and AY tune, so `go run . -m68k <binary>` needs no guest file root.
+; Read device setup, data layout, per-frame animation and presentation in that order.
 ; ============================================================================
 ; ROBOCOP INTRO (M68K PORT) - Blitter Sprite, Copper Rasterbars and PSG Music
-; Motorola 68020 assembly for IntuitionEngine - VideoChip + Copper + PSG audio
+; Motorola 68020 assembly for Intuition Engine - VideoChip + Copper + PSG audio
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -9,7 +12,7 @@
 ; Audio Engine:  PSG (AY-3-8910 compatible, PSG+ enhanced mode)
 ; Assembler:     vasmm68k_mot (Motorola syntax)
 ; Build:         vasmm68k_mot -Fbin -m68020 -devpac -o robocop_intro_68k.ie68 robocop_intro_68k.asm
-; Run:           ./IntuitionEngine -m68k robocop_intro_68k.ie68
+; Run:           go run . -m68k robocop_intro_68k.ie68
 ; Porting:       See robocop_intro.asm (IE32 reference), robocop_intro_65.asm
 ;                (6502), robocop_intro_z80.asm (Z80)
 ;
@@ -21,7 +24,7 @@
 ; 5. Renders a sine-wave scrolltext along the bottom of the screen
 ; 6. Animates copper bar colours each frame using a scrolling gradient
 ;
-; === WHY BLITTER IMAGE DISPLAY + COPPER EFFECTS ===
+; === BLITTER IMAGE DISPLAY + COPPER EFFECTS ===
 ; This demo recreates the style of classic 8-bit and 16-bit game intro
 ; screens -- specifically inspired by the Robocop (1988) home computer
 ; ports by Ocean Software. On machines like the ZX Spectrum and Amstrad
@@ -64,7 +67,7 @@
 ;
 ; === BUILD AND RUN ===
 ; Build:  vasmm68k_mot -Fbin -m68020 -devpac -o robocop_intro_68k.ie68 robocop_intro_68k.asm
-; Run:    ./IntuitionEngine -m68k robocop_intro_68k.ie68
+; Run:    go run . -m68k robocop_intro_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -341,7 +344,7 @@ update_bars:
 
     ; Calculate global scroll offset from sine table
     move.l  d0,d2                       ; d2 = frame
-    lsl.l   #1,d2                       ; faster scroll
+    lsl.l   #1,d2                       ; Double the scroll phase.
     andi.l  #$FF,d2                     ; wrap to 256 entries
     lsl.l   #2,d2                       ; * 4 bytes per entry
     lea     data_sin_x,a2
@@ -1084,7 +1087,6 @@ data_cos_y:
 ; ----------------------------------------------------------------------------
 ; Colour palette for copper bars (16 entries, BGRA format)
 ; These colours form a rainbow gradient that the update_bars routine
-; cycles through each frame.
 ; ----------------------------------------------------------------------------
 data_palette:
     dc.l    $FF101820

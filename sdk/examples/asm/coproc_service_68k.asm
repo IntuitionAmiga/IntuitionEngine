@@ -1,76 +1,13 @@
-; ============================================================================
-; COPROCESSOR SERVICE - M68K WORKER SIDE OF INTER-CPU COMMUNICATION
-; Motorola 68020 syntax for IntuitionEngine - Headless coprocessor service
-; ============================================================================
+; Coprocessor mailbox service: M68020 guest code that waits for mailbox entries, reads an add request from shared guest RAM, writes the response and advances the ring tail.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    Motorola 68020 (32-bit, big-endian, register-rich)
-; Video Chip:    None (headless coprocessor service)
-; Audio Engine:  None
-; Assembler:     vasmm68k_mot (Motorola syntax, DevPac compatible)
-; Build:         vasmm68k_mot -Fbin -m68020 -devpac -o coproc_service_68k.ie68 coproc_service_68k.asm
-; Run:           Used as -coproc-svc argument with a matching caller binary
-; Porting:       Same service implemented on all CPU cores. See
-;                coproc_service_ie32.asm (reference), coproc_service_65.asm,
-;                coproc_service_x86.asm, coproc_service_z80.asm.
+; The caller and service communicate through shared guest RAM and coprocessor MMIO.
+; The Host SDK builds both guest binaries; it is not present at runtime. Read the
+; mailbox constants, initialisation, descriptor exchange and terminal path in order.
+; Run the caller with `go run . -m68k -coproc-svc <service> <caller>`.
+; Compare coproc_caller_68k.asm as its matching pair and the other CPU ports for their
+; real addressing differences.
 ;
-; === WHAT THIS DEMO DOES ===
-; 1. Polls the shared-memory ring buffer for incoming request descriptors
-; 2. Dispatches on the op field (currently supports op=1: 32-bit add)
-; 3. Reads two uint32 operands from the request data pointer
-; 4. Performs a single 32-bit ADD.L instruction (native word size)
-; 5. Writes the 32-bit result to the response data pointer
-; 6. Fills in the response descriptor (ticket echo, status, result length)
-; 7. Advances the ring tail pointer and loops back to poll
-;
-; === WHY COPROCESSOR MAILBOX IPC ===
-; This is the SERVICE side of the coprocessor mailbox protocol. The service
-; runs on a separate CPU core -- in this case a Motorola 68020 -- and polls
-; shared memory for incoming commands from a caller running on a different
-; CPU. When a new request appears (head != tail), the service processes it
-; and writes the result back, then advances the tail to signal completion.
-;
-; The ring buffer acts as a hardware-neutral IPC channel: any CPU can be
-; the caller and any CPU can be the service, because they communicate
-; solely through memory-mapped addresses. This mirrors real coprocessor
-; architectures throughout computing history:
-;
-;   - Amiga: The 68000 was the main CPU, but the copper and blitter acted
-;     as coprocessors executing command lists from shared chip RAM. This
-;     M68K service inverts that relationship -- here the 68K IS the
-;     coprocessor, serving requests from another CPU
-;   - SNES: The SA-1 coprocessor (a second 65C816) ran its own program
-;     from shared ROM, communicating via hardware registers
-;   - Modern GPUs: The CPU submits command buffers to a ring; the GPU
-;     processes them asynchronously and signals completion
-;
-; === M68K-SPECIFIC NOTES ===
-; The 68020's 32-bit registers and rich addressing modes make this service
-; significantly more compact than the 8-bit implementations. The entire
-; add operation is a single ADD.L instruction, versus four carry-chained
-; byte adds on the 6502 or Z80. Address registers (A0-A3) hold pointers
-; directly, eliminating the zero-page indirection needed on the 6502.
-;
-; The 68020 can also use displacement addressing (e.g., 8(a0) for
-; entry+8) which lets us access entry fields without separate pointer
-; arithmetic. This is why the M68K version has noticeably fewer
-; instructions than the other ports.
-;
-; === MEMORY MAP ===
-; $280000          Code entry point (WORKER_M68K_BASE, instance 0)
-; $790000          Mailbox base (MAILBOX_BASE)
-; $791000          Ring 4 head pointer (M68K is ring index 4, instance 0)
-; $791001          Ring 4 tail pointer
-; $791008+tail*32  Request entry descriptors (32 bytes each)
-; $791208+tail*16  Response descriptors (16 bytes each)
-; A4 = assigned ring base, seeded by the host (serves either instance ring)
-;
-; === BUILD AND RUN ===
-; vasmm68k_mot -Fbin -m68020 -devpac -o coproc_service_68k.ie68 coproc_service_68k.asm
-; (loaded by a caller binary via COPROC_CMD_START)
-;
-; (c) 2024-2026 Zayn Otley - GPLv3 or later
-; ============================================================================
+
 
     include "ie68.inc"
 
@@ -97,7 +34,7 @@ LAYOUT_VER  equ 1               ; COPROC_LAYOUT_VERSION
 ; MAIN POLL LOOP - Wait for Requests
 ; ============================================================================
 ;
-; WHY: The service spins on head != tail. The caller advances head when
+; The service spins on head != tail. The caller advances head when
 ; it enqueues a request; we advance tail when we finish processing one.
 ; Both are single bytes, so reads are atomic on any architecture.
 ;
@@ -139,7 +76,7 @@ main_loop:
 ; ENTRY ADDRESS COMPUTATION - Locate the Request Descriptor
 ; ============================================================================
 ;
-; WHY: Each entry is 32 bytes, so entry address = ENTRIES + tail * 32.
+; Each entry is 32 bytes, so entry address = ENTRIES + tail * 32.
 ; The 68020's barrel shifter computes tail*32 in a single LSL.L #5
 ; instruction. LEA loads the entries base into A0, then ADDA adds the
 ; offset -- a clean two-instruction sequence.
@@ -163,7 +100,7 @@ main_loop:
 ; EXTRACT REQUEST FIELDS AND COMPUTE - Read Pointers, Perform Addition
 ; ============================================================================
 ;
-; WHY: The 68020's address registers can load pointers directly from
+; The 68020's address registers can load pointers directly from
 ; memory with displacement addressing. A1 = reqPtr, A2 = respPtr,
 ; D4 = ticket -- all extracted from the entry descriptor in three
 ; instructions. The actual computation (ADD.L) is a single opcode
@@ -187,7 +124,7 @@ main_loop:
 ; WRITE RESPONSE DESCRIPTOR - Signal Completion to the Caller
 ; ============================================================================
 ;
-; WHY: The response descriptor tells the caller what happened. We echo
+; The response descriptor tells the caller what happened. We echo
 ; back the ticket for correlation, set status=2 (success), resultCode=0,
 ; and respLen=4 (one uint32 of result data). The 68020 can write all
 ; four fields with immediate MOVE.L instructions using displacement
@@ -209,7 +146,7 @@ main_loop:
 ; ADVANCE TAIL - Mark This Slot as Consumed
 ; ============================================================================
 ;
-; WHY: Incrementing tail modulo 16 frees this ring slot for reuse.
+; Incrementing tail modulo 16 frees this ring slot for reuse.
 ; The AND mask ($0F) provides the wrap-around for a 16-entry ring.
 
     ; Advance tail: (tail + 1) & 15
@@ -224,7 +161,7 @@ main_loop:
 ; ERROR RESPONSE - Unknown Opcode Handler
 ; ============================================================================
 ;
-; WHY: If the caller sends an opcode we do not recognise, we must still
+; If the caller sends an opcode we do not recognise, we must still
 ; advance the tail (otherwise the ring would stall forever). We write
 ; status=3 (error) and resultCode=1 (unknown op) so the caller knows
 ; the request was rejected rather than lost.

@@ -1,6 +1,6 @@
 ; ============================================================================
 ; ANTIC PLASMA DEMO - Raster Bars with Vertical Sine Scrolltext and SID Music
-; x86 Assembly for IntuitionEngine - ANTIC Display List + GTIA Colour
+; x86 Assembly for Intuition Engine - ANTIC Display List + GTIA Colour
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -9,7 +9,7 @@
 ; Audio Engine:  SID (Commodore 64 sound chip, MOS 6581/8580)
 ; Assembler:     ie32asm (x86 mode)
 ; Build:         (cd sdk/examples/asm && nasm -f bin -I ../../include/ -o antic_plasma_x86.ie86 antic_plasma_x86.asm)
-; Run:           ./bin/IntuitionEngine -x86 antic_plasma_x86.ie86
+; Run:           go run . -x86 antic_plasma_x86.ie86
 ; Porting:       ANTIC/GTIA MMIO is CPU-agnostic. Display list programming
 ;                works the same from any CPU core. SID audio setup is also
 ;                identical across all IntuitionEngine architectures.
@@ -20,7 +20,7 @@
 ; 3. Uses the IE-native ANTIC display list (similar to Amiga copper lists)
 ; 4. Plays SID music through the Commodore 64 audio emulation
 ;
-; === WHY ANTIC DISPLAY LIST ARCHITECTURE ===
+; === ANTIC DISPLAY LIST ARCHITECTURE ===
 ; ANTIC (Alpha-Numeric Television Interface Controller) was designed by
 ; Jay Miner for the Atari 400/800 in 1979. It was the first consumer
 ; display processor to use a programmable "display list" - essentially a
@@ -41,7 +41,7 @@
 ; list is stored in memory and processed by the video chip each frame; this
 ; demo uses a mostly blank display list while CPU WSYNC writes drive bars.
 ;
-; === WHY THESE EFFECTS MATTER (HISTORICAL CONTEXT) ===
+; === THESE EFFECTS MATTER (HISTORICAL CONTEXT) ===
 ;
 ; PLASMA EFFECTS:
 ; "Plasma" refers to smoothly animated colour patterns created by combining
@@ -61,7 +61,7 @@
 ; This creates a "wavy" or "rubbery" text effect popular in Amiga and
 ; Atari demos of the late 1980s and early 1990s.
 ;
-; === WHY x86 FOR AN ATARI DEMO? ===
+; === x86 FOR AN ATARI DEMO? ===
 ; The original Atari 8-bits used a 6502 CPU at 1.79 MHz. This demo runs on
 ; the IntuitionEngine's 32-bit x86 core, demonstrating that:
 ;   1. The ANTIC/GTIA emulation works correctly with any CPU architecture
@@ -131,7 +131,7 @@
 ;
 ; === BUILD AND RUN ===
 ; (cd sdk/examples/asm && nasm -f bin -I ../../include/ -o antic_plasma_x86.ie86 antic_plasma_x86.asm)
-; ./bin/IntuitionEngine -x86 antic_plasma_x86.ie86
+; go run . -x86 antic_plasma_x86.ie86
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -319,7 +319,7 @@ main_loop:
         ; --- Update Animation Time Counters ---
         ; Different increment rates create phase differences between effects.
         add     esi, 2                  ; Time1 advances slowly
-        add     edi, 3                  ; Time2 advances faster (creates variation)
+        add     edi, 3                  ; Advance the second phase at a distinct rate.
 
         ; --- Update Vertical Scroll Position ---
         ; scroll_y is in 16.16 fixed-point format:
@@ -335,8 +335,6 @@ main_loop:
         ; Instead of doing expensive division (DIV) 192 times per frame in
         ; the scanline loop, we calculate the base character index ONCE here.
         ;
-        ; WHY: DIV takes 20-40 cycles on x86. Doing it 192 times per frame
-        ; wastes 4000-8000 cycles. Doing it once during VBlank is free.
         ; =====================================================================
 
         ; Get integer part of scroll position
@@ -672,11 +670,10 @@ section .data
 ;   Bit 6:    LMS (Load Memory Scan - next 2 bytes are screen address)
 ;   Bit 7:    DLI (trigger Display List Interrupt at end of this line)
 ;
-; === WHY BLANK LINES INSTEAD OF GRAPHICS MODE LINES ===
+; === BLANK LINES INSTEAD OF GRAPHICS MODE LINES ===
 ; For plasma/raster bar effects where we only change COLBK (background
 ; colour), we do not need actual graphics mode lines. Mode 15 would require
 ; ANTIC to DMA 40 bytes per line from screen memory - that is 40 x 192
-; = 7680 memory cycles per frame WASTED on unused graphics data.
 ;
 ; Using DL_BLANK1 instructions generates 1 blank line each with NO screen
 ; memory DMA. The CPU still changes COLBK via WSYNC. This reduces ANTIC's
@@ -742,9 +739,8 @@ message_len:    equ $ - scroll_message
 ;
 ; Formula: sin_table[i] = 128 + 127 * sin(2 * PI * i / 256)
 ;
-; === WHY A LOOKUP TABLE ===
+; === A LOOKUP TABLE ===
 ; On 8-bit systems, calculating sine in real-time was impossible. Even on
-; x86, a lookup table is faster than FSIN for simple effects. The 256-entry
 ; table gives ~1.4 degree resolution - plenty for smooth animation.
 ;
 ; Usage: value = sin_table[(angle + offset) & 0xFF]

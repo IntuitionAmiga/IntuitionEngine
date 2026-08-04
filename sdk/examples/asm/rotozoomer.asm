@@ -1,148 +1,12 @@
-; ============================================================================
-; ROTOZOOMER TUTORIAL: IE32 AND THE MODE7 BLITTER
-; IE32 Assembly for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
-; ============================================================================
+; Mode7 rotozoomer: IE32 guest code submits an affine texture map to the IE blitter.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    IE32 (custom 32-bit RISC)
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
-; Audio Engine:  AHX (Amiga tracker synthesis)
-; Assembler:     ie32asm (built-in IE32 assembler)
-; Build:         sdk/bin/ie32asm sdk/examples/asm/rotozoomer.asm
-; Run:           ./bin/IntuitionEngine -ie32 rotozoomer.iex
-; Porting:       VideoChip/blitter MMIO is CPU-agnostic. See rotozoomer_68k.asm,
-;                rotozoomer_z80.asm, rotozoomer_65.asm, rotozoomer_x86.asm for
-;                ports to other CPU cores.
+; The frame path derives signed fixed-point origin and step vectors, renders into a
+; back buffer, then presents after the submission has completed. The Host SDK builds
+; this guest binary; it is not part of the runtime. Run it with `go run . -ie32 <binary>`.
+; Read data layout, initialisation, per-frame vectors, blitter submission and table
+; generation in order. Compare the other ports only for real CPU addressing changes.
 ;
-; This tutorial follows the common affine mapping and points out the IE32
-; instructions used to calculate and submit its fixed-point parameters.
-;
-; === WHAT THIS DEMO DOES ===
-; 1. Generates a 256x256 checkerboard texture via 4 hardware blitter fills
-; 2. Computes per-frame affine transformation parameters (rotation + zoom)
-; 3. Delegates the full-screen affine warp to the Mode7 hardware blitter
-; 4. Renders into alternating off-screen buffers and presents one at vblank
-; 5. Plays AHX music (Amiga tracker format) through the audio subsystem
-;
-; === WHY MODE7 HARDWARE BLITTER ===
-; The classic "rotozoomer" effect rotates and zooms a texture across the
-; entire screen. A naive software implementation must compute texture
-; coordinates for every single pixel:
-;
-;   for each pixel (px, py):
-;       u = u0 + px*du_col + py*du_row
-;       v = v0 + px*dv_col + py*dv_row
-;       colour = texture[u & mask][v & mask]
-;
-; At 640 by 480 there are 307,200 output pixels. The Mode7 operation accepts
-; an origin and four directional deltas. The CPU computes those values from
-; the current animation state, and the blitter performs the sampling loop.
-;
-; Keep the two jobs separate: calculate the transform in the CPU, then submit
-; it to the blitter.
-;
-; === THE MODE7 AFFINE MATRIX ===
-;
-; The 2x2 affine matrix for combined rotation + zoom is:
-;
-;                  [ cos(angle)  -sin(angle) ]
-;   M = scale  *   [                          ]
-;                  [ sin(angle)   cos(angle) ]
-;
-; We decompose this into the blitter's six parameters:
-;
-;   CA = cos(angle) * reciprocal(scale_index)    -- scaled cosine
-;   SA = sin(angle) * reciprocal(scale_index)    -- scaled sine
-;
-;   du_col =  CA     (texture U change per screen column)
-;   dv_col =  SA     (texture V change per screen column)
-;   du_row = -SA     (texture U change per screen row)
-;   dv_row =  CA     (texture V change per screen row)
-;
-;   u0 = centre - CA*half_width + SA*half_height  (starting U)
-;   v0 = centre - SA*half_width - CA*half_height  (starting V)
-;
-; The u0/v0 formulas ensure the rotation pivots around the centre of
-; both the screen and the texture, not the top-left corner.
-;
-; === WHY AHX MUSIC ===
-; Each demo in the Intuition Engine SDK showcases a different audio chip.
-; The rotating cube demo (M68K) uses SID; the ULA cube demo uses PSG.
-; This IE32 demo uses AHX (Abyss' Highest eXperience), an Amiga-heritage
-; tracker format with waveform synthesis. AHX_PLAY_CTRL=5 means bits 0+2
-; are set: start playback (bit 0) with looping enabled (bit 2).
-;
-; === IE32 CPU CHARACTERISTICS ===
-; The IE32 is a custom 32-bit RISC-style CPU with some important quirks
-; that this demo must work around:
-;
-;   - NO SIGNED MULTIPLY: MUL is unsigned only. For signed math (needed
-;     because sine values range -256 to +256), we must manually handle
-;     signs using the "sign-magnitude multiply" pattern.
-;
-;   - NO NEG INSTRUCTION: To negate a value we use two's complement
-;     identity: -x = ~x + 1, implemented as XOR #0xFFFFFFFF + ADD #1.
-;
-;   - 32-BIT .word DIRECTIVE: Unlike most assemblers where .word is 16-bit,
-;     IE32's .word emits 32-bit values. This means our sine table entries
-;     are already sign-extended (e.g., -256 stored as 0xFFFFFF00), avoiding
-;     any sign-extension at load time.
-;
-;   - REGISTER-RICH: 20 general-purpose registers (A-T, plus U) allow
-;     complex computations without excessive stack traffic.
-;
-;   - @ PREFIX FOR MMIO: Absolute memory-mapped I/O uses the @ prefix
-;     (e.g., STA @VIDEO_CTRL), while [A] dereferences register A as a
-;     pointer.
-;
-; === ARCHITECTURE OVERVIEW ===
-;
-;   +-----------------------------------------------------------------+
-;   |                    MAIN LOOP                                    |
-;   |                                                                 |
-;   |  +-------------+   +-------------+   +---------------+         |
-;   |  | compute_    |-->| render_     |-->| blit_to_      |         |
-;   |  | frame       |   | mode7       |   | front         |         |
-;   |  | (6 params)  |   | (HW blit)   |   | (dbl buffer)  |         |
-;   |  +-------------+   +-------------+   +---------------+         |
-;   |        |                                      |                 |
-;   |        v                                      v                 |
-;   |  +-------------+                      +---------------+         |
-;   |  | advance_    |<---------------------| wait_vsync    |         |
-;   |  | animation   |                      | (two-phase)   |         |
-;   |  +-------------+                      +---------------+         |
-;   +-----------------------------------------------------------------+
-;
-;   +----------------------------+    +-----------------------------+
-;   |  AHX AUDIO (background)   |    |  MODE7 BLITTER (hardware)   |
-;   |                            |    |                             |
-;   |  AHX player runs in the   |    |  Iterates 307,200 pixels    |
-;   |  audio subsystem. Once    |    |  per frame using the 6      |
-;   |  started, it plays        |    |  affine parameters. CPU     |
-;   |  independently of the     |    |  only waits for completion  |
-;   |  main CPU -- no per-frame |    |  via BLT_CTRL busy polling. |
-;   |  overhead for music.      |    |                             |
-;   +----------------------------+    +-----------------------------+
-;
-; === MEMORY MAP ===
-;
-;   Address       Size    Purpose
-;   ------------- ------- ------------------------------------------
-;   0x001000      ~4 KB   Program code (.org 0x1000)
-;   ~0x002000     2 KB    Sine table (256 entries x 4 bytes)
-;   ~0x002800     2 KB    Reciprocal table (256 entries x 4 bytes)
-;   ~0x003000     varies  AHX music data (.incbin)
-;   0x046C20      24 B    Runtime variables (angle, scale, CA, SA, u0, v0)
-;   0x100000      1.2 MB  VRAM front buffer (640x480x4 bytes)
-;   0x600000      256 KB  Texture (256x256, stride 1024 bytes)
-;   0x900000      1.2 MB  Back buffer (Mode7 render target)
-;
-; === BUILD AND RUN ===
-;
-;   Assemble:  sdk/bin/ie32asm assembler/rotozoomer.asm
-;   Run:       ./bin/IntuitionEngine -ie32 assembler/rotozoomer.iex
-;
-; ============================================================================
+
 
 .include "ie32.inc"
 
@@ -171,13 +35,13 @@
 ;   Bot-left  = 0x620000                (row 128 * 1024 = +0x20000)
 ;   Bot-right = 0x620200                (row 128 * 1024 + col 128 * 4)
 ;
-; WHY 0x600000? This address is safely above the front buffer VRAM
+; 0x600000? This address is safely above the front buffer VRAM
 ; (0x100000 + 640*480*4 = ~0x2E0000) and below the back buffer (0x900000).
 ; Placing the texture in this gap means all three memory regions (front
 ; buffer, texture, back buffer) are non-overlapping and can be accessed
 ; simultaneously by the blitter without conflicts.
 ;
-; WHY STRIDE 1024? The texture is 256 pixels wide at 4 bytes/pixel =
+; STRIDE 1024? The texture is 256 pixels wide at 4 bytes/pixel =
 ; 1024 bytes per row. The blitter needs this stride to know how to
 ; advance from one row to the next in the texture source during Mode7
 ; rendering. The Mode7 mask (255) wraps texture coordinates to 0-255,
@@ -204,11 +68,10 @@
 ;   0.03 * (256 / 2*pi) * 256 ~= 313
 ;   0.01 * (256 / 2*pi) * 256 ~= 104
 ;
-; The 3:1 ratio means the rotation completes 3 full cycles for every 1
 ; zoom cycle, creating a visually interesting Lissajous-like pattern where
 ; the same combination of angle+zoom never exactly repeats for a long time.
 ;
-; WHY 8.8 AND NOT PLAIN INTEGERS?
+; 8.8 AND NOT PLAIN INTEGERS?
 ; If we incremented the table index directly by 1 each frame, the rotation
 ; would complete 256/60 ~ 4.3 seconds per revolution, which is too fast.
 ; Using 8.8 with an increment of 313 means the index advances by ~1.22
@@ -220,7 +83,7 @@
 
 ; --- Variable Addresses ---
 ;
-; WHY 0x46C20? The IE32 program starts at .org 0x1000 and can grow large
+; 0x46C20? The IE32 program starts at .org 0x1000 and can grow large
 ; (code + sine table + reciprocal table + AHX music data). Variables are
 ; placed at 0x46C20 to guarantee they don't overlap with any of the
 ; program's code or data sections. This address is in the gap between the
@@ -321,7 +184,7 @@ start:
 ; 6. advance_animation:  Increment the angle and scale accumulators for
 ;                        the next frame.
 ;
-; WHY THIS ORDER?
+; THIS ORDER?
 ; We compute and render before waiting for vsync. This means all the
 ; heavy work happens during the active display period (while the previous
 ; frame is being shown). The vblank edge then presents the completed buffer
@@ -341,7 +204,7 @@ main_loop:
 ; ============================================================================
 ; Ensures exactly one frame passes between iterations of the main loop.
 ;
-; WHY TWO PHASES?
+; TWO PHASES?
 ; A single "wait for vblank" is ambiguous -- if we're already IN vblank
 ; when we check, we'd return immediately and potentially run multiple
 ; frames within the same vblank period. The two-phase approach:
@@ -435,7 +298,7 @@ lt_w1:
 ;   T = SA (scaled sine) U = scratch for intermediate results
 ;   A, B, C = scratch (used extensively by multiply helpers)
 ;
-; === WHY PROPER SINE TABLES ===
+; === PROPER SINE TABLES ===
 ; The values are computed as round(sin(i * 2*pi / 256) * 256), giving
 ; true circular rotation. A cheap approximation like a triangle wave
 ; would produce ~29% error at 45 degrees, causing visible distortion
@@ -443,7 +306,7 @@ lt_w1:
 ; quadrant). With 256 entries, we get ~1.4 degree resolution, which is
 ; imperceptible at 60 FPS animation speed.
 ;
-; === WHY RECIPROCAL TABLE ===
+; === RECIPROCAL TABLE ===
 ; The reciprocal table provides zoom modulation:
 ;   recip[i] = round(256 / (0.5 + sin(i * 2*pi / 256) * 0.3))
 ;
@@ -476,7 +339,7 @@ compute_frame:
     ; system, 90 degrees = 64 units (256/4). We add 64 to the angle index
     ; and wrap with AND #255 to get the cosine.
     ;
-    ; WHY SHL #2? IE32's .word directive emits 32-bit values, so each
+    ; SHL #2? IE32's .word directive emits 32-bit values, so each
     ; table entry is 4 bytes. Multiplying the index by 4 converts it to
     ; a byte offset for the table lookup.
     LDA D
@@ -526,13 +389,13 @@ compute_frame:
 
     ; --- Compute u0 = 8388608 - CA*320 + SA*240 ---
     ;
-    ; WHY 8388608?
+    ; 8388608?
     ; 8388608 = 128 << 16 = 0x800000. This is the centre of the 256-pixel
     ; texture in 16.16 fixed-point representation. The texture coordinates
     ; wrap at 255 (the Mode7 mask), so 128.0 in 16.16 FP places the
     ; origin at the texture centre.
     ;
-    ; WHY -CA*320 + SA*240?
+    ; -CA*320 + SA*240?
     ; The screen is 640x480. Half-width = 320, half-height = 240.
     ; These terms offset from the texture centre by the rotated half-screen
     ; dimensions, ensuring the rotation pivots around the screen centre
@@ -577,7 +440,7 @@ compute_frame:
 ; ============================================================================
 ; SIGNED MULTIPLY: A = A * B (signed result)
 ; ============================================================================
-; IE32-SPECIFIC: WHY THIS EXISTS
+; IE32-SPECIFIC: THIS EXISTS
 ;
 ; The IE32 CPU's MUL instruction is UNSIGNED only. It treats both operands
 ; as unsigned 32-bit integers. But our sine table contains signed values
@@ -592,7 +455,7 @@ compute_frame:
 ;   3. Perform unsigned multiply
 ;   4. If result should be negative, negate it
 ;
-; IE32-SPECIFIC: WHY XOR/ADD FOR NEGATE
+; IE32-SPECIFIC: XOR/ADD FOR NEGATE
 ; IE32 has no NEG instruction. We use the two's complement identity:
 ;   -x = ~x + 1
 ; Implemented as:
@@ -642,7 +505,7 @@ sm_done:
 ; ============================================================================
 ; MUL_320: A = A * 320 (signed) using shift decomposition
 ; ============================================================================
-; IE32-SPECIFIC: WHY SHIFT DECOMPOSITION WITH SIGN HANDLING
+; IE32-SPECIFIC: SHIFT DECOMPOSITION WITH SIGN HANDLING
 ;
 ; Multiplying by 320 using MUL would work, but shift decomposition is a
 ; common optimization that avoids the multiply unit:
@@ -731,7 +594,7 @@ m240_done:
 ; Programs the hardware blitter with all parameters for a full-screen
 ; affine texture warp, then triggers the blit and waits for completion.
 ;
-; WHY DOUBLE BUFFERING?
+; DOUBLE BUFFERING?
 ; The Mode7 blit writes to the current off-screen render buffer, not the
 ; buffer currently being scanned out. At vblank, VIDEO_FB_BASE is updated
 ; to present the completed frame, then the other render buffer is selected.
@@ -765,7 +628,7 @@ m240_done:
 ;
 ; The -SA for du_row is computed inline using IE32's XOR+ADD negate pattern.
 ;
-; WHY MASKS = 255 (NOT 256)?
+; MASKS = 255 (NOT 256)?
 ; The Mode7 blitter uses bitwise AND with these masks to wrap texture
 ; coordinates: (u >> 16) & 255 maps any coordinate to 0-255, creating
 ; the infinite tiling effect. This is a standard power-of-2 texture
@@ -821,7 +684,6 @@ render_mode7:
     ; BLT_CTRL = 1 starts the operation. We then poll BLT_CTRL bit 1
     ; (busy flag) until it clears. BLT_STATUS bit 1 is DONE, not BUSY.
     ; The Mode7 blit processes all 307,200
-    ; pixels in hardware, so this is much faster than software rendering.
     LDA #1
     STA @BLT_CTRL
 
@@ -897,14 +759,14 @@ advance_animation:
 ; Each entry is round(sin(i * 2*pi / 256) * 256).
 ; Values range from -256 to +256 (representing -1.0 to +1.0 in 8.8 FP).
 ;
-; WHY 256 ENTRIES?
+; 256 ENTRIES?
 ; 256 = 2^8, so the table index is exactly the upper byte of our 8.8
 ; fixed-point angle accumulator. No additional masking or scaling is
 ; needed beyond shifting right by 8 and masking to 8 bits. 256 entries
 ; give ~1.4 degree resolution, which is far below the perceptible
 ; threshold for smooth rotation animation at 60 FPS.
 ;
-; WHY TRUE SINE (NOT TRIANGLE WAVE)?
+; TRUE SINE (NOT TRIANGLE WAVE)?
 ; A triangle wave approximation would be cheaper to compute (and wouldn't
 ; need a table at all), but it introduces ~29% error at 45 degrees. This
 ; error manifests as visible speed variation -- the rotation appears to
@@ -912,7 +774,7 @@ advance_animation:
 ; circular motion. True sine gives perfect circular rotation with constant
 ; angular velocity.
 ;
-; IE32-SPECIFIC: WHY 32-BIT ENTRIES?
+; IE32-SPECIFIC: 32-BIT ENTRIES?
 ; IE32's .word directive emits 32-bit values (unlike most assemblers where
 ; .word is 16-bit). This means negative values are stored already sign-
 ; extended to 32 bits: -6 is stored as 0xFFFFFFFA, -256 as 0xFFFFFF00.
@@ -962,7 +824,7 @@ sine_table:
 ; Precomputed zoom factors for the Mode7 affine transformation.
 ; Each entry is round(256 / (0.5 + sin(i * 2*pi / 256) * 0.3)).
 ;
-; WHY THIS FORMULA?
+; THIS FORMULA?
 ; The expression (0.5 + sin(i) * 0.3) oscillates between 0.2 and 0.8.
 ; Taking the reciprocal and scaling by 256 gives values from ~320 to ~1280.
 ;
@@ -983,7 +845,7 @@ sine_table:
 ;     by 256). The product CA = cos * recip is therefore in 16.16-ish
 ;     fixed-point, suitable for the blitter's 16.16 FP parameter format.
 ;
-; WHY PRE-COMPUTE?
+; PRE-COMPUTE?
 ; IE32 has no division instruction at all. Computing reciprocals at
 ; runtime would require a software division routine -- expensive and
 ; unnecessary when the values are deterministic (indexed by a known

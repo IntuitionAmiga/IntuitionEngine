@@ -1,23 +1,14 @@
-1 REM ============================================================================
-2 REM WOBBLE ZOOM DEMO - WOBBLED SPLASH TEXTURE WITH MODE7 ROTOZOOM
-3 REM IE64 BASIC for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
-4 REM ============================================================================
-5 REM Run: bin/IntuitionEngine -basic
-6 REM      LOAD "sdk/examples/basic/wobble_zoom.bas"
-7 REM      RUN
-8 REM
-9 REM MEMORY:
-10 REM   MEMALLOC(1228800,4096) front framebuffer (640x480x4)
-11 REM   MEMALLOC(1228800,4096) back framebuffer (640x480x4)
-12 REM   MEMALLOC(2097152,4096) Mode7 texture (1024x512x4)
-13 REM   MEMALLOC(235520,4096) splash source image (640x92x4)
-14 REM ============================================================================
+1 REM WOBBLE ZOOM: IE64 BASIC, a disk-backed splash and the Mode7 blitter
+2 REM Start with `go run . -basic -file-root .`, then LOAD this guest source and
+3 REM RUN it. The example reads splash_640x92.rgba and enjoythesilence.mid.
+4 REM It builds a 1024 by 512 power-of-two texture, submits an affine Mode7 blit
+5 REM into BB, then copies BB to the displayed framebuffer FB.
 
-100 REM START MIDI FIRST
+100 REM Start the guest MIDI asset independently of the video submission path.
 110 SOUND PLAY "sdk/examples/assets/music/enjoythesilence.mid"
 120 PRINT "MEDIA_TYPE=";PEEK32(&HF2310)
 
-200 REM HARDWARE SETUP
+200 REM Allocate aligned guest buffers and select the 640 by 480 RGBA mode.
 210 FB=MEMALLOC(1228800,4096):BB=MEMALLOC(1228800,4096):TX=MEMALLOC(2097152,4096):SR=MEMALLOC(235520,4096)
 220 ST=2560:TS=4096:SW=640:SH=92
 230 TW=1024:TH=512:OX=192:OY=210
@@ -25,13 +16,14 @@
 250 POKE32 &HF0004,0:POKE32 &HF0080,0:POKE32 &HF0084,FB
 260 POKE32 &HF0000,1
 
-300 REM LOAD SPLASH
+300 REM BLOAD places the raw RGBA rows in guest RAM; ST remains their byte stride.
 310 BLOAD "sdk/examples/assets/splash_640x92.rgba",SR
 
-350 REM INITIAL STATE
+350 REM T moves the row wobble; A rotates; Z changes the affine scale.
 360 T=0:A=0:Z=0
 
-400 REM BUILD WOBBLED POWER-OF-TWO TEXTURE
+400 REM Rebuild TX every frame so Mode7 samples the current wobble. Its dimensions
+401 REM are powers of two, matching the 1023 and 511 coordinate masks below.
 410 BLIT FILL TX,TW,TH,&H00000000,TS
 420 FOR Y=0 TO 91
 430 DY=OY+Y
@@ -45,7 +37,7 @@
 510 BLIT COPY SA,DA,CW,1,ST,TS
 520 NEXT Y
 
-600 REM ROTOZOOM TEXTURE INTO BACK BUFFER
+600 REM Mode7 consumes 16.16 origin and step vectors. BB isolates the render from FB.
 610 SC=1.7+SIN(Z)*0.9
 620 CA=COS(A)/SC:SA=SIN(A)/SC
 630 DC=INT(CA*FP):DS=INT(SA*FP)
@@ -53,7 +45,7 @@
 650 V0=INT((CV-HW*SA-HH*CA)*FP)
 660 BLIT MODE7 TX,BB,640,480,U0,V0,DC,DS,0-DS,DC,1023,511,TS,ST
 
-700 REM FLIP AND ADVANCE
+700 REM Present after rendering, then wrap phase values to retain useful precision.
 710 BLIT MEMCOPY BB,FB,1228800
 720 VSYNC
 730 T=T+0.08:IF T>6.28318 THEN T=T-6.28318

@@ -1,93 +1,12 @@
-; ============================================================================
-; ROTOZOOMER TUTORIAL: Z80 AND THE MODE7 BLITTER
-; Zilog Z80 Assembly for IntuitionEngine - VideoChip Mode (640x480x32bpp)
-; ============================================================================
+; Mode7 rotozoomer: Z80 guest code submits an affine texture map to the IE blitter.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    Zilog Z80
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
-; Audio Engine:  SID (Commodore 64 sound chip)
-; Assembler:     vasmz80_std (VASM Z80, standard syntax)
-; Build:         make showreel-z80
-; Run:           go run . -file-root . -z80 sdk/examples/prebuilt/rotozoomer_z80.ie80
-; Porting:       VideoChip/blitter MMIO is CPU-agnostic. Compare with
-;                rotozoomer_65.asm (6502) for another 8-bit approach, or
-;                rotozoomer_68k.asm (M68K) for a 32-bit approach.
+; The frame path derives signed fixed-point origin and step vectors, renders into a
+; back buffer, then presents after the submission has completed. The Host SDK builds
+; this guest binary; it is not part of the runtime. Run it with `go run . -file-root . -z80 <binary>`.
+; Read data layout, initialisation, per-frame vectors, blitter submission and table
+; generation in order. Compare the other ports only for real CPU addressing changes.
 ;
-; This tutorial follows the common affine mapping, explains the Z80 MMIO window,
-; and keeps the fixed-point calculations in byte-addressable working memory.
-;
-; === WHAT THIS DEMO DOES ===
-; 1. Loads a 256x256 RGBA texture from disk via File I/O
-; 2. Computes a per-frame affine transformation matrix (rotation + zoom)
-; 3. Delegates the full 640x480 pixel transform to the Mode7 hardware blitter
-; 4. Alternates off-screen render buffers and presents one at vblank
-; 5. Plays SID music through the 6502 audio subsystem in the background
-;
-; === WHY MODE7 HARDWARE BLITTER ===
-; The "Mode7" blitter performs affine texture mapping: it reads a source
-; texture and writes transformed pixels to a destination buffer, applying
-; rotation, scaling, and translation from the origin and directional deltas.
-;
-; A software implementation would iterate over all 307,200 output pixels.
-; This Z80 source instead computes the origin and four deltas, writes the MMIO
-; registers, and waits for the Mode7 operation to finish.
-;
-; === ARCHITECTURE OVERVIEW ===
-;
-;   +------------------------------------------------------------------+
-;   |                    MAIN LOOP                                     |
-;   |                                                                  |
-;   |  +--------------+   +--------------+   +--------------+          |
-;   |  | compute_frame|-->| render_mode7 |-->|present_frame |          |
-;   |  | (6 params)   |   | (HW blitter) |   | (FB pointer) |          |
-;   |  +--------------+   +--------------+   +--------------+          |
-;   |        |                                      |                  |
-;   |        v                                      v                  |
-;   |  +--------------+                      +--------------+          |
-;   |  |   advance    |<---------------------| WAIT_VBLANK  |          |
-;   |  |  animation   |                      | (two-phase)  |          |
-;   |  +--------------+                      +--------------+          |
-;   +------------------------------------------------------------------+
-;
-;   +------------------------------------------------------------------+
-;   |              SID AUDIO SUBSYSTEM (runs in parallel)              |
-;   |                                                                  |
-;   |  A real 6502 CPU core executes the SID player code from the     |
-;   |  embedded .sid file. Register writes to $D400-$D418 are         |
-;   |  intercepted and remapped to the native synthesiser engine.     |
-;   |  The Z80 main loop is completely unaware of audio playback.     |
-;   +------------------------------------------------------------------+
-;
-; === MEMORY MAP ===
-;
-;   Address       Size     Purpose
-;   -----------   ------   ----------------------------------------
-;   0x000000+     ~2KB     Z80 program code + tables (this file)
-;   0x100000      1.2MB    VRAM front buffer (640x480x32bpp)
-;   0x600000      256KB    Texture (256x256x32bpp, 1024-byte stride)
-;   0x900000      1.2MB    Back buffer for Mode7 rendering
-;   0xF000-0xFFFF          MMIO registers (mapped from 0xF0000+)
-;
-;   Note: Z80 has a 16-bit address bus (0x0000-0xFFFF). The bus adapter
-;   maps Z80 addresses 0xF000+ to physical 0xF0000+ via the formula:
-;     physical = z80_addr - 0xF000 + 0xF0000
-;   This lets us access 20-bit MMIO addresses from 16-bit Z80 code.
-;   Addresses above 0xFFFF (VRAM, texture, back buffer) are accessed
-;   indirectly through blitter registers, never by Z80 load/store.
-;
-; === BUILD AND RUN ===
-;
-;   Assemble:
-;     make showreel-z80
-;
-;   Run:
-;     go run . -file-root . -z80 sdk/examples/prebuilt/rotozoomer_z80.ie80
-;
-; File I/O resolves this source's texture name beneath the guest file root.
-; Supplying `-file-root .` exposes sdk/examples/assets from the repository root.
-;
-; ============================================================================
+
 
     .include "ie80.inc"
 
@@ -123,7 +42,7 @@
 
 ; --- Texture Geometry ---
 ; The texture is 256x256 pixels but stored with a 1024-byte stride.
-; WHY 1024? Each pixel is 4 bytes (RGBA), so 256 pixels = 1024 bytes.
+; 1024? Each pixel is 4 bytes (RGBA), so 256 pixels = 1024 bytes.
 ; The stride must match the actual byte width so the blitter can advance
 ; scanline-by-scanline through the texture correctly.
 .set TEX_STRIDE,1024
@@ -220,7 +139,7 @@ start:
     ; real 6502 CPU core. Register writes to $D400-$D418 (SID chip) are
     ; intercepted and remapped to the native synthesiser.
     ;
-    ; WHY BYTE-BY-BYTE MMIO WRITES: Z80's address bus is only 16 bits
+    ; BYTE-BY-BYTE MMIO WRITES: Z80's address bus is only 16 bits
     ; (0x0000-0xFFFF), but IntuitionEngine MMIO registers live at 20-bit
     ; physical addresses (0xF0000+). The bus adapter maps Z80 addresses
     ; 0xF000+ to physical 0xF0000+ via:
@@ -278,7 +197,7 @@ start:
 ; 5. swap_draw_buffer: Select the other render buffer
 ; 6. advance_animation: Increment accumulators for next frame's parameters
 ;
-; WHY THIS ORDER: We do all rendering BEFORE waiting for vblank. This means
+; THIS ORDER: We do all rendering BEFORE waiting for vblank. This means
 ; rendering overlaps with the display of the previous frame. The vblank wait
 ; ensures we don't swap buffers mid-scanout. The animation advance happens
 ; AFTER vblank so the next frame's compute starts with fresh values.
@@ -316,7 +235,7 @@ main_loop:
 ; Each quadrant is a separate BLIT FILL operation. We can't fill the entire
 ; texture in one pass because the two colours alternate per quadrant.
 ;
-; WHY LOAD FROM DISK: The Z80 can't incbin the 262KB texture (it would
+; LOAD FROM DISK: The Z80 can't incbin the 262KB texture (it would
 ; exceed the 64KB address space). Instead we use the File I/O device to
 ; load rotozoomtexture.raw at runtime. This gives us the same rich
 ; purple/green texture used by the IE32, IE64, M68K, and x86 versions.
@@ -398,7 +317,7 @@ compute_frame:
     ; The high byte IS the integer table index (0-255). We read it directly
     ; using little-endian byte addressing: (angle_accum+1) is the high byte.
     ;
-    ; WHY THIS WORKS: In a 16-bit value stored little-endian at address N,
+    ; THIS WORKS: In a 16-bit value stored little-endian at address N,
     ; byte at N is the low byte (fractional part) and byte at N+1 is the
     ; high byte (integer part). No shift or mask needed -- just read the
     ; right byte. This is a Z80-specific optimization that exploits the
@@ -425,16 +344,15 @@ compute_frame:
     ld (var_sin),hl
 
     ; --- Look Up Reciprocal (Zoom Factor) ---
-    ; WHY A RECIPROCAL TABLE: The zoom effect oscillates smoothly between
+    ; A RECIPROCAL TABLE: The zoom effect oscillates smoothly between
     ; zooming in and zooming out. The formula is:
     ;   recip[i] = round(256 / (0.5 + sin(i * 2*pi/256) * 0.3))
     ;
     ; This produces values from ~320 (zoomed in) to ~1280 (zoomed out).
     ; The sine oscillation creates smooth zoom pulsation.
     ;
-    ; WHY NOT JUST DIVIDE AT RUNTIME: The Z80 has NO divide instruction
+    ; NOT JUST DIVIDE AT RUNTIME: The Z80 has NO divide instruction
     ; at all. Implementing 16-bit division in software would take hundreds
-    ; of cycles. A 512-byte lookup table gives instant results.
     ld a,(var_scale_idx)
     call lookup_recip       ; HL = recip (unsigned 16-bit)
     ld (var_recip),hl
@@ -465,7 +383,7 @@ compute_frame:
     ; CA*320 shifts the origin by half the screen width (scaled).
     ; SA*240 compensates for the rotation's vertical component.
     ;
-    ; WHY 320 AND 240: The screen is 640x480, so half-width=320, half-height=240.
+    ; 320 AND 240: The screen is 640x480, so half-width=320, half-height=240.
     ; The affine transform maps pixel (x,y) to texture coordinate:
     ;   U = U0 + x*CA + y*(-SA)
     ; At the screen centre (320, 240):
@@ -533,7 +451,7 @@ compute_frame:
 ; ============================================================================
 ; These helpers compute 32-bit products of CA or SA with screen half-dimensions.
 ;
-; WHY DECOMPOSE INTO SHIFTS AND ADDS:
+; DECOMPOSE INTO SHIFTS AND ADDS:
 ; The Z80 has no multiply instruction at all (unlike the 8086's MUL or
 ; the M68K's MULU). Software multiply via shift-and-add would work but is
 ; slow for arbitrary values. Instead, we decompose the constant multipliers
@@ -543,7 +461,6 @@ compute_frame:
 ;   240 = 256 - 16  => val*240 = val*256 - val*16 = (val<<8) - (val<<4)
 ;
 ; This reduces each multiplication to 2 shifts and 1 add/subtract, which
-; is much faster than a generic 32x16-bit multiply loop.
 ;
 ; HOW val*256 WORKS (byte shift):
 ; Shifting left by 8 bits is the same as moving each byte up one position.
@@ -682,7 +599,7 @@ compute_ca_240:
 ; ============================================================================
 ; Reads a 16-bit signed value from the sine table at the given index.
 ;
-; WHY PROPER SINE TABLES:
+; PROPER SINE TABLES:
 ; Each entry is round(sin(i * 2*pi/256) * 256), giving true circular rotation.
 ; 256 entries cover a full circle with ~1.4 degree resolution (360/256).
 ; Values range from -256 to +256, representing -1.0 to +1.0 in 8.8 format.
@@ -711,7 +628,7 @@ lookup_sine:
 ; ============================================================================
 ; Reads a 16-bit unsigned value from the reciprocal/zoom table.
 ;
-; WHY A RECIPROCAL TABLE:
+; A RECIPROCAL TABLE:
 ; The table stores pre-computed values of:
 ;   recip[i] = round(256 / (0.5 + sin(i * 2*pi/256) * 0.3))
 ;
@@ -741,7 +658,7 @@ lookup_recip:
 ; ============================================================================
 ; MUL16_SIGNED: DEHL = HL * DE (signed 16-bit -> signed 32-bit)
 ; ============================================================================
-; WHY SOFTWARE MULTIPLY: The Z80 has NO multiply instruction of any kind.
+; SOFTWARE MULTIPLY: The Z80 has NO multiply instruction of any kind.
 ; Not 8-bit, not 16-bit. Every multiplication must be done in software.
 ; This is one of the most significant limitations of the Z80 compared to
 ; later CPUs (the 8086 has MUL, the M68K has MULU/MULS).
@@ -816,7 +733,7 @@ mul16_signed:
 ; - DE holds the multiplier (constant, added when BC's top bit is set)
 ; - IX:HL is the 32-bit accumulator (IX = high word, HL = low word)
 ;
-; WHY IX FOR THE HIGH WORD:
+; IX FOR THE HIGH WORD:
 ; The Z80 has only three general 16-bit register pairs: HL, DE, BC.
 ; HL is the accumulator low word (needed for ADD HL,DE).
 ; DE is the multiplier (added on set bits).
@@ -916,7 +833,7 @@ mul_a_l:
 ; These routines shift a 32-bit value held across two register pairs
 ; (DE = high word, HL = low word) left by a fixed number of bit positions.
 ;
-; WHY UNROLLED LOOPS: The Z80 has no barrel shifter (unlike ARM or x86's
+; UNROLLED LOOPS: The Z80 has no barrel shifter (unlike ARM or x86's
 ; SHL with a count operand). Each bit position requires a separate shift
 ; instruction. Unrolling the loop avoids the overhead of a counter and
 ; branch, which matters when these routines are called multiple times
@@ -962,7 +879,7 @@ shift_left_6:
 ; ============================================================================
 ; WRITE 32-BIT VALUE TO MMIO: copy 4 bytes from (HL) to (DE)
 ; ============================================================================
-; WHY BYTE-BY-BYTE MMIO WRITES:
+; BYTE-BY-BYTE MMIO WRITES:
 ; Z80's address bus is only 16 bits (0x0000-0xFFFF), but IntuitionEngine's
 ; MMIO registers are at 20-bit physical addresses (0xF0000+). The bus
 ; adapter maps Z80 addresses 0xF000+ to physical 0xF0000+.
@@ -1001,7 +918,7 @@ write_mode7_32:
 ; ============================================================================
 ; Two's complement negation of a 32-bit value stored in memory.
 ;
-; WHY THIS IS COMPLEX ON Z80:
+; THIS IS COMPLEX ON Z80:
 ; The Z80's NEG instruction only works on the A register (8-bit). There is
 ; no 16-bit or 32-bit negate. We must complement all 4 bytes manually using
 ; CPL (complement accumulator = bitwise NOT) and then add 1 with carry
@@ -1107,7 +1024,7 @@ neg32:
 ; The blitter applies it per-pixel in hardware, producing the rotated
 ; and zoomed texture output.
 ;
-; === WHY DOUBLE BUFFERING ===
+; === DOUBLE BUFFERING ===
 ; The blitter writes to the current off-screen render buffer, not directly
 ; to the buffer currently being scanned out. At vblank, VIDEO_FB_BASE is
 ; updated to present the completed frame.
@@ -1156,7 +1073,7 @@ render_mode7:
     call write_mode7_32         ; dv_col = SA
 
     ; dU_row = -SA: U increment per row (per scanline vertically)
-    ; WHY var_neg_sa SCRATCH SPACE: To write -SA to the blitter register,
+    ; var_neg_sa SCRATCH SPACE: To write -SA to the blitter register,
     ; we need to negate a 32-bit value. The neg32 routine works IN-PLACE
     ; on memory (it reads, complements, and writes back to the same address).
     ; If we negated var_sa directly, we would corrupt it -- but var_sa is
@@ -1222,7 +1139,7 @@ swap_draw_buffer:
 ; ============================================================================
 ; Adds the fixed increments to the 16-bit angle and scale accumulators.
 ;
-; WHY ACCUMULATORS DON'T NEED MASKING:
+; ACCUMULATORS DON'T NEED MASKING:
 ; The accumulators are 16-bit values stored in 16-bit memory locations.
 ; Adding ANGLE_INC (313) or SCALE_INC (104) to a 16-bit value wraps
 ; naturally at 65536 due to Z80's 16-bit arithmetic overflow. No AND
@@ -1296,7 +1213,7 @@ draw_fb_hi:     .byte 0
 ; Pre-computed sine values for angles 0 through 255 (representing 0 to 360
 ; degrees). Each entry is round(sin(i * 2*pi/256) * 256).
 ;
-; WHY PROPER SINE TABLES (not approximations):
+; PROPER SINE TABLES (not approximations):
 ; Using the exact formula round(sin(i * 2*pi/256) * 256) gives true
 ; circular rotation. Cheaper approximations (like triangle waves or
 ; piecewise linear) would produce visible distortion: the rotation would
@@ -1349,7 +1266,7 @@ sine_table:
 ; Pre-computed zoom oscillation values. Each entry is:
 ;   recip[i] = round(256 / (0.5 + sin(i * 2*pi/256) * 0.3))
 ;
-; WHY THIS FORMULA:
+; THIS FORMULA:
 ; The denominator (0.5 + sin(x)*0.3) oscillates between 0.2 and 0.8.
 ; Taking the reciprocal (256 / denom) gives a value that oscillates
 ; between 320 (zoomed in, when denom=0.8) and 1280 (zoomed out, when

@@ -1,6 +1,6 @@
 1 REM ============================================================================
 2 REM ROTOZOOMER TUTORIAL - MODE7 BLITTER IN BASIC
-3 REM IE64 BASIC for IntuitionEngine - VideoChip Mode 0 (640x480x32bpp)
+3 REM IE64 BASIC for Intuition Engine - VideoChip Mode 0 (640x480x32bpp)
 4 REM ============================================================================
 5 REM
 6 REM === SDK QUICK REFERENCE ===
@@ -8,7 +8,7 @@
 8 REM Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 9 REM Audio Engine:  SID (MOS 6581/8580 - Commodore 64 sound chip)
 10 REM Prerequisites: Build the BASIC runtime with 'make basic'
-11 REM Run:           bin/IntuitionEngine -basic
+11 REM Run:           go run . -basic
 12 REM                Then type: LOAD "rotozoomer_basic.bas"
 13 REM                Then type: RUN
 14 REM Porting:       This is BASIC source interpreted by the IE64 BASIC
@@ -22,7 +22,7 @@
 13 REM the blitter maps it to a 640 by 480 back buffer, which is copied to
 14 REM the configured framebuffer. SID playback is started separately.
 15 REM
-16 REM === WHY MODE7 HARDWARE ===
+16 REM === MODE7 HARDWARE ===
 17 REM A software renderer would calculate a texture coordinate for each
 18 REM output pixel. Here the program writes the origin and four directional
 19 REM deltas, then the blitter performs the pixel loop.
@@ -169,7 +169,7 @@
 1016 REM    ST     - source texture stride in bytes (1024)
 1017 REM    2560   - destination stride in bytes (640 pixels * 4 bytes)
 1018 REM
-1019 REM  WHY "0-DS" INSTEAD OF "-DS"?
+1019 REM  "0-DS" INSTEAD OF "-DS"?
 1020 REM  EhBASIC's expression parser treats a bare minus as subtraction,
 1021 REM  not unary negation, when it appears in an argument list. Writing
 1022 REM  "0-DS" explicitly subtracts DS from zero, producing -DS reliably.

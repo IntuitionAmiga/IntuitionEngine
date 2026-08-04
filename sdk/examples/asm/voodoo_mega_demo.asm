@@ -1,6 +1,6 @@
 ; ============================================================================
 ; VOODOO MEGA DEMO - Twisting Starfield Tunnel with Rainbow Scrolltext
-; IE32 for IntuitionEngine - Voodoo 3D (640x480, triangle rasteriser)
+; IE32 for Intuition Engine - Voodoo 3D (640x480, triangle rasteriser)
 ; ============================================================================
 ;
 ; === SDK QUICK REFERENCE ===
@@ -27,7 +27,7 @@
 ;      on the IntuitionEngine's internal 6502 CPU core, driving the SID
 ;      synthesiser for genuine Commodore 64 sound.
 ;
-; === WHY THESE EFFECTS ===
+; === THESE EFFECTS ===
 ; The starfield tunnel, scrolltext, and chiptune music are the three
 ; pillars of the demoscene tradition that began on the Commodore 64 and
 ; Amiga in the mid-1980s.  Nearly every demo combined these elements:
@@ -75,7 +75,7 @@
 ;
 ; === BUILD AND RUN ===
 ;   sdk/bin/ie32asm sdk/examples/asm/voodoo_mega_demo.asm
-;   ./bin/IntuitionEngine -ie32 sdk/examples/asm/voodoo_mega_demo.iex
+;   go run . -ie32 sdk/examples/asm/voodoo_mega_demo.iex
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================
@@ -201,7 +201,7 @@ start:
     JSR init_stars
 
     ; --- Start SID music: "Reggae 2" by Djinn/Fraction (1998) ---
-    ; WHY: a demo without music is incomplete.  The SID player loads the
+    ; a demo without music is incomplete.  The SID player loads the
     ; embedded .SID file into the 6502 CPU core, which executes the original
     ; C64 music player code ~50 times per second to drive the synthesiser.
     LDA #sid_data
@@ -228,7 +228,7 @@ main_loop:
     JSR draw_background
 
     ; --- Calculate tunnel twist (X axis) ---
-    ; WHY different frequencies: if both axes used the same sine, the tunnel
+    ; different frequencies: if both axes used the same sine, the tunnel
     ; would move in a circle.  Different rates create a Lissajous figure.
     LDA @frame_counter
     AND A, #255
@@ -324,7 +324,7 @@ no_respawn:
     STA [X]
 
     ; === 3D to 2D projection ===
-    ; WHY the offset technique: cos/sin values are 0-254 (127 = zero).
+    ; the offset technique: cos/sin values are 0-254 (127 = zero).
     ; Multiplying by radius gives an unsigned result that cannot represent
     ; negative coordinates.  Adding WORLD_OFFSET keeps everything positive
     ; through division; we subtract the projected offset afterwards.
@@ -739,7 +739,7 @@ random:
 ; draw_scrolltext -- render bitmap font text with rainbow colours and wobble
 ; ============================================================================
 ;
-; WHY quads instead of pixels: each "on" pixel in the 5x7 font is drawn as
+; quads instead of pixels: each "on" pixel in the 5x7 font is drawn as
 ; a 4x4 screen-pixel quad (two Voodoo triangles).  This makes the text large
 ; enough to read at 640x480 while keeping the charming bitmap aesthetic.
 ;
@@ -1094,7 +1094,7 @@ scroll_rect_done:
 ; ============================================================================
 ; build_sin_table -- generate 256-entry unsigned sine table using quarter-wave
 ; ============================================================================
-; WHY quarter-wave: a full sine has mirror symmetry.  We store only one
+; quarter-wave: a full sine has mirror symmetry.  We store only one
 ; quarter (64 values in quarter_sin) and derive the other three quadrants
 ; at runtime, saving ROM space and demonstrating the technique.
 
@@ -1394,7 +1394,7 @@ font_data:
 ; ============================================================================
 ; SID music data -- "Reggae 2" by Kamil Degorski (Djinn) / Fraction (1998)
 ; ============================================================================
-; WHY embedded: the .SID file contains both the 6502 player code and the
+; embedded: the .SID file contains both the 6502 player code and the
 ; pattern data.  The IntuitionEngine's 6502 core executes this code directly,
 ; with SID register writes ($D400-$D41C) remapped to the native synthesiser.
 

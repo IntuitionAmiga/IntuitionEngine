@@ -1,104 +1,12 @@
-; ============================================================================
-; ROTOZOOMER TUTORIAL: 32-BIT x86 AND THE MODE7 BLITTER
-; NASM Syntax for IntuitionEngine - VideoChip 640x480 True Colour
-; ============================================================================
+; Mode7 rotozoomer: x86 guest code submits an affine texture map to the IE blitter.
 ;
-; === SDK QUICK REFERENCE ===
-; Target CPU:    x86 (32-bit protected mode)
-; Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
-; Audio Engine:  PSG (AY-3-8910 compatible)
-; Assembler:     nasm (Netwide Assembler)
-; Build:         nasm -f bin -o rotozoomer_x86.ie86 rotozoomer_x86.asm
-; Run:           ./bin/IntuitionEngine -x86 rotozoomer_x86.ie86
-; Porting:       VideoChip/blitter MMIO is CPU-agnostic. Compare with
-;                rotozoomer.asm (IE32), rotozoomer_68k.asm (M68K) for other
-;                32-bit approaches.
+; The frame path derives signed fixed-point origin and step vectors, renders into a
+; back buffer, then presents after the submission has completed. The Host SDK builds
+; this guest binary; it is not part of the runtime. Run it with `go run . -x86 <binary>`.
+; Read data layout, initialisation, per-frame vectors, blitter submission and table
+; generation in order. Compare the other ports only for real CPU addressing changes.
 ;
-; This tutorial follows the common affine mapping and the NASM x86 operations
-; used to calculate and submit its signed fixed-point parameters.
-;
-; === WHAT THIS DEMO DOES ===
-; 1. Generates a 256x256 checkerboard texture via hardware blitter fills
-; 2. Performs rotation and scaling through the Mode7 operation
-; 3. Alternates off-screen render buffers and presents one at vblank
-; 4. Plays PSG (AY-3-8910) music through the audio subsystem
-;
-; === WHY MODE7 HARDWARE BLITTER (NOT SOFTWARE RENDERING) ===
-; A rotozoomer must transform every pixel on screen through an affine matrix.
-; At 640x480 resolution, that is 307,200 pixels per frame. A software
-; implementation would need a coordinate calculation, wrapping, a fetch and a
-; write for every output pixel. This source instead calculates an origin and
-; four deltas, starts Mode7, and waits for the blitter to finish.
-;
-; === THE MODE7 AFFINE TRANSFORM ===
-; Mode7 maps a 2D texture onto the screen using an affine transformation:
-;
-;   For each screen pixel (px, py):
-;     u = u0 + px * du_col + py * du_row
-;     v = v0 + px * dv_col + py * dv_row
-;     colour = texture[u & TEX_W_MASK][v & TEX_H_MASK]
-;
-; The six parameters encode rotation AND scaling simultaneously:
-;
-;   Rotation matrix = [[cos(A), -sin(A)],     Scaled by zoom factor S:
-;                       [sin(A),  cos(A)]]
-;
-;   du_col = CA = cos(A) * S    (texture U change per column step)
-;   dv_col = SA = sin(A) * S    (texture V change per column step)
-;   du_row = -SA                (texture U change per row step)
-;   dv_row = CA                 (texture V change per row step)
-;   u0, v0 = starting coords   (centreing offsets)
-;
-; This is all in 16.16 fixed-point: upper 16 bits = integer texture coord,
-; lower 16 bits = fractional sub-texel precision.
-;
-; === x86-SPECIFIC ARCHITECTURAL NOTES ===
-; This demo uses NASM (Netwide Assembler) syntax with a 32-bit flat memory
-; model (`bits 32`). All MMIO registers are accessed via absolute memory
-; addresses in [brackets]. Key x86 advantages exploited here:
-;
-;   - MOVSX/MOVZX: sign/zero extend in a single instruction (no manual
-;     bit manipulation needed as on 6502/Z80)
-;   - IMUL r32,r32: signed 32x32->32 multiply in one instruction
-;   - SHL/SHR: arbitrary shift amounts for fixed-point arithmetic
-;   - Flat 32-bit addressing: no bank switching or segment hassles
-;
-; === MEMORY MAP ===
-;
-;   0x000000 +-----------------+
-;            | System Vectors  |
-;   0x001000 +-----------------+
-;            | Program Code    |  <-- This program lives here
-;            | (code + data)   |
-;            |                 |
-;   0x100000 +-----------------+
-;            | VRAM (front     |  640x480x4 = 1,228,800 bytes
-;            |  buffer)        |  Displayed on screen
-;   0x200000 +-----------------+
-;            |                 |
-;   0x600000 +-----------------+
-;            | Texture Buffer  |  256x256x4 = 262,144 bytes (stride 1024)
-;            |                 |  Checkerboard pattern
-;   0x900000 +-----------------+
-;            | Back Buffer     |  640x480x4 = 1,228,800 bytes
-;            |                 |  Mode7 renders here, then BLIT COPY to VRAM
-;   0xFF0000 +-----------------+
-;            | Stack           |  Grows downward
-;            +-----------------+
-;
-; === BUILD AND RUN ===
-;
-;   Assemble: nasm -f bin -o assembler/rotozoomer_x86.ie86 assembler/rotozoomer_x86.asm
-;   Run:      ./bin/IntuitionEngine -x86 assembler/rotozoomer_x86.ie86
-;
-; ============================================================================
-
-; ============================================================================
-; INCLUDE: HARDWARE DEFINITIONS
-; ============================================================================
-; ie86.inc provides all MMIO register addresses, blitter opcodes, audio
-; register definitions, and helper macros for the IntuitionEngine x86 mode.
-; Uses NASM %include directive (not MASM's include).
+include directive (not MASM's include).
 ;
 ; Override SDK defaults (1280x960) since this demo runs at 640x480.
 ; These must be %define'd BEFORE %include so ie86.inc skips them.
@@ -115,7 +23,7 @@
 ; ============================================================================
 
 ; --- Texture Configuration ---
-; WHY 0x600000: The texture must live ABOVE VRAM (0x100000-0x22C000) and
+; 0x600000: The texture must live ABOVE VRAM (0x100000-0x22C000) and
 ; below the back buffer (0x900000-0xA2C000). 0x600000 sits in a safe gap.
 ; On systems with banked memory, this would be inaccessible -- but x86's
 ; flat 32-bit address space lets us place buffers anywhere.
@@ -131,7 +39,7 @@ BACK_BUFFER_B   equ 0xB00000
 RENDER_W        equ 640
 RENDER_H        equ 480
 
-; WHY STRIDE 1024: Each texture row is 256 pixels x 4 bytes/pixel = 1024
+; STRIDE 1024: Each texture row is 256 pixels x 4 bytes/pixel = 1024
 ; bytes. The stride tells the blitter how many bytes to skip to reach the
 ; next row. This is separate from the texture width because textures can
 ; have padding between rows (though ours doesn't).
@@ -139,7 +47,7 @@ TEX_STRIDE      equ 1024
 
 ; --- Animation Accumulator Increments (8.8 Fixed-Point) ---
 ;
-; WHY 8.8 FIXED-POINT ACCUMULATORS:
+; 8.8 FIXED-POINT ACCUMULATORS:
 ; We want smooth, fractional-step animation without floating point.
 ; The accumulator is a 16-bit value where:
 ;   - High byte (bits 15-8) = integer part (index into sine/recip table)
@@ -148,14 +56,12 @@ TEX_STRIDE      equ 1024
 ; After each frame, we add the increment and mask to 16 bits.
 ; The high byte wraps through 0-255 = one full revolution.
 ;
-; WHY ANGLE_INC=313, SCALE_INC=104:
+; ANGLE_INC=313, SCALE_INC=104:
 ; These match the BASIC version's `A += 0.03, SI += 0.01` (a 3:1 ratio).
 ; Converting from radians-per-frame to 8.8 table increments:
 ;   0.03 radians * (256 / (2*pi)) * 256 = 312.7 -> 313
 ;   0.01 radians * (256 / (2*pi)) * 256 = 104.2 -> 104
 ;
-; The 3:1 ratio means the rotation angle advances 3x faster than the zoom
-; oscillation, creating a pleasing visual rhythm where the zoom cycles
 ; roughly once for every 3 rotations. ANGLE_INC=313 gives approximately
 ; 0.03 radians/frame, completing a full rotation in ~209 frames (~3.5s at
 ; 60fps). SCALE_INC=104 gives ~0.01 radians/frame for a smooth zoom
@@ -221,7 +127,7 @@ start:
                 mov dword [draw_fb], BACK_BUFFER_A
 
                 ; --- Start PSG Music Playback ---
-                ; WHY PSG (AY-3-8910 / YM2149): Each IntuitionEngine demo
+                ; PSG (AY-3-8910 / YM2149): Each IntuitionEngine demo
                 ; showcases a different audio chip from computing history. The x86
                 ; demo uses the PSG -- the sound chip found in the Atari ST,
                 ; Amstrad CPC, and ZX Spectrum 128K. The YM music data may be
@@ -260,7 +166,7 @@ start:
 ;   5. swap_draw_buffer:  Select the other render buffer
 ;   6. advance_animation: Increment accumulators (trivial)
 ;
-; WHY THIS ORDER: We compute and render first, then present at the vblank
+; THIS ORDER: We compute and render first, then present at the vblank
 ; edge by updating VIDEO_FB_BASE.
 ; ============================================================================
 
@@ -281,7 +187,7 @@ main_loop:
 ;   - Visual tearing (presenting frames mid-scanout)
 ;   - Inconsistent animation speed (varies with CPU speed)
 ;
-; WHY TWO-PHASE VSYNC:
+; TWO-PHASE VSYNC:
 ; A single "wait until vblank" has a race condition: if we're ALREADY in
 ; the vblank interval when we check, we'd proceed immediately, potentially
 ; running multiple frames within a single vblank period.
@@ -293,7 +199,7 @@ main_loop:
 ; This ensures we always synchronise to the START of vblank, regardless
 ; of where we happen to be in the refresh cycle when we enter this routine.
 ;
-; WHY `test eax, N` FOR BIT CHECKS:
+; `test eax, N` FOR BIT CHECKS:
 ; x86's TEST instruction performs a bitwise AND without modifying the
 ; destination register, then sets the Zero Flag (ZF) based on the result.
 ; JNZ/JZ branch on ZF. This is more efficient than using AND (which would
@@ -361,14 +267,14 @@ load_texture:
 ;   u0 = 8388608 - CA*320 + SA*240     (texture start U, centreing offset)
 ;   v0 = 8388608 - SA*320 - CA*240     (texture start V, centreing offset)
 ;
-; === WHY PROPER SINE TABLES ===
+; === PROPER SINE TABLES ===
 ; Each entry is round(sin(i * 2*pi / 256) * 256), giving true circular
 ; rotation. Earlier implementations used triangle-wave approximations which
 ; had 29% error at 45 degrees, causing visible "diamond" distortion --
 ; the rotation would squash diagonally instead of being truly circular.
 ; 256 entries cover a full revolution at ~1.4-degree resolution.
 ;
-; === WHY RECIPROCAL TABLE ===
+; === RECIPROCAL TABLE ===
 ; Each entry is round(256 / (0.5 + sin(i * 2*pi / 256) * 0.3)).
 ;   - The 0.5 base keeps the zoom factor always positive (avoids inversion)
 ;   - The 0.3 amplitude gives smooth oscillation between ~1.25x and ~5x zoom
@@ -376,7 +282,7 @@ load_texture:
 ; Pre-computing avoids runtime division, which is very expensive even on x86.
 ; The sine-based oscillation creates a smooth, organic zoom rhythm.
 ;
-; === WHY u0/v0 CENTERING (8388608 = 128 << 16) ===
+; === u0/v0 CENTERING (8388608 = 128 << 16) ===
 ; 8388608 in 16.16 fixed-point represents 128.0, which is the centre of
 ; our 256x256 texture. Without this offset, the rotation pivot would be at
 ; texture coordinate (0,0) -- the top-left corner -- and the texture would
@@ -389,15 +295,14 @@ load_texture:
 ; Combined: the texture rotates around its own centre (128,128), and that
 ; centre is displayed at screen centre (320,240).
 ;
-; === WHY MULTIPLY BY SHIFTS (CA*320 = CA*256 + CA*64) ===
+; === MULTIPLY BY SHIFTS (CA*320 = CA*256 + CA*64) ===
 ; 320 is not a power of 2, so we decompose: 320 = 256 + 64 = 2^8 + 2^6.
 ; Similarly: 240 = 256 - 16 = 2^8 - 2^4.
-; Using shifts and adds is faster than a general multiply on many CPUs,
 ; and demonstrates a classic demoscene optimization. On modern x86, IMUL
 ; is fast enough that this wouldn't matter, but it's educational to show
 ; the decomposition.
 ;
-; === x86-SPECIFIC: WHY MOVSX AND MOVZX ===
+; === x86-SPECIFIC: MOVSX AND MOVZX ===
 ; MOVSX (Move with Sign Extension) takes a 16-bit value from memory and
 ; sign-extends it to 32 bits in a register. For sine values that can be
 ; negative (-256 to +256), this preserves the sign correctly.
@@ -412,7 +317,7 @@ load_texture:
 ; On Z80 or 6502, these extensions require multiple instructions. x86
 ; does it in one, which is a significant architectural advantage.
 ;
-; === x86-SPECIFIC: WHY IMUL eax, ebx ===
+; === x86-SPECIFIC: IMUL eax, ebx ===
 ; x86's `IMUL r32, r32` performs a signed 32x32 -> 32-bit multiply in a
 ; single instruction. Since our operands fit in 16 bits (sine: -256..+256,
 ; recip: 320..1280) and the product fits in 32 bits (max magnitude:
@@ -442,7 +347,7 @@ compute_frame:
                 ; --- Look up trigonometric values ---
 
                 ; cos_val = sine_table[(angle_idx + 64) & 255]
-                ; WHY +64: In our 256-entry system, 64 = 256/4 = 90 degrees.
+                ; +64: In our 256-entry system, 64 = 256/4 = 90 degrees.
                 ; cos(x) = sin(x + 90), so we reuse the sine table for cosine
                 ; by adding a quarter-revolution offset.
                 mov eax, esi
@@ -569,7 +474,7 @@ compute_frame:
 ; This is a standard 2D rotation matrix [[cos,-sin],[sin,cos]] scaled by
 ; the zoom factor (already baked into CA and SA from compute_frame).
 ;
-; WHY RENDER TO AN OFF-SCREEN BUFFER:
+; RENDER TO AN OFF-SCREEN BUFFER:
 ; The Mode7 blit takes time. If we wrote into the buffer currently being
 ; scanned out, the viewer would see the blit in progress. Rendering to the
 ; non-visible buffer and presenting it at vblank prevents this.
@@ -622,7 +527,7 @@ render_mode7:
                 ; asynchronously; we must poll BLT_CTRL until busy clears.
                 mov dword [BLT_CTRL], 1
 
-                ; WHY POLL BLT_CTRL BIT 1 (mask value 2):
+                ; POLL BLT_CTRL BIT 1 (mask value 2):
                 ; BLT_CTRL bit 1 = busy flag. BLT_STATUS bit 1 is DONE, not
                 ; BUSY. We spin-wait here because we need the result before
                 ; we can present the completed buffer.
@@ -665,13 +570,13 @@ swap_draw_buffer:
 ;   - Bits 15-8 (high byte): Integer part = table index (0-255)
 ;   - Bits 7-0 (low byte):   Fractional part = sub-step precision
 ;
-; WHY AND 0xFFFF: Masking to 16 bits ensures the accumulator wraps around
+; AND 0xFFFF: Masking to 16 bits ensures the accumulator wraps around
 ; after the high byte passes 255 (one full revolution / one full zoom cycle).
 ; Without this mask, the accumulator would grow indefinitely, and after
 ; reaching 0x10000 the high byte would enter a second "revolution" at
 ; index 256+ which is outside our 256-entry tables.
 ;
-; WHY SEPARATE INCREMENTS (NOT IN MAIN LOOP):
+; SEPARATE INCREMENTS (NOT IN MAIN LOOP):
 ; Keeping animation advancement in its own function makes the main loop
 ; structure clearer and allows easy modification (e.g., changing speeds,
 ; adding acceleration, or pausing animation).
@@ -695,12 +600,11 @@ advance_animation:
 ; ============================================================================
 ; These are modified every frame by the compute and animation routines.
 ;
-; WHY DD (DWORD) FOR EVERYTHING: All values are 32-bit to match x86's
+; DD (DWORD) FOR EVERYTHING: All values are 32-bit to match x86's
 ; natural register width. Using smaller sizes would require sign/zero
 ; extension on every access, adding unnecessary instructions.
 ;
 ; angle_accum: 8.8 FP rotation angle accumulator.
-;   High byte cycles 0-255 = one full rotation. At ANGLE_INC=313 per frame
 ;   and 60fps, one full rotation takes 256*256/313/60 = ~3.5 seconds.
 ;
 ; scale_accum: 8.8 FP zoom oscillation accumulator.
@@ -730,13 +634,13 @@ draw_fb:        dd 0
 ; Each entry is round(sin(i * 2*pi / 256) * 256).
 ; Values range from -256 to +256, representing -1.0 to +1.0 in 8.8 FP.
 ;
-; WHY A LOOKUP TABLE (NOT RUNTIME CALCULATION):
+; A LOOKUP TABLE (NOT RUNTIME CALCULATION):
 ; Computing sine requires a Taylor series (5+ multiplies and adds per call)
 ; or CORDIC algorithm (16+ iterations). A 512-byte table (256 entries x
 ; 2 bytes each) gives instant O(1) results. This was the universal approach
 ; on every 8/16/32-bit platform in the demoscene.
 ;
-; WHY 256 ENTRIES:
+; 256 ENTRIES:
 ; 256 = 2^8, so a full revolution maps to exactly one byte of index range.
 ; This means angle wrapping is a simple AND 255 (or implicit byte overflow).
 ; It gives ~1.4-degree resolution, which is more than sufficient for smooth
@@ -792,12 +696,11 @@ sine_table:
 ; ============================================================================
 ; Precomputed zoom values: round(256 / (0.5 + sin(i * 2*pi / 256) * 0.3))
 ;
-; WHY A RECIPROCAL TABLE (NOT RUNTIME DIVISION):
+; A RECIPROCAL TABLE (NOT RUNTIME DIVISION):
 ; Division is the most expensive arithmetic operation on nearly every CPU.
-; Even x86's IDIV takes 20-40 cycles versus 3-4 for IMUL. Pre-computing
 ; the reciprocal eliminates all runtime division from the animation loop.
 ;
-; WHY THIS SPECIFIC FORMULA:
+; THIS SPECIFIC FORMULA:
 ;   base = 0.5 + sin(i) * 0.3
 ;   recip = 256 / base
 ;
@@ -861,7 +764,7 @@ recip_table:
 ; ============================================================================
 ; MUSIC DATA - PSG (AY-3-8910 / YM2149) FORMAT
 ; ============================================================================
-; WHY PSG MUSIC:
+; PSG MUSIC:
 ; Each IntuitionEngine demo showcases a different audio chip from computing
 ; history. The x86 rotozoomer uses the PSG -- the AY-3-8910 / YM2149 sound
 ; chip found in:
