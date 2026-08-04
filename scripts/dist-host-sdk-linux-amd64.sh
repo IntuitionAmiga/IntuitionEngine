@@ -30,8 +30,15 @@ verify_checkout Picolibc "${picolibc_dir}" "${PICOLIBC_REVISION}"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "${work_dir}"' EXIT
 stage="${work_dir}/${package_name}"
-mkdir -p "${stage}/bin" "${stage}/include" "${stage}/lib/ie64-unknown-none/include" \
+mkdir -p "${stage}/bin" "${stage}/examples" "${stage}/include" "${stage}/lib/ie64-unknown-none/include" \
     "${stage}/share/cc65" "${stage}/share/docs" "${stage}/share/licenses"
+
+# The Host SDK ships example source only. Assets, prebuilt guest binaries and
+# editorial files belong to the repository, not the cross-development package.
+while IFS= read -r -d '' source; do
+    relative="${source#"${root_dir}/sdk/examples/"}"
+    install -D -m 0644 "${source}" "${stage}/examples/${relative}"
+done < <(find "${root_dir}/sdk/examples" -type f \( -name '*.asm' -o -name '*.bas' -o -name '*.c' \) -print0)
 
 for include in ie32.inc ie64.inc ie68.inc ie80.inc ie65.inc ie86.inc; do
     install -m 0644 "${root_dir}/sdk/include/${include}" "${stage}/include/${include}"
