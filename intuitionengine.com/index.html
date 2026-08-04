@@ -1899,17 +1899,17 @@ SOUND PLAY "SONG.MID"</code></pre>
           </article>
           <article class="card">
             <h3>SDK and debug tools</h3>
-            <p>The live image carries the Linux x86-64 host SDK archive and checksum under <code>SDK/Toolchains</code>. It contains the supported first-party assemblers, converter and IE64 C toolchain. IE Mon supplies the debugger.</p>
+            <p>The live image carries the full Linux x86-64 Host SDK archive and checksum under <code>SDK/Toolchains</code>. It is the supported download for the first-party assemblers, converter and IE64 C toolchain. IE Mon supplies the debugger.</p>
           </article>
           <article class="card">
-            <span class="kicker">C</span>
-            <h3>C on five CPUs</h3>
+            <span class="kicker">Linux x86-64</span>
+            <h3>Host SDK</h3>
             <p>C is not limited to IE64. You can use any freestanding C compiler that targets 68020, Z80, 6502 or 32-bit x86, provided you link or convert its output to the flat image format expected by that CPU: <code>.ie68</code>, <code>.ie80</code>, <code>.ie65</code> or <code>.ie86</code>. The SDK supplies the hardware definitions; IE32 is the only CPU without a C compiler target.</p>
-            <p><code>ie64-cproc</code> is a freestanding C23 toolchain for the <code>ie64-unknown-none</code> target. It uses cproc, QBE and Picolibc, with the V3 IE64 ABI, scalar floating point, static archives and C atomics. It is not a hosted POSIX environment and does not provide dynamic linking, threads or C++.</p>
+            <p>The Host SDK includes <code>ie64-cproc</code>, a freestanding C23 toolchain for the <code>ie64-unknown-none</code> target. It uses cproc, QBE and Picolibc, with the V3 IE64 ABI, scalar floating point, static archives and C atomics. It is not a hosted POSIX environment and does not provide dynamic linking, threads or C++.</p>
             <pre class="code-panel"><code>ie64-cproc -o demo.ie64 demo.c</code></pre>
             <p>Copy <code>demo.ie64</code> to the machine's file area, then type this at the BASIC prompt:</p>
             <pre class="code-panel"><code>RUN "demo.ie64"</code></pre>
-            <p>The Linux x86-64 package requires glibc 2.38 or newer and includes <code>ie64-cproc</code>, QBE, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie64ld</code>, <code>ie64-ar</code>, <code>ie64-ranlib</code>, headers and the bare-metal libraries.</p>
+            <p>The Linux x86-64 Host SDK requires glibc 2.38 or newer. It includes <code>ie32asm</code>, <code>ie32to64</code>, <code>ie64-cproc</code>, QBE, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie64ld</code>, <code>ie64-ar</code>, <code>ie64-ranlib</code>, headers, documentation and the bare-metal libraries.</p>
             <div class="actions">
               <a class="button" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz" download>Download the Linux x86-64 host SDK</a>
               <a class="button secondary" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz.sha256" download>SHA-256 checksum</a>
@@ -1919,7 +1919,7 @@ SOUND PLAY "SONG.MID"</code></pre>
             <span class="kicker">Assembly</span>
             <h3>Native assembly for all six CPUs</h3>
             <p>Every CPU has its own hardware-definition include, so you write assembly straight against the machine: <code>ie32.inc</code> and <code>ie64.inc</code> for the IE cores, and <code>ie65.inc</code>, <code>ie68.inc</code>, <code>ie80.inc</code> and <code>ie86.inc</code> for the 6502, M68K, Z80 and x86. IE32 and IE64 use their own assemblers, <code>ie32asm</code> and <code>ie64asm</code>; the retro cores use the standard ca65, vasm and NASM.</p>
-            <p><code>ie64dis</code> disassembles IE64 and <code>ie32to64</code> translates IE32 source towards IE64. The host SDK carries its supported first-party tools with the examples and manuals they support.</p>
+            <p><code>ie64dis</code> disassembles IE64 and <code>ie32to64</code> translates IE32 source towards IE64. Both are included in the Linux x86-64 Host SDK with the relevant documentation.</p>
           </article>
         </div>
       </div>
