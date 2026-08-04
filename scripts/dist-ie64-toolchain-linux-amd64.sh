@@ -157,14 +157,10 @@ rm -f "${stage}/lib/libc.a" "${stage}/lib/libm.a" "${stage}/lib/libg.a" \
 "${stage}/bin/ie64-ar" rcs "${stage}/lib/ie64-unknown-none/libatomic.a" \
     "${work_dir}/libatomic.o"
 install -m 0644 "${root_dir}/sdk/toolchain/README.md" "${stage}/share/ie64/docs/README.md"
-install -m 0644 "${root_dir}/sdk/docs/IE64_ABI_V2.md" \
-    "${stage}/share/ie64/docs/IE64_ABI_V2.md"
 install -m 0644 "${root_dir}/sdk/docs/IE64_ISA.md" \
     "${stage}/share/ie64/docs/IE64_ISA.md"
 install -m 0644 "${root_dir}/sdk/docs/architecture.md" \
     "${stage}/share/ie64/docs/architecture.md"
-install -m 0644 "${root_dir}/sdk/toolchain/PICOLIBC_SOURCE_AUDIT.md" \
-    "${stage}/share/ie64/docs/PICOLIBC_SOURCE_AUDIT.md"
 install -m 0644 "${root_dir}/LICENSE" "${stage}/share/ie64/licenses/IntuitionEngine-LICENSE"
 install -m 0644 "${qbe_dir}/LICENSE" "${stage}/share/ie64/licenses/QBE-LICENSE"
 install -m 0644 "${cproc_dir}/LICENSE" "${stage}/share/ie64/licenses/cproc-LICENSE"
