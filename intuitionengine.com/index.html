@@ -1100,7 +1100,7 @@ SOUND STOP</code></pre>
         <article class="card">
           <span class="kicker">A complete demo, start to finish</span>
           <h3>wobble_zoom.bas</h3>
-          <p>A 62-line source file. It wobbles a splash image line by line, rotozooms it through the blitter's Mode 7, and rides it on a MIDI score. Its splash and its tune ship on the browser demo's disk, so you can watch it now with nothing to install: open the demo, load the file, and it plays. A few lines of it, an excerpt to read rather than paste:</p>
+          <p>A compact BASIC source file. It wobbles a splash image line by line, rotozooms it through the blitter's Mode 7, and rides it on a MIDI score. Its splash and its tune ship on the browser demo's disk, so you can watch it now with nothing to install: open the demo, load the file, and it plays. A few lines of it, an excerpt to read rather than paste:</p>
           <pre class="code-panel"><code>110 SOUND PLAY "sdk/examples/assets/music/enjoythesilence.mid"
 310 BLOAD "sdk/examples/assets/splash_640x92.rgba",SR
 420 FOR Y=0 TO 91
@@ -1118,7 +1118,7 @@ SOUND STOP</code></pre>
           <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
         </div>
-        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos. IE64, 68020 and x86 code can use WebAssembly JITs, with x86 JIT compilation available when the browser supports WebAssembly SIMD; IE32, Z80 and 6502 run through their interpreters. The live image bundles worked examples in BASIC, assembly and C, together with the host SDK archive. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
+        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos. IE64, 68020, 6502 and x86 code use WebAssembly JITs, with x86 JIT compilation available when the browser supports WebAssembly SIMD; IE32 and Z80 run through their interpreters. The live image bundles worked examples in BASIC, assembly and C, together with the host SDK archive. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
       </div>
     </section>
 
@@ -1310,8 +1310,8 @@ SOUND STOP</code></pre>
 
         <article class="card" style="margin-top: 1rem">
           <span class="kicker">JIT</span>
-          <h3>Five CPUs compiled to native code</h3>
-          <p>In the live image, IE64, M68K, x86, Z80 and 6502 compile guest code to x86-64 machine code as it runs; only IE32 stays interpreted. In the browser, IE64, M68K and x86 have WebAssembly JITs; the x86 JIT requires WebAssembly SIMD. Unsupported instructions return to the relevant interpreter with the guest state preserved. The compilers handle self-modifying code and include CPU-specific floating-point paths such as the M68K 68881 and x86 x87.</p>
+          <h3>JIT compilers for five CPUs</h3>
+          <p>In the live image, IE64, M68K, x86, Z80 and 6502 compile guest code to x86-64 machine code as it runs; only IE32 stays interpreted. In the browser, IE64, M68K, 6502 and x86 have WebAssembly JITs; IE32 and Z80 stay interpreted. The x86 JIT requires WebAssembly SIMD. Unsupported instructions return to the relevant interpreter with the guest state preserved. The compilers handle self-modifying code and include CPU-specific floating-point paths such as the M68K 68881 and x86 x87.</p>
           <p>Even with the paged MMU enabled, IE64 code stays JIT-compiled: the dispatcher keys native blocks by translation state, and data, stack, floating-point and control-flow accesses that need address translation take a helper exit and resume in native code instead of bailing the whole block.</p>
         </article>
       </div>
@@ -1899,10 +1899,10 @@ SOUND PLAY "SONG.MID"</code></pre>
           </article>
           <article class="card">
             <h3>SDK and debug tools</h3>
-            <p>The live image carries the full Linux x86-64 Host SDK archive and checksum under <code>SDK/Toolchains</code>. It is the supported download for the first-party assemblers, converter and IE64 C toolchain. IE Mon supplies the debugger.</p>
+            <p>The live image carries the full Host SDK archive and checksum under <code>SDK/Toolchains</code>. It is the supported download for the first-party assemblers, converter and IE64 C toolchain. IE Mon supplies the debugger.</p>
           </article>
           <article class="card">
-            <span class="kicker">Linux x86-64</span>
+            <span class="kicker">Companion tools</span>
             <h3>Host SDK</h3>
             <p>C is not limited to IE64. You can use any freestanding C compiler that targets 68020, Z80, 6502 or 32-bit x86, provided you link or convert its output to the flat image format expected by that CPU: <code>.ie68</code>, <code>.ie80</code>, <code>.ie65</code> or <code>.ie86</code>. The SDK supplies the hardware definitions; IE32 is the only CPU without a C compiler target.</p>
             <p>The Host SDK includes <code>ie64-cproc</code>, a freestanding C23 toolchain for the <code>ie64-unknown-none</code> target. It uses cproc, QBE and Picolibc, with the V3 IE64 ABI, scalar floating point, static archives and C atomics. It is not a hosted POSIX environment and does not provide dynamic linking, threads or C++.</p>
@@ -1911,7 +1911,7 @@ SOUND PLAY "SONG.MID"</code></pre>
             <pre class="code-panel"><code>RUN "demo.ie64"</code></pre>
             <p>The Linux x86-64 Host SDK requires glibc 2.38 or newer. It includes <code>ie32asm</code>, <code>ie32to64</code>, <code>ie64-cproc</code>, QBE, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie64ld</code>, <code>ie64-ar</code>, <code>ie64-ranlib</code>, headers, documentation and the bare-metal libraries.</p>
             <div class="actions">
-              <a class="button" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz" download>Download the Linux x86-64 host SDK</a>
+              <a class="button" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz" download>Download the Host SDK</a>
               <a class="button secondary" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz.sha256" download>SHA-256 checksum</a>
             </div>
           </article>
@@ -1919,7 +1919,7 @@ SOUND PLAY "SONG.MID"</code></pre>
             <span class="kicker">Assembly</span>
             <h3>Native assembly for all six CPUs</h3>
             <p>Every CPU has its own hardware-definition include, so you write assembly straight against the machine: <code>ie32.inc</code> and <code>ie64.inc</code> for the IE cores, and <code>ie65.inc</code>, <code>ie68.inc</code>, <code>ie80.inc</code> and <code>ie86.inc</code> for the 6502, M68K, Z80 and x86. IE32 and IE64 use their own assemblers, <code>ie32asm</code> and <code>ie64asm</code>; the retro cores use the standard ca65, vasm and NASM.</p>
-            <p><code>ie64dis</code> disassembles IE64 and <code>ie32to64</code> translates IE32 source towards IE64. Both are included in the Linux x86-64 Host SDK with the relevant documentation.</p>
+            <p><code>ie64dis</code> disassembles IE64 and <code>ie32to64</code> translates IE32 source towards IE64. Both are included in the Host SDK with the relevant documentation.</p>
           </article>
         </div>
       </div>
