@@ -31,6 +31,31 @@ type crtFilter struct {
 	err    error
 }
 
+type crtPresentationGeometry struct {
+	scanlinePeriod float32
+	scanlineOrigin float32
+}
+
+func defaultCRTPresentationGeometry() crtPresentationGeometry {
+	// Overlay and legacy framebuffer paths have no retained guest geometry.
+	// Keep their existing two-row fine scanline fallback; compositor-backed
+	// guest frames replace it with their actual source scale below.
+	return crtPresentationGeometry{scanlinePeriod: 2}
+}
+
+// crtHardwareLayerUniforms keeps the native guest and presentation rectangle
+// together. Zfast receives this at the same draw that expands a guest texture,
+// never after a 320x200 or 640x480 frame has already become a 1080p image.
+func crtHardwareLayerUniforms(layer *ebitenHardwareLayer) map[string]any {
+	return map[string]any{
+		"SourceSize": []float32{float32(layer.SourceWidth), float32(layer.SourceHeight)},
+		"DestSize":   []float32{float32(layer.DestWidth), float32(layer.DestHeight)},
+		"DestOrigin": []float32{float32(layer.DestX), float32(layer.DestY)},
+		"Opaque":     opaqueUniform(layer.Opaque),
+		"LayerMode":  float32(1),
+	}
+}
+
 // newCRTFilter deliberately owns shader construction. Production supplies the
 // embedded Zfast source; tests can exercise GPU failure handling with invalid
 // Kage without changing package state.
@@ -50,27 +75,54 @@ const zfastCRTShaderSource = `//kage:unit pixels
 
 package main
 
+var ScanlinePeriod float
+var ScanlineOrigin float
+var SourceSize vec2
+var DestSize vec2
+var DestOrigin vec2
+var Opaque float
+var LayerMode float
+
 func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 	// Quilez-style scaling, sharpened as in zfast_crt_impl.inc.
 	p := srcPos
+	if DestSize.x > 0.0 && DestSize.y > 0.0 {
+		p = (dstPos.xy-DestOrigin)*SourceSize/DestSize
+	}
 	i := floor(p) + vec2(0.5)
 	f := p - i
 	p = i + 4.0*f*f*f
 	p.x = mix(p.x, srcPos.x, 0.30)
 
-	// Ebiten supplies pixel-centre source coordinates to a one-to-one final
-	// pass, so f.y would otherwise always be zero. Derive the scanline phase
-	// from the destination row, preserving Zfast's alternating scanline shape.
-	scanY := fract(floor(dstPos.y) * 0.5)
+	// p is native-source space in the hardware-compositor path, so its
+	// fractional Y naturally spans every enlarged guest line. The final-image
+	// fallback retains its explicit presentation-space period.
+	scanY := fract((dstPos.y - ScanlineOrigin) / ScanlinePeriod)
+	if DestSize.x > 0.0 && DestSize.y > 0.0 {
+		scanY = f.y
+	}
 	y := scanY*scanY
 	yy := y*y
+	// Zfast's fine mask is deliberately an output-pixel aperture pattern. Only
+	// the vertical scanline phase follows the enlarged guest source geometry.
 	whichMask := fract(floor(dstPos.x) * -0.4999)
 	mask := 1.0
 	if whichMask < 0.5 {
 		mask -= 0.25
 	}
 
-	colour := imageSrc0At(p)
+	colour := imageSrc0At(imageSrc0Origin() + p)
+	// Preserve the hardware compositor's layer semantics. Opaque guest layers
+	// use alpha only as storage and must cover everything beneath them; normal
+	// layers discard a fully transparent texel instead of overwriting a lower
+	// filtered layer with transparent black.
+	if LayerMode != 0.0 {
+		if Opaque != 0.0 {
+			colour.a = 1.0
+		} else if colour.a == 0.0 && colour.r == 0.0 && colour.g == 0.0 && colour.b == 0.0 {
+			discard()
+		}
+	}
 	scanLineWeight := 1.25 - 6.0*(y - 2.05*yy)
 	scanLineWeightB := 1.0 - 8.0*(yy - 2.8*yy*y)
 	weight := mix(scanLineWeight*mask, scanLineWeightB, dot(colour.rgb, vec3(0.3333*0.8)))

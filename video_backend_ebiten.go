@@ -52,37 +52,41 @@ type EbitenOutput struct {
 	// statusBarKey changes. Touched from Draw only.
 	statusBarImage *ebiten.Image
 	statusBarKey   string
-	// presentation is the one reusable final image. Every selected route is
+	// presentation is the reusable final image. Every selected route is
 	// composed here before it is copied or filtered onto the display.
-	presentation       *ebiten.Image
-	crtRequested       bool
-	crtState           crtFilterState
-	crtFilter          *crtFilter
-	firstFrameOnce     sync.Once
-	window             *ebiten.Image
-	width              int
-	height             int
-	format             PixelFormat
-	fullscreen         bool
-	lockFullscreen     bool
-	scale              int
-	windowedW          int
-	windowedH          int
-	frameBuffer        []byte
-	bufferMutex        sync.RWMutex
-	frameCount         atomic.Uint64
-	refreshRate        int
-	vsyncChan          chan struct{}
-	lifecycleMu        sync.Mutex
-	done               chan struct{}
-	doneOnce           *sync.Once
-	compositor         *VideoCompositor
-	keyHandler         func(byte)
-	scrollHandler      func(int)
-	copyHandler        func()
-	cutHandler         func()
-	middleMouseHandler func()
-	wheelAccum         float64
+	presentation *ebiten.Image
+	// crtPresentationOverlay stages post-compositor host elements. Hardware
+	// guest layers are filtered while scaling their native textures, whereas the
+	// cursor and status bar must receive their own final-presentation CRT pass.
+	crtPresentationOverlay *ebiten.Image
+	crtRequested           bool
+	crtState               crtFilterState
+	crtFilter              *crtFilter
+	firstFrameOnce         sync.Once
+	window                 *ebiten.Image
+	width                  int
+	height                 int
+	format                 PixelFormat
+	fullscreen             bool
+	lockFullscreen         bool
+	scale                  int
+	windowedW              int
+	windowedH              int
+	frameBuffer            []byte
+	bufferMutex            sync.RWMutex
+	frameCount             atomic.Uint64
+	refreshRate            int
+	vsyncChan              chan struct{}
+	lifecycleMu            sync.Mutex
+	done                   chan struct{}
+	doneOnce               *sync.Once
+	compositor             *VideoCompositor
+	keyHandler             func(byte)
+	scrollHandler          func(int)
+	copyHandler            func()
+	cutHandler             func()
+	middleMouseHandler     func()
+	wheelAccum             float64
 
 	clipboardOnce sync.Once
 	clipboardOK   bool
@@ -1590,24 +1594,24 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	// When monitor is active, draw the overlay instead
 	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
 		eo.monitorOverlay.Draw(presentation)
-		eo.finishPresentation(screen, presentation, effectiveCRT)
+		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
 		return
 	}
 	if eo.luaOverlay != nil && eo.luaOverlay.IsActive() {
 		eo.luaOverlay.Draw(presentation)
-		eo.finishPresentation(screen, presentation, effectiveCRT)
+		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
 		return
 	}
 	if eo.hostOverlay != nil && eo.hostOverlay.IsActive() {
 		eo.hostOverlay.Draw(presentation)
-		eo.finishPresentation(screen, presentation, effectiveCRT)
+		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
 		return
 	}
 
 	eo.bufferMutex.Lock()
 	usedHardware := eo.hwFrameID != 0
 	if usedHardware {
-		eo.drawHardwareCompositorLocked(presentation)
+		eo.drawHardwareCompositorLocked(presentation, effectiveCRT, eo.crtFilter)
 	} else {
 		if eo.window == nil {
 			eo.window = ebiten.NewImage(eo.width, eo.height)
@@ -1623,6 +1627,11 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	if !usedHardware {
 		presentation.DrawImage(eo.window, nil)
 	}
+	postCompositor := presentation
+	if usedHardware && effectiveCRT {
+		postCompositor = eo.crtPresentationOverlayImage(screen.Bounds().Dx(), screen.Bounds().Dy())
+		postCompositor.Clear()
+	}
 
 	// Draw software cursor when the system cursor is hidden (EmuTOS mode).
 	// AROS draws its own Intuition cursor in VRAM, so skip when noSoftwareCursor is set.
@@ -1634,13 +1643,18 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 		}
 		op := &ebiten.DrawImageOptions{}
 		op.GeoM.Translate(float64(mx), float64(my))
-		presentation.DrawImage(cursorImage, op)
+		postCompositor.DrawImage(cursorImage, op)
 	}
 
 	if showStatusBar {
-		eo.drawRuntimeStatusBar(presentation, effectiveCRT)
+		eo.drawRuntimeStatusBar(postCompositor, effectiveCRT)
 	}
-	eo.finishPresentation(screen, presentation, effectiveCRT)
+	if postCompositor != presentation {
+		eo.compositeCRTPresentationOverlay(presentation, postCompositor)
+	}
+	// Hardware layers have already received Zfast while sampling their native
+	// textures. Do not run the composed guest through a second CRT pass.
+	eo.finishPresentation(screen, presentation, effectiveCRT && !usedHardware, defaultCRTPresentationGeometry())
 }
 
 // ensureCRTFilter lazily compiles once. A backend that cannot compile or run
@@ -1679,10 +1693,37 @@ func (eo *EbitenOutput) presentationImage(width, height int) *ebiten.Image {
 	return eo.presentation
 }
 
-func (eo *EbitenOutput) finishPresentation(screen, presentation *ebiten.Image, effectiveCRT bool) {
+func (eo *EbitenOutput) crtPresentationOverlayImage(width, height int) *ebiten.Image {
+	if eo.crtPresentationOverlay == nil || eo.crtPresentationOverlay.Bounds().Dx() != width || eo.crtPresentationOverlay.Bounds().Dy() != height {
+		if eo.crtPresentationOverlay != nil {
+			eo.crtPresentationOverlay.Deallocate()
+		}
+		eo.crtPresentationOverlay = ebiten.NewImage(width, height)
+	}
+	return eo.crtPresentationOverlay
+}
+
+// compositeCRTPresentationOverlay filters only the post-compositor host
+// elements and source-over composites them onto native-source CRT guest layers.
+// Applying the shader to presentation instead would filter the guest twice.
+func (eo *EbitenOutput) compositeCRTPresentationOverlay(presentation, overlay *ebiten.Image) {
+	op := &ebiten.DrawRectShaderOptions{}
+	op.Images[0] = overlay
+	op.Uniforms = map[string]any{
+		"ScanlinePeriod": defaultCRTPresentationGeometry().scanlinePeriod,
+		"ScanlineOrigin": defaultCRTPresentationGeometry().scanlineOrigin,
+	}
+	presentation.DrawRectShader(overlay.Bounds().Dx(), overlay.Bounds().Dy(), eo.crtFilter.shader, op)
+}
+
+func (eo *EbitenOutput) finishPresentation(screen, presentation *ebiten.Image, effectiveCRT bool, geometry crtPresentationGeometry) {
 	if effectiveCRT {
 		op := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy}
 		op.Images[0] = presentation
+		op.Uniforms = map[string]any{
+			"ScanlinePeriod": geometry.scanlinePeriod,
+			"ScanlineOrigin": geometry.scanlineOrigin,
+		}
 		screen.DrawRectShader(presentation.Bounds().Dx(), presentation.Bounds().Dy(), eo.crtFilter.shader, op)
 	} else {
 		screen.DrawImage(presentation, nil)
@@ -1695,7 +1736,7 @@ func (eo *EbitenOutput) finishPresentation(screen, presentation *ebiten.Image, e
 	}
 }
 
-func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image) {
+func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image, crtActive bool, filter *crtFilter) {
 	screen.Clear()
 	if !eo.hwHasContent || eo.hwCopyShader == nil {
 		return
@@ -1796,7 +1837,13 @@ func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image) {
 		}
 		op := layer.cachedOptions
 		op.Images[0] = src
-		screen.DrawTrianglesShader(layer.cachedVertices, ebitenHWQuadIndices, eo.hwCopyShader, op)
+		shader := eo.hwCopyShader
+		if crtActive && filter != nil && filter.shader != nil {
+			shader = filter.shader
+			op = &ebiten.DrawTrianglesShaderOptions{Blend: ebiten.BlendCopy, Uniforms: crtHardwareLayerUniforms(layer)}
+			op.Images[0] = src
+		}
+		screen.DrawTrianglesShader(layer.cachedVertices, ebitenHWQuadIndices, shader, op)
 	}
 }
 

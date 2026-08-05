@@ -63,11 +63,15 @@ func gateCRTFilter() error {
 		return fmt.Errorf("scanline positions have equal brightness")
 	}
 
+	// A native 2x2 source expanded to 8x8 is the regression for the bug this
+	// filter fixes: final-presentation CRT sees only eight already-scaled rows,
+	// while the layer CRT must retain the four-pixel guest-line cadence.
+	native := solidTestFrame(2, 2, 200, 200, 200, 0xFF)
 	if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{
 		FrameID: 1, PresentationWidth: width, PresentationHeight: height, HasContent: true,
 		Layers: []CompositorFrameLayer{{
-			SourceID: 1, SourceWidth: width, SourceHeight: height,
-			DestWidth: width, DestHeight: height, Buffer: frame,
+			SourceID: 1, SourceWidth: 2, SourceHeight: 2,
+			DestWidth: width, DestHeight: height, Buffer: native,
 		}},
 	}); err != nil {
 		return fmt.Errorf("UpdateHardwareCompositorFrame: %w", err)
@@ -76,6 +80,24 @@ func gateCRTFilter() error {
 	hardware := readCRTGPUImage(screen, width, height)
 	if equalBytes(hardware, frame) {
 		return fmt.Errorf("enabled CRT left hardware compositor output byte-identical")
+	}
+	first := luminance(hardware, width, 0, 0)
+	withinGuestLine := luminance(hardware, width, 0, 2)
+	nextGuestLine := luminance(hardware, width, 0, 4)
+	if first == withinGuestLine {
+		return fmt.Errorf("hardware CRT lost native 2x2 scanline phase: rows 0 and 2 are equal")
+	}
+	if first != nextGuestLine {
+		return fmt.Errorf("hardware CRT scanline phase did not repeat after one 2x2 guest line: rows 0=%d and 4=%d", first, nextGuestLine)
+	}
+	if err := gateCRTTransparentLayerPreservesLower(); err != nil {
+		return err
+	}
+	if err := gateCRTOpaqueLayerForcesAlpha(); err != nil {
+		return err
+	}
+	if err := gateCRTHardwarePostCompositorElements(); err != nil {
+		return err
 	}
 	if err := gateCRTOverlayRoutes(frame); err != nil {
 		return err
@@ -101,6 +123,143 @@ func gateCRTFilter() error {
 	fallback.Draw(screen)
 	if got := readCRTGPUImage(screen, width, height); !equalBytes(got, frame) {
 		return fmt.Errorf("first fallback frame was not unfiltered")
+	}
+	return nil
+}
+
+// gateCRTHardwarePostCompositorElements proves the cursor and status bar are
+// filtered independently after a hardware guest layer has received its native
+// source-scaled CRT pass. A black guest leaves no other pixels that can make
+// either assertion pass accidentally.
+func gateCRTHardwarePostCompositorElements() error {
+	const width, height = 64, 64
+	black := solidTestFrame(2, 2, 0, 0, 0, 0)
+	update := CompositorFrameUpdate{
+		FrameID: 1, PresentationWidth: width, PresentationHeight: height, HasContent: true,
+		Layers: []CompositorFrameLayer{{SourceID: 1, SourceWidth: 2, SourceHeight: 2, DestWidth: width, DestHeight: height, Opaque: true, Buffer: black}},
+	}
+
+	// A deliberately mid-grey cursor avoids saturation, so the Zfast weight is
+	// observable at the exact cursor location.
+	cursorOut, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("hardware cursor output: %w", err)
+	}
+	cursor := cursorOut.(*EbitenOutput)
+	cursor.showStatusBar = false
+	cursor.crtRequested = true
+	if err := cursor.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("hardware cursor display: %w", err)
+	}
+	cursor.cursorImage = ebiten.NewImage(1, 1)
+	cursor.cursorImage.WritePixels([]byte{100, 100, 100, 0xFF})
+	cursor.termMMIO = NewTerminalMMIO()
+	cursor.termMMIO.mouseX.Store(3)
+	cursor.termMMIO.mouseY.Store(3)
+	if err := cursor.UpdateHardwareCompositorFrame(update); err != nil {
+		return fmt.Errorf("hardware cursor update: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	cursor.Draw(screen)
+	cursorPixels := readCRTGPUImage(screen, width, height)
+	if got := cursorPixels[(3*width+3)*BYTES_PER_PIXEL : (3*width+4)*BYTES_PER_PIXEL]; sameBytes(got, []byte{100, 100, 100, 0xFF}) {
+		return fmt.Errorf("hardware CRT cursor bypassed the filter: %v", got)
+	}
+
+	statusOut, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("hardware status output: %w", err)
+	}
+	status := statusOut.(*EbitenOutput)
+	status.showStatusBar = true
+	status.crtRequested = true
+	if err := status.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("hardware status display: %w", err)
+	}
+	if err := status.UpdateHardwareCompositorFrame(update); err != nil {
+		return fmt.Errorf("hardware status update: %w", err)
+	}
+	status.Draw(screen)
+	filteredStatus := readCRTGPUImage(screen, width, height)
+	if status.statusBarImage == nil {
+		return fmt.Errorf("hardware status bar was not drawn")
+	}
+	rawStatus := ebiten.NewImage(width, height)
+	op := &ebiten.DrawImageOptions{}
+	op.GeoM.Translate(0, float64(height-status.statusBarImage.Bounds().Dy()))
+	rawStatus.DrawImage(status.statusBarImage, op)
+	if got := readCRTGPUImage(rawStatus, width, height); equalBytes(filteredStatus, got) {
+		return fmt.Errorf("hardware CRT status bar bypassed the filter")
+	}
+	return nil
+}
+
+// gateCRTOpaqueLayerForcesAlpha preserves the compositor's opaque-layer
+// contract. Source alpha is not meaningful for these layers: black is still a
+// real opaque guest pixel, so Zfast must write alpha 255 just as the copy
+// shader does.
+func gateCRTOpaqueLayerForcesAlpha() error {
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("opaque CRT output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	eo.crtRequested = true
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: 2, Height: 2, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("opaque CRT display: %w", err)
+	}
+	pixels := solidTestFrame(2, 2, 120, 80, 40, 0)
+	if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{
+		FrameID: 1, PresentationWidth: 2, PresentationHeight: 2, HasContent: true,
+		Layers: []CompositorFrameLayer{{SourceID: 1, SourceWidth: 2, SourceHeight: 2, DestWidth: 2, DestHeight: 2, Opaque: true, Buffer: pixels}},
+	}); err != nil {
+		return fmt.Errorf("opaque CRT update: %w", err)
+	}
+	screen := ebiten.NewImage(2, 2)
+	eo.Draw(screen)
+	got := readCRTGPUImage(screen, 2, 2)
+	for i := 3; i < len(got); i += BYTES_PER_PIXEL {
+		if got[i] != 0xFF {
+			return fmt.Errorf("opaque CRT alpha at byte %d = %d, want 255", i, got[i])
+		}
+	}
+	return nil
+}
+
+// gateCRTTransparentLayerPreservesLower covers the compositor contract that
+// the CRT path replaced: a transparent upper-layer texel must discard, rather
+// than copy black over a filtered texel from a lower guest layer.
+func gateCRTTransparentLayerPreservesLower() error {
+	const width, height = 8, 8
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("transparent layer output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	eo.crtRequested = true
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("transparent layer display: %w", err)
+	}
+	lower := solidTestFrame(2, 2, 160, 120, 80, 0xFF)
+	lowerLayer := CompositorFrameLayer{SourceID: 1, SourceWidth: 2, SourceHeight: 2, DestWidth: width, DestHeight: height, Buffer: lower}
+	if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{FrameID: 1, PresentationWidth: width, PresentationHeight: height, HasContent: true, Layers: []CompositorFrameLayer{lowerLayer}}); err != nil {
+		return fmt.Errorf("transparent layer lower update: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	eo.Draw(screen)
+	lowerOnly := readCRTGPUImage(screen, width, height)
+
+	upper := make([]byte, 2*2*BYTES_PER_PIXEL) // all texels transparent
+	upperLayer := CompositorFrameLayer{SourceID: 2, SourceWidth: 2, SourceHeight: 2, DestWidth: width, DestHeight: height, Buffer: upper}
+	if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{FrameID: 2, PresentationWidth: width, PresentationHeight: height, HasContent: true, Layers: []CompositorFrameLayer{lowerLayer, upperLayer}}); err != nil {
+		return fmt.Errorf("transparent layer combined update: %w", err)
+	}
+	eo.Draw(screen)
+	combined := readCRTGPUImage(screen, width, height)
+	if !equalBytes(combined, lowerOnly) {
+		return fmt.Errorf("transparent CRT layer overwrote the filtered lower layer")
 	}
 	return nil
 }
