@@ -989,7 +989,8 @@ func NewM68KCPU(bus Bus32) *M68KCPU {
 	cpu := &M68KCPU{
 		SR:              M68K_SR_S | M68K_SR_IPL, // Hardware powers up in supervisor mode with all interrupts masked
 		bus:             bus,
-		memory:          mem,                     // Direct memory access for lock-free reads
+		memory:          mem, // Direct memory access for lock-free reads
+		m68kJitEnabled:  m68kJitAvailable,
 		memBase:         unsafe.Pointer(&mem[0]), // Unsafe base pointer for bounds-check-free access
 		stackLowerBound: 0x00002000,              // Reserves space for exception vectors
 		stackUpperBound: defaultTop,

@@ -178,8 +178,9 @@ const (
 // NewCPU_X86 creates a new x86 CPU instance
 func NewCPU_X86(bus X86Bus) *CPU_X86 {
 	cpu := &CPU_X86{
-		bus: bus,
-		FPU: NewFPU_X87(),
+		bus:           bus,
+		FPU:           NewFPU_X87(),
+		x86JitEnabled: x86JitAvailable,
 	}
 	// Initialize register pointer array for O(1) lookup
 	cpu.regs32 = [8]*uint32{

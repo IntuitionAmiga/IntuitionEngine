@@ -578,6 +578,7 @@ func NewCPU64(bus *MachineBus) *CPU64 {
 		PC:             PROG_START,
 		bus:            bus,
 		memory:         bus.GetMemory(),
+		jitEnabled:     jitAvailable || wasmJITSupported,
 		supervisorMode: true, // Boot in supervisor mode
 		FPU:            NewIE64FPU(),
 		debugCPUID:     -1,

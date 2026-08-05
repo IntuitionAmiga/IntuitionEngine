@@ -32,9 +32,10 @@ const (
 )
 
 type CPUZ80Config struct {
-	LoadAddr     uint16
-	Entry        uint16
-	JITEnabled   bool          // Enable Z80 JIT compiler on supported amd64 hosts
+	LoadAddr uint16
+	Entry    uint16
+	// DisableJIT requests interpreter execution. The JIT is enabled by default.
+	DisableJIT   bool
 	VGAEngine    *VGAEngine    // Optional VGA engine for port I/O
 	VoodooEngine *VoodooEngine // Optional Voodoo engine for port I/O
 }
@@ -831,13 +832,13 @@ func NewCPUZ80Runner(bus *MachineBus, config CPUZ80Config) *CPUZ80Runner {
 	}
 
 	cpu := NewCPU_Z80(z80Bus)
-	cpu.jitEnabled = config.JITEnabled
+	cpu.jitEnabled = z80JitAvailable && !config.DisableJIT
 	return &CPUZ80Runner{
 		cpu:        cpu,
 		bus:        bus,
 		loadAddr:   loadAddr,
 		entry:      config.Entry,
-		JITEnabled: config.JITEnabled,
+		JITEnabled: cpu.jitEnabled,
 	}
 }
 

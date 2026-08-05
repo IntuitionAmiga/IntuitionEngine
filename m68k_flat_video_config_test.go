@@ -365,7 +365,7 @@ func TestX86FlatProgramVideoConfigClearsJITBitmapVRAMPagesBeforeRunnerBuild(t *t
 	defer video.Stop()
 
 	restoreLegacyVideoConfig(bus, video)
-	legacyRunner := NewCPUX86Runner(bus, &CPUX86Config{JITEnabled: true})
+	legacyRunner := NewCPUX86Runner(bus, &CPUX86Config{})
 	vramPage := int(VRAM_START >> 8)
 	if vramPage >= len(legacyRunner.cpu.x86JitIOBitmap) {
 		t.Fatalf("VRAM page 0x%X outside x86 JIT bitmap len=%d", vramPage, len(legacyRunner.cpu.x86JitIOBitmap))
@@ -375,7 +375,7 @@ func TestX86FlatProgramVideoConfigClearsJITBitmapVRAMPagesBeforeRunnerBuild(t *t
 	}
 
 	applyX86FlatProgramVideoConfig(bus, video)
-	flatRunner := NewCPUX86Runner(bus, &CPUX86Config{JITEnabled: true})
+	flatRunner := NewCPUX86Runner(bus, &CPUX86Config{})
 	if got := flatRunner.cpu.x86JitIOBitmap[vramPage]; got != 0 {
 		t.Fatalf("flat x86 JIT bitmap page 0x%X = %d, want RAM after flat remap", vramPage, got)
 	}

@@ -1773,7 +1773,7 @@ func TestScriptEngine_CPUJITControls_X86(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	se := NewScriptEngine(bus, comp, term)
 
-	runner := NewCPUX86Runner(bus, &CPUX86Config{JITEnabled: x86JitAvailable})
+	runner := NewCPUX86Runner(bus, &CPUX86Config{})
 	runner.cpu.SetRunning(false)
 	runner.cpu.Halted = false
 	runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, runner, nil)

@@ -1581,6 +1581,7 @@ func TestCoprocEndToEnd_X86(t *testing.T) {
 
 	// x86 uses 32-bit addressing - reqPtr/respPtr are bus addresses directly
 	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_X86, 0x400000, 0x400100, 0x400000, 0x400100)
+	assertX86CoprocNativeBlock(t, worker)
 }
 
 // TestCoprocEndToEnd_X86_Instance1 proves the P1 bootstrap-seed fix: the SAME
@@ -1612,6 +1613,18 @@ func TestCoprocEndToEnd_X86_Instance1(t *testing.T) {
 	// Drive the request against instance 1.
 	mgr.instance = 1
 	coprocEndToEndTest(t, bus, mgr, EXEC_TYPE_X86, 0x400000, 0x400100, 0x400000, 0x400100)
+	assertX86CoprocNativeBlock(t, worker)
+}
+
+func assertX86CoprocNativeBlock(t *testing.T, worker *CoprocWorker) {
+	t.Helper()
+	if !x86JitAvailable {
+		return
+	}
+	cpu := worker.debugCPU.(*DebugX86).cpu
+	if cpu.x86JitCache == nil || cpu.x86JitCache.Get(uint64(worker.loadBase)) == nil {
+		t.Fatal("x86 coprocessor service completed without compiling its entry block")
+	}
 }
 
 func TestCoprocEndToEnd_Z80(t *testing.T) {

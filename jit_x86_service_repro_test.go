@@ -168,9 +168,8 @@ func TestX86JIT_ServiceUnbounded(t *testing.T) {
 // exercise emitters in isolation; a compiled C binary composes them densely
 // and has caught register-scheduling faults the unit tests cannot.
 //
-// The binary is the checked-in testdata fixture (a gcc i486 freestanding
-// build of a mailbox T&L service); it reproduces the still-open live
-// worker-JIT fault when run as a full worker.
+// The binary is the checked-in testdata fixture: a gcc i486 freestanding
+// mailbox T&L service. It guards the full worker-style JIT execution path.
 func TestX86JIT_CompiledServiceBinary(t *testing.T) {
 	data, err := os.ReadFile("testdata/tnl_service_x86.ie86")
 	if err != nil {

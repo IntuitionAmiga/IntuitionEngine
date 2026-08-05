@@ -139,7 +139,8 @@ const (
 
 func NewCPU_Z80(bus Z80Bus) *CPU_Z80 {
 	cpu := &CPU_Z80{
-		bus: bus,
+		bus:        bus,
+		jitEnabled: z80JitAvailable,
 	}
 	cpu.initBaseOps()
 	cpu.initCBOps()

@@ -51,9 +51,10 @@ const (
 
 // CPUX86Config holds configuration for the x86 runner
 type CPUX86Config struct {
-	LoadAddr     uint32
-	Entry        uint32
-	JITEnabled   bool
+	LoadAddr uint32
+	Entry    uint32
+	// DisableJIT requests interpreter execution. The JIT is enabled by default.
+	DisableJIT   bool
 	VGAEngine    *VGAEngine    // Optional VGA engine for VRAM-window access
 	VoodooEngine *VoodooEngine // Optional Voodoo engine for port I/O
 }
@@ -644,7 +645,7 @@ func NewCPUX86Runner(bus *MachineBus, config *CPUX86Config) *CPUX86Runner {
 
 	cpu := NewCPU_X86(x86Bus)
 	cpu.memory = x86Bus.GetMemory()
-	cpu.x86JitEnabled = config != nil && config.JITEnabled && x86JitAvailable
+	cpu.x86JitEnabled = x86JitAvailable && (config == nil || !config.DisableJIT)
 	cpu.x86JitIOBitmap = buildX86IOBitmap(x86Bus, bus)
 
 	return &CPUX86Runner{
@@ -706,7 +707,7 @@ func (r *CPUX86Runner) LoadProgramFromFile(filename string) error {
 	return r.LoadProgram(filename)
 }
 
-// Run executes the program until halted. Honors CPUX86Config.JITEnabled:
+// Run executes the program until halted. Honors CPUX86Config.DisableJIT:
 // when explicitly disabled by the caller, runs the interpreter loop. The
 // internal JIT-side per-block compile-error fallbacks are gone (Phase 8),
 // but this runtime opt-out is an external configuration contract, not an
@@ -741,7 +742,7 @@ func (r *CPUX86Runner) Reset() {
 }
 
 // Execute runs the CPU in a loop until halted (for GUI integration).
-// Mirrors Run's JITEnabled gate — see Run for rationale.
+// Mirrors Run's DisableJIT gate — see Run for rationale.
 func (r *CPUX86Runner) Execute() {
 	if r.PerfEnabled {
 		r.perfStartTime = time.Now()

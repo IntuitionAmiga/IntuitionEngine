@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 )
 
 func createX86Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWorker, error) {
@@ -46,17 +45,7 @@ func createX86Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWork
 	stopFn := func() { cpu.SetRunning(false) }
 	execFn := func() {
 		cpu.SetRunning(true)
-		// Interpreter by default: the JIT-executed worker miscompiles
-		// service stores under full-machine conditions (ring writes land
-		// at wrong addresses; interp-vs-JIT service parity passes in
-		// isolation, so the trigger is machine-state dependent and still
-		// open). The interpreter sustains full mailbox throughput.
-		// IE_COPROC_X86_JIT=1 opts back in for debugging that fault.
-		if os.Getenv("IE_COPROC_X86_JIT") == "1" {
-			cpu.x86JitExecute()
-			return
-		}
-		cpu.x86RunInterpreter()
+		cpu.x86JitExecute()
 	}
 
 	dbg := NewDebugX86(cpu, nil)

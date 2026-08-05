@@ -853,7 +853,7 @@ func (cpu *CPU_X86) finishFastMMIOWrite(nextPC uint32) {
 }
 
 // x86RunInterpreter is the fallback interpreter loop. Used when JIT is
-// disabled (CPUX86Runner.JITEnabled=false). Keeps only the
+// disabled (CPUX86Runner.DisableJIT=true). Keeps only the
 // workload-agnostic tryFastMMIOPollLoop fast match for status-poll
 // loops; no per-program shortcuts.
 func (cpu *CPU_X86) x86RunInterpreter() {

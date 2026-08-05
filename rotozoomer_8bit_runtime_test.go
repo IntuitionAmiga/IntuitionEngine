@@ -119,9 +119,8 @@ func TestZ80RotozoomerRuntimeProducesVideo(t *testing.T) {
 	})
 
 	runner := NewCPUZ80Runner(rig.bus, CPUZ80Config{
-		LoadAddr:   defaultZ80LoadAddr,
-		Entry:      defaultZ80LoadAddr,
-		JITEnabled: true,
+		LoadAddr: defaultZ80LoadAddr,
+		Entry:    defaultZ80LoadAddr,
 	})
 	if err := runner.LoadProgram(filepath.Join("sdk", "examples", "prebuilt", "rotozoomer_z80.ie80")); err != nil {
 		t.Fatalf("load z80 rotozoomer: %v", err)
@@ -145,9 +144,8 @@ func TestZ80RobocopRuntimeProducesVideo(t *testing.T) {
 	})
 
 	runner := NewCPUZ80Runner(rig.bus, CPUZ80Config{
-		LoadAddr:   defaultZ80LoadAddr,
-		Entry:      defaultZ80LoadAddr,
-		JITEnabled: true,
+		LoadAddr: defaultZ80LoadAddr,
+		Entry:    defaultZ80LoadAddr,
 	})
 	if err := runner.LoadProgram(filepath.Join("sdk", "examples", "prebuilt", "robocop_intro_z80.ie80")); err != nil {
 		t.Fatalf("load z80 robocop: %v", err)
@@ -171,9 +169,8 @@ func TestX86RotozoomerRuntimeProducesVideo(t *testing.T) {
 	})
 
 	runner := NewCPUX86Runner(rig.bus, &CPUX86Config{
-		LoadAddr:   0,
-		Entry:      0,
-		JITEnabled: true,
+		LoadAddr: 0,
+		Entry:    0,
 	})
 	if err := runner.LoadProgram(filepath.Join("sdk", "examples", "prebuilt", "rotozoomer_x86.ie86")); err != nil {
 		t.Fatalf("load x86 rotozoomer: %v", err)
@@ -199,7 +196,7 @@ func TestX86RotozoomerRuntimeProducesVideoNoJIT(t *testing.T) {
 	runner := NewCPUX86Runner(rig.bus, &CPUX86Config{
 		LoadAddr:   0,
 		Entry:      0,
-		JITEnabled: false,
+		DisableJIT: true,
 	})
 	if err := runner.LoadProgram(filepath.Join("sdk", "examples", "prebuilt", "rotozoomer_x86.ie86")); err != nil {
 		t.Fatalf("load x86 rotozoomer: %v", err)
