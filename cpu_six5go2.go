@@ -384,6 +384,7 @@ func newCPU6502WithAdapter(adapter *Bus6502Adapter) *CPU_6502 {
 	cpu := &CPU_6502{
 		memory:        adapter,
 		fastAdapter:   adapter, // Set fastAdapter since we just created it
+		jitEnabled:    true,
 		SP:            0xFF,
 		SR:            UNUSED_FLAG,
 		breakpoints:   make(map[uint16]bool),

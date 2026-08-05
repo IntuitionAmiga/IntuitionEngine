@@ -26,4 +26,7 @@ func TestP65JITDocumentationPlatformClaims(t *testing.T) {
 	if !strings.Contains(string(doc), "Linux AMD64") || !strings.Contains(string(doc), "Windows and macOS retain 6502 interpreter support only") {
 		t.Fatal("6502 JIT documentation does not state Linux-only JIT and retained desktop interpreter support")
 	}
+	if !strings.Contains(string(doc), "`--nojit`") || strings.Contains(string(doc), "`--no-jit`") {
+		t.Fatal("6502 JIT documentation does not use the registered --nojit flag")
+	}
 }

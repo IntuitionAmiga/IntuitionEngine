@@ -10,8 +10,10 @@ const (
 )
 
 type CPU6502Config struct {
-	LoadAddr     uint16
-	Entry        uint16
+	LoadAddr uint16
+	Entry    uint16
+	// DisableJIT requests interpreter execution. The JIT is enabled by default.
+	DisableJIT   bool
 	VoodooEngine *VoodooEngine
 }
 
@@ -35,10 +37,11 @@ func NewCPU6502Runner(bus *MachineBus, config CPU6502Config) *CPU6502Runner {
 	}
 
 	return &CPU6502Runner{
-		cpu:      NewCPU_6502WithVoodoo(bus, config.VoodooEngine),
-		bus:      bus,
-		loadAddr: loadAddr,
-		entry:    config.Entry,
+		cpu:        NewCPU_6502WithVoodoo(bus, config.VoodooEngine),
+		bus:        bus,
+		loadAddr:   loadAddr,
+		entry:      config.Entry,
+		JITEnabled: !config.DisableJIT,
 	}
 }
 

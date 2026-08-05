@@ -803,7 +803,6 @@ func TestJIT6502_Exec_RunnerIntegration(t *testing.T) {
 		LoadAddr: 0x0600,
 		Entry:    0x0600,
 	})
-	runner.JITEnabled = true
 
 	// Simple program: LDA #$42; JAM
 	bus.Write8(0x0600, 0xA9)
@@ -820,5 +819,23 @@ func TestJIT6502_Exec_RunnerIntegration(t *testing.T) {
 
 	if runner.CPU().A != 0x42 {
 		t.Errorf("A = 0x%02X, want 0x42 (runner integration)", runner.CPU().A)
+	}
+}
+
+func TestJIT6502_Exec_RunnerConfigControlsEnablement(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	if !cpu.jitEnabled {
+		t.Fatal("6502 JIT must be enabled by default for directly created CPUs")
+	}
+
+	enabled := NewCPU6502Runner(bus, CPU6502Config{})
+	if !enabled.JITEnabled {
+		t.Fatal("6502 JIT must be enabled by default for every runner")
+	}
+
+	disabled := NewCPU6502Runner(bus, CPU6502Config{DisableJIT: true})
+	if disabled.JITEnabled {
+		t.Fatal("DisableJIT configuration did not disable the runner")
 	}
 }

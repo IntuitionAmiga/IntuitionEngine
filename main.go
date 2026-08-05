@@ -1671,6 +1671,7 @@ func main() {
 			runner := NewCPU6502Runner(sysBus, CPU6502Config{
 				LoadAddr:     cpu6502LoadAddr,
 				Entry:        cpu6502Entry,
+				DisableJIT:   noJIT,
 				VoodooEngine: voodooEngine,
 			})
 			wireVideoInterruptSinks(videoChip, anticEngine, NewCPU6502InterruptSink(runner.cpu))
@@ -2293,6 +2294,7 @@ func main() {
 		cpu6502 := NewCPU6502Runner(sysBus, CPU6502Config{
 			LoadAddr:     parsedLoadAddr,
 			Entry:        parsedEntry,
+			DisableJIT:   noJIT,
 			VoodooEngine: voodooEngine,
 		})
 		wireVideoInterruptSinks(videoChip, anticEngine, NewCPU6502InterruptSink(cpu6502.cpu))
