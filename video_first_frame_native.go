@@ -14,3 +14,5 @@ package main
 // holds a loading overlay until the first frame renders. Native windows are
 // their own evidence of a live screen.
 func hostSignalFirstFrame() {}
+
+func hostSetCRTPresentationState(string) {}

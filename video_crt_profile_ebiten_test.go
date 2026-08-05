@@ -30,6 +30,15 @@ func TestGuestAdvancedConvexWarpGeometry(t *testing.T) {
 	}
 }
 
+func TestGuestAdvancedCurvatureSelection(t *testing.T) {
+	if x, y, shape := guestAdvancedCurvature(false); x != 0 || y != 0 || shape != 0 {
+		t.Fatalf("flat CRT curvature = (%v, %v, %v), want zero", x, y, shape)
+	}
+	if x, y, shape := guestAdvancedCurvature(true); x != guestAdvancedCurvatureX || y != guestAdvancedCurvatureY || shape != guestAdvancedCurvatureShape {
+		t.Fatalf("curved CRT curvature = (%v, %v, %v), want (%v, %v, %v)", x, y, shape, guestAdvancedCurvatureX, guestAdvancedCurvatureY, guestAdvancedCurvatureShape)
+	}
+}
+
 func TestGuestAdvancedFinalWarpSamplesGaussianGlow(t *testing.T) {
 	if !strings.Contains(guestAdvancedFinalShaderSource, "p2 := imageSrc2Origin()+uv*ScreenSize") {
 		t.Fatal("final CRT pass does not derive Gaussian-glow coordinates from the convex warp")
@@ -48,7 +57,7 @@ func TestCRTProfileGuestAdvancedIsDefault(t *testing.T) {
 	if got := eo.crtProfile; got != crtProfileGuestAdvanced {
 		t.Fatalf("default CRT profile = %v, want Guest-Advanced", got)
 	}
-	if !eo.crtRequested {
+	if eo.crtMode != crtModeFlat {
 		t.Fatal("Guest-Advanced must be enabled by default")
 	}
 }

@@ -63,7 +63,7 @@ type EbitenOutput struct {
 	// cursor and status bar must receive their own final-presentation CRT pass.
 	crtPresentationOverlay *ebiten.Image
 	crtMu                  sync.Mutex
-	crtRequested           bool
+	crtMode                crtPresentationMode
 	presentationReset      atomic.Bool
 	crtProfile             crtProfile
 	crtState               crtFilterState
@@ -244,7 +244,7 @@ func NewEbitenOutput() (VideoOutput, error) {
 		done:          make(chan struct{}),
 		doneOnce:      &sync.Once{},
 		showStatusBar: true,
-		crtRequested:  true,
+		crtMode:       crtModeFlat,
 		crtProfile:    crtProfileGuestAdvanced,
 	}
 	// Browser build only: expose ieTypeText/ieKey so the demo page's text input
@@ -253,19 +253,21 @@ func NewEbitenOutput() (VideoOutput, error) {
 	return eo, nil
 }
 
-// crtIsRequested, setCRTRequested and toggleCRTRequested are shared by the
-// host F7 handler and IEScript. Scripts run on a separate goroutine, so keep
-// presentation control independent from the render thread's frame buffers.
+// crtIsRequested, setCRTRequested and toggleCRTRequested preserve IEScript's
+// boolean CRT contract. F7 itself cycles the richer host presentation mode.
+// Scripts run on a separate goroutine, so keep this control independent from
+// the render thread's frame buffers.
 func (eo *EbitenOutput) crtIsRequested() bool {
 	eo.crtMu.Lock()
 	defer eo.crtMu.Unlock()
-	return eo.crtRequested
+	return eo.crtMode.enabled()
 }
 
 func (eo *EbitenOutput) setCRTRequested(enabled bool) {
 	eo.crtMu.Lock()
-	changed := eo.crtRequested != enabled
-	eo.crtRequested = enabled
+	next := crtModeFromEnabled(enabled)
+	changed := eo.crtMode != next
+	eo.crtMode = next
 	eo.crtMu.Unlock()
 	if changed {
 		eo.presentationReset.Store(true)
@@ -274,11 +276,29 @@ func (eo *EbitenOutput) setCRTRequested(enabled bool) {
 
 func (eo *EbitenOutput) toggleCRTRequested() bool {
 	eo.crtMu.Lock()
-	eo.crtRequested = !eo.crtRequested
-	enabled := eo.crtRequested
+	next := crtModeOff
+	if !eo.crtMode.enabled() {
+		next = crtModeFlat
+	}
+	eo.crtMode = next
 	eo.crtMu.Unlock()
 	eo.presentationReset.Store(true)
-	return enabled
+	return next.enabled()
+}
+
+func (eo *EbitenOutput) cycleCRTMode() crtPresentationMode {
+	eo.crtMu.Lock()
+	eo.crtMode = eo.crtMode.next()
+	next := eo.crtMode
+	eo.crtMu.Unlock()
+	eo.presentationReset.Store(true)
+	return next
+}
+
+func (eo *EbitenOutput) crtPresentationMode() crtPresentationMode {
+	eo.crtMu.Lock()
+	defer eo.crtMu.Unlock()
+	return eo.crtMode
 }
 
 func (eo *EbitenOutput) Start() error {
@@ -753,7 +773,7 @@ func (eo *EbitenOutput) Update() error {
 		}
 	}
 	if decideEbitenF7Action(inpututil.IsKeyJustPressed(ebiten.KeyF7)) {
-		eo.toggleCRTRequested()
+		eo.cycleCRTMode()
 		eo.bufferMutex.RLock()
 		compositor := eo.compositor
 		eo.bufferMutex.RUnlock()
@@ -1621,7 +1641,10 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	// browser demo keeps its loading overlay up until this fires, because the
 	// canvas element exists long before anything has been drawn to it.
 	eo.firstFrameOnce.Do(hostSignalFirstFrame)
-	effectiveCRT := eo.crtIsRequested() && eo.ensureCRTFilter()
+	crtMode := eo.crtPresentationMode()
+	effectiveCRT := crtMode.enabled() && eo.ensureCRTFilter()
+	hostSetCRTPresentationState(crtPresentationState(crtMode, effectiveCRT))
+	curvedCRT := crtMode == crtModeCurved
 	eo.resetPresentationTargetsAfterToggle()
 	// F7 disables presentation entirely, so Guest-Advanced's finish pass does
 	// not run to replace its history texture. Latch a reset for the next
@@ -1655,7 +1678,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 		}
 		eo.monitorOverlay.Draw(presentation)
 		eo.completeCompositionScreenshot(presentation)
-		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
+		eo.finishPresentation(screen, presentation, effectiveCRT, curvedCRT, defaultCRTPresentationGeometry())
 		return
 	}
 	if eo.luaOverlay != nil && eo.luaOverlay.IsActive() {
@@ -1664,7 +1687,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 		}
 		eo.luaOverlay.Draw(presentation)
 		eo.completeCompositionScreenshot(presentation)
-		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
+		eo.finishPresentation(screen, presentation, effectiveCRT, curvedCRT, defaultCRTPresentationGeometry())
 		return
 	}
 	if eo.hostOverlay != nil && eo.hostOverlay.IsActive() {
@@ -1673,7 +1696,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 		}
 		eo.hostOverlay.Draw(presentation)
 		eo.completeCompositionScreenshot(presentation)
-		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
+		eo.finishPresentation(screen, presentation, effectiveCRT, curvedCRT, defaultCRTPresentationGeometry())
 		return
 	}
 
@@ -1738,7 +1761,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	}
 
 	if showStatusBar {
-		eo.drawRuntimeStatusBar(postCompositor, effectiveCRT)
+		eo.drawRuntimeStatusBar(postCompositor, crtMode, effectiveCRT)
 	}
 	if postCompositor != presentation {
 		eo.compositeCRTPresentationOverlay(presentation, postCompositor)
@@ -1747,7 +1770,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	// textures. Do not run the composed guest through a second CRT pass.
 	// Zfast is fully applied while compositing hardware layers. Guest-Advanced
 	// needs a final viewport bloom/mask/deconvergence stage after those layers.
-	eo.finishPresentation(screen, presentation, effectiveCRT && (!usedHardware || eo.crtProfile == crtProfileGuestAdvanced), defaultCRTPresentationGeometry())
+	eo.finishPresentation(screen, presentation, effectiveCRT && (!usedHardware || eo.crtProfile == crtProfileGuestAdvanced), curvedCRT, defaultCRTPresentationGeometry())
 }
 
 // ensureCRTFilter lazily compiles once. A backend that cannot compile or run
@@ -1878,10 +1901,10 @@ func (eo *EbitenOutput) compositeCRTPresentationOverlay(presentation, overlay *e
 	presentation.DrawRectShader(overlay.Bounds().Dx(), overlay.Bounds().Dy(), eo.crtFilter.shader, op)
 }
 
-func (eo *EbitenOutput) finishPresentation(screen, presentation *ebiten.Image, effectiveCRT bool, geometry crtPresentationGeometry) {
+func (eo *EbitenOutput) finishPresentation(screen, presentation *ebiten.Image, effectiveCRT, curvedCRT bool, geometry crtPresentationGeometry) {
 	if effectiveCRT {
 		if eo.crtProfile == crtProfileGuestAdvanced {
-			eo.crtFilter.guest.finish(screen, presentation)
+			eo.crtFilter.guest.finish(screen, presentation, curvedCRT)
 		} else {
 			op := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy}
 			op.Images[0] = presentation
@@ -2172,7 +2195,15 @@ func playbackCPUFlags(s runtimeStatusSnapshot) (ie32 bool, ie64 bool, m68k bool,
 type statusToken struct {
 	name    string
 	enabled bool
+	colour  statusTokenColour
 }
+
+type statusTokenColour uint8
+
+const (
+	statusTokenColourDefault statusTokenColour = iota
+	statusTokenColourBlue
+)
 
 const runtimeStatusBarAlpha = 40
 
@@ -2207,10 +2238,13 @@ func drawStatusTokens(screen *ebiten.Image, x, baselineY int, tokens []statusTok
 	face := basicfont.Face7x13
 	offColor := color.RGBA{120, 120, 120, 255}
 	onColor := color.RGBA{0, 220, 90, 255}
+	blueColor := color.RGBA{80, 160, 255, 255}
 	cursorX := x
 	for _, token := range tokens {
 		c := offColor
-		if token.enabled {
+		if token.colour == statusTokenColourBlue {
+			c = blueColor
+		} else if token.enabled {
 			c = onColor
 		}
 		text.Draw(screen, token.name, face, cursorX, baselineY, c)
@@ -2280,9 +2314,16 @@ func runtimeCPUStatusTokens(s runtimeStatusSnapshot) []statusToken {
 	}
 }
 
-func ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable bool, scaleMode PresentationScaleMode, crtEnabled bool) []statusToken {
+func ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable bool, scaleMode PresentationScaleMode, crtMode crtPresentationMode, effectiveCRT bool) []statusToken {
+	crtToken := statusToken{name: "F7:CRT"}
+	if effectiveCRT {
+		crtToken.enabled = crtMode == crtModeFlat
+		if crtMode == crtModeCurved {
+			crtToken.colour = statusTokenColourBlue
+		}
+	}
 	tokens := []statusToken{
-		{name: "F7:CRT", enabled: crtEnabled},
+		crtToken,
 		{name: "F8:IE Script", enabled: false},
 		{name: "F9:IE Monitor", enabled: false},
 		{name: "F10:Reset", enabled: false},
@@ -2312,7 +2353,7 @@ func ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable bool, scaleMo
 // identical to the previous frame. The bar is now rendered once into an
 // offscreen image and re-rendered only when its content or the window geometry
 // changes.
-func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image, effectiveCRT bool) {
+func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image, crtMode crtPresentationMode, effectiveCRT bool) {
 	s := runtimeStatus.snapshot()
 
 	videoOn := s.video != nil && s.video.IsEnabled()
@@ -2359,7 +2400,7 @@ func (eo *EbitenOutput) drawRuntimeStatusBar(screen *ebiten.Image, effectiveCRT 
 		{name: "|", enabled: false},
 		{name: "VOODOO", enabled: voodooOn},
 	}
-	legendTokens := ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable, scaleMode, effectiveCRT)
+	legendTokens := ebitenStatusLegendTokens(lockFullscreen, scaleToggleAvailable, scaleMode, crtMode, effectiveCRT)
 
 	key := statusBarCacheKey(eo.width, barHeight, cpuTokens, videoTokens, audioTokens, legendTokens)
 	if eo.statusBarImage == nil || eo.statusBarKey != key ||
@@ -2392,6 +2433,7 @@ func statusBarCacheKey(width, height int, groups ...[]statusToken) string {
 		b.WriteByte(';')
 		for _, token := range tokens {
 			b.WriteString(token.name)
+			b.WriteByte(byte('0' + token.colour))
 			if token.enabled {
 				b.WriteByte('+')
 			} else {

@@ -35,6 +35,13 @@ func guestAdvancedWarpUV(u, v, curvatureX, curvatureY, shape float32) (float32, 
 	return x*0.5 + 0.5, y*0.5 + 0.5
 }
 
+func guestAdvancedCurvature(curved bool) (float32, float32, float32) {
+	if !curved {
+		return 0, 0, 0
+	}
+	return guestAdvancedCurvatureX, guestAdvancedCurvatureY, guestAdvancedCurvatureShape
+}
+
 // guestAdvancedCRT is the screen-only part of CRT-Guest-Advanced. It keeps
 // its intermediate images explicitly because Guest-Advanced is a pass graph:
 // source-space beam shaping, phosphor persistence, separable glow/bloom and
@@ -174,7 +181,7 @@ func (g *guestAdvancedCRT) drawRaster(dst, source *ebiten.Image, uniforms map[st
 // deliberately after composition: light from adjacent guest layers behaves
 // like light on one CRT face, while source-space rasterisation remains per
 // layer. The history is reset when the output size changes in ensureTargets.
-func (g *guestAdvancedCRT) finish(screen, input *ebiten.Image) {
+func (g *guestAdvancedCRT) finish(screen, input *ebiten.Image, curved bool) {
 	w, h := input.Bounds().Dx(), input.Bounds().Dy()
 	g.ensureTargets(w, h)
 	if g.resetPersistence || g.activeModeKey != g.sourceModeKey {
@@ -228,10 +235,11 @@ func (g *guestAdvancedCRT) finish(screen, input *ebiten.Image) {
 	bloomVertical.Images[0] = g.bloomHorizontalTarget
 	g.bloomVertical.DrawRectShader(w, h, g.bloomVerticalPass, bloomVertical)
 
+	curvatureX, curvatureY, curvatureShape := guestAdvancedCurvature(curved)
 	final := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{
 		"BloomStrength": float32(0.28), "GlowStrength": float32(0.12), "MaskStrength": float32(0.34), "TexelSize": texel,
 		"ScreenSize": []float32{float32(w), float32(h)},
-		"CurvatureX": guestAdvancedCurvatureX, "CurvatureY": guestAdvancedCurvatureY, "CurvatureShape": guestAdvancedCurvatureShape,
+		"CurvatureX": curvatureX, "CurvatureY": curvatureY, "CurvatureShape": curvatureShape,
 	}}
 	final.Images[0], final.Images[1], final.Images[2] = g.linear, g.bloomVertical, g.gaussianVertical
 	screen.DrawRectShader(w, h, g.final, final)

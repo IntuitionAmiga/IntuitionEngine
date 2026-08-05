@@ -48,6 +48,61 @@ func (p crtProfile) String() string {
 	}
 }
 
+// crtPresentationMode is the host-facing F7 state. Flat CRT is the default;
+// convex curvature is opt-in, and off bypasses the presentation shader.
+type crtPresentationMode uint8
+
+const (
+	crtModeFlat crtPresentationMode = iota
+	crtModeCurved
+	crtModeOff
+)
+
+func (m crtPresentationMode) next() crtPresentationMode {
+	switch m {
+	case crtModeFlat:
+		return crtModeCurved
+	case crtModeCurved:
+		return crtModeOff
+	default:
+		return crtModeFlat
+	}
+}
+
+func (m crtPresentationMode) enabled() bool { return m != crtModeOff }
+
+func (m crtPresentationMode) String() string {
+	switch m {
+	case crtModeFlat:
+		return "flat"
+	case crtModeCurved:
+		return "curved"
+	default:
+		return "off"
+	}
+}
+
+// crtPresentationState is a browser-automation contract. It deliberately
+// distinguishes a requested CRT mode from one whose shader failed to become
+// available, so a wasm smoke test cannot mistake an unfiltered fallback for
+// an active presentation path.
+func crtPresentationState(mode crtPresentationMode, effective bool) string {
+	if mode == crtModeOff {
+		return "off"
+	}
+	if effective {
+		return mode.String() + "-active"
+	}
+	return mode.String() + "-unavailable"
+}
+
+func crtModeFromEnabled(enabled bool) crtPresentationMode {
+	if enabled {
+		return crtModeFlat
+	}
+	return crtModeOff
+}
+
 type crtFilter struct {
 	shader *ebiten.Shader
 	guest  *guestAdvancedCRT

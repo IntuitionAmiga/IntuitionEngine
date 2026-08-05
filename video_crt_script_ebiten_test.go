@@ -65,6 +65,7 @@ func gateIEScriptCapturesCurved1080pPresentation() error {
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
+	eo.crtMode = crtModeCurved
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("SetDisplayConfig: %w", err)
 	}
@@ -217,7 +218,7 @@ func gateIEScriptCapturesGPUComposition() error {
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
-	eo.crtRequested = false
+	eo.crtMode = crtModeOff
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: 4, Height: 4, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("SetDisplayConfig: %w", err)
 	}

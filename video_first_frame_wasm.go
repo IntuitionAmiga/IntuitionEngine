@@ -27,3 +27,10 @@ func hostSignalFirstFrame() {
 		document.Call("dispatchEvent", event)
 	}
 }
+
+// hostSetCRTPresentationState publishes the post-initialisation CRT state for
+// browser automation. It is set from Draw after shader initialisation, so a
+// requested mode that fell back to an unfiltered frame is observable.
+func hostSetCRTPresentationState(state string) {
+	js.Global().Set("ieCRTPresentationState", js.ValueOf(state))
+}

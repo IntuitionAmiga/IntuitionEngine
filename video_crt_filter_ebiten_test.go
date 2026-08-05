@@ -175,6 +175,7 @@ func gateCRTIEMonOverlayUsesFinalCurvedPresentation() error {
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
+	eo.crtMode = crtModeCurved
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("IEMon display: %w", err)
 	}
@@ -205,7 +206,7 @@ func gateCRTRawPresentationCopiesTransparentRGB() error {
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
-	eo.crtRequested = false
+	eo.crtMode = crtModeOff
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("transparent-RGB display: %w", err)
 	}
@@ -273,12 +274,12 @@ func gateCRTGuestAdvancedToggleClearsAfterglow() error {
 	eo.Draw(screen)
 
 	black := solidTestFrame(width, height, 0, 0, 0, 0xFF)
-	eo.crtRequested = false
+	eo.crtMode = crtModeOff
 	if err := eo.UpdateFrame(black); err != nil {
 		return fmt.Errorf("Guest-Advanced toggle disabled frame: %w", err)
 	}
 	eo.Draw(screen)
-	eo.crtRequested = true
+	eo.crtMode = crtModeFlat
 	eo.Draw(screen)
 	pixels := readCRTGPUImage(screen, width, height)
 	if got := luminance(pixels, width, width/2, height/2); got != 0 {
@@ -311,13 +312,13 @@ func gateCRTHardwareTogglePreservesGuestLayer() error {
 	screen := ebiten.NewImage(width, height)
 	eo.Draw(screen)
 
-	eo.crtRequested = false
+	eo.crtMode = crtModeOff
 	eo.Draw(screen)
 	if got := readCRTGPUImage(screen, width, height); !equalBytes(got, frame) {
 		return fmt.Errorf("hardware guest layer disappeared when CRT was disabled")
 	}
 
-	eo.crtRequested = true
+	eo.crtMode = crtModeFlat
 	eo.Draw(screen)
 	pixels := readCRTGPUImage(screen, width, height)
 	if luminance(pixels, width, width/2, height/2) == 0 {
@@ -417,16 +418,11 @@ func gateCRTGuestAdvancedNativeScreenModes() error {
 		if pixels[i+3] != 0xFF {
 			return fmt.Errorf("Guest-Advanced %s alpha = %d, want 255", mode.name, pixels[i+3])
 		}
-		// A solid native source makes the convex CRT face observable at every
-		// real guest mode: its centre stays lit while a physical screen corner
-		// lies outside the warped sampling coordinate and becomes black. This
-		// catches a regression that applies the warp only to one source mode.
+		// Flat CRT is the default F7 state: a solid source reaches the screen
+		// corner at every full-screen native guest mode.
 		if mode.destX == 0 && mode.destY == 0 && mode.destWidth == presentationWidth && mode.destHeight == presentationHeight {
-			if got := luminance(pixels, presentationWidth, 0, 0); got != 0 {
-				return fmt.Errorf("Guest-Advanced %s lacks convex corner blanking: luminance=%d", mode.name, got)
-			}
-			if got := luminance(pixels, presentationWidth, presentationWidth/2, presentationHeight/2); got == 0 {
-				return fmt.Errorf("Guest-Advanced %s convex warp darkened the CRT centre", mode.name)
+			if got := luminance(pixels, presentationWidth, 0, 0); got == 0 {
+				return fmt.Errorf("Guest-Advanced %s flat CRT unexpectedly blanks a corner", mode.name)
 			}
 		}
 		if sameBytes(pixels[i:i+3], pixels[i+BYTES_PER_PIXEL:i+BYTES_PER_PIXEL+3]) {
@@ -435,6 +431,20 @@ func gateCRTGuestAdvancedNativeScreenModes() error {
 		if mode.destX != 0 || mode.destY != 0 {
 			if got := pixels[3]; got != 0 {
 				return fmt.Errorf("Guest-Advanced %s wrote outside its destination rect, alpha=%d", mode.name, got)
+			}
+		}
+
+		// The first F7 press enables the convex face. Run it at every native
+		// source geometry, rather than assuming curvature works only for 320x200.
+		eo.crtMode = crtModeCurved
+		eo.Draw(screen)
+		curved := readCRTGPUImage(screen, presentationWidth, presentationHeight)
+		if curved[i] == 0 && curved[i+1] == 0 && curved[i+2] == 0 {
+			return fmt.Errorf("Guest-Advanced %s curved CRT darkened the centre", mode.name)
+		}
+		if mode.destX == 0 && mode.destY == 0 && mode.destWidth == presentationWidth && mode.destHeight == presentationHeight {
+			if got := luminance(curved, presentationWidth, 0, 0); got != 0 {
+				return fmt.Errorf("Guest-Advanced %s curved CRT lacks corner blanking: luminance=%d", mode.name, got)
 			}
 		}
 
@@ -650,7 +660,7 @@ func gateCRTHardwarePostCompositorElements() error {
 	}
 	cursor := cursorOut.(*EbitenOutput)
 	cursor.showStatusBar = false
-	cursor.crtRequested = true
+	cursor.crtMode = crtModeFlat
 	if err := cursor.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("hardware cursor display: %w", err)
 	}
@@ -675,7 +685,7 @@ func gateCRTHardwarePostCompositorElements() error {
 	}
 	status := statusOut.(*EbitenOutput)
 	status.showStatusBar = true
-	status.crtRequested = true
+	status.crtMode = crtModeFlat
 	if err := status.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("hardware status display: %w", err)
 	}
@@ -708,7 +718,7 @@ func gateCRTOpaqueLayerForcesAlpha() error {
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
-	eo.crtRequested = true
+	eo.crtMode = crtModeFlat
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: 2, Height: 2, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("opaque CRT display: %w", err)
 	}
@@ -741,7 +751,7 @@ func gateCRTTransparentLayerPreservesLower() error {
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
-	eo.crtRequested = true
+	eo.crtMode = crtModeFlat
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("transparent layer display: %w", err)
 	}
@@ -780,7 +790,7 @@ func gateCRTRawHardwareLayerPromotesZeroAlphaRGB() error {
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
-	eo.crtRequested = false
+	eo.crtMode = crtModeOff
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("zero-alpha hardware display: %w", err)
 	}
@@ -820,7 +830,7 @@ func gateCRTRawHardwareMixedNativeLayers() error {
 	}
 	eo := out.(*EbitenOutput)
 	eo.showStatusBar = false
-	eo.crtRequested = false
+	eo.crtMode = crtModeOff
 	if err := eo.SetDisplayConfig(DisplayConfig{Width: presentationWidth, Height: presentationHeight, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("mixed native-layer display: %w", err)
 	}
@@ -884,13 +894,13 @@ func gateCRTOverlayRoutes(frame []byte) error {
 		}
 		tc.setup(eo)
 		screen := ebiten.NewImage(8, 8)
-		eo.crtRequested = false
+		eo.crtMode = crtModeOff
 		eo.Draw(screen)
 		raw := readCRTGPUImage(screen, 8, 8)
 		if equalBytes(raw, frame) {
 			return fmt.Errorf("%s overlay did not replace the guest route", tc.name)
 		}
-		eo.crtRequested = true
+		eo.crtMode = crtModeFlat
 		eo.Draw(screen)
 		if filtered := readCRTGPUImage(screen, 8, 8); equalBytes(filtered, raw) {
 			return fmt.Errorf("%s overlay was not CRT filtered", tc.name)

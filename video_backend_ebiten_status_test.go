@@ -66,8 +66,8 @@ func TestEbitenCRTRequestedByDefaultAndF7Decision(t *testing.T) {
 		t.Fatalf("NewEbitenOutput: %v", err)
 	}
 	eo := out.(*EbitenOutput)
-	if !eo.crtRequested || eo.crtState != crtFilterUninitialised {
-		t.Fatalf("new CRT state = requested:%v state:%v, want requested and uninitialised", eo.crtRequested, eo.crtState)
+	if eo.crtMode != crtModeFlat || eo.crtState != crtFilterUninitialised {
+		t.Fatalf("new CRT mode = %v state:%v, want flat and uninitialised", eo.crtMode, eo.crtState)
 	}
 	if decideEbitenF7Action(false) {
 		t.Fatal("F7 action fired without a just-pressed F7")
@@ -76,9 +76,81 @@ func TestEbitenCRTRequestedByDefaultAndF7Decision(t *testing.T) {
 		t.Fatal("F7 action did not fire for a just-pressed F7")
 	}
 
-	eo.crtRequested = !eo.crtRequested
-	if eo.crtRequested {
+	eo.cycleCRTMode()
+	if eo.crtMode != crtModeCurved {
+		t.Fatal("first F7 transition did not enable curved CRT state")
+	}
+	eo.cycleCRTMode()
+	if eo.crtMode != crtModeOff {
 		t.Fatal("F7 transition did not disable requested CRT state")
+	}
+}
+
+func TestCRTPresentationModeCyclesFlatCurvedOff(t *testing.T) {
+	mode := crtModeFlat
+	for _, want := range []crtPresentationMode{crtModeCurved, crtModeOff, crtModeFlat} {
+		mode = mode.next()
+		if mode != want {
+			t.Fatalf("F7 CRT mode = %v, want %v", mode, want)
+		}
+	}
+}
+
+func TestCRTPresentationModeNamesAreBrowserStable(t *testing.T) {
+	for mode, want := range map[crtPresentationMode]string{
+		crtModeFlat:   "flat",
+		crtModeCurved: "curved",
+		crtModeOff:    "off",
+	} {
+		if got := mode.String(); got != want {
+			t.Fatalf("CRT mode %v name = %q, want %q", mode, got, want)
+		}
+	}
+}
+
+func TestCRTPresentationStateDistinguishesUnavailableFilter(t *testing.T) {
+	tests := []struct {
+		mode      crtPresentationMode
+		effective bool
+		want      string
+	}{
+		{crtModeFlat, true, "flat-active"},
+		{crtModeCurved, true, "curved-active"},
+		{crtModeFlat, false, "flat-unavailable"},
+		{crtModeCurved, false, "curved-unavailable"},
+		{crtModeOff, false, "off"},
+	}
+	for _, test := range tests {
+		if got := crtPresentationState(test.mode, test.effective); got != test.want {
+			t.Errorf("crtPresentationState(%s, %t) = %q, want %q", test.mode, test.effective, got, test.want)
+		}
+	}
+}
+
+func TestCRTModeKeepsScriptBooleanContract(t *testing.T) {
+	if !crtModeFlat.enabled() || !crtModeCurved.enabled() || crtModeOff.enabled() {
+		t.Fatal("CRT mode enabled mapping is wrong")
+	}
+	if got := crtModeFromEnabled(true); got != crtModeFlat {
+		t.Fatalf("script CRT true mode = %v, want flat", got)
+	}
+	if got := crtModeFromEnabled(false); got != crtModeOff {
+		t.Fatalf("script CRT false mode = %v, want off", got)
+	}
+
+	out, err := NewEbitenOutput()
+	if err != nil {
+		t.Fatalf("NewEbitenOutput: %v", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.crtMode = crtModeCurved
+	eo.setCRTRequested(true)
+	if eo.crtMode != crtModeFlat {
+		t.Fatalf("script CRT true selected mode %v, want flat", eo.crtMode)
+	}
+	eo.crtMode = crtModeCurved
+	if enabled := eo.toggleCRTRequested(); enabled || eo.crtMode != crtModeOff {
+		t.Fatalf("script CRT toggle from curved = enabled:%v mode:%v, want off", enabled, eo.crtMode)
 	}
 }
 
@@ -95,10 +167,24 @@ func TestStatusBarCacheKeyTracksCRTLegendState(t *testing.T) {
 	cpu := []statusToken{{name: "IE64", enabled: true}}
 	video := []statusToken{{name: "IEVID", enabled: true}}
 	audio := []statusToken{{name: "SID", enabled: false}}
-	on := ebitenStatusLegendTokens(false, false, ScaleAspectFit, true)
-	off := ebitenStatusLegendTokens(false, false, ScaleAspectFit, false)
-	if statusBarCacheKey(640, 44, cpu, video, audio, on) == statusBarCacheKey(640, 44, cpu, video, audio, off) {
-		t.Fatal("CRT legend state did not invalidate the status-bar cache")
+	flat := ebitenStatusLegendTokens(false, false, ScaleAspectFit, crtModeFlat, true)
+	curved := ebitenStatusLegendTokens(false, false, ScaleAspectFit, crtModeCurved, true)
+	off := ebitenStatusLegendTokens(false, false, ScaleAspectFit, crtModeOff, false)
+	flatUnavailable := ebitenStatusLegendTokens(false, false, ScaleAspectFit, crtModeFlat, false)
+	if statusBarCacheKey(640, 44, cpu, video, audio, flat) == statusBarCacheKey(640, 44, cpu, video, audio, curved) ||
+		statusBarCacheKey(640, 44, cpu, video, audio, curved) == statusBarCacheKey(640, 44, cpu, video, audio, off) ||
+		statusBarCacheKey(640, 44, cpu, video, audio, flat) == statusBarCacheKey(640, 44, cpu, video, audio, flatUnavailable) {
+		t.Fatal("CRT legend mode did not invalidate the status-bar cache")
+	}
+}
+
+func TestEbitenStatusLegendShowsUnavailableCRTAsDisabled(t *testing.T) {
+	for _, mode := range []crtPresentationMode{crtModeFlat, crtModeCurved} {
+		tokens := ebitenStatusLegendTokens(false, false, ScaleAspectFit, mode, false)
+		index := statusTokenIndex(tokens, "F7:CRT")
+		if index < 0 || tokens[index].enabled || tokens[index].colour != statusTokenColourDefault {
+			t.Fatalf("unavailable %s CRT legend token = %+v, want disabled grey", mode, tokens)
+		}
 	}
 }
 
@@ -122,9 +208,9 @@ func TestEbitenDisplayConfigLockFullscreenSticky(t *testing.T) {
 }
 
 func TestEbitenStatusLegendFullscreenLockAndScaleTokens(t *testing.T) {
-	normal := ebitenStatusLegendTokens(false, true, ScaleAspectFit, true)
+	normal := ebitenStatusLegendTokens(false, true, ScaleAspectFit, crtModeFlat, true)
 	crtIdx := statusTokenIndex(normal, "F7:CRT")
-	if crtIdx < 0 || !normal[crtIdx].enabled {
+	if crtIdx < 0 || !normal[crtIdx].enabled || normal[crtIdx].colour != statusTokenColourDefault {
 		t.Fatalf("enabled CRT legend token missing or grey: %v", normal)
 	}
 	if statusTokenIndex(normal, "Shift+F11:Fullscreen/Windowed") < 0 {
@@ -134,7 +220,13 @@ func TestEbitenStatusLegendFullscreenLockAndScaleTokens(t *testing.T) {
 		t.Fatalf("scale-capable legend missing F11 scale token: %v", statusTokenNames(normal))
 	}
 
-	locked := ebitenStatusLegendTokens(true, true, ScaleStretchFill, false)
+	curved := ebitenStatusLegendTokens(true, true, ScaleStretchFill, crtModeCurved, true)
+	crtIdx = statusTokenIndex(curved, "F7:CRT")
+	if crtIdx < 0 || curved[crtIdx].colour != statusTokenColourBlue {
+		t.Fatalf("curved CRT legend token missing or not blue: %v", curved)
+	}
+
+	locked := ebitenStatusLegendTokens(true, true, ScaleStretchFill, crtModeOff, false)
 	crtIdx = statusTokenIndex(locked, "F7:CRT")
 	if crtIdx < 0 || locked[crtIdx].enabled {
 		t.Fatalf("disabled CRT legend token missing or green: %v", locked)
@@ -143,7 +235,7 @@ func TestEbitenStatusLegendFullscreenLockAndScaleTokens(t *testing.T) {
 		t.Fatalf("locked legend should omit fullscreen/windowed token: %v", statusTokenNames(locked))
 	}
 
-	noScale := ebitenStatusLegendTokens(false, false, ScaleAspectFit, true)
+	noScale := ebitenStatusLegendTokens(false, false, ScaleAspectFit, crtModeFlat, true)
 	if statusTokenIndex(noScale, "F11:") >= 0 {
 		t.Fatalf("non-scale legend should omit F11 scale token: %v", statusTokenNames(noScale))
 	}
@@ -216,14 +308,14 @@ func TestStatusBar_CachedImageReusedAcrossFrames(t *testing.T) {
 	}
 
 	screen := ebiten.NewImage(320, 200)
-	eo.drawRuntimeStatusBar(screen, true)
+	eo.drawRuntimeStatusBar(screen, crtModeFlat, true)
 	first := eo.statusBarImage
 	firstKey := eo.statusBarKey
 	if first == nil {
 		t.Fatal("the status bar was not rendered")
 	}
 	for range 5 {
-		eo.drawRuntimeStatusBar(screen, true)
+		eo.drawRuntimeStatusBar(screen, crtModeFlat, true)
 	}
 	if eo.statusBarImage != first {
 		t.Fatal("the status bar image was rebuilt with nothing changed")
@@ -237,7 +329,7 @@ func TestStatusBar_CachedImageReusedAcrossFrames(t *testing.T) {
 		t.Fatalf("SetDisplayConfig: %v", err)
 	}
 	wide := ebiten.NewImage(640, 400)
-	eo.drawRuntimeStatusBar(wide, true)
+	eo.drawRuntimeStatusBar(wide, crtModeFlat, true)
 	if eo.statusBarImage == first {
 		t.Fatal("the status bar survived a resize, so it would be drawn at the wrong width")
 	}
