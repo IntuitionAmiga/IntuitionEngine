@@ -346,7 +346,9 @@ func gateCRTGuestAdvancedNativeScreenModes() error {
 		destHeight   int
 	}{
 		{name: "320x200", sourceWidth: 320, sourceHeight: 200, destWidth: presentationWidth, destHeight: presentationHeight},
+		{name: "320x240", sourceWidth: 320, sourceHeight: 240, destWidth: presentationWidth, destHeight: presentationHeight},
 		{name: "640x480", sourceWidth: 640, sourceHeight: 480, destWidth: presentationWidth, destHeight: presentationHeight},
+		{name: "1024x768", sourceWidth: 1024, sourceHeight: 768, destWidth: presentationWidth, destHeight: presentationHeight},
 		{name: "320x200 aspect-fit", sourceWidth: 320, sourceHeight: 200, destX: 160, destY: 40, destWidth: 1600, destHeight: 1000},
 	} {
 		out, err := NewEbitenOutput()
@@ -450,6 +452,54 @@ func gateCRTGuestAdvancedEffects() error {
 	}
 	if err := gateCRTGuestAdvancedBloom(); err != nil {
 		return err
+	}
+	if err := gateCRTGuestAdvancedPreparatoryPasses(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// gateCRTGuestAdvancedPreparatoryPasses proves the stages omitted from the
+// original six-pass port are independently populated before final masking.
+// A single bright pixel gives each stage a deterministic non-zero contribution
+// without tying the test to a particular driver's rounded final colour.
+func gateCRTGuestAdvancedPreparatoryPasses() error {
+	const width, height = 24, 24
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("Guest-Advanced preparation output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("Guest-Advanced preparation display: %w", err)
+	}
+	frame := solidTestFrame(width, height, 0, 0, 0, 0xFF)
+	centre := (12*width + 12) * BYTES_PER_PIXEL
+	frame[centre], frame[centre+1], frame[centre+2] = 255, 180, 80
+	if err := eo.UpdateFrame(frame); err != nil {
+		return fmt.Errorf("Guest-Advanced preparation frame: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	eo.Draw(screen)
+	g := eo.crtFilter.guest
+	if luminance(readCRTGPUImage(g.prepared, width, height), width, 12, 12) == 0 {
+		return fmt.Errorf("Guest-Advanced pre-afterglow pass is empty")
+	}
+	if readCRTGPUImage(g.averageLuminance, width, height)[centre+3] == 0 {
+		return fmt.Errorf("Guest-Advanced average-luminance pass did not publish scene luminance")
+	}
+	if luminance(readCRTGPUImage(g.gaussianHorizontal, width, height), width, 13, 12) == 0 {
+		return fmt.Errorf("Guest-Advanced horizontal Gaussian glow is empty")
+	}
+	if luminance(readCRTGPUImage(g.gaussianVertical, width, height), width, 13, 13) == 0 {
+		return fmt.Errorf("Guest-Advanced vertical Gaussian glow is empty")
+	}
+	if luminance(readCRTGPUImage(g.bloomVertical, width, height), width, 15, 14) == 0 {
+		return fmt.Errorf("Guest-Advanced wide bloom did not reach its supported sample location")
+	}
+	if luminance(readCRTGPUImage(g.gaussianVertical, width, height), width, 15, 14) != 0 {
+		return fmt.Errorf("Guest-Advanced Gaussian glow reaches the wide-bloom-only sample location")
 	}
 	return nil
 }

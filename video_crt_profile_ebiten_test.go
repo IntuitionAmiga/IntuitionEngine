@@ -40,7 +40,11 @@ func TestGuestAdvancedPassGraphHasScreenOnlyStages(t *testing.T) {
 	}{
 		{"native raster", guestAdvancedRasterShaderSource},
 		{"afterglow", guestAdvancedAfterglowShaderSource},
+		{"afterglow preparation", guestAdvancedPreAfterglowShaderSource},
+		{"average luminance", guestAdvancedAverageLuminanceShaderSource},
 		{"linearise", guestAdvancedLinearizeShaderSource},
+		{"horizontal Gaussian glow", guestAdvancedGaussianHorizontalShaderSource},
+		{"vertical Gaussian glow", guestAdvancedGaussianVerticalShaderSource},
 		{"horizontal glow", guestAdvancedHorizontalBlurShaderSource},
 		{"vertical bloom", guestAdvancedVerticalBlurShaderSource},
 		{"mask and deconvergence", guestAdvancedFinalShaderSource},

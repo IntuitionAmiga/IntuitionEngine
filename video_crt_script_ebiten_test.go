@@ -132,8 +132,7 @@ func gateIEScriptCapturesHardwareGPUComposition() error {
 	if err := validateIEScriptScreenshotPixel(path, "hardware composition", 40, 120, 200, 255); err != nil {
 		return err
 	}
-	final := make([]byte, BYTES_PER_PIXEL)
-	screen.ReadPixels(final)
+	final := readCRTGPUImage(screen, 4, 4)[:BYTES_PER_PIXEL]
 	if final[0] == 40 && final[1] == 120 && final[2] == 200 {
 		return fmt.Errorf("final hardware presentation unexpectedly bypassed CRT: %v", final)
 	}
@@ -173,8 +172,7 @@ func gateIEScriptCapturesGPUComposition() error {
 	}
 	screen := ebiten.NewImage(4, 4)
 	eo.Draw(screen)
-	visible := make([]byte, BYTES_PER_PIXEL)
-	screen.ReadPixels(visible)
+	visible := readCRTGPUImage(screen, 4, 4)[:BYTES_PER_PIXEL]
 	if visible[0] != 255 || visible[1] != 0 || visible[2] != 0 || visible[3] != 255 {
 		return fmt.Errorf("test cursor was not present in final presentation: %v", visible)
 	}

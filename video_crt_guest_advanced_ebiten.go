@@ -16,10 +16,14 @@ const guestAdvancedPersistence float32 = 0.32
 // output-space mask/deconvergence. There is intentionally no bezel, cabinet
 // or reflection image in this pipeline.
 type guestAdvancedCRT struct {
-	raster, afterglow, linearize, blurHorizontal, blurVertical, final *ebiten.Shader
-	history, persisted, linear, glowHorizontal, glowVertical          *ebiten.Image
-	sourceModeKey, activeModeKey                                      string
-	resetPersistence                                                  bool
+	raster, afterglow, preAfterglow, averageLuminancePass, linearize                     *ebiten.Shader
+	gaussianHorizontalPass, gaussianVerticalPass, bloomHorizontalPass, bloomVerticalPass *ebiten.Shader
+	final                                                                                *ebiten.Shader
+	history, persisted, prepared, averageLuminance, luminanceHistory                     *ebiten.Image
+	linear, gaussianHorizontal, gaussianVertical, bloomHorizontalTarget                  *ebiten.Image
+	bloomVertical                                                                        *ebiten.Image
+	sourceModeKey, activeModeKey                                                         string
+	resetPersistence                                                                     bool
 }
 
 func (g *guestAdvancedCRT) setSourceMode(key string) { g.sourceModeKey = key }
@@ -70,13 +74,25 @@ func newGuestAdvancedCRT() (*guestAdvancedCRT, error) {
 	if g.afterglow, err = compile("afterglow", guestAdvancedAfterglowShaderSource); err != nil {
 		return nil, err
 	}
+	if g.preAfterglow, err = compile("afterglow preparation", guestAdvancedPreAfterglowShaderSource); err != nil {
+		return nil, err
+	}
+	if g.averageLuminancePass, err = compile("average luminance", guestAdvancedAverageLuminanceShaderSource); err != nil {
+		return nil, err
+	}
 	if g.linearize, err = compile("linearise", guestAdvancedLinearizeShaderSource); err != nil {
 		return nil, err
 	}
-	if g.blurHorizontal, err = compile("horizontal glow", guestAdvancedHorizontalBlurShaderSource); err != nil {
+	if g.gaussianHorizontalPass, err = compile("horizontal Gaussian glow", guestAdvancedGaussianHorizontalShaderSource); err != nil {
 		return nil, err
 	}
-	if g.blurVertical, err = compile("vertical bloom", guestAdvancedVerticalBlurShaderSource); err != nil {
+	if g.gaussianVerticalPass, err = compile("vertical Gaussian glow", guestAdvancedGaussianVerticalShaderSource); err != nil {
+		return nil, err
+	}
+	if g.bloomHorizontalPass, err = compile("horizontal bloom", guestAdvancedHorizontalBlurShaderSource); err != nil {
+		return nil, err
+	}
+	if g.bloomVerticalPass, err = compile("vertical bloom", guestAdvancedVerticalBlurShaderSource); err != nil {
 		return nil, err
 	}
 	if g.final, err = compile("mask and deconvergence", guestAdvancedFinalShaderSource); err != nil {
@@ -92,18 +108,25 @@ func (g *guestAdvancedCRT) ensureTargets(width, height int) {
 	g.disposeTargets()
 	g.history = ebiten.NewImage(width, height)
 	g.persisted = ebiten.NewImage(width, height)
+	g.prepared = ebiten.NewImage(width, height)
+	g.averageLuminance = ebiten.NewImage(width, height)
+	g.luminanceHistory = ebiten.NewImage(width, height)
 	g.linear = ebiten.NewImage(width, height)
-	g.glowHorizontal = ebiten.NewImage(width, height)
-	g.glowVertical = ebiten.NewImage(width, height)
+	g.gaussianHorizontal = ebiten.NewImage(width, height)
+	g.gaussianVertical = ebiten.NewImage(width, height)
+	g.bloomHorizontalTarget = ebiten.NewImage(width, height)
+	g.bloomVertical = ebiten.NewImage(width, height)
 }
 
 func (g *guestAdvancedCRT) disposeTargets() {
-	for _, image := range []*ebiten.Image{g.history, g.persisted, g.linear, g.glowHorizontal, g.glowVertical} {
+	for _, image := range []*ebiten.Image{g.history, g.persisted, g.prepared, g.averageLuminance, g.luminanceHistory, g.linear, g.gaussianHorizontal, g.gaussianVertical, g.bloomHorizontalTarget, g.bloomVertical} {
 		if image != nil {
 			image.Deallocate()
 		}
 	}
-	g.history, g.persisted, g.linear, g.glowHorizontal, g.glowVertical = nil, nil, nil, nil, nil
+	g.history, g.persisted, g.prepared, g.averageLuminance, g.luminanceHistory = nil, nil, nil, nil, nil
+	g.linear, g.gaussianHorizontal, g.gaussianVertical = nil, nil, nil
+	g.bloomHorizontalTarget, g.bloomVertical = nil, nil
 }
 
 // drawRaster applies Guest-Advanced's source-space interpolation and
@@ -131,6 +154,7 @@ func (g *guestAdvancedCRT) finish(screen, input *ebiten.Image) {
 	g.ensureTargets(w, h)
 	if g.resetPersistence || g.activeModeKey != g.sourceModeKey {
 		g.history.Clear()
+		g.luminanceHistory.Clear()
 		g.activeModeKey = g.sourceModeKey
 		g.resetPersistence = false
 	}
@@ -144,27 +168,49 @@ func (g *guestAdvancedCRT) finish(screen, input *ebiten.Image) {
 	afterglow.Images[0], afterglow.Images[1] = input, g.history
 	g.persisted.DrawRectShader(w, h, g.afterglow, afterglow)
 
+	g.prepared.Clear()
+	prepare := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy}
+	prepare.Images[0], prepare.Images[1] = input, g.persisted
+	g.prepared.DrawRectShader(w, h, g.preAfterglow, prepare)
+
+	g.averageLuminance.Clear()
+	average := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{"SourceSize": []float32{float32(w), float32(h)}}}
+	average.Images[0], average.Images[1] = g.prepared, g.luminanceHistory
+	g.averageLuminance.DrawRectShader(w, h, g.averageLuminancePass, average)
+
 	g.linear.Clear()
 	linearize := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy}
-	linearize.Images[0] = g.persisted
+	linearize.Images[0], linearize.Images[1] = g.prepared, g.averageLuminance
 	g.linear.DrawRectShader(w, h, g.linearize, linearize)
 
-	g.glowHorizontal.Clear()
-	horizontal := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{"TexelSize": texel}}
-	horizontal.Images[0] = g.linear
-	g.glowHorizontal.DrawRectShader(w, h, g.blurHorizontal, horizontal)
+	g.gaussianHorizontal.Clear()
+	gaussianHorizontal := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{"TexelSize": texel}}
+	gaussianHorizontal.Images[0] = g.linear
+	g.gaussianHorizontal.DrawRectShader(w, h, g.gaussianHorizontalPass, gaussianHorizontal)
 
-	g.glowVertical.Clear()
-	vertical := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{"TexelSize": texel}}
-	vertical.Images[0] = g.glowHorizontal
-	g.glowVertical.DrawRectShader(w, h, g.blurVertical, vertical)
+	g.gaussianVertical.Clear()
+	gaussianVertical := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{"TexelSize": texel}}
+	gaussianVertical.Images[0] = g.gaussianHorizontal
+	g.gaussianVertical.DrawRectShader(w, h, g.gaussianVerticalPass, gaussianVertical)
 
-	final := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{"BloomStrength": float32(0.28), "MaskStrength": float32(0.34), "TexelSize": texel}}
-	final.Images[0], final.Images[1] = g.linear, g.glowVertical
+	g.bloomHorizontalTarget.Clear()
+	bloomHorizontal := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{"TexelSize": texel}}
+	bloomHorizontal.Images[0] = g.linear
+	g.bloomHorizontalTarget.DrawRectShader(w, h, g.bloomHorizontalPass, bloomHorizontal)
+
+	g.bloomVertical.Clear()
+	bloomVertical := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{"TexelSize": texel}}
+	bloomVertical.Images[0] = g.bloomHorizontalTarget
+	g.bloomVertical.DrawRectShader(w, h, g.bloomVerticalPass, bloomVertical)
+
+	final := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{"BloomStrength": float32(0.28), "GlowStrength": float32(0.12), "MaskStrength": float32(0.34), "TexelSize": texel}}
+	final.Images[0], final.Images[1], final.Images[2] = g.linear, g.bloomVertical, g.gaussianVertical
 	screen.DrawRectShader(w, h, g.final, final)
 
 	g.history.Clear()
 	g.history.DrawImage(g.persisted, nil)
+	g.luminanceHistory.Clear()
+	g.luminanceHistory.DrawImage(g.averageLuminance, nil)
 }
 
 // Ported effect structure from libretro/slang-shaders crt-guest-advanced
@@ -205,6 +251,49 @@ func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 	return vec4(max(now.rgb, previous.rgb*Persistence), max(now.a, previous.a*Persistence))
 }`
 
+// The upstream pre-shaders-afterglow pass combines the current signal with
+// colour-shaped retained phosphor light before the linear-light blur stages.
+// IE deliberately keeps the neutral profile: no LUT, vignette or cabinet
+// treatment, but the retained light is saturated and added separately from
+// the current raster rather than being treated as the source image itself.
+const guestAdvancedPreAfterglowShaderSource = `//kage:unit pixels
+package main
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	p := imageSrc0Origin()+srcPos
+	now := imageSrc0At(p)
+	persisted := imageSrc1At(imageSrc1Origin()+srcPos)
+	trail := max(persisted.rgb-now.rgb, vec3(0.0))
+	light := length(trail)
+	if light > 0.0 { trail = normalize(trail+vec3(0.00001))*light }
+	return vec4(min(now.rgb+trail, vec3(1.0)), max(now.a, persisted.a))
+}`
+
+// avg-lum is the screen-only equivalent of Guest-Advanced's AvgLumPass. Kage
+// does not expose Slang's mip LOD sampling, so it uses five stable screen
+// probes plus the local pixel and temporal alpha feedback. The result is kept
+// in alpha for the final CRT pass while RGB carries local edge deltas for
+// later profile extensions.
+const guestAdvancedAverageLuminanceShaderSource = `//kage:unit pixels
+package main
+var SourceSize vec2
+func luma(c vec3) float { return dot(c, vec3(0.2126, 0.7152, 0.0722)) }
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	origin := imageSrc0Origin()
+	p := origin+srcPos
+	local := imageSrc0At(p).rgb
+	c0 := imageSrc0At(origin+SourceSize*vec2(0.20, 0.20)).rgb
+	c1 := imageSrc0At(origin+SourceSize*vec2(0.80, 0.20)).rgb
+	c2 := imageSrc0At(origin+SourceSize*vec2(0.20, 0.80)).rgb
+	c3 := imageSrc0At(origin+SourceSize*vec2(0.80, 0.80)).rgb
+	c4 := imageSrc0At(origin+SourceSize*vec2(0.50, 0.50)).rgb
+	scene := (luma(c0)+luma(c1)+luma(c2)+luma(c3)+luma(c4))*0.20
+	previous := imageSrc1At(imageSrc1Origin()+srcPos).a
+	adapted := mix(max(scene, luma(local)*0.20), previous, 0.70)
+	dx := abs(luma(imageSrc0At(p+vec2(1.0, 0.0)).rgb)-luma(imageSrc0At(p-vec2(1.0, 0.0)).rgb))
+	dy := abs(luma(imageSrc0At(p+vec2(0.0, 1.0)).rgb)-luma(imageSrc0At(p-vec2(0.0, 1.0)).rgb))
+	return vec4(dx, dy, max(dx, dy), adapted)
+}`
+
 // Guest-Advanced's glow and bloom passes operate in linear light. Ebiten
 // render targets are normalised RGBA rather than floating point, so this pass
 // retains the upstream gamma relationship while clamping to the portable range.
@@ -212,7 +301,38 @@ const guestAdvancedLinearizeShaderSource = `//kage:unit pixels
 package main
 func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 	c := imageSrc0At(srcPos)
-	return vec4(pow(max(c.rgb, vec3(0.0)), vec3(2.2)), c.a)
+	adaptiveLuminance := imageSrc1At(imageSrc1Origin()+srcPos).a
+	// The AvgLumPass feeds a restrained gain into linear light. This retains
+	// the CRT's stable beam while letting bright and dark scenes diverge.
+	gain := mix(0.92, 1.05, adaptiveLuminance)
+	return vec4(pow(max(c.rgb*gain, vec3(0.0)), vec3(2.2)), c.a)
+}`
+
+// Guest-Advanced keeps a tight Gaussian glow distinct from its broader bloom.
+// The pair makes bright phosphors softly bleed into immediately adjacent
+// pixels while the later bloom pair remains responsible for the larger halo.
+const guestAdvancedGaussianHorizontalShaderSource = `//kage:unit pixels
+package main
+var TexelSize vec2
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	p := imageSrc0Origin()+srcPos
+	d := vec2(1.0, 0.0)
+	c := imageSrc0At(p)*0.40
+	c += (imageSrc0At(p-d)+imageSrc0At(p+d))*0.24
+	c += (imageSrc0At(p-2.0*d)+imageSrc0At(p+2.0*d))*0.06
+	return c
+}`
+
+const guestAdvancedGaussianVerticalShaderSource = `//kage:unit pixels
+package main
+var TexelSize vec2
+func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
+	p := imageSrc0Origin()+srcPos
+	d := vec2(0.0, 1.0)
+	c := imageSrc0At(p)*0.40
+	c += (imageSrc0At(p-d)+imageSrc0At(p+d))*0.24
+	c += (imageSrc0At(p-2.0*d)+imageSrc0At(p+2.0*d))*0.06
+	return c
 }`
 
 const guestAdvancedHorizontalBlurShaderSource = `//kage:unit pixels
@@ -242,6 +362,7 @@ func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 const guestAdvancedFinalShaderSource = `//kage:unit pixels
 package main
 var BloomStrength float
+var GlowStrength float
 var MaskStrength float
 var TexelSize vec2
 func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
@@ -252,7 +373,7 @@ func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
 	r := imageSrc0At(p0+vec2(0.35, 0.0)).r
 	g := base.g
 	b := imageSrc0At(p0-vec2(0.35, 0.0)).b
-	c := vec3(r, g, b) + imageSrc1At(p1).rgb*BloomStrength
+	c := vec3(r, g, b) + imageSrc2At(imageSrc2Origin()+srcPos).rgb*GlowStrength + imageSrc1At(p1).rgb*BloomStrength
 	c = pow(max(c, vec3(0.0)), vec3(1.0/2.2))
 	phase := mod(floor(dstPos.x-imageDstOrigin().x), 3.0)
 	mask := vec3(1.0-MaskStrength)
