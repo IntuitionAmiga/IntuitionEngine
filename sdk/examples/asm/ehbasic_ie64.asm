@@ -9,7 +9,6 @@
 ; Audio Engine:  All engines accessible via BASIC SOUND commands
 ; Assembler:     ie64asm (Intuition Engine IE64 assembler)
 ; Build:         sdk/bin/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
-; Run:           go run . -ie64 ehbasic_ie64.ie64
 ; Shortcut:      make basic (assembles, embeds, and builds with -basic flag)
 ; Porting:       IE64 BASIC is tightly coupled to IE64. The interpreter's
 ;                register conventions and MMIO addresses are IE64-specific.
@@ -85,11 +84,9 @@
 ;
 ; === BUILD AND RUN ===
 ;   sdk/bin/ie64asm -I sdk/include sdk/examples/asm/ehbasic_ie64.asm
-;   go run . -ie64 ehbasic_ie64.ie64
 ;
 ; Or use the embedded build:
 ;   make basic
-;   go run . -basic
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

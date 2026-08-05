@@ -1,9 +1,8 @@
 ; Coprocessor mailbox service: x86 guest code that waits for mailbox entries, reads an add request from shared guest RAM, writes the response and advances the ring tail.
 ;
 ; The caller and service communicate through shared guest RAM and coprocessor MMIO.
-; The Host SDK builds both guest binaries; it is not present at runtime. Read the
+; Read the
 ; mailbox constants, initialisation, descriptor exchange and terminal path in order.
-; Run the caller with `go run . -x86 -coproc-svc <service> <caller>`.
 ; Compare coproc_caller_x86.asm as its matching pair and the other CPU ports for their
 ; real addressing differences.
 ;

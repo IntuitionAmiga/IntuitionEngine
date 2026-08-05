@@ -1,6 +1,6 @@
 # IEScript Lua Automation Manual
 
-*Last modified: 2026-08-04*
+*Last modified: 2026-08-05*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
@@ -302,7 +302,7 @@ CPU lifecycle and mode.
 
 `cpu.mode()` - Return the active CPU type as a string. Returns: one of `"ie32"`, `"ie64"`, `"m68k"`, `"z80"`, `"x86"`, `"6502"`, or `"none"`.
 
-`cpu.jit_enabled()` - Check whether JIT compilation is currently enabled for the active CPU. Supported for m68k, z80, x86, 6502, and ie64 when the current host build includes that CPU's JIT backend; returns `false` for any other CPU or unavailable backend. Returns: boolean.
+`cpu.jit_enabled()` - Check whether JIT compilation is currently enabled for the active CPU. Available backends start enabled during normal CPU and runner construction; the primary command-line CPU starts disabled when `--nojit` is used. Supported for m68k, z80, x86, 6502, and ie64 when the current host build includes that CPU's JIT backend; returns `false` for any other CPU or unavailable backend. Returns: boolean.
 
 `cpu.set_jit_enabled(enabled)` - Enable or disable JIT for the active CPU. Raises if the CPU is currently running, if the platform build does not provide a JIT for that CPU, or if the selected CPU does not support script-controlled JIT (currently m68k, z80, x86, 6502, and ie64). The 6502 native backend is available on Linux AMD64, Linux arm64 and browser js/wasm; Windows and macOS retain interpreter support. Linux arm64 provides IE64, M68K, 6502, and x86 JITs; Windows and macOS arm64 provide IE64 and M68K JITs. Browser builds provide IE64, M68K, 6502, and x86 WebAssembly JITs, although x86 availability additionally requires WebAssembly SIMD. On a successful disable the JIT is turned off immediately. Returns: nothing.
 

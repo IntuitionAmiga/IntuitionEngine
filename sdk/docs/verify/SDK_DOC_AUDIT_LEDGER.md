@@ -3456,6 +3456,77 @@ Notes: This gate is expected to fail after source/manual changes and before the
 final render-manifest refresh. It must pass after rendering before completion.
 Disposition: KEEP.
 
+ID: SDK-DOC-0096
+Status: FIXED
+Document: `sdk/docs/architecture.md`, `sdk/docs/iescript.md`, their empirical
+source inventories, and companion-document gates.
+Section: 6502 JIT platform availability, invalidation architecture, and Lua
+diagnostics.
+Claim: Commits after the 2026-08-04 five-book refresh add 6502 JIT execution
+on Linux arm64 and js/wasm, restrict the native 6502 backend to Linux amd64
+and Linux arm64, publish physical-RAM mutations to CPU-owned generation
+invalidators, and expose six 6502 counters through `cpu.jit_stats()`.
+Purpose judgement: Host/backend availability and cache-coherency boundaries
+belong in the whole-machine architecture manual. Script-visible fields and
+platform errors belong in the IEScript API manual. These changes do not alter
+the IE64 or IE32 instruction sets or the IEMon command surface.
+Canonical sources checked: every commit from `254ceaa9..58b86813`, with
+executable evidence in `jit_6502_dispatch.go`,
+`jit_6502_dispatch_stub.go`, `jit_6502_dispatch_wasm.go`,
+`jit_6502_exec.go`, `jit_6502_policy.go`, `machine_bus.go`,
+`cpu_six5go2.go`, and `script_engine.go`.
+Runnable verification: `go test -tags headless -count=1 -run
+'TestSDKISAInventory|TestSDKIEMonSourceInventory|TestSDKIEScriptSourceInventory|TestSDKArchitectureSourceInventory|TestSDKCompanionDocs|TestSDKDocAuditLedger'
+.` plus the native, Linux-arm64 and js/wasm 6502 JIT acceptance gates.
+Observed result: Corrected the architecture inventory rows that still claimed
+Windows/macOS amd64 6502 JIT support and omitted Linux arm64 and js/wasm.
+Added executable build-gate checks, an architecture claim for 6502 cache
+invalidation/fallback behaviour, and an IEScript contract row for all six
+6502 JIT statistics. Updated the affected manuals' page-one dates to
+2026-08-05. The three unaffected Markdown manuals remain byte-for-byte
+unchanged.
+Action: Updated both affected manuals, source inventory generator and golden
+tables, companion-document regressions, and this ledger. The five PDFs and
+render manifest must be regenerated after all gates pass.
+Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` are excluded from
+edits and are checksum-verified after rendering.
+Disposition: KEEP.
+
+ID: SDK-DOC-0097
+Status: FIXED
+Document: `sdk/docs/architecture.md`, `sdk/docs/iescript.md`, their empirical
+source inventories, and companion-document gates.
+Section: Default JIT activation and browser execution matrix.
+Claim: Commits `b28f8c52` and `0265aca4` make each available JIT backend
+enabled by default for direct CPU construction, normal runners, Program
+Executor launches, and supported coprocessor workers. The `--nojit` command-line
+flag disables JIT execution for the primary CPU. Browser 6502 execution uses
+the js/wasm JIT when its backend gate succeeds; IE32 and Z80 remain interpreted
+in the browser.
+Purpose judgement: Default execution policy and platform fallback are
+whole-machine architecture contracts. The current-state and mutation semantics
+of `cpu.jit_enabled()` and `cpu.set_jit_enabled()` belong in the IEScript API
+manual. CPU ISA behaviour and IEMon commands are unchanged.
+Canonical sources checked: commits `b28f8c52`, `2326e818`, and `0265aca4`;
+the IE64, M68K, Z80, 6502, and x86 constructors; their runner constructors;
+`program_executor.go`; JIT-capable coprocessor worker constructors; `main.go`
+`nojit` paths; `jit_6502_dispatch_wasm.go`; and `script_engine.go` JIT APIs.
+Runnable verification: `go test -tags headless -count=1 -run
+'TestJITDefaults|TestJIT6502_Exec_RunnerConfigControlsEnablement|TestSDKISAInventory|TestSDKIEMonSourceInventory|TestSDKIEScriptSourceInventory|TestSDKArchitectureSourceInventory|TestSDKCompanionDocs|TestSDKDocAuditLedger'
+.` plus js/wasm 6502 execution tests.
+Observed result: Added the default-on and primary-CPU opt-out contracts to
+the two affected manuals. Corrected the stale statement that browser 6502
+always interprets. Added source-value checks, empirical claim rows, and
+positive/negative manual gates. The IE64 ISA, IE32 ISA, and IEMon Markdown
+files remain unchanged.
+Action: Updated `architecture.md`, `iescript.md`, the source inventory
+generator and goldens, companion-document tests, and this ledger. The five
+PDFs and render manifest must be regenerated after all pre-render gates pass.
+Notes: Website-only copy in `2326e818` does not define a five-book contract.
+The current tracked changes from `SDK-DOC-0096` were retained and audited as
+part of the combined source state.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -3492,22 +3563,23 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0083`, `SDK-DOC-0084`, `SDK-DOC-0085`,
 `SDK-DOC-0086`, `SDK-DOC-0087`, `SDK-DOC-0088`,
 `SDK-DOC-0089`, `SDK-DOC-0090`, `SDK-DOC-0091`,
-`SDK-DOC-0092`, and `SDK-DOC-0093` corrections and
+`SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
+`SDK-DOC-0096` and `SDK-DOC-0097` corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
 `go test -tags headless -run
 'TestSDKISAInventory|TestSDKIEMonSourceInventory|TestSDKIEScriptSourceInventory|TestSDKArchitectureSourceInventory|TestSDKCompanionDocs'
 .`
-`IE64_ISA.pdf` (2225888 bytes), `IE32_ISA.pdf` (1011125 bytes),
-`iemon.pdf` (770182 bytes), `iescript.pdf` (1167922 bytes), and
-`architecture.pdf` (1146925 bytes).
+The generated files are non-empty and contain 84 pages for `IE64_ISA.pdf`,
+41 pages for `IE32_ISA.pdf`, 33 pages for `iemon.pdf`, 46 pages for
+`iescript.pdf`, and 51 pages for `architecture.pdf`.
 The render command was `scripts/sdk-companion-pdf.sh`, which copies the
 published preface and five shipped Markdown files into an isolated temporary
 source tree, invokes `scripts/refman-pdf.sh`, and copies only the five companion
 PDFs back to `sdk/docs/`.
 The render pipeline used Google Chrome headless through
 `scripts/refman-pdf.sh`. `SDK_DOC_PDF_RENDER_MANIFEST.sha256` records
-950 SHA-256 rows covering root source files, audit tests, empirical
+1302 SHA-256 rows covering root source files, audit tests, empirical
 inventories, shipped manuals, the render script, and generated PDFs.
 Action: Regenerated `sdk/docs/IE64_ISA.pdf`,
 `sdk/docs/IE32_ISA.pdf`, `sdk/docs/iemon.pdf`,
@@ -3573,7 +3645,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0092` and
+Open claim-group backlog: none for this run after `SDK-DOC-0097` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate

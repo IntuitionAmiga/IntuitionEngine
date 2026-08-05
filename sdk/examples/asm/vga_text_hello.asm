@@ -1,5 +1,4 @@
 ; VGA TEXT PLASMA: IE32 writes character and attribute bytes to the text buffer.
-; Assemble with the Host SDK and run `go run . -ie32 <binary>`.
 ; Read geometry, initialisation, vertical-blank wait and the three drawing passes.
 ; ============================================================================
 ; VGA TEXT MODE "HELLO" - IE32 TEXT-MODE PLASMA DEMO
@@ -12,7 +11,6 @@
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
 ; Build:         sdk/bin/ie32asm -I sdk/include sdk/examples/asm/vga_text_hello.asm
-; Run:           go run . -ie32 sdk/examples/prebuilt/vga_text_hello.iex
 ;
 ; === WHAT THIS DEMO DOES ===
 ; Shows that classic VGA text mode can still do more than plain "hello world":

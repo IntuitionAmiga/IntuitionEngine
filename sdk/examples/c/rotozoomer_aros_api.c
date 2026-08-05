@@ -1,5 +1,5 @@
 /* AROS API ROTOZOOMER: guest C using Mode7 plus WritePixelArray presentation.
- * The Host SDK builds this guest program; AROS owns the screen at runtime.
+ * The assembler builds this guest program; AROS owns the screen at runtime.
  * ============================================================================
  * AROS ROTOZOOMER TUTORIAL: C and the graphics API
  * ============================================================================

@@ -9,7 +9,6 @@
 ; Audio Engine:  SID (Commodore 64 sound chip, MOS 6581/8580)
 ; Assembler:     ie32asm (x86 mode)
 ; Build:         (cd sdk/examples/asm && nasm -f bin -I ../../include/ -o antic_plasma_x86.ie86 antic_plasma_x86.asm)
-; Run:           go run . -x86 antic_plasma_x86.ie86
 ; Porting:       ANTIC/GTIA MMIO is CPU-agnostic. Display list programming
 ;                works the same from any CPU core. SID audio setup is also
 ;                identical across all IntuitionEngine architectures.
@@ -131,7 +130,6 @@
 ;
 ; === BUILD AND RUN ===
 ; (cd sdk/examples/asm && nasm -f bin -I ../../include/ -o antic_plasma_x86.ie86 antic_plasma_x86.asm)
-; go run . -x86 antic_plasma_x86.ie86
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

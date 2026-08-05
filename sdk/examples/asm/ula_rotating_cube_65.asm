@@ -9,7 +9,6 @@
 ; Audio Engine:  AHX (Amiga tracker synthesis)
 ; Assembler:     ca65/ld65 (cc65 toolchain)
 ; Build:         make ie65asm SRC=sdk/examples/asm/ula_rotating_cube_65.asm
-; Run:           go run . -m6502 ula_rotating_cube_65.ie65
 ; Porting:       ULA/AHX MMIO is CPU-agnostic. Port effort: rewrite the
 ;                ULA address calculation and line-drawing loop. Z80 port is
 ;                straightforward (similar register model). M68K simplifies
@@ -61,7 +60,6 @@
 ;
 ; === BUILD AND RUN ===
 ;   make ie65asm SRC=sdk/examples/asm/ula_rotating_cube_65.asm
-;   go run . -m6502 ula_rotating_cube_65.ie65
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

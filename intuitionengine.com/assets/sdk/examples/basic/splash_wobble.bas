@@ -1,5 +1,4 @@
 1 REM SPLASH WOBBLE: IE64 BASIC, VideoChip mode 0 and a MIDI-backed raster effect
-2 REM Start the interpreter with `go run . -basic -file-root .`, then LOAD this
 3 REM guest source and RUN it. It needs splash_640x92.rgba and enjoythesilence.mid.
 4 REM Read the setup, file loading, static copy, then the per-scanline loop.
 5 REM The front buffer is displayed; the back buffer prevents half-drawn rows from

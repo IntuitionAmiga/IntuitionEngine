@@ -2,10 +2,9 @@
 ; reads an add request from shared guest RAM, writes the response and advances
 ; the ring tail.
 ;
-; It shares the descriptor layout with every coprocessor port. The Host SDK builds
+; It shares the descriptor layout with every coprocessor port. The assembler builds
 ; the service binary, but the running guest communicates only through shared RAM
 ; and coprocessor MMIO. Read constants, the poll loop, response path and error
-; path in order. Run a caller with `go run . -ie32 -coproc-svc <service> <caller>`.
 ; Compare coproc_caller_ie32.asm as its matching pair.
 
     .org 0x200000

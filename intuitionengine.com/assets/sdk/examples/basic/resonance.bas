@@ -1,5 +1,4 @@
 1 REM RESONANCE: an IE64 BASIC composition using VideoChip, Copper, blitter and MIDI
-2 REM Start with `go run . -basic -file-root .`, then LOAD this guest source and RUN.
 3 REM It reads resonance_scroll.rgba and adagioforstrings.mid from the guest file root.
 4 REM Read setup first, then Copper bands, asset preparation, the music-clocked frame
 5 REM loop and its drawing subroutines. FB and BB are 640 by 480 RGBA buffers; TX is

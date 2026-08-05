@@ -1,5 +1,4 @@
 ; RoboCop intro: M68020 guest code combines a masked blitter image, Copper bars and PSG+ playback.
-; The assembler embeds its artwork and AY tune, so `go run . -m68k <binary>` needs no guest file root.
 ; Read device setup, data layout, per-frame animation and presentation in that order.
 ; ============================================================================
 ; ROBOCOP INTRO (M68K PORT) - Blitter Sprite, Copper Rasterbars and PSG Music
@@ -12,7 +11,6 @@
 ; Audio Engine:  PSG (AY-3-8910 compatible, PSG+ enhanced mode)
 ; Assembler:     vasmm68k_mot (Motorola syntax)
 ; Build:         vasmm68k_mot -Fbin -m68020 -devpac -o robocop_intro_68k.ie68 robocop_intro_68k.asm
-; Run:           go run . -m68k robocop_intro_68k.ie68
 ; Porting:       See robocop_intro.asm (IE32 reference), robocop_intro_65.asm
 ;                (6502), robocop_intro_z80.asm (Z80)
 ;
@@ -67,7 +65,6 @@
 ;
 ; === BUILD AND RUN ===
 ; Build:  vasmm68k_mot -Fbin -m68020 -devpac -o robocop_intro_68k.ie68 robocop_intro_68k.asm
-; Run:    go run . -m68k robocop_intro_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

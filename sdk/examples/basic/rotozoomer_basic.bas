@@ -8,7 +8,6 @@
 8 REM Video Chip:    IEVideoChip Mode 0 (640x480, 32bpp true colour)
 9 REM Audio Engine:  SID (MOS 6581/8580 - Commodore 64 sound chip)
 10 REM Prerequisites: Build the BASIC runtime with 'make basic'
-11 REM Run:           go run . -basic
 12 REM                Then type: LOAD "rotozoomer_basic.bas"
 13 REM                Then type: RUN
 14 REM Porting:       This is BASIC source interpreted by the IE64 BASIC

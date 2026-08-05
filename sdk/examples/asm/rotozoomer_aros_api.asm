@@ -1,5 +1,5 @@
 ; AROS API ROTOZOOMER: 68020 guest code using the IE blitter and graphics API.
-; The Host SDK assembles the guest binary; AROS owns screen presentation at runtime.
+; The assembler assembles the guest binary; AROS owns screen presentation at runtime.
 ; Read allocation, screen setup, affine submission, API copy and cleanup in that order.
 ; ============================================================================
 ; AROS ROTOZOOMER TUTORIAL: 68020 assembly and the graphics API

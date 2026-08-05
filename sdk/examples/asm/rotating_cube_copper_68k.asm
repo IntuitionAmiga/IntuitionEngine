@@ -5,7 +5,6 @@
 ;
 ; === SDK QUICK REFERENCE ===
 ; Assembler:    vasmm68k_mot -Fbin -m68020 -devpac -o rotating_cube_copper_68k.ie68 rotating_cube_copper_68k.asm
-; Run:          go run . -m68k rotating_cube_copper_68k.ie68
 ; Video mode:   VGA Mode 13h (320x200, 256 colours, linear framebuffer)
 ; Audio:        SID music via embedded 6502 CPU core
 ; Copper:       100-line animated rainbow gradient behind the scene
@@ -86,7 +85,6 @@
 ; === BUILD AND RUN ===
 ;   vasmm68k_mot -Fbin -m68020 -devpac -o rotating_cube_copper_68k.ie68 \
 ;       sdk/examples/asm/rotating_cube_copper_68k.asm
-;   go run . -m68k rotating_cube_copper_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

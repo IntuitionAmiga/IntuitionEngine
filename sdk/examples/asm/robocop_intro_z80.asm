@@ -1,5 +1,4 @@
 ; RoboCop intro: Z80 guest code combines a masked blitter image, Copper bars and PSG+ playback.
-; The assembler embeds its artwork and AY tune, so `go run . -z80 <binary>` needs no guest file root.
 ; Read device setup, data layout, per-frame animation and presentation in that order.
 ; ============================================================================
 ; ROBOCOP INTRO (Z80 PORT) - Blitter Sprite, Copper Rasterbars and PSG Music
@@ -12,7 +11,6 @@
 ; Audio Engine:  PSG (AY-3-8910 compatible, PSG+ enhanced mode)
 ; Assembler:     vasmz80_std
 ; Build:         vasmz80_std -Fbin -o robocop_intro_z80.ie80 robocop_intro_z80.asm
-; Run:           go run . -z80 robocop_intro_z80.ie80
 ; Porting:       See robocop_intro.asm (IE32 reference), robocop_intro_65.asm
 ;                (6502), robocop_intro_68k.asm (M68K)
 ;
@@ -78,7 +76,6 @@
 ;
 ; === BUILD AND RUN ===
 ; Build:  vasmz80_std -Fbin -o robocop_intro_z80.ie80 robocop_intro_z80.asm
-; Run:    go run . -z80 robocop_intro_z80.ie80
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

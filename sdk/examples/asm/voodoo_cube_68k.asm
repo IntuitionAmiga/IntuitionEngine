@@ -62,7 +62,6 @@
 ;
 ; === BUILD AND RUN ===
 ;   vasmm68k_mot -Fbin -m68020 -devpac -o voodoo_cube_68k.ie68 voodoo_cube_68k.asm
-;   go run . -m68k voodoo_cube_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

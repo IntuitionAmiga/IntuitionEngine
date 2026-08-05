@@ -1,5 +1,4 @@
 1 REM WOBBLE ZOOM: IE64 BASIC, a disk-backed splash and the Mode7 blitter
-2 REM Start with `go run . -basic -file-root .`, then LOAD this guest source and
 3 REM RUN it. The example reads splash_640x92.rgba and enjoythesilence.mid.
 4 REM It builds a 1024 by 512 power-of-two texture, submits an affine Mode7 blit
 5 REM into BB, then copies BB to the displayed framebuffer FB.

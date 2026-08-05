@@ -9,7 +9,6 @@
 ; Audio Engine:  PSG+ (AY-3-8910 compatible, enhanced mode)
 ; Assembler:     vasmm68k_mot (VASM M68K, Motorola syntax)
 ; Build:         vasmm68k_mot -Fbin -m68020 -o ted_121_colors_68k.ie68 ted_121_colors_68k.asm
-; Run:           go run . -m68k ted_121_colors_68k.ie68
 ; Porting:       TED/PSG MMIO is CPU-agnostic. Port effort: rewrite sine
 ;                tables and loop structures for target CPU. 8-bit CPUs will
 ;                need optimised inner loops to maintain 60fps plasma update.
@@ -77,7 +76,6 @@
 ;
 ; === BUILD AND RUN ===
 ;   vasmm68k_mot -Fbin -m68020 -o ted_121_colors_68k.ie68 ted_121_colors_68k.asm
-;   go run . -m68k ted_121_colors_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

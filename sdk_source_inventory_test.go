@@ -89,6 +89,20 @@ func TestSDKDocAuditLedgerRequiresFiveManualEmpiricalInventories(t *testing.T) {
 			t.Fatalf("SDK doc audit ledger is missing five-manual empirical inventory rule %q", needle)
 		}
 	}
+	for path, needle := range map[string]string{
+		"cpu_ie64.go":        "jitEnabled:     jitAvailable || wasmJITSupported",
+		"cpu_m68k.go":        "m68kJitEnabled:  m68kJitAvailable",
+		"cpu_z80.go":         "jitEnabled: z80JitAvailable",
+		"cpu_six5go2.go":     "jitEnabled:    true",
+		"cpu_x86.go":         "x86JitEnabled: x86JitAvailable",
+		"cpu_6502_runner.go": "JITEnabled: !config.DisableJIT",
+		"cpu_z80_runner.go":  "cpu.jitEnabled = z80JitAvailable && !config.DisableJIT",
+		"cpu_x86_runner.go":  "cpu.x86JitEnabled = x86JitAvailable && (config == nil || !config.DisableJIT)",
+	} {
+		if !strings.Contains(readAuditFile(t, path), needle) {
+			t.Fatalf("%s JIT default changed; review architecture.md and iescript.md: %s", path, needle)
+		}
+	}
 	for _, path := range []string{
 		"sdk/docs/verify/SDK_ISA_SOURCE_AUDIT.md",
 		"sdk/docs/verify/SDK_IEMON_SOURCE_AUDIT.md",
@@ -311,6 +325,19 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 			Evidence: "`script_engine.go` `keys` table binding",
 		})
 	}
+	for _, needle := range []string{
+		"case runtimeCPU6502:",
+		`L.SetField(tbl, "instruction_count"`,
+		`L.SetField(tbl, "tier1_blocks"`,
+		`L.SetField(tbl, "native_entries"`,
+		`L.SetField(tbl, "bailouts"`,
+		`L.SetField(tbl, "invalidations"`,
+		`L.SetField(tbl, "chain_exits"`,
+	} {
+		if !strings.Contains(source, needle) {
+			t.Fatalf("script_engine.go 6502 JIT statistics contract changed; review iescript.md: %s", needle)
+		}
+	}
 	facts = append(facts, sdkSourceFact{
 		Surface:  "IEScript",
 		Kind:     "api claim",
@@ -347,6 +374,8 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"dbg.history_config([opts]) returns delta_interval, delta_mib, checkpoints, and snapshots", "`script_engine.go` `luaDbgHistoryConfig` return table fields"},
 		{"dbg.mmio_stats() returns rows with start, end, name, reads, and writes", "`script_engine.go` `luaDbgMMIOStats`, `mmio_stats.go` `MMIOStatsSnapshot`"},
 		{"media.type() returns sid, psg, ted, ahx, pokey, mod, wav, midi, or none", "`script_engine.go` `mediaTypeToString`, `media_loader.go` MIDI extension detection"},
+		{"instruction_count, tier1_blocks, native_entries, bailouts, invalidations, and chain_exits; reset clears all 6502 counters", "`script_engine.go` `luaCPUJITStats`, `cpu_six5go2.go` `Reset`, and `jit_6502_policy.go` `resetJITStats`"},
+		{"Available backends start enabled during normal CPU and runner construction; the primary command-line CPU starts disabled when --nojit is used.", "CPU constructors and runner defaults; `main.go` `nojit` flag and per-primary-CPU disable paths"},
 		{"dbg.open() freezes every CPU and the audio clock; final dbg.close() restores the pre-entry audio state unless fa or ta changed it during the session", "`script_engine.go` `luaDbgOpen`/`luaDbgClose`, `debug_monitor.go` media-freeze entry/exit contract"},
 		{"coproc.start(cpu_type, filename [, instance]), coproc.stop(cpu_type [, instance]), and coproc.enqueue(cpu_type, op, request [, instance]) default to instance 0; M68K, x86, and IE64 accept instance 1, while IE32, 6502, and Z80 reject it", "`script_engine.go` `coprocLuaInstance`/`luaCoprocStart`/`luaCoprocStop`/`luaCoprocEnqueue`, `coprocessor_constants.go` `coprocInstanceLimit`"},
 		{"coproc.workers() returns cpu_type, instance, and is_running for every active instance without changing COPROC_CPU_TYPE or COPROC_INSTANCE", "`script_engine.go` `luaCoprocWorkers` reads `COPROC_INSTANCE_STATE`, `coprocessor_manager.go` `computeInstanceStateMask`"},
@@ -381,6 +410,18 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		"Video Subsystem": goFilesByPrefix(t, "video_", "vga_", "ula_", "antic_", "gtia_", "ted_video_", "voodoo_", "copper_", "blitter_"),
 	}
 	var facts []sdkSourceFact
+	for path, needles := range map[string][]string{
+		"jit_6502_dispatch.go":      {"//go:build (amd64 || arm64) && linux", "jit6502Available = true"},
+		"jit_6502_dispatch_stub.go": {"//go:build !((amd64 || arm64) && linux) && !(js && wasm)", "cpu.Execute()"},
+		"jit_6502_dispatch_wasm.go": {"//go:build js && wasm", `os.Getenv("P65_WASM_JIT") != "0"`, "cpu.ExecuteJIT6502()"},
+	} {
+		source := readAuditFile(t, path)
+		for _, needle := range needles {
+			if !strings.Contains(source, needle) {
+				t.Fatalf("%s 6502 JIT platform contract changed; review architecture.md: %s", path, needle)
+			}
+		}
+	}
 	for category, files := range categoryEvidence {
 		if len(files) == 0 {
 			t.Fatalf("architecture category %q has no source evidence", category)
@@ -521,12 +562,12 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		evidence string
 	}{
 		{"Linux amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` build tags"},
-		{"Linux arm64 | IE64, M68K, x86", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and `jit_x86_dispatch_arm64.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false"},
-		{"Windows amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` build tags"},
+		{"Linux arm64 | IE64, M68K, 6502, x86", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_6502_dispatch.go`, and `jit_x86_dispatch_arm64.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false"},
+		{"Windows amd64 | IE64, M68K, Z80, x86", "`jit_6502_dispatch_stub.go` interpreter fallback plus amd64 dispatch files for the listed cores"},
 		{"Windows arm64 | IE64, M68K", "`jit_dispatch.go` and `jit_m68k_dispatch_arm64.go` arm64 Windows tags plus other-core stubs"},
-		{"macOS amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, amd64 per-core dispatch files"},
+		{"macOS amd64 | IE64, M68K, Z80, x86", "`jit_6502_dispatch_stub.go` interpreter fallback plus amd64 dispatch files for the listed cores"},
 		{"macOS arm64 | IE64, M68K", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and Darwin arm64 JIT write-protect helpers"},
-		{"Browser (js/wasm) | IE64, M68K and x86 (wasm bytecode backends)", "`jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, and `jit_x86_dispatch_wasm.go`"},
+		{"Browser (js/wasm) | IE64, M68K, 6502 and x86 (wasm bytecode backends)", "`jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_6502_dispatch_wasm.go`, and `jit_x86_dispatch_wasm.go`"},
 	} {
 		facts = append(facts, sdkSourceFact{
 			Surface:  "Architecture",
@@ -590,6 +631,8 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"M68020 JIT memory guards use the profile-visible RAM ceiling, and native and wasm stores invalidate compiled code before stale execution.", "`jit_m68k_exec.go` profile-bound context setup and invalidation, `jit_m68k_dispatch_wasm.go` ceiling/stamp checks, and `jit_m68k_wasm_emit.go` code-page probes"},
 		{"Hot M68020 native blocks can form bounded regions using constant-address propagation, constant-only folding, loop-invariant hoisting, observed-path cold exits and safe JSR leaf fusion.", "`jit_m68k_const_addr.go`, `jit_m68k_const_fold.go`, `jit_m68k_loop_analysis.go`, `jit_m68k_observed_region.go`, `jit_m68k_region_form.go`, and `m68kAnalyzeJSRLeafFusion`"},
 		{"Browser FileIO and Bootstrap HostFS use in-memory volumes seeded from web assets, with file contents fetched lazily on first read.", "`file_io_select_wasm.go` asset manifest registration, `file_io_mem.go` lazy fetch path, and `hostfs_select_wasm.go`/`bootstrap_hostfs_mem.go` in-memory HostFS"},
+		{"The 6502 JIT is available only on Linux amd64, Linux arm64, and js/wasm; Windows and macOS use the interpreter. Native and wasm backends invalidate cached code after physical RAM writes and resume unsupported or observed accesses through the interpreter.", "`jit_6502_dispatch.go`/`jit_6502_dispatch_stub.go`/`jit_6502_dispatch_wasm.go` build and activation gates, `machine_bus.go` generation publication, and `jit_6502_exec.go` invalidation and fallback paths"},
+		{"Every available JIT backend starts enabled for directly constructed CPUs, normal runners, Program Executor launches, and JIT-capable coprocessor workers. --nojit selects interpreter execution for the primary CPU started from the command line.", "CPU constructors and runner defaults, `program_executor.go`, coprocessor worker constructors, and `main.go` `nojit` paths"},
 		{"The browser exposes an in-tab bridge over the same FileIO memory volume.", "`file_io_select_wasm.go` `registerWasmFileBridge`, `wasm_file_bridge.go` global bridge registration"},
 		{"ieImportFile adds a session-local file with a 64 MiB per-file limit, ieExportFile returns a saved file's bytes, and ieDeleteFile removes a file; none of these operations uploads data to a server.", "`wasm_file_bridge.go` `maxImportFileBytes`/`registerWasmFileBridge`, `file_io_mem.go` memory-volume operations"},
 		{"ieTypeText injects representable text bytes and ieKey injects the supported editing and navigation key sequences through the normal terminal input path.", "`wasm_input_bridge.go` `registerWasmInput`, `runeToInputByte`, `translateSpecialKey`"},

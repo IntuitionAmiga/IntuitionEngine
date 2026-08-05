@@ -110,8 +110,8 @@ var sdkAuditLastModifiedDates = map[string]string{
 	"sdk/docs/IE64_ISA.md":     "2026-07-09",
 	"sdk/docs/IE32_ISA.md":     "2026-07-09",
 	"sdk/docs/iemon.md":        "2026-07-23",
-	"sdk/docs/iescript.md":     "2026-08-04",
-	"sdk/docs/architecture.md": "2026-08-04",
+	"sdk/docs/iescript.md":     "2026-08-05",
+	"sdk/docs/architecture.md": "2026-08-05",
 }
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
@@ -1826,9 +1826,10 @@ func TestSDKCompanionDocs_IEScriptRawMonitorFilterMatchesSource(t *testing.T) {
 	}
 }
 
-func TestSDKCompanionDocs_IEScriptJITCPUListIncludesX86(t *testing.T) {
+func TestSDKCompanionDocs_IEScriptJITPlatformMatrixMatchesSource(t *testing.T) {
 	source := readAuditFile(t, "script_engine.go")
 	doc := readAuditFile(t, "sdk/docs/iescript.md")
+	architecture := readAuditFile(t, "sdk/docs/architecture.md")
 	for _, needle := range []string{
 		"case runtimeCPUX86:",
 		"snap.x86.cpu.x86JitEnabled = enabled && x86JitAvailable",
@@ -1841,11 +1842,14 @@ func TestSDKCompanionDocs_IEScriptJITCPUListIncludesX86(t *testing.T) {
 	for _, needle := range []string{
 		"Supported for m68k, z80, x86, 6502, and ie64",
 		"currently m68k, z80, x86, 6502, and ie64",
-		"On amd64 desktop hosts all five listed CPU types have JIT backends",
-		"Linux arm64 provides IE64, M68K, and x86 JITs",
+		"6502 native backend is available on Linux AMD64, Linux arm64 and browser js/wasm",
+		"Windows and macOS retain interpreter support",
+		"Linux arm64 provides IE64, M68K, 6502, and x86 JITs",
 		"Windows and macOS arm64 provide IE64 and M68K JITs",
-		"Browser builds provide IE64, M68K, and x86 WebAssembly JITs",
+		"Browser builds provide IE64, M68K, 6502, and x86 WebAssembly JITs",
 		"x86 availability additionally requires WebAssembly SIMD",
+		"Available backends start enabled during normal CPU and runner construction",
+		"primary command-line CPU starts disabled when `--nojit` is used",
 	} {
 		if !strings.Contains(doc, needle) {
 			t.Fatalf("iescript.md JIT API docs missing x86/platform detail: %s", needle)
@@ -1853,6 +1857,35 @@ func TestSDKCompanionDocs_IEScriptJITCPUListIncludesX86(t *testing.T) {
 	}
 	if strings.Contains(doc, "currently only m68k, z80, 6502, and ie64 are supported") {
 		t.Fatal("iescript.md still omits x86 from script-controlled JIT support")
+	}
+	for _, obsolete := range []string{
+		"On amd64 desktop hosts all five listed CPU types have JIT backends",
+		"Linux arm64 provides IE64, M68K, and x86 JITs",
+		"Browser builds provide IE64, M68K, and x86 WebAssembly JITs",
+		"IE32, 6502 and Z80 interpret in the browser",
+		"IE32, 6502, and Z80 interpret in the browser",
+	} {
+		if strings.Contains(doc, obsolete) {
+			t.Fatalf("iescript.md contains obsolete JIT platform claim: %s", obsolete)
+		}
+	}
+	for _, needle := range []string{
+		"Every available JIT backend starts enabled for directly constructed CPUs",
+		"`--nojit` selects interpreter execution for the primary CPU",
+		"IE64, M68K, 6502 and x86 use separate wasm bytecode",
+		"IE32 and Z80 interpret in the browser",
+	} {
+		if !strings.Contains(architecture, needle) {
+			t.Fatalf("architecture.md missing JIT default/browser contract: %s", needle)
+		}
+	}
+	for _, obsolete := range []string{
+		"IE32, 6502 and Z80 interpret in the browser",
+		"IE32, 6502, and Z80 interpret in the browser",
+	} {
+		if strings.Contains(architecture, obsolete) {
+			t.Fatalf("architecture.md contains obsolete browser JIT claim: %s", obsolete)
+		}
 	}
 }
 

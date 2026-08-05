@@ -5,8 +5,7 @@
 ; page through $F7F2, then uses the $E000 aperture. This is a useful starting
 ; point for 6502 code that needs to submit Voodoo commands.
 ;
-; Assemble with the Host SDK's ie65 tools, then launch the generated guest
-; binary with `go run . -m6502 <binary>`. There are no guest-file assets.
+; Assemble for the selected CPU launch the generated guest
 
 .include "ie65.inc"
 

@@ -1,9 +1,8 @@
 ; Coprocessor mailbox caller: M68020 guest code that starts the matching worker, writes two operands to shared guest RAM, enqueues an add request and polls its ticket.
 ;
 ; The caller and service communicate through shared guest RAM and coprocessor MMIO.
-; The Host SDK builds both guest binaries; it is not present at runtime. Read the
+; Read the
 ; mailbox constants, initialisation, descriptor exchange and terminal path in order.
-; Run the caller with `go run . -m68k -coproc-svc <service> <caller>`.
 ; Compare coproc_service_68k.asm as its matching pair and the other CPU ports for their
 ; real addressing differences.
 ;
@@ -28,7 +27,6 @@
 ;
 ; === BUILD AND RUN ===
 ;   vasmm68k_mot -Fbin -m68020 -devpac -o coproc_caller_68k.ie68 coproc_caller_68k.asm
-;   go run . -m68k -coproc-svc coproc_service_68k.ie68 coproc_caller_68k.ie68
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

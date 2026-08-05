@@ -4,8 +4,7 @@
 ; register offset through ports $B0-$B1 and a 32-bit little-endian value
 ; through $B2-$B5; writing data byte 3 commits the register write.
 ;
-; Assemble with the Host SDK's Z80 tools, then launch the resulting guest
-; binary with `go run . -z80 <binary>`. There are no guest-file assets.
+; Assemble for the selected CPU launch the resulting guest
 
     .include "ie80.inc"
 

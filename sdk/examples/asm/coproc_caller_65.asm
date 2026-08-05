@@ -1,9 +1,8 @@
 ; Coprocessor mailbox caller: 6502 guest code that starts the matching worker, writes two operands to shared guest RAM, enqueues an add request and polls its ticket.
 ;
 ; The caller and service communicate through shared guest RAM and coprocessor MMIO.
-; The Host SDK builds both guest binaries; it is not present at runtime. Read the
+; Read the
 ; mailbox constants, initialisation, descriptor exchange and terminal path in order.
-; Run the caller with `go run . -m6502 -coproc-svc <service> <caller>`.
 ; Compare coproc_service_65.asm as its matching pair and the other CPU ports for their
 ; real addressing differences.
 ;
@@ -60,7 +59,7 @@ no_start_err:
 ;
 ; The request buffer at $410000 contains two uint32 values (the operands).
 ; The response buffer at $410100 will receive one uint32 (the sum).
-; These buffers must be pre-populated by the host environment.
+; These buffers must be pre-populated by the boot environment.
 
     STORE32 COPROC_CPU_TYPE, COPROC_CPU_6502
     STORE32 COPROC_OP, 1               ; op = add

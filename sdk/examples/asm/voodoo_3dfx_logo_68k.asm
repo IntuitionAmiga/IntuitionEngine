@@ -1,5 +1,4 @@
 ; VOODOO LOGO: M68020 guest code submits shaded triangles and swaps at vertical sync.
-; Assemble with the Host SDK and run `go run . -m68k <binary>`.
 ; The data-driven quads keep vector geometry separate from the frame submission path.
 ; ============================================================================
 ; 3DFX BOOT LOGO - shaded Voodoo vector logo

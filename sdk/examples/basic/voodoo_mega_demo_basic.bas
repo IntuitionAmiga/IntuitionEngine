@@ -1,5 +1,4 @@
 1 REM VOODOO MEGA DEMO: IE64 BASIC command-stream rendering on the Voodoo device
-2 REM Start with `go run . -basic -file-root .`, then LOAD this guest source and RUN.
 3 REM It reads Reggae_2.sid. Read allocation and MMIO constants, initial scene setup,
 4 REM the per-frame command construction, then the table-building subroutines.
 5 REM CommandBuffer stores register-value pairs in guest RAM so the program can submit

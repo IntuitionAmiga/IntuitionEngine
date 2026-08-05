@@ -5,7 +5,7 @@
 ; writes the response, and advances the ring tail pointer.
 ;
 ; Ring buffer layout (at RING_BASE = MAILBOX_BASE + 5 * RING_STRIDE):
-;   +0x00: head (byte) - next write slot (producer / Go manager)
+;   +0x00: head (byte) - next write slot (producer / coprocessor controller)
 ;   +0x01: tail (byte) - next read slot (consumer / this worker)
 ;   +0x02: capacity (byte) - ring depth (16)
 ;   +0x08: request descriptors (16 × 32 bytes = 512 bytes)

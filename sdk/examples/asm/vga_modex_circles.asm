@@ -9,7 +9,6 @@
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
 ; Build:         sdk/bin/ie32asm sdk/examples/asm/vga_modex_circles.asm
-; Run:           go run . -ie32 vga_modex_circles.iex
 ; Porting:       VGA MMIO is CPU-agnostic. The Mode X plane selection and
 ;                page-flipping logic applies to any CPU core driving VGA.
 ;
@@ -57,7 +56,6 @@
 ;
 ; === BUILD AND RUN ===
 ;   sdk/bin/ie32asm sdk/examples/asm/vga_modex_circles.asm
-;   go run . -ie32 vga_modex_circles.iex
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

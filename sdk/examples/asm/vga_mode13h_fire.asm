@@ -9,7 +9,6 @@
 ; Audio Engine:  None
 ; Assembler:     ie32asm (built-in IE32 assembler)
 ; Build:         sdk/bin/ie32asm sdk/examples/asm/vga_mode13h_fire.asm
-; Run:           go run . -ie32 vga_mode13h_fire.iex
 ; Porting:       VGA MMIO is CPU-agnostic. The fire algorithm is simple enough
 ;                to run on any CPU core, even 8-bit (6502/Z80).
 ;
@@ -44,7 +43,6 @@
 ;
 ; === BUILD AND RUN ===
 ;   sdk/bin/ie32asm sdk/examples/asm/vga_mode13h_fire.asm
-;   go run . -ie32 vga_mode13h_fire.iex
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

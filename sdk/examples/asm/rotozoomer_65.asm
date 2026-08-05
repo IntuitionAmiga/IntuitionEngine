@@ -1,8 +1,7 @@
 ; Mode7 rotozoomer: 6502 guest code submits an affine texture map to the IE blitter.
 ;
 ; The frame path derives signed fixed-point origin and step vectors, renders into a
-; back buffer, then presents after the submission has completed. The Host SDK builds
-; this guest binary; it is not part of the runtime. Run it with `go run . -file-root . -m6502 <binary>`.
+; back buffer, then presents after the submission has completed.
 ; Read data layout, initialisation, per-frame vectors, blitter submission and table
 ; generation in order. Compare the other ports only for real CPU addressing changes.
 ;
@@ -1333,7 +1332,7 @@ recip_table:
 ; ============================================================================
 ; This string is read by the File I/O device via bus.Read8() to locate the
 ; texture file on disk. It is relative to the guest File I/O root, not the
-; host process working directory.
+; guest file root.
 texture_filename:
     .byte "sdk/examples/assets/rotozoomtexture_6502.raw",0
 

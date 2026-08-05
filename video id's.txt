@@ -1,0 +1,12 @@
+
+  ┌─────────────────┬────────────────────────────────────────────────────────────────────────────────────┐
+  │   Asset ID      │                                   YouTube title                                    │
+  ├─────────────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ AL-DEMO-ROTO    │ Intuition Engine: One Rotozoomer, Thirteen Ways (6 CPUs, BASIC, Lua, EmuTOS, AROS) │
+  │ AL-D007         │ Intuition Engine: VGA Mode 13h Fire on IE32                                        │
+  │ AL-D020         │ Intuition Engine: RoboCop Intro on M68K                                            │
+  │ AL-D022         │ Intuition Engine: RoboCop Intro on Z80                                             │
+  │ AL-D025         │ Intuition Engine: RoboCop Intro on 6502                                            │
+  │ AL-GAME-DOOMX86 │ Intuition Engine: Chocolate Doom on x86                                            │
+  │ AL-GAME-DOOM68K │ Intuition Engine: Chocolate Doom on M68K (68020)                                   │
+  └─────────────────┴────────────────────────────────────────────────────────────────────────────────────┘

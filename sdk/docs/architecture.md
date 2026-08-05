@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-08-04*
+*Last modified: 2026-08-05*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -567,12 +567,23 @@ never emitted unless the host supports them.
 | macOS arm64 | IE64, M68K | IE64 and M68K dispatch plus Darwin arm64 JIT write-protect helpers |
 | Browser (js/wasm) | IE64, M68K, 6502 and x86 (wasm bytecode backends) | `jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_6502_dispatch_wasm.go`, `jit_x86_dispatch_wasm.go` |
 
+Every available JIT backend starts enabled for directly constructed CPUs,
+normal runners, Program Executor launches, and JIT-capable coprocessor
+workers. `--nojit` selects interpreter execution for the primary CPU started
+from the command line. An unavailable backend always falls back to the
+interpreter; stopped primary CPUs can also be switched through IEScript.
+
+The 6502 JIT is available only on Linux amd64, Linux arm64, and js/wasm;
+Windows and macOS use the interpreter. Native and wasm backends invalidate
+cached code after physical RAM writes and resume unsupported or observed
+accesses through the interpreter.
+
 On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles. IE64 and M68K have arm64 backends; the other guest cores remain interpreter-only.
 
 On js/wasm the native backends are absent because the browser gives Go no
-executable memory. IE64, M68K and x86 use separate wasm bytecode backends
-instead; see the backend sections below. IE32, 6502 and Z80 interpret in the
-browser.
+executable memory. IE64, M68K, 6502 and x86 use separate wasm bytecode
+backends instead; see the backend sections below. IE32 and Z80 interpret in
+the browser.
 
 ### M68020 JIT Backends
 

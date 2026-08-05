@@ -1,0 +1,909 @@
+; Mode7 rotozoomer: IE32 guest code submits an affine texture map to the IE blitter.
+;
+; The frame path derives signed fixed-point origin and step vectors, renders into a
+; back buffer, then presents after the submission has completed.
+; Read data layout, initialisation, per-frame vectors, blitter submission and table
+; generation in order. Compare the other ports only for real CPU addressing changes.
+;
+
+
+.include "ie32.inc"
+
+; ============================================================================
+; CONSTANTS
+; ============================================================================
+
+; --- Texture Memory Layout ---
+;
+; The texture is a 256x256 pixel checkerboard placed at 0x600000, which is
+; above VRAM (0x100000-0x2E0000 for 640x480x4). We use a stride of 1024
+; bytes (256 pixels * 4 bytes/pixel) so that each row is contiguous.
+;
+; The checkerboard is built from four 128x128 quadrants using BLIT FILL:
+;
+;   +---+---+
+;   | W | B |   W = white (0xFFFFFFFF)   B = black (0xFF000000)
+;   +---+---+   Each quadrant is 128x128 pixels
+;   | B | W |   Stride = 1024 bytes per row (256 * 4)
+;   +---+---+
+;
+; The quadrant addresses are computed from TEXTURE_BASE + column offset
+; and TEXTURE_BASE + row offset:
+;   Top-left  = 0x600000                (row 0, col 0)
+;   Top-right = 0x600200                (row 0, col 128 * 4 = +0x200)
+;   Bot-left  = 0x620000                (row 128 * 1024 = +0x20000)
+;   Bot-right = 0x620200                (row 128 * 1024 + col 128 * 4)
+;
+; 0x600000? This address is safely above the front buffer VRAM
+; (0x100000 + 640*480*4 = ~0x2E0000) and below the back buffer (0x900000).
+; Placing the texture in this gap means all three memory regions (front
+; buffer, texture, back buffer) are non-overlapping and can be accessed
+; simultaneously by the blitter without conflicts.
+;
+; STRIDE 1024? The texture is 256 pixels wide at 4 bytes/pixel =
+; 1024 bytes per row. The blitter needs this stride to know how to
+; advance from one row to the next in the texture source during Mode7
+; rendering. The Mode7 mask (255) wraps texture coordinates to 0-255,
+; creating the infinite-tiling illusion as the texture rotates.
+.equ TEXTURE_BASE   0x600000
+.equ TEX_TR         0x600200
+.equ TEX_BL         0x620000
+.equ TEX_BR         0x620200
+.equ BACK_BUFFER_A  0x900000
+.equ BACK_BUFFER_B  0xB00000
+.equ RENDER_W       640
+.equ RENDER_H       480
+.equ TEX_STRIDE     1024
+.equ LINE_BYTES_V   2560
+
+; --- Animation Accumulator Increments (8.8 Fixed-Point) ---
+;
+; Animation uses 16-bit 8.8 fixed-point accumulators that wrap at 0xFFFF.
+; The upper 8 bits index into the 256-entry sine/reciprocal tables, while
+; the lower 8 bits provide sub-index fractional precision for smooth motion.
+;
+; ANGLE_INC=313 and SCALE_INC=104 maintain a 3:1 ratio, matching the
+; original BASIC rotozoomer's `A+=0.03, SI+=0.01`. In 8.8 fixed-point:
+;   0.03 * (256 / 2*pi) * 256 ~= 313
+;   0.01 * (256 / 2*pi) * 256 ~= 104
+;
+; zoom cycle, creating a visually interesting Lissajous-like pattern where
+; the same combination of angle+zoom never exactly repeats for a long time.
+;
+; 8.8 AND NOT PLAIN INTEGERS?
+; If we incremented the table index directly by 1 each frame, the rotation
+; would complete 256/60 ~ 4.3 seconds per revolution, which is too fast.
+; Using 8.8 with an increment of 313 means the index advances by ~1.22
+; per frame (313/256), giving ~3.5 seconds per revolution -- a more
+; visually pleasing speed. The fractional accumulation also means the
+; effective table index changes smoothly rather than in integer jumps.
+.equ ANGLE_INC      313
+.equ SCALE_INC      104
+
+; --- Variable Addresses ---
+;
+; 0x46C20? The IE32 program starts at .org 0x1000 and can grow large
+; (code + sine table + reciprocal table + AHX music data). Variables are
+; placed at 0x46C20 to guarantee they don't overlap with any of the
+; program's code or data sections. This address is in the gap between the
+; program area and VRAM (which starts at 0x100000), providing ample room.
+;
+; Each variable is 4 bytes (32-bit), totaling 24 bytes for the 6 runtime
+; state variables that drive the animation:
+;
+;   ANGLE_ACC  -- 8.8 FP accumulator for rotation angle
+;   SCALE_ACC  -- 8.8 FP accumulator for zoom oscillation
+;   CA         -- cos(angle) * recip(scale), the scaled cosine
+;   SA         -- sin(angle) * recip(scale), the scaled sine
+;   U0         -- starting texture U coordinate (16.16 FP)
+;   V0         -- starting texture V coordinate (16.16 FP)
+.equ VAR_BASE       0x46C20
+.equ VAR_ANGLE_ACC  0x46C20
+.equ VAR_SCALE_ACC  0x46C24
+.equ VAR_CA         0x46C28
+.equ VAR_SA         0x46C2C
+.equ VAR_U0         0x46C30
+.equ VAR_V0         0x46C34
+.equ VAR_DRAW_FB    0x46C38
+
+; ============================================================================
+; PROGRAM ENTRY POINT
+; ============================================================================
+; The IE32 CPU begins execution at .org 0x1000 after loading the binary.
+; We must initialise video, generate the texture, set up animation state,
+; and start music before entering the main loop.
+; ============================================================================
+
+.org 0x1000
+
+start:
+    ; --- Enable VideoChip ---
+    ; The VideoChip is the IE custom video system (distinct from VGA/ULA/etc).
+    ; Mode 0 = 640x480 truecolour (32-bit BGRA). The blitter and VRAM are
+    ; part of this subsystem, so it MUST be enabled before any blit operations.
+    ; VIDEO_CTRL=1 enables the chip; VIDEO_MODE=0 selects Mode 0.
+    LDA #1
+    STA @VIDEO_CTRL
+    LDA #0
+    STA @VIDEO_MODE
+    LDA #VRAM_START
+    STA @VIDEO_FB_BASE
+
+    ; --- Load Texture ---
+    ; Copy the 256x256 RGBA texture (embedded via .incbin) to TEXTURE_BASE
+    ; using a hardware BLIT COPY. The texture is pre-converted from
+    ; rotozoomtexture.png.
+    JSR load_texture
+
+    ; --- Initialise Animation State ---
+    ; Both accumulators start at zero. The angle accumulator determines
+    ; rotation; the scale accumulator determines zoom oscillation.
+    ; Starting both at zero means the demo begins with no rotation and
+    ; the zoom at the midpoint of its oscillation range.
+    LDA #0
+    STA @VAR_ANGLE_ACC
+    STA @VAR_SCALE_ACC
+    LDA #BACK_BUFFER_A
+    STA @VAR_DRAW_FB
+
+    ; --- Start AHX Music Playback ---
+    ; AHX (Abyss' Highest eXperience) is an Amiga-heritage tracker format.
+    ; The audio subsystem handles playback entirely in the background --
+    ; once started, it requires zero CPU involvement per frame.
+    ;
+    ; Setup: point the player at the embedded AHX data and tell it the size.
+    ; The size is computed as (end label - start label) at assemble time.
+    ;
+    ; AHX_PLAY_CTRL = 5 = bit 0 (start) | bit 2 (loop).
+    ; Looping ensures the music repeats seamlessly when it reaches the end,
+    ; which is essential for a demo that runs indefinitely.
+    LDA #ahx_data
+    STA @AHX_PLAY_PTR
+    LDA #ahx_data_end
+    LDB #ahx_data
+    SUB A, B
+    STA @AHX_PLAY_LEN
+    LDA #5
+    STA @AHX_PLAY_CTRL
+
+; ============================================================================
+; MAIN LOOP
+; ============================================================================
+; Runs once per frame (~60 FPS with vsync). The order of operations is:
+;
+; 1. compute_frame:      Calculate the 6 Mode7 affine parameters from the
+;                        current angle and scale accumulators.
+; 2. render_mode7:       Program the blitter with those parameters and
+;                        trigger a full-screen affine warp into the back
+;                        buffer at 0x900000.
+; 3. wait_vsync:         Synchronise with the vertical blank to prevent
+;                        a completed buffer.
+; 4. present_frame:      Point the VideoChip at the completed render buffer.
+; 5. swap_draw_buffer:   Select the other render buffer for the next frame.
+; 6. advance_animation:  Increment the angle and scale accumulators for
+;                        the next frame.
+;
+; THIS ORDER?
+; We compute and render before waiting for vsync. This means all the
+; heavy work happens during the active display period (while the previous
+; frame is being shown). The vblank edge then presents the completed buffer
+; by updating VIDEO_FB_BASE.
+; ============================================================================
+main_loop:
+    JSR compute_frame
+    JSR render_mode7
+    JSR wait_vsync
+    JSR present_frame
+    JSR swap_draw_buffer
+    JSR advance_animation
+    JMP main_loop
+
+; ============================================================================
+; WAIT FOR VSYNC (Two-Phase Synchronisation)
+; ============================================================================
+; Ensures exactly one frame passes between iterations of the main loop.
+;
+; TWO PHASES?
+; A single "wait for vblank" is ambiguous -- if we're already IN vblank
+; when we check, we'd return immediately and potentially run multiple
+; frames within the same vblank period. The two-phase approach:
+;
+;   Phase 1 (wait_end):   Spin while vblank is ACTIVE. This drains any
+;                         remaining vblank time from the previous frame.
+;   Phase 2 (wait_start): Spin until vblank BEGINS. This catches the
+;                         rising edge of the next vblank.
+;
+; Together, these guarantee we synchronise to exactly one vblank boundary
+; per main-loop iteration after the vblank edge.
+;
+; STATUS_VBLANK is bit 1 (value 2) of the VIDEO_STATUS register.
+; ============================================================================
+wait_vsync:
+wait_end:
+    LDA @VIDEO_STATUS
+    AND A, #STATUS_VBLANK
+    JNZ A, wait_end
+wait_start:
+    LDA @VIDEO_STATUS
+    AND A, #STATUS_VBLANK
+    JZ A, wait_start
+    RTS
+
+; ============================================================================
+; LOAD TEXTURE (256x256 RGBA from Embedded Raw Data via BLIT COPY)
+; ============================================================================
+; Copies the 256x256 RGBA texture from embedded raw data (texture_data,
+; included via .incbin) to TEXTURE_BASE using a single hardware BLIT COPY.
+; ============================================================================
+load_texture:
+    LDA #BLT_OP_COPY
+    STA @BLT_OP
+    LDA #texture_data
+    STA @BLT_SRC
+    LDA #TEXTURE_BASE
+    STA @BLT_DST
+    LDA #256
+    STA @BLT_WIDTH
+    STA @BLT_HEIGHT
+    LDA #TEX_STRIDE
+    STA @BLT_SRC_STRIDE
+    STA @BLT_DST_STRIDE
+    LDA #1
+    STA @BLT_CTRL
+lt_w1:
+    LDA @BLT_CTRL
+    AND A, #2
+    JNZ A, lt_w1
+
+    RTS
+
+; ============================================================================
+; COMPUTE FRAME - Calculate Mode7 Parameters from Animation State
+; ============================================================================
+; This is the mathematical heart of the rotozoomer. From two animation
+; accumulators (angle and scale), we derive the 6 parameters the Mode7
+; blitter needs: u0, v0, du_col, dv_col, du_row, dv_row.
+;
+; === ALGORITHM ===
+;
+; 1. Extract table indices from the 8.8 accumulators:
+;      angle_idx = (angle_accum >> 8) & 255
+;      scale_idx = (scale_accum >> 8) & 255
+;
+; 2. Look up trigonometric values from the sine table:
+;      cos_val = sine_table[(angle_idx + 64) & 255]   (cosine = sine + 90 degrees)
+;      sin_val = sine_table[angle_idx]
+;
+; 3. Look up zoom factor from the reciprocal table:
+;      recip = recip_table[scale_idx]
+;
+; 4. Compute scaled cosine/sine (these ARE the column deltas):
+;      CA = cos_val * recip   (signed multiply)
+;      SA = sin_val * recip   (signed multiply)
+;
+; 5. Compute starting UV coordinates (16.16 fixed-point):
+;      u0 = 8388608 - CA*320 + SA*240
+;      v0 = 8388608 - SA*320 - CA*240
+;
+;    WHERE 8388608 = 128 << 16 = centre of a 256-pixel texture in 16.16 FP.
+;    The CA*320 and SA*240 terms are half-screen offsets (640/2 and 480/2)
+;    that shift the rotation pivot to the screen centre.
+;
+; === REGISTER ALLOCATION ===
+; We use IE32's rich register set to avoid stack pressure:
+;   D = angle_idx        E = scale_idx
+;   F = cos_val          G = sin_val
+;   H = recip            S = CA (scaled cosine)
+;   T = SA (scaled sine) U = scratch for intermediate results
+;   A, B, C = scratch (used extensively by multiply helpers)
+;
+; === PROPER SINE TABLES ===
+; The values are computed as round(sin(i * 2*pi / 256) * 256), giving
+; true circular rotation. A cheap approximation like a triangle wave
+; would produce ~29% error at 45 degrees, causing visible distortion
+; (the rotation would appear to "speed up" and "slow down" within each
+; quadrant). With 256 entries, we get ~1.4 degree resolution, which is
+; imperceptible at 60 FPS animation speed.
+;
+; === RECIPROCAL TABLE ===
+; The reciprocal table provides zoom modulation:
+;   recip[i] = round(256 / (0.5 + sin(i * 2*pi / 256) * 0.3))
+;
+; The 0.5 baseline ensures the zoom factor is always positive (no
+; inversion). The 0.3 amplitude gives smooth oscillation between
+; zoom levels ~320 (zoomed in) and ~1280 (zoomed out). Pre-computing
+; avoids per-frame division, which IE32 lacks entirely (no DIV instruction).
+; ============================================================================
+compute_frame:
+    ; --- Extract angle table index ---
+    ; The accumulator is 8.8 fixed-point. Shifting right by 8 extracts
+    ; the integer part, which directly indexes the 256-entry sine table.
+    ; The AND #255 wraps the index, though it should already be in range
+    ; since the accumulator is masked to 16 bits in advance_animation.
+    LDA @VAR_ANGLE_ACC
+    SHR A, #8
+    AND A, #255
+    LDD A                ; D = angle_idx (preserved across subroutine calls)
+
+    ; --- Extract scale table index ---
+    ; Same extraction for the scale accumulator. This index drives the
+    ; reciprocal table, which controls the zoom oscillation.
+    LDA @VAR_SCALE_ACC
+    SHR A, #8
+    AND A, #255
+    LDE A                ; E = scale_idx
+
+    ; --- Look up cos(angle) ---
+    ; Cosine is sine phase-shifted by 90 degrees. In our 256-unit angle
+    ; system, 90 degrees = 64 units (256/4). We add 64 to the angle index
+    ; and wrap with AND #255 to get the cosine.
+    ;
+    ; SHL #2? IE32's .word directive emits 32-bit values, so each
+    ; table entry is 4 bytes. Multiplying the index by 4 converts it to
+    ; a byte offset for the table lookup.
+    LDA D
+    ADD A, #64
+    AND A, #255
+    SHL A, #2            ; *4 for 32-bit entries
+    ADD A, #sine_table
+    LDA [A]              ; A = cos_val (signed, already sign-extended in table)
+    LDF A                ; F = cos_val
+
+    ; --- Look up sin(angle) ---
+    ; Direct table lookup using the angle index.
+    LDA D
+    SHL A, #2
+    ADD A, #sine_table
+    LDA [A]
+    LDG A                ; G = sin_val
+
+    ; --- Look up reciprocal (zoom factor) ---
+    ; The reciprocal table is indexed by scale_idx. Values are unsigned
+    ; (always positive) and range from 320 to 1280.
+    LDA E
+    SHL A, #2
+    ADD A, #recip_table
+    LDA [A]
+    LDH A                ; H = recip (unsigned)
+
+    ; --- Compute CA = cos_val * recip ---
+    ; This is a signed * unsigned multiply. The sine values range -256 to
+    ; +256 (signed), while the reciprocal is always positive (unsigned).
+    ; We use the signed_mul helper which handles sign-magnitude conversion.
+    ; CA is the per-column texture U delta and also used in the row delta.
+    LDA F
+    LDB H
+    JSR signed_mul       ; A = CA
+    STA @VAR_CA
+    LDS A                ; S = CA (preserved for u0/v0 computation)
+
+    ; --- Compute SA = sin_val * recip ---
+    ; Same signed multiply for the sine component.
+    ; SA is the per-column texture V delta and (negated) the row U delta.
+    LDA G
+    LDB H
+    JSR signed_mul       ; A = SA
+    STA @VAR_SA
+    LDT A                ; T = SA
+
+    ; --- Compute u0 = 8388608 - CA*320 + SA*240 ---
+    ;
+    ; 8388608?
+    ; 8388608 = 128 << 16 = 0x800000. This is the centre of the 256-pixel
+    ; texture in 16.16 fixed-point representation. The texture coordinates
+    ; wrap at 255 (the Mode7 mask), so 128.0 in 16.16 FP places the
+    ; origin at the texture centre.
+    ;
+    ; -CA*320 + SA*240?
+    ; The screen is 640x480. Half-width = 320, half-height = 240.
+    ; These terms offset from the texture centre by the rotated half-screen
+    ; dimensions, ensuring the rotation pivots around the screen centre
+    ; rather than the top-left corner. Without this centreing, the
+    ; texture would rotate around pixel (0,0) and most of the visible
+    ; area would show off-centre content.
+    ;
+    ; The formula comes from evaluating the affine transformation at the
+    ; screen centre (320, 240) and solving for the origin:
+    ;   u(320,240) should map to texture centre (128.0)
+    ;   u0 = 128.0 - du_col*320 - du_row*240
+    ;   u0 = 128.0 - CA*320 - (-SA)*240
+    ;   u0 = 128.0 - CA*320 + SA*240
+    LDA S
+    JSR mul_320           ; A = CA*320
+    LDU A                ; U = CA*320
+    LDA T
+    JSR mul_240           ; A = SA*240
+    LDB #0x800000
+    SUB B, U             ; B = 0x800000 - CA*320
+    ADD B, A             ; B += SA*240
+    STB @VAR_U0
+
+    ; --- Compute v0 = 8388608 - SA*320 - CA*240 ---
+    ;
+    ; Same centreing logic for the V coordinate:
+    ;   v(320,240) should map to texture centre (128.0)
+    ;   v0 = 128.0 - dv_col*320 - dv_row*240
+    ;   v0 = 128.0 - SA*320 - CA*240
+    LDA T
+    JSR mul_320           ; A = SA*320
+    LDU A                ; U = SA*320
+    LDA S
+    JSR mul_240           ; A = CA*240
+    LDB #0x800000
+    SUB B, U             ; B = 0x800000 - SA*320
+    SUB B, A             ; B -= CA*240
+    STB @VAR_V0
+
+    RTS
+
+; ============================================================================
+; SIGNED MULTIPLY: A = A * B (signed result)
+; ============================================================================
+; IE32-SPECIFIC: THIS EXISTS
+;
+; The IE32 CPU's MUL instruction is UNSIGNED only. It treats both operands
+; as unsigned 32-bit integers. But our sine table contains signed values
+; (-256 to +256), so we need signed multiplication for the core math.
+;
+; This subroutine implements the classic "sign-magnitude multiply" pattern
+; used on CPUs without IMUL (like early MIPS and some microcontrollers):
+;
+;   1. Track the result sign: XOR of input signs
+;      (positive*positive=positive, positive*negative=negative, etc.)
+;   2. Take absolute values of both operands
+;   3. Perform unsigned multiply
+;   4. If result should be negative, negate it
+;
+; IE32-SPECIFIC: XOR/ADD FOR NEGATE
+; IE32 has no NEG instruction. We use the two's complement identity:
+;   -x = ~x + 1
+; Implemented as:
+;   XOR A, #0xFFFFFFFF    ; bitwise NOT (flip all bits)
+;   ADD A, #1             ; add one
+; This is the standard two's complement negate, equivalent to NEG on CPUs
+; that have it. The XOR flips all bits (one's complement), and the +1
+; converts from one's complement to two's complement.
+;
+; REGISTER USAGE:
+;   Input:  A = first operand (signed), B = second operand (signed)
+;   Output: A = A * B (signed result)
+;   Clobbers: A, B, C (C is saved/restored via PUSH/POP)
+;
+; JGE A, label -- tests the int32 sign bit. If A >= 0 (sign bit clear),
+; the operand is already positive and needs no negation.
+; ============================================================================
+signed_mul:
+    PUSH C
+    LDC #0               ; C = sign flag (0=positive result, 1=negative result)
+
+    ; --- Check sign of A ---
+    ; If A is negative (int32 < 0), negate it and toggle the sign flag.
+    JGE A, sm_a_pos
+    XOR A, #0xFFFFFFFF
+    ADD A, #1            ; A = -A (two's complement negate)
+    XOR C, #1            ; Toggle sign flag
+sm_a_pos:
+    ; --- Check sign of B ---
+    ; Same treatment for the second operand.
+    JGE B, sm_b_pos
+    XOR B, #0xFFFFFFFF
+    ADD B, #1
+    XOR C, #1            ; Toggle again (two negatives make positive)
+sm_b_pos:
+    MUL A, B             ; Unsigned multiply of absolute values
+    ; --- Conditionally negate result ---
+    ; If the sign flag is set (operands had different signs), the result
+    ; should be negative. Apply two's complement negate.
+    JZ C, sm_done
+    XOR A, #0xFFFFFFFF
+    ADD A, #1
+sm_done:
+    POP C
+    RTS
+
+; ============================================================================
+; MUL_320: A = A * 320 (signed) using shift decomposition
+; ============================================================================
+; IE32-SPECIFIC: SHIFT DECOMPOSITION WITH SIGN HANDLING
+;
+; Multiplying by 320 using MUL would work, but shift decomposition is a
+; common optimization that avoids the multiply unit:
+;   320 = 256 + 64 = (1 << 8) + (1 << 6)
+; So: A * 320 = (A << 8) + (A << 6)
+;
+; HOWEVER, left shifts on IE32 are unsigned operations -- they don't
+; preserve the sign bit in a meaningful way for signed arithmetic. Since
+; CA and SA can be negative (signed 16.16 fixed-point values from the
+; Mode7 matrix), we must:
+;   1. Save the sign of the input
+;   2. Take the absolute value
+;   3. Perform the unsigned shift-and-add
+;   4. Restore the original sign
+;
+; This is the same negate-before/negate-after pattern as signed_mul,
+; applied to shift operations instead of MUL.
+;
+; REGISTER USAGE:
+;   Input:  A = signed value to multiply by 320
+;   Output: A = A * 320 (signed)
+;   Clobbers: A, B, C (B and C are saved/restored)
+; ============================================================================
+mul_320:
+    PUSH B
+    PUSH C
+    LDC #0               ; C = sign flag
+    JGE A, m320_pos
+    XOR A, #0xFFFFFFFF
+    ADD A, #1            ; Negate to get absolute value
+    LDC #1               ; Remember that result needs negation
+m320_pos:
+    LDB A               ; B = |A| (copy for the second shift)
+    SHL A, #8            ; A = |A| * 256
+    SHL B, #6            ; B = |A| * 64
+    ADD A, B             ; A = |A| * 320
+    JZ C, m320_done      ; If input was positive, we're done
+    XOR A, #0xFFFFFFFF
+    ADD A, #1            ; Negate back to restore sign
+m320_done:
+    POP C
+    POP B
+    RTS
+
+; ============================================================================
+; MUL_240: A = A * 240 (signed) using shift decomposition
+; ============================================================================
+; Same pattern as mul_320 but with different shift decomposition:
+;   240 = 256 - 16 = (1 << 8) - (1 << 4)
+; So: A * 240 = (A << 8) - (A << 4)
+;
+; Note the SUBTRACTION here (unlike mul_320's addition). This is because
+; 240 = 256 - 16, not 256 + anything. The shift decomposition exploits
+; the fact that 240 is close to a power of 2, making it expressible as
+; a difference of two powers.
+;
+; REGISTER USAGE:
+;   Input:  A = signed value to multiply by 240
+;   Output: A = A * 240 (signed)
+;   Clobbers: A, B, C (B and C are saved/restored)
+; ============================================================================
+mul_240:
+    PUSH B
+    PUSH C
+    LDC #0
+    JGE A, m240_pos
+    XOR A, #0xFFFFFFFF
+    ADD A, #1
+    LDC #1
+m240_pos:
+    LDB A
+    SHL A, #8            ; A = |A| * 256
+    SHL B, #4            ; B = |A| * 16
+    SUB A, B             ; A = |A| * (256 - 16) = |A| * 240
+    JZ C, m240_done
+    XOR A, #0xFFFFFFFF
+    ADD A, #1
+m240_done:
+    POP C
+    POP B
+    RTS
+
+; ============================================================================
+; RENDER MODE7 - Configure and Trigger the Mode7 Affine Texture Blit
+; ============================================================================
+; Programs the hardware blitter with all parameters for a full-screen
+; affine texture warp, then triggers the blit and waits for completion.
+;
+; DOUBLE BUFFERING?
+; The Mode7 blit writes to the current off-screen render buffer, not the
+; buffer currently being scanned out. At vblank, VIDEO_FB_BASE is updated
+; to present the completed frame, then the other render buffer is selected.
+;
+; === BLITTER PARAMETER SETUP ===
+;
+;   BLT_OP = 5                    Mode7 affine texture mapping operation
+;   BLT_SRC = TEXTURE_BASE        Source texture at 0x600000
+;   BLT_DST = VAR_DRAW_FB         Current off-screen render buffer
+;   BLT_WIDTH = 640               Output width in pixels
+;   BLT_HEIGHT = 480              Output height in pixels
+;   BLT_SRC_STRIDE = 1024         Texture row stride (256 px * 4 bytes)
+;   BLT_DST_STRIDE = 2560         Output row stride (640 px * 4 bytes)
+;   BLT_MODE7_TEX_W = 255         Texture width MASK (wraps U to 0-255)
+;   BLT_MODE7_TEX_H = 255         Texture height MASK (wraps V to 0-255)
+;
+; === MODE7 AFFINE PARAMETERS ===
+;
+; These define the affine transformation. For each screen pixel (px, py):
+;   u = u0 + px * du_col + py * du_row
+;   v = v0 + px * dv_col + py * dv_row
+;   output[py][px] = texture[(u >> 16) & tex_w][(v >> 16) & tex_h]
+;
+;   u0, v0:           Starting texture coordinates (16.16 fixed-point)
+;   du_col, dv_col:   UV change per column (per pixel horizontally)
+;   du_row, dv_row:   UV change per row (per pixel vertically)
+;
+; From the rotation matrix [[CA, -SA], [SA, CA]]:
+;   du_col =  CA       dv_col =  SA
+;   du_row = -SA       dv_row =  CA
+;
+; The -SA for du_row is computed inline using IE32's XOR+ADD negate pattern.
+;
+; MASKS = 255 (NOT 256)?
+; The Mode7 blitter uses bitwise AND with these masks to wrap texture
+; coordinates: (u >> 16) & 255 maps any coordinate to 0-255, creating
+; the infinite tiling effect. This is a standard power-of-2 texture
+; wrapping trick used in hardware since the SNES.
+; ============================================================================
+render_mode7:
+    LDA #5
+    STA @BLT_OP
+
+    LDA #TEXTURE_BASE
+    STA @BLT_SRC
+    LDA @VAR_DRAW_FB
+    STA @BLT_DST
+
+    LDA #RENDER_W
+    STA @BLT_WIDTH
+    LDA #RENDER_H
+    STA @BLT_HEIGHT
+
+    LDA #TEX_STRIDE
+    STA @BLT_SRC_STRIDE
+    LDA #LINE_BYTES_V
+    STA @BLT_DST_STRIDE
+
+    LDA #255
+    STA @BLT_MODE7_TEX_W
+    STA @BLT_MODE7_TEX_H
+
+    ; --- Load pre-computed affine parameters ---
+    LDA @VAR_U0
+    STA @BLT_MODE7_U0
+
+    LDA @VAR_V0
+    STA @BLT_MODE7_V0
+
+    LDA @VAR_CA
+    STA @BLT_MODE7_DU_COL       ; du_col = CA
+
+    LDA @VAR_SA
+    STA @BLT_MODE7_DV_COL       ; dv_col = SA
+
+    ; du_row = -SA (negate SA using XOR+ADD)
+    ; The rotation matrix requires du_row to be the negative of SA.
+    ; Since IE32 has no NEG instruction, we apply two's complement negate.
+    XOR A, #0xFFFFFFFF
+    ADD A, #1                     ; A = -SA
+    STA @BLT_MODE7_DU_ROW       ; du_row = -SA
+
+    LDA @VAR_CA
+    STA @BLT_MODE7_DV_ROW       ; dv_row = CA
+
+    ; --- Trigger the blit and wait for completion ---
+    ; BLT_CTRL = 1 starts the operation. We then poll BLT_CTRL bit 1
+    ; (busy flag) until it clears. BLT_STATUS bit 1 is DONE, not BUSY.
+    ; The Mode7 blit processes all 307,200
+    LDA #1
+    STA @BLT_CTRL
+
+rm7_wait:
+    LDA @BLT_CTRL
+    AND A, #2
+    JNZ A, rm7_wait
+
+    RTS
+
+; ============================================================================
+; PRESENT COMPLETED FRAME
+; ============================================================================
+; Points the VideoChip at the completed render buffer. No full-screen copy is
+; needed, so the blitter is free for the next Mode7 render.
+; ============================================================================
+present_frame:
+    LDA @VAR_DRAW_FB
+    STA @VIDEO_FB_BASE
+    RTS
+
+; ============================================================================
+; SWAP DRAW BUFFER
+; ============================================================================
+swap_draw_buffer:
+    LDA @VAR_DRAW_FB
+    SUB A, #BACK_BUFFER_A
+    JNZ A, use_buffer_a
+    LDA #BACK_BUFFER_B
+    STA @VAR_DRAW_FB
+    RTS
+use_buffer_a:
+    LDA #BACK_BUFFER_A
+    STA @VAR_DRAW_FB
+    RTS
+
+; ============================================================================
+; ADVANCE ANIMATION
+; ============================================================================
+; Increments the angle and scale accumulators by their respective rates,
+; then wraps both to 16 bits (0x0000-0xFFFF).
+;
+; The 8.8 fixed-point format means:
+;   - Upper 8 bits: table index (0-255)
+;   - Lower 8 bits: fractional part (sub-index precision)
+;
+; ANGLE_INC=313 advances the angle by ~1.22 table entries per frame,
+; completing a full rotation every ~210 frames (~3.5 seconds at 60 FPS).
+;
+; SCALE_INC=104 advances the zoom by ~0.41 table entries per frame,
+; completing a full zoom cycle every ~630 frames (~10.5 seconds).
+;
+; The AND #0xFFFF wraps the accumulator to 16 bits, ensuring the upper
+; byte (table index) naturally wraps from 255 back to 0 via overflow.
+; ============================================================================
+advance_animation:
+    LDA @VAR_ANGLE_ACC
+    ADD A, #ANGLE_INC
+    AND A, #0xFFFF
+    STA @VAR_ANGLE_ACC
+
+    LDA @VAR_SCALE_ACC
+    ADD A, #SCALE_INC
+    AND A, #0xFFFF
+    STA @VAR_SCALE_ACC
+
+    RTS
+
+; ============================================================================
+; SINE TABLE - 256 Entries, 32-bit Sign-Extended
+; ============================================================================
+; Precomputed sine values for angles 0-255 (representing 0 to 2*pi).
+; Each entry is round(sin(i * 2*pi / 256) * 256).
+; Values range from -256 to +256 (representing -1.0 to +1.0 in 8.8 FP).
+;
+; 256 ENTRIES?
+; 256 = 2^8, so the table index is exactly the upper byte of our 8.8
+; fixed-point angle accumulator. No additional masking or scaling is
+; needed beyond shifting right by 8 and masking to 8 bits. 256 entries
+; give ~1.4 degree resolution, which is far below the perceptible
+; threshold for smooth rotation animation at 60 FPS.
+;
+; TRUE SINE (NOT TRIANGLE WAVE)?
+; A triangle wave approximation would be cheaper to compute (and wouldn't
+; need a table at all), but it introduces ~29% error at 45 degrees. This
+; error manifests as visible speed variation -- the rotation appears to
+; accelerate and decelerate within each quadrant, destroying the smooth
+; circular motion. True sine gives perfect circular rotation with constant
+; angular velocity.
+;
+; IE32-SPECIFIC: 32-BIT ENTRIES?
+; IE32's .word directive emits 32-bit values (unlike most assemblers where
+; .word is 16-bit). This means negative values are stored already sign-
+; extended to 32 bits: -6 is stored as 0xFFFFFFFA, -256 as 0xFFFFFF00.
+; When loaded with LDA [A], no sign-extension is needed -- the value is
+; immediately usable as a signed 32-bit integer. This eliminates what
+; would otherwise be a separate sign-extension step on every table lookup.
+;
+; TABLE LAYOUT:
+;   Index   0-63:   Quadrant 1 (0 to +256)    ascending
+;   Index  64-127:  Quadrant 2 (+256 to 0)     descending
+;   Index 128-191:  Quadrant 3 (0 to -256)     descending
+;   Index 192-255:  Quadrant 4 (-256 to 0)     ascending
+;
+; COSINE TRICK: cos(angle) = sin(angle + 64)
+; Since 64 entries = 90 degrees, adding 64 to the sine table index gives
+; cosine. This avoids needing a separate cosine table.
+;
+; MEMORY FOOTPRINT: 256 entries * 4 bytes = 1024 bytes (1 KB)
+; ============================================================================
+sine_table:
+    ; Quadrant 1: indices 0-63, values rise from 0 to +256
+    .word 0,6,13,19,25,31,38,44,50,56,62,68,74,80,86,92
+    .word 98,104,109,115,121,126,132,137,142,147,152,157,162,167,172,177
+    .word 181,185,190,194,198,202,206,209,213,216,220,223,226,229,231,234
+    .word 237,239,241,243,245,247,248,250,251,252,253,254,255,255,256,256
+    ; Quadrant 2: indices 64-127, values fall from +256 to 0
+    .word 256,256,256,255,255,254,253,252,251,250,248,247,245,243,241,239
+    .word 237,234,231,229,226,223,220,216,213,209,206,202,198,194,190,185
+    .word 181,177,172,167,162,157,152,147,142,137,132,126,121,115,109,104
+    .word 98,92,86,80,74,68,62,56,50,44,38,31,25,19,13,6
+    ; Quadrant 3: indices 128-191, values fall from 0 to -256
+    ; Negative values are stored as 32-bit two's complement (sign-extended).
+    ; Example: -6 = 0xFFFFFFFA, -256 = 0xFFFFFF00
+    .word 0,0xFFFFFFFA,0xFFFFFFF3,0xFFFFFFED,0xFFFFFFE7,0xFFFFFFE1,0xFFFFFFDA,0xFFFFFFD4,0xFFFFFFCE,0xFFFFFFC8,0xFFFFFFC2,0xFFFFFFBC,0xFFFFFFB6,0xFFFFFFB0,0xFFFFFFAA,0xFFFFFFA4
+    .word 0xFFFFFF9E,0xFFFFFF98,0xFFFFFF93,0xFFFFFF8D,0xFFFFFF87,0xFFFFFF82,0xFFFFFF7C,0xFFFFFF77,0xFFFFFF72,0xFFFFFF6D,0xFFFFFF68,0xFFFFFF63,0xFFFFFF5E,0xFFFFFF59,0xFFFFFF54,0xFFFFFF4F
+    .word 0xFFFFFF4B,0xFFFFFF47,0xFFFFFF42,0xFFFFFF3E,0xFFFFFF3A,0xFFFFFF36,0xFFFFFF32,0xFFFFFF2F,0xFFFFFF2B,0xFFFFFF28,0xFFFFFF24,0xFFFFFF21,0xFFFFFF1E,0xFFFFFF1B,0xFFFFFF19,0xFFFFFF16
+    .word 0xFFFFFF13,0xFFFFFF11,0xFFFFFF0F,0xFFFFFF0D,0xFFFFFF0B,0xFFFFFF09,0xFFFFFF08,0xFFFFFF06,0xFFFFFF05,0xFFFFFF04,0xFFFFFF03,0xFFFFFF02,0xFFFFFF01,0xFFFFFF01,0xFFFFFF00,0xFFFFFF00
+    ; Quadrant 4: indices 192-255, values rise from -256 to 0
+    .word 0xFFFFFF00,0xFFFFFF00,0xFFFFFF00,0xFFFFFF01,0xFFFFFF01,0xFFFFFF02,0xFFFFFF03,0xFFFFFF04,0xFFFFFF05,0xFFFFFF06,0xFFFFFF08,0xFFFFFF09,0xFFFFFF0B,0xFFFFFF0D,0xFFFFFF0F,0xFFFFFF11
+    .word 0xFFFFFF13,0xFFFFFF16,0xFFFFFF19,0xFFFFFF1B,0xFFFFFF1E,0xFFFFFF21,0xFFFFFF24,0xFFFFFF28,0xFFFFFF2B,0xFFFFFF2F,0xFFFFFF32,0xFFFFFF36,0xFFFFFF3A,0xFFFFFF3E,0xFFFFFF42,0xFFFFFF47
+    .word 0xFFFFFF4B,0xFFFFFF4F,0xFFFFFF54,0xFFFFFF59,0xFFFFFF5E,0xFFFFFF63,0xFFFFFF68,0xFFFFFF6D,0xFFFFFF72,0xFFFFFF77,0xFFFFFF7C,0xFFFFFF82,0xFFFFFF87,0xFFFFFF8D,0xFFFFFF93,0xFFFFFF98
+    .word 0xFFFFFF9E,0xFFFFFFA4,0xFFFFFFAA,0xFFFFFFB0,0xFFFFFFB6,0xFFFFFFBC,0xFFFFFFC2,0xFFFFFFC8,0xFFFFFFCE,0xFFFFFFD4,0xFFFFFFDA,0xFFFFFFE1,0xFFFFFFE7,0xFFFFFFED,0xFFFFFFF3,0xFFFFFFFA
+
+; ============================================================================
+; RECIPROCAL TABLE - 256 Entries, 32-bit Unsigned
+; ============================================================================
+; Precomputed zoom factors for the Mode7 affine transformation.
+; Each entry is round(256 / (0.5 + sin(i * 2*pi / 256) * 0.3)).
+;
+; THIS FORMULA?
+; The expression (0.5 + sin(i) * 0.3) oscillates between 0.2 and 0.8.
+; Taking the reciprocal and scaling by 256 gives values from ~320 to ~1280.
+;
+;   - The 0.5 baseline keeps the denominator always positive (minimum 0.2),
+;     preventing division by zero or negative zoom (which would flip the
+;     texture -- visually jarring). Without this offset, when sin(i) = -1,
+;     the denominator would be -0.3, causing an inverted and extremely
+;     zoomed-in frame.
+;
+;   - The 0.3 amplitude controls how dramatically the zoom oscillates.
+;     Smaller values (e.g., 0.1) would give subtle zoom; larger values
+;     (e.g., 0.5) would range from extreme close-up to very far away.
+;     0.3 gives a visually balanced range: the texture is always
+;     recognizable but clearly zooming in and out.
+;
+;   - The 256 numerator scales the result into a useful integer range for
+;     the signed multiply with sine/cosine values (which are also scaled
+;     by 256). The product CA = cos * recip is therefore in 16.16-ish
+;     fixed-point, suitable for the blitter's 16.16 FP parameter format.
+;
+; PRE-COMPUTE?
+; IE32 has no division instruction at all. Computing reciprocals at
+; runtime would require a software division routine -- expensive and
+; unnecessary when the values are deterministic (indexed by a known
+; accumulator). A 1 KB table eliminates all runtime division.
+;
+; TABLE SHAPE (zoom over one full cycle):
+;   Index 0:     512 (baseline zoom -- texture at 1:2 scale)
+;   Index 64:    320 (most zoomed in -- texture appears larger)
+;   Index 128:   512 (back to baseline)
+;   Index 192:  1280 (most zoomed out -- texture appears smaller)
+;   Index 255:   520 (approaching baseline again)
+;
+; MEMORY FOOTPRINT: 256 entries * 4 bytes = 1024 bytes (1 KB)
+;
+; IE32-SPECIFIC: All values are positive, so no sign-extension concerns.
+; They are stored as plain unsigned 32-bit integers.
+; ============================================================================
+recip_table:
+    .word 512,505,497,490,484,477,471,464,458,453,447,441,436,431,426,421
+    .word 416,412,407,403,399,395,391,388,384,381,377,374,371,368,365,362
+    .word 359,357,354,352,350,348,345,343,342,340,338,336,335,333,332,331
+    .word 329,328,327,326,325,324,324,323,322,322,321,321,321,320,320,320
+    .word 320,320,320,320,321,321,321,322,322,323,324,324,325,326,327,328
+    .word 329,331,332,333,335,336,338,340,342,343,345,348,350,352,354,357
+    .word 359,362,365,368,371,374,377,381,384,388,391,395,399,403,407,412
+    .word 416,421,426,431,436,441,447,453,458,464,471,477,484,490,497,505
+    .word 512,520,528,536,544,553,561,571,580,589,599,610,620,631,642,653
+    .word 665,676,689,701,714,727,740,754,768,782,797,812,827,842,858,873
+    .word 889,905,922,938,955,972,988,1005,1022,1038,1055,1071,1087,1103,1119,1134
+    .word 1149,1163,1177,1190,1202,1214,1225,1235,1244,1252,1260,1266,1271,1275,1278,1279
+    .word 1280,1279,1278,1275,1271,1266,1260,1252,1244,1235,1225,1214,1202,1190,1177,1163
+    .word 1149,1134,1119,1103,1087,1071,1055,1038,1022,1005,988,972,955,938,922,905
+    .word 889,873,858,842,827,812,797,782,768,754,740,727,714,701,689,676
+    .word 665,653,642,631,620,610,599,589,580,571,561,553,544,536,528,520
+
+; ============================================================================
+; MUSIC DATA
+; ============================================================================
+; Embedded AHX music file (Amiga tracker format).
+;
+; AHX (Abyss' Highest eXperience) is a 4-channel waveform synthesis tracker
+; format from the Amiga demoscene. Unlike SID (which uses a 6502 CPU core)
+; or PSG (which uses a Z80 core), AHX playback is handled natively by the
+; Intuition Engine's AHX audio engine -- no secondary CPU is involved.
+;
+; The file is included verbatim using .incbin. The audio subsystem parses
+; the AHX header, extracts instrument definitions and pattern data, and
+; plays the music autonomously. The main CPU has zero per-frame overhead
+; for audio after the initial AHX_PLAY_CTRL write.
+;
+; The ahx_data_end label immediately after the .incbin allows us to compute
+; the file size at assemble time: size = ahx_data_end - ahx_data.
+; ============================================================================
+; ============================================================================
+; TEXTURE DATA - 256x256 RGBA RAW IMAGE
+; ============================================================================
+texture_data:
+.incbin "../assets/rotozoomtexture_ie32.raw"
+
+ahx_data:
+.incbin "../assets/music/Fairlightz.ahx"
+ahx_data_end:

@@ -1,8 +1,7 @@
 ; RoboCop intro: IE32 guest code combines a masked blitter image, Copper bars and PSG+ playback.
 ;
-; The sprite, mask, AY tune and font are embedded when the Host SDK assembles the
-; guest binary, so launch needs no guest file root: `go run . -ie32 <binary>`. Read
-; the device registers, data layout, initialisation, per-frame update and presentation
+; The sprite, mask, AY tune and font are embedded in the guest image. Read the
+; device registers, data layout, initialisation, per-frame update and presentation
 ; in that order. The other ports retain this data flow but use their own addressing.
 
 ; ----------------------------------------------------------------------------

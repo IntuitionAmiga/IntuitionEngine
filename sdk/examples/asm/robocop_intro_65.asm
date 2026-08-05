@@ -1,7 +1,6 @@
 ; RoboCop intro: 6502 guest code combines a masked blitter image, Copper bars and PSG+ playback.
 ;
 ; The assembler embeds the sprite, mask, AY tune and font in the guest binary, so
-; launch needs no guest file root: `go run . -m6502 <binary>`. The 6502 uses the
 ; banked aperture for device registers and extended addresses for the blitter data.
 ; Read data organisation, initialisation, per-frame update and presentation in order.
 ;

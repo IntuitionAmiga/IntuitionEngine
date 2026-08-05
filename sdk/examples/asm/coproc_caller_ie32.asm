@@ -1,9 +1,8 @@
 ; Coprocessor mailbox caller: IE32 guest code that starts the matching worker, writes two operands to shared guest RAM, enqueues an add request and polls its ticket.
 ;
 ; The caller and service communicate through shared guest RAM and coprocessor MMIO.
-; The Host SDK builds both guest binaries; it is not present at runtime. Read the
+; Read the
 ; mailbox constants, initialisation, descriptor exchange and terminal path in order.
-; Run the caller with `go run . -ie32 -coproc-svc <service> <caller>`.
 ; Compare coproc_service_ie32.asm as its matching pair and the other CPU ports for their
 ; real addressing differences.
 ;

@@ -75,7 +75,6 @@
 ;
 ; === BUILD AND RUN ===
 ;   sdk/bin/ie32asm sdk/examples/asm/voodoo_mega_demo.asm
-;   go run . -ie32 sdk/examples/asm/voodoo_mega_demo.iex
 ;
 ; (c) 2024-2026 Zayn Otley - GPLv3 or later
 ; ============================================================================

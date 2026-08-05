@@ -2322,7 +2322,11 @@ sdk-build: ie32asm ie64asm ie32to64 m68kto64 ie64dis
 	echo ""; \
 	echo "SDK build complete: $${SDK_BUILT} assembled, $${SDK_SKIPPED} skipped, $${SDK_FAILED} failed"; \
 	ls sdk/examples/prebuilt/ 2>/dev/null || true; \
-	if [ "$$SDK_FAILED" -gt 0 ]; then exit 1; fi
+	if [ "$$SDK_FAILED" -gt 0 ]; then exit 1; fi; \
+	$(MKDIR) -p intuitionengine.com/assets/sdk/examples/asm intuitionengine.com/assets/sdk/examples/basic intuitionengine.com/assets/sdk/examples/c; \
+	cp -f sdk/examples/asm/*.asm intuitionengine.com/assets/sdk/examples/asm/; \
+	cp -f sdk/examples/basic/*.bas intuitionengine.com/assets/sdk/examples/basic/; \
+	cp -f sdk/examples/c/*.c intuitionengine.com/assets/sdk/examples/c/
 
 # Reusable macro for building a Linux release archive for a given architecture.
 # $(1) = GOARCH (amd64 or arm64)
