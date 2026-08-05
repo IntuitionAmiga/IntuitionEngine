@@ -127,10 +127,13 @@ func invalidateM68KJITForGuestWrite(bus Bus32, addr uint64, size uint64) {
 	if bus == nil || size == 0 {
 		return
 	}
-	// Page dirty publication is not bounded by the JIT's 32-bit ceiling; see
-	// MachineBus.invalidateM68KJITRAMWrite for why the two share a call site.
+	// Route MachineBus users through the one physical-RAM mutation service.
+	// Besides M68K dirty publication, it notifies subscribed 6502 JITs. Host
+	// loaders, FileIO and device DMA call this helper after direct backing
+	// writes, so splitting the paths would leave a stale 6502 code cache.
 	if mb, ok := bus.(*MachineBus); ok {
-		mb.markPagesDirty(addr, size)
+		mb.invalidateM68KJITRAMWrite(addr, size)
+		return
 	}
 	if addr > uint64(^uint32(0)) {
 		return

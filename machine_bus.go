@@ -55,6 +55,7 @@ package main
 import (
 	"encoding/binary"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -179,9 +180,17 @@ type MachineBus struct {
 
 	mmioStats []*IODeviceStats
 
-	m68kJITInvalidator   func(addr, size uint64)
-	m68kJITWriteBegin    func(addr, size uint64) bool
-	m68kJITWriteEnd      func(locked bool)
+	m68kJITInvalidator func(addr, size uint64)
+	m68kJITWriteBegin  func(addr, size uint64) bool
+	m68kJITWriteEnd    func(locked bool)
+
+	// p65JITInvalidators are CPU-owned generation publishers. Writers invoke
+	// them after a physical RAM mutation; each owning 6502 dispatcher drains
+	// its own pending generations at a block boundary.
+	p65JITInvalidatorMu  sync.RWMutex
+	p65JITInvalidators   map[uint64]func(addr, size uint64)
+	p65JITInvalidatorID  atomic.Uint64
+	p65JITInvalidatorCnt atomic.Uint64
 	coprocCompletionWake func(addr, value uint32)
 }
 
@@ -420,11 +429,52 @@ func (bus *MachineBus) invalidateM68KJITRAMWrite(addr uint64, size uint64) {
 		return
 	}
 	bus.markPagesDirty(addr, size)
+	bus.notifyP65JITRAMWrite(addr, size)
 	if addr > uint64(^uint32(0)) {
 		return
 	}
 	if bus.m68kJITInvalidator != nil {
 		bus.m68kJITInvalidator(addr, size)
+	}
+}
+
+// RegisterP65JITInvalidator subscribes one 6502 execution context to physical
+// RAM mutations. The returned function is idempotent and must be called when
+// that context is released. Callbacks only publish generations: cache mutation
+// remains on the owning CPU execution thread.
+func (bus *MachineBus) RegisterP65JITInvalidator(fn func(addr, size uint64)) func() {
+	if bus == nil || fn == nil {
+		return func() {}
+	}
+	id := bus.p65JITInvalidatorID.Add(1)
+	bus.p65JITInvalidatorMu.Lock()
+	if bus.p65JITInvalidators == nil {
+		bus.p65JITInvalidators = make(map[uint64]func(addr, size uint64))
+	}
+	bus.p65JITInvalidators[id] = fn
+	bus.p65JITInvalidatorCnt.Add(1)
+	bus.p65JITInvalidatorMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			bus.p65JITInvalidatorMu.Lock()
+			if _, ok := bus.p65JITInvalidators[id]; ok {
+				delete(bus.p65JITInvalidators, id)
+				bus.p65JITInvalidatorCnt.Add(^uint64(0))
+			}
+			bus.p65JITInvalidatorMu.Unlock()
+		})
+	}
+}
+
+func (bus *MachineBus) notifyP65JITRAMWrite(addr, size uint64) {
+	if bus == nil || size == 0 || bus.p65JITInvalidatorCnt.Load() == 0 {
+		return
+	}
+	bus.p65JITInvalidatorMu.RLock()
+	defer bus.p65JITInvalidatorMu.RUnlock()
+	for _, fn := range bus.p65JITInvalidators {
+		fn(addr, size)
 	}
 }
 
@@ -3112,6 +3162,15 @@ func (bus *MachineBus) Reset() {
 	}
 	if bus.backing != nil {
 		bus.backing.Reset()
+	}
+	// Reset replaces physical RAM just as surely as a program loader does.
+	// Publish only after both stores complete so a dispatcher that drains the
+	// generation cannot recompile from half-cleared source bytes.
+	if len(bus.memory) != 0 {
+		bus.invalidateM68KJITRAMWrite(0, uint64(len(bus.memory)))
+	}
+	if bus.backing != nil && bus.backing.Size() > uint64(len(bus.memory)) {
+		bus.invalidateM68KJITRAMWrite(uint64(len(bus.memory)), bus.backing.Size()-uint64(len(bus.memory)))
 	}
 	for _, hook := range bus.resetHooks {
 		hook()

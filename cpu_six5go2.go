@@ -261,11 +261,21 @@ type CPU_6502 struct {
 	jitCache         *CodeCache
 	jitExecMem       any // *ExecMem
 	jitCtx           *JIT6502Context
-	interpTraceCache *interp6502TraceCache
-	interpDecodeGen  [256]uint32
-	codePageBitmap   [256]byte // self-mod detection: one byte per 6502 page
-	directPageBitmap [256]byte // JIT fast-path: 0=memDirect ok, 1=bail to interpreter
-	directPageReady  bool      // set true once initDirectPageBitmap has been called for this run
+	jitStats         p65JITStats
+	jitCodeGen       [256]atomic.Uint64
+	jitSeenCodeGen   [256]uint64
+	jitDispatchGen   atomic.Uint64
+	jitBusUnregister func()
+	// Test-only deterministic JIT checkpoint controls. Zero values preserve
+	// normal production scanning and chaining behaviour.
+	jitTestStopAfter  uint64
+	jitTestRetired    uint64
+	jitTestBlockLimit int
+	interpTraceCache  *interp6502TraceCache
+	interpDecodeGen   [256]uint32
+	codePageBitmap    [256]byte // self-mod detection: one byte per 6502 page
+	directPageBitmap  [256]byte // JIT fast-path: 0=memDirect ok, 1=bail to interpreter
+	directPageReady   bool      // set true once initDirectPageBitmap has been called for this run
 }
 
 // Running returns the execution state (thread-safe)
@@ -902,8 +912,7 @@ func c6502RegisterReadTarget(a *Bus6502Adapter, addr uint16) (uint32, bool) {
 func (a *Bus6502Adapter) WriteFast(addr uint16, val byte) {
 	a.noteInterpTraceWrite(addr)
 	if addr < 0x2000 && a.pageKnownPlainRAM(addr>>8) {
-		old := a.memDirect[addr]
-		a.memDirect[addr] = val
+		old := a.writePlainRAM(addr, val)
 		a.debugOnWrite(addr, 1, uint64(old), uint64(val))
 		return
 	}
@@ -923,8 +932,7 @@ func (a *Bus6502Adapter) ReadZP(addr byte) byte {
 func (a *Bus6502Adapter) WriteZP(addr byte, val byte) {
 	a.noteInterpTraceWrite(uint16(addr))
 	if a.pageKnownPlainRAM(0) {
-		old := a.memDirect[addr]
-		a.memDirect[addr] = val
+		old := a.writePlainRAM(uint16(addr), val)
 		a.debugOnWrite(uint16(addr), 1, uint64(old), uint64(val))
 		return
 	}
@@ -946,12 +954,28 @@ func (a *Bus6502Adapter) WriteStack(sp byte, val byte) {
 	a.noteInterpTraceWrite(0x0100 | uint16(sp))
 	if a.pageKnownPlainRAM(1) {
 		addr := 0x0100 | uint16(sp)
-		old := a.memDirect[addr]
-		a.memDirect[addr] = val
+		old := a.writePlainRAM(addr, val)
 		a.debugOnWrite(addr, 1, uint64(old), uint64(val))
 		return
 	}
 	a.Write(0x0100|uint16(sp), val)
+}
+
+// writePlainRAM is the fast-interpreter counterpart of MachineBus.Write8 for
+// an address already proven to be unaliased plain RAM. It intentionally avoids
+// another translation lookup, but preserves the bus write barrier and physical
+// generation publication so a running 6502 JIT cannot retain stale code.
+func (a *Bus6502Adapter) writePlainRAM(addr uint16, value byte) byte {
+	old := a.memDirect[addr]
+	if a.machineBus == nil {
+		a.memDirect[addr] = value
+		return old
+	}
+	locked := a.machineBus.beginM68KJITRAMWrite(uint64(addr), 1)
+	a.memDirect[addr] = value
+	a.machineBus.invalidateM68KJITRAMWrite(uint64(addr), 1)
+	a.machineBus.endM68KJITRAMWrite(locked)
+	return old
 }
 
 func (a *Bus6502Adapter) noteInterpTraceWrite(addr uint16) {
@@ -1835,6 +1859,7 @@ func (cpu_6502 *CPU_6502) Reset() {
 	cpu_6502.SR = UNUSED_FLAG | INTERRUPT_FLAG
 	cpu_6502.PC = cpu_6502.read16(RESET_VECTOR)
 	cpu_6502.Cycles = 0
+	cpu_6502.resetJITStats()
 	cpu_6502.running.Store(true)
 	cpu_6502.InInterrupt = false
 

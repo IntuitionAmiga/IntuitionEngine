@@ -2110,6 +2110,17 @@ func (se *ScriptEngine) luaCPUJITStats() lua.LGFunction {
 				L.SetField(tbl, "native_pc_ring", se.luaM68KJITNativePCRing(L, cpu))
 				L.SetField(tbl, "compile_failures", se.luaM68KJITCompileFailures(L, cpu, 16))
 			}
+		case runtimeCPU6502:
+			if snap.cpu65 != nil && snap.cpu65.cpu != nil {
+				cpu := snap.cpu65.cpu
+				stats := cpu.jit6502StatsSnapshot()
+				L.SetField(tbl, "instruction_count", lua.LNumber(cpu.InstructionCount))
+				L.SetField(tbl, "tier1_blocks", lua.LNumber(stats.tier1Blocks))
+				L.SetField(tbl, "native_entries", lua.LNumber(stats.nativeEntries))
+				L.SetField(tbl, "bailouts", lua.LNumber(stats.bails))
+				L.SetField(tbl, "invalidations", lua.LNumber(stats.invalidations))
+				L.SetField(tbl, "chain_exits", lua.LNumber(stats.chainExits))
+			}
 		}
 		L.Push(tbl)
 		return 1

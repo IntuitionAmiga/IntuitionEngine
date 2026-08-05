@@ -1,5 +1,8 @@
 // jit_6502_emit_amd64.go - x86-64 native code emitter for 6502 JIT compiler
 
+// This emitter also carries shared AMD64 encoding helpers used by other JIT
+// backends, so it remains built on desktop AMD64 even though the 6502
+// dispatcher exposes native execution on Linux only.
 //go:build amd64 && (linux || windows || darwin)
 
 package main
@@ -444,6 +447,14 @@ func emit6502ChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, pendi
 	// JNE .unchained (self-mod detected)
 	unchainedOff2 := amd64Jcc_rel32(cb, amd64CondNE)
 
+	// An external writer can invalidate a patched target while this native
+	// chain is live. Compare the atomic publisher generation against the
+	// value captured at dispatcher entry before taking the patchable jump.
+	amd64MOV_reg_mem(cb, amd64RAX, amd64RCX, int32(j65CtxOffDispatchGenPtr))
+	amd64MOV_reg_mem(cb, amd64RAX, amd64RAX, 0)
+	amd64CMP_reg_mem64(cb, amd64RAX, amd64RCX, int32(j65CtxOffDispatchGeneration))
+	unchainedOff3 := amd64Jcc_rel32(cb, amd64CondNE)
+
 	// Patchable JMP rel32 — initially jumps to .unchained
 	jmpOff := cb.Len()
 	cb.EmitBytes(0xE9, 0, 0, 0, 0) // JMP rel32 (placeholder)
@@ -453,6 +464,7 @@ func emit6502ChainExit(cb *CodeBuffer, targetPC uint32, instrCount uint32, pendi
 	unchainedLabel := cb.Len()
 	patchRel32(cb, unchainedOff1, unchainedLabel)
 	patchRel32(cb, unchainedOff2, unchainedLabel)
+	patchRel32(cb, unchainedOff3, unchainedLabel)
 	patchRel32(cb, jmpDispOffset, unchainedLabel) // initial target = unchained
 
 	// Emit unchained exit
@@ -719,7 +731,7 @@ func emit6502FullFastPathCheck(cb *CodeBuffer) int {
 	return off
 }
 
-// emit6502ZPPageCheck emits the ioPageBitmap check for a specific ZP page (0).
+// emit6502ZPPageCheck emits the ioPageBitmap check for a specific 6502 page.
 // Returns the offset to be patched to the bail target.
 func emit6502ZPPageCheck(cb *CodeBuffer, page byte) int {
 	amd64MOVZX_B_mem(cb, amd64RCX, j65RegIO, int32(page))
@@ -840,9 +852,11 @@ func emit6502PageCrossCheck(cb *CodeBuffer) {
 // Self-Modification Detection (for stores)
 // ===========================================================================
 
-// emit6502SelfModCheck emits code page bitmap check after a store.
-// Address must be in EAX. Returns offset to patch to the inval bail target.
-// Clobbers: ECX, RDX.
+// emit6502SelfModCheck exits after every native RAM store. A compiled store
+// bypasses MachineBus.Write8, so the dispatcher must publish it to peer 6502
+// caches before another chained block can execute. ARM64 follows the same
+// conservative policy. Address must be in EAX. Returns the JMP displacement
+// to patch to the invalidation epilogue. Clobbers: ECX, RDX.
 func emit6502SelfModCheck(cb *CodeBuffer) int {
 	amd64MOV_reg_reg32(cb, amd64RCX, amd64RAX) // ECX = addr
 	amd64SHR_imm32(cb, amd64RCX, 8)            // ECX = page number
@@ -852,14 +866,7 @@ func emit6502SelfModCheck(cb *CodeBuffer) int {
 	amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(j65OffCtxPtr))         // RDX = ctx
 	amd64MOV_mem_reg32(cb, amd64RDX, int32(j65CtxOffInvalPage), amd64RCX) // ctx.InvalPage = page
 
-	// Load CodePageBitmapPtr from stack
-	amd64MOV_reg_mem(cb, amd64RDX, amd64RSP, int32(j65OffCodePage)) // RDX = bitmap ptr
-
-	off, ok := emitAMD64FastPathBitmapProbe(cb, FPBitmapCodePageDirty, amd64RDX, amd64RAX, amd64RCX, amd64RCX, false)
-	if !ok {
-		panic("missing FPBitmapCodePageDirty shape")
-	}
-	return off
+	return amd64JMP_rel32(cb)
 }
 
 // ===========================================================================
@@ -943,10 +950,10 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		*bails = append(*bails, bailInfo{
 			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
-		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
 			emit6502PageCrossCheck(cb)
 		}
+		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
 	// === Absolute,Y ===
 	case 0xB9, 0xBE: // LDA/LDX abs,Y
@@ -955,10 +962,10 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		*bails = append(*bails, bailInfo{
 			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
-		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
 			emit6502PageCrossCheck(cb)
 		}
+		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 
 	// === (Indirect,X) ===
 	case 0xA1: // LDA (ind,X)
@@ -976,10 +983,10 @@ func emit6502Load(cb *CodeBuffer, dstReg byte, opcode byte, operand uint16,
 		*bails = append(*bails, bailInfo{
 			offsets: []int{fpOff}, instrPC: instrPC, instrIdx: instrIdx, pendingCycles: pendingCycles, nzPending: nzPending, nzReg: nzReg,
 		})
-		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 		if isLoadWithPageCross {
 			emit6502PageCrossCheck(cb)
 		}
+		amd64MOVZX_B_memSIB(cb, dstReg, j65RegMem, amd64RAX)
 	}
 }
 
@@ -1283,9 +1290,111 @@ func amd64CMP_mem32_imm32(cb *CodeBuffer, base byte, disp int32, imm int32) {
 	cb.Emit32(uint32(imm))
 }
 
+// amd64CMP_reg_mem64 emits CMP reg64, QWORD [base + disp].
+func amd64CMP_reg_mem64(cb *CodeBuffer, reg, base byte, disp int32) {
+	emitREX(cb, true, reg, base)
+	cb.EmitBytes(0x3B)
+	baseBits := regBits(base)
+	if disp == 0 && baseBits != 5 {
+		if baseBits == 4 {
+			cb.EmitBytes(modRM(0, reg, 4), sibByte(0, 4, base))
+		} else {
+			cb.EmitBytes(modRM(0, reg, base))
+		}
+		return
+	}
+	if disp >= -128 && disp <= 127 {
+		if baseBits == 4 {
+			cb.EmitBytes(modRM(1, reg, 4), sibByte(0, 4, base), byte(int8(disp)))
+		} else {
+			cb.EmitBytes(modRM(1, reg, base), byte(int8(disp)))
+		}
+		return
+	}
+	if baseBits == 4 {
+		cb.EmitBytes(modRM(2, reg, 4), sibByte(0, 4, base))
+	} else {
+		cb.EmitBytes(modRM(2, reg, base))
+	}
+	cb.Emit32(uint32(disp))
+}
+
 // ===========================================================================
 // Control Flow — JMP, JSR, RTS
 // ===========================================================================
+
+// emit6502BRK implements the documented NMOS BRK sequence in direct RAM.
+// The interrupt vector is deliberately read from $FFFE/$FFFF without the
+// normal I/O-page guard: these two bytes are the defined CPU vector path.
+func emit6502BRK(cb *CodeBuffer, instrPC uint16, instrCount uint32, pendingCycles *uint32, nzPending bool, nzReg byte) {
+	if nzPending {
+		emit6502UpdateNZ(cb, nzReg)
+	}
+	// BRK pushes the address after its padding byte.
+	returnPC := uint16(uint32(instrPC) + 2)
+	amd64MOVZX_B(cb, amd64RAX, j65RegSP)
+	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
+	amd64MOV_reg_imm32(cb, amd64RCX, uint32(returnPC>>8))
+	amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, amd64RCX)
+	amd64DEC_reg8(cb, j65RegSP)
+	amd64MOVZX_B(cb, amd64RAX, j65RegSP)
+	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
+	amd64MOV_reg_imm32(cb, amd64RCX, uint32(returnPC&0xFF))
+	amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, amd64RCX)
+	amd64DEC_reg8(cb, j65RegSP)
+	// Pushed status has B and U set. The live B flag is cleared afterwards.
+	amd64MOV_reg_reg32(cb, amd64RCX, j65RegSR)
+	amd64OR_reg_imm32_32bit(cb, amd64RCX, int32(BREAK_FLAG|UNUSED_FLAG))
+	amd64MOVZX_B(cb, amd64RAX, j65RegSP)
+	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
+	amd64MOV_memSIB_reg8(cb, j65RegMem, amd64RAX, amd64RCX)
+	amd64DEC_reg8(cb, j65RegSP)
+	amd64OR_reg_imm32_32bit(cb, j65RegSR, int32(INTERRUPT_FLAG|UNUSED_FLAG))
+	amd64AND_reg_imm32_32bit(cb, j65RegSR, 0xEF)
+	// Vector bytes bypass the broad I/O guard only here.
+	amd64MOV_reg_imm32(cb, amd64RAX, uint32(IRQ_VECTOR))
+	amd64MOVZX_B_memSIB(cb, amd64R10, j65RegMem, amd64RAX)
+	amd64MOV_reg_imm32(cb, amd64RAX, uint32(IRQ_VECTOR+1))
+	amd64MOVZX_B_memSIB(cb, amd64R11, j65RegMem, amd64RAX)
+	amd64SHL_imm32(cb, amd64R11, 8)
+	emitREX(cb, false, amd64R11, amd64R10)
+	cb.EmitBytes(0x09, modRM(3, amd64R11, amd64R10))
+	*pendingCycles += 7
+	flushPendingCycles(cb, pendingCycles)
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(j65OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount))
+	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffChainCount), amd64RAX)
+	emit6502UnchainedExitReg(cb, amd64R10, false, 0)
+}
+
+// emit6502RTI restores status and PC from the direct-RAM stack.
+func emit6502RTI(cb *CodeBuffer, instrCount uint32, pendingCycles *uint32) {
+	amd64INC_reg8(cb, j65RegSP)
+	amd64MOVZX_B(cb, amd64RAX, j65RegSP)
+	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
+	amd64MOVZX_B_memSIB(cb, j65RegSR, j65RegMem, amd64RAX)
+	amd64AND_reg_imm32_32bit(cb, j65RegSR, 0xEF)
+	amd64OR_reg_imm32_32bit(cb, j65RegSR, int32(UNUSED_FLAG))
+	amd64INC_reg8(cb, j65RegSP)
+	amd64MOVZX_B(cb, amd64RAX, j65RegSP)
+	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
+	amd64MOVZX_B_memSIB(cb, amd64R10, j65RegMem, amd64RAX)
+	amd64INC_reg8(cb, j65RegSP)
+	amd64MOVZX_B(cb, amd64RAX, j65RegSP)
+	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
+	amd64MOVZX_B_memSIB(cb, amd64R11, j65RegMem, amd64RAX)
+	amd64SHL_imm32(cb, amd64R11, 8)
+	emitREX(cb, false, amd64R11, amd64R10)
+	cb.EmitBytes(0x09, modRM(3, amd64R11, amd64R10))
+	*pendingCycles += 6
+	flushPendingCycles(cb, pendingCycles)
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(j65OffCtxPtr))
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RCX, int32(j65CtxOffChainCount))
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(instrCount))
+	amd64MOV_mem_reg32(cb, amd64RCX, int32(j65CtxOffChainCount), amd64RAX)
+	emit6502UnchainedExitReg(cb, amd64R10, false, 0)
+}
 
 // emit6502JMP_Abs emits JMP absolute ($4C). Block terminator.
 // Returns chain exit info for patching.
@@ -1702,7 +1811,9 @@ func emit6502PLA(cb *CodeBuffer) {
 	amd64OR_reg_imm32_32bit(cb, amd64RAX, 0x0100)
 	// Load A = BYTE [RSI + RAX]
 	amd64MOVZX_B_memSIB(cb, j65RegA, j65RegMem, amd64RAX)
-	// N/Z deferred — caller sets j65MaybeSetNZPending(&nz, j65RegA, live, i)
+	// Binary ADC owns N/Z immediately. Decimal lookup carries its source-table
+	// flags, so the shared wrapper must not overwrite them after the branch.
+	emit6502UpdateNZ(cb, j65RegA)
 }
 
 // emit6502PHP emits PHP (push processor status with B and U set).
@@ -1771,18 +1882,18 @@ func emit6502LoadOperandToEAX(cb *CodeBuffer, opcode byte, operand uint16,
 		emit6502AddrAbsX(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
-		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
 		}
+		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 6: // Absolute,Y
 		emit6502AddrAbsY(cb, operand)
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
-		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
 		}
+		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	case 0: // (Indirect,X)
 		emit6502AddrIndX(cb, byte(operand))
 		fpOff := emit6502FullFastPathCheck(cb)
@@ -1792,15 +1903,15 @@ func emit6502LoadOperandToEAX(cb *CodeBuffer, opcode byte, operand uint16,
 		emit6502AddrIndY(cb, byte(operand))
 		fpOff := emit6502FullFastPathCheck(cb)
 		*bails = append(*bails, bailInfo{[]int{fpOff}, instrPC, instrIdx, pendingCycles, nzPending, nzReg})
-		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 		if emitPageCross {
 			emit6502PageCrossCheck(cb)
 		}
+		amd64MOVZX_B_memSIB(cb, amd64RAX, j65RegMem, amd64RAX)
 	}
 }
 
 // ===========================================================================
-// ADC — Add with Carry (binary mode only, decimal mode bails)
+// ADC — Add with Carry
 // ===========================================================================
 
 // emit6502ADCFlags emits the ADC operation and flag extraction.
@@ -1839,18 +1950,49 @@ func emit6502ADCFlags(cb *CodeBuffer) {
 	emitREX(cb, false, amd64RDX, j65RegSR)
 	cb.EmitBytes(0x09, modRM(3, amd64RDX, j65RegSR)) // OR R15D, EDX
 
-	// N/Z deferred — caller sets j65MaybeSetNZPending(&nz, j65RegA, live, i)
+	// See ADC: preserve decimal-table flags while materialising binary N/Z in
+	// this branch before rejoining the shared wrapper.
+	emit6502UpdateNZ(cb, j65RegA)
 }
 
-// emit6502DecimalBailCheck emits a check for decimal mode (D flag).
-// If D flag is set, jumps to a bail path. Returns bail offset to patch.
-func emit6502DecimalBailCheck(cb *CodeBuffer) int {
+// emit6502DecimalLookup applies a precomputed NMOS decimal result. Operand is
+// EAX, A is RBX and SR supplies carry/no-borrow. The table is CPU-context
+// owned input, so the generated block has no Go callback or interpreter exit.
+func emit6502DecimalLookup(cb *CodeBuffer, tableOffset int32) {
+	amd64MOV_reg_reg32(cb, amd64R10, j65RegA)
+	amd64MOV_reg_reg32(cb, amd64R11, amd64RAX)
+	amd64SHL_imm32(cb, amd64R11, 8)
+	emitREX(cb, false, amd64R11, amd64R10)
+	cb.EmitBytes(0x09, modRM(3, amd64R11, amd64R10)) // OR R10D, R11D
+	amd64MOV_reg_reg32(cb, amd64RCX, j65RegSR)
+	amd64AND_reg_imm32_32bit(cb, amd64RCX, 1)
+	amd64SHL_imm32(cb, amd64RCX, 16)
+	emitREX(cb, false, amd64RCX, amd64R10)
+	cb.EmitBytes(0x09, modRM(3, amd64RCX, amd64R10)) // OR R10D, ECX
+	amd64SHL_imm32(cb, amd64R10, 1)                  // two-byte table entry
+	amd64MOV_reg_mem(cb, amd64RCX, amd64RSP, int32(j65OffCtxPtr))
+	amd64MOV_reg_mem(cb, amd64R11, amd64RCX, tableOffset)
+	amd64MOVZX_B_memSIB(cb, j65RegA, amd64R11, amd64R10)
+	amd64ALU_reg_imm32_32bit(cb, 0, amd64R10, 1)
+	amd64MOVZX_B_memSIB(cb, amd64RCX, amd64R11, amd64R10)
+	// Keep I, D, B and U from live SR, replace C/V/N/Z from the table.
+	amd64AND_reg_imm32_32bit(cb, j65RegSR, 0x3C)
+	emitREX(cb, false, amd64RCX, j65RegSR)
+	cb.EmitBytes(0x09, modRM(3, amd64RCX, j65RegSR)) // OR R15D, ECX
+}
+
+func emit6502ADC(cb *CodeBuffer) {
 	amd64TEST_reg_imm32(cb, j65RegSR, uint32(DECIMAL_FLAG))
-	return amd64Jcc_rel32(cb, amd64CondNE) // JNZ bail (D flag set)
+	binaryOff := amd64Jcc_rel32(cb, amd64CondE)
+	emit6502DecimalLookup(cb, int32(j65CtxOffDecimalADCPtr))
+	doneOff := amd64JMP_rel32(cb)
+	patchRel32(cb, binaryOff, cb.Len())
+	emit6502ADCFlags(cb)
+	patchRel32(cb, doneOff, cb.Len())
 }
 
 // ===========================================================================
-// SBC — Subtract with Carry (binary mode only)
+// SBC — Subtract with Carry
 // ===========================================================================
 
 // emit6502SBCFlags emits the SBC operation and flag extraction.
@@ -1891,7 +2033,19 @@ func emit6502SBCFlags(cb *CodeBuffer) {
 	emitREX(cb, false, amd64RDX, j65RegSR)
 	cb.EmitBytes(0x09, modRM(3, amd64RDX, j65RegSR))
 
-	// N/Z deferred — caller sets j65MaybeSetNZPending(&nz, j65RegA, live, i)
+	// Keep decimal-table flags on the other branch, but materialise binary
+	// subtraction N/Z before the branches rejoin.
+	emit6502UpdateNZ(cb, j65RegA)
+}
+
+func emit6502SBC(cb *CodeBuffer) {
+	amd64TEST_reg_imm32(cb, j65RegSR, uint32(DECIMAL_FLAG))
+	binaryOff := amd64Jcc_rel32(cb, amd64CondE)
+	emit6502DecimalLookup(cb, int32(j65CtxOffDecimalSBCPtr))
+	doneOff := amd64JMP_rel32(cb)
+	patchRel32(cb, binaryOff, cb.Len())
+	emit6502SBCFlags(cb)
+	patchRel32(cb, doneOff, cb.Len())
 }
 
 // ===========================================================================
@@ -2080,6 +2234,22 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		nextPC := uint32(instrPC) + uint32(ji.length)
 
 		switch ji.opcode {
+		case 0x00: // BRK
+			// Stack accesses need ordinary direct-RAM admission. The vector
+			// bytes are a defined exception to the broad $Fxxx rejection, but
+			// still have to bail if page $FF itself is mapped by a device.
+			amd64MOV_reg_imm32(cb, amd64RAX, 0x0100)
+			stackBail := emit6502FullFastPathCheck(cb)
+			vectorBail := emit6502ZPPageCheck(cb, 0xFF)
+			bails = append(bails, bailInfo{[]int{stackBail, vectorBail}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
+			emit6502BRK(cb, instrPC, uint32(i+1), &pendingCycles, nz.nzPending, nz.nzReg)
+			goto done
+		case 0x40: // RTI
+			amd64MOV_reg_imm32(cb, amd64RAX, 0x0100)
+			stackBail := emit6502FullFastPathCheck(cb)
+			bails = append(bails, bailInfo{[]int{stackBail}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
+			emit6502RTI(cb, uint32(i+1), &pendingCycles)
+			goto done
 
 		// ================================================================
 		// NOP
@@ -2147,12 +2317,10 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		// ================================================================
 		case 0x69, 0x65, 0x75, 0x6D, 0x7D, 0x79, 0x61, 0x71:
 			isPageCross := ji.opcode == 0x7D || ji.opcode == 0x79 || ji.opcode == 0x71
-			decBailOff := emit6502DecimalBailCheck(cb)
-			bails = append(bails, bailInfo{[]int{decBailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
 				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
-			emit6502ADCFlags(cb)
-			j65MaybeSetNZPending(&nz, j65RegA, live, i)
+			emit6502ADC(cb)
+			nz.nzPending = false
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2160,12 +2328,10 @@ func compileBlock6502WithOptions(instrs []JIT6502Instr, startPC uint16, execMem 
 		// ================================================================
 		case 0xE9, 0xE5, 0xF5, 0xED, 0xFD, 0xF9, 0xE1, 0xF1:
 			isPageCross := ji.opcode == 0xFD || ji.opcode == 0xF9 || ji.opcode == 0xF1
-			decBailOff := emit6502DecimalBailCheck(cb)
-			bails = append(bails, bailInfo{[]int{decBailOff}, uint32(instrPC), i, pendingCycles, nz.nzPending, nz.nzReg})
 			emit6502LoadOperandToEAX(cb, ji.opcode, ji.operand,
 				uint32(instrPC), i, pendingCycles, &bails, isPageCross, nz.nzPending, nz.nzReg, opts)
-			emit6502SBCFlags(cb)
-			j65MaybeSetNZPending(&nz, j65RegA, live, i)
+			emit6502SBC(cb)
+			nz.nzPending = false
 			pendingCycles += baseCycles
 
 		// ================================================================
@@ -2660,17 +2826,27 @@ done:
 		return nil, err
 	}
 
-	// Mark code pages in bitmap. Use lastByte (inclusive) to avoid marking
-	// the next page when the block ends exactly on a page boundary.
-	lastByte := startPC
+	// The decoded offsets are linear even when their 16-bit guest PCs wrap.
+	// Derive source length from them rather than comparing wrapped addresses.
+	sourceLen := 0
 	for i := range instrs {
-		jiLast := startPC + instrs[i].pcOffset + uint16(instrs[i].length) - 1
-		if jiLast > lastByte {
-			lastByte = jiLast
+		end := int(instrs[i].pcOffset) + int(instrs[i].length)
+		if end > sourceLen {
+			sourceLen = end
 		}
 	}
-	for page := startPC >> 8; page <= lastByte>>8; page++ {
-		codePageBitmap[page&0xFF] = 1
+	logicalEnd := int(startPC) + sourceLen
+	coveredRanges := [][2]uint64{{uint64(startPC), uint64(min(logicalEnd, 1<<16))}}
+	if logicalEnd > 1<<16 {
+		coveredRanges = append(coveredRanges, [2]uint64{0, uint64(logicalEnd & 0xFFFF)})
+	}
+	for _, r := range coveredRanges {
+		if r[0] == r[1] {
+			continue
+		}
+		for page := r[0] >> 8; page <= (r[1]-1)>>8; page++ {
+			codePageBitmap[page&0xFF] = 1
+		}
 	}
 
 	// Build chain slots from chain exit info (convert CodeBuffer offsets to absolute addresses)
@@ -2682,14 +2858,33 @@ done:
 		})
 	}
 
+	source := make([]byte, sourceLen)
+	for _, ji := range instrs {
+		off := int(ji.pcOffset)
+		source[off] = ji.opcode
+		if ji.length >= 2 {
+			source[off+1] = byte(ji.operand)
+		}
+		if ji.length == 3 {
+			source[off+2] = byte(ji.operand >> 8)
+		}
+	}
+
 	return &JITBlock{
 		startPC:    uint64(startPC),
-		endPC:      uint64(lastByte) + 1, // first byte after block (for cache invalidation)
+		endPC:      uint64(uint16(logicalEnd)), // first byte after block
 		instrCount: len(instrs),
 		execAddr:   addr,
 		execSize:   len(code),
 		chainEntry: addr + uintptr(chainEntryOff),
 		chainSlots: slots,
 		tier:       opts.tier,
+		p65Source:  source,
+		coveredRanges: func() [][2]uint64 {
+			if len(coveredRanges) == 1 && coveredRanges[0][0] == uint64(startPC) && coveredRanges[0][1] == uint64(logicalEnd) {
+				return nil
+			}
+			return coveredRanges
+		}(),
 	}, nil
 }

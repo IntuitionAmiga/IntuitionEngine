@@ -36,12 +36,33 @@ func TestJIT6502_ContextFieldOffsets(t *testing.T) {
 		{"RTSCache1PC", uintptr(unsafe.Pointer(&ctx.RTSCache1PC)) - base, j65CtxOffRTSCache1PC},
 		{"RTSCache1Addr", uintptr(unsafe.Pointer(&ctx.RTSCache1Addr)) - base, j65CtxOffRTSCache1Addr},
 		{"DirectPageBitmapPtr", uintptr(unsafe.Pointer(&ctx.DirectPageBitmapPtr)) - base, j65CtxOffDirectPageBitmapPtr},
+		{"DecimalADCPtr", uintptr(unsafe.Pointer(&ctx.DecimalADCPtr)) - base, j65CtxOffDecimalADCPtr},
+		{"DecimalSBCPtr", uintptr(unsafe.Pointer(&ctx.DecimalSBCPtr)) - base, j65CtxOffDecimalSBCPtr},
+		{"DispatchGenPtr", uintptr(unsafe.Pointer(&ctx.DispatchGenPtr)) - base, j65CtxOffDispatchGenPtr},
+		{"DispatchGeneration", uintptr(unsafe.Pointer(&ctx.DispatchGeneration)) - base, j65CtxOffDispatchGeneration},
+		{"BackendMarker", uintptr(unsafe.Pointer(&ctx.BackendMarker)) - base, j65CtxOffBackendMarker},
+		{"NZTablePtr", uintptr(unsafe.Pointer(&ctx.NZTablePtr)) - base, j65CtxOffNZTablePtr},
+		{"BinaryADCPtr", uintptr(unsafe.Pointer(&ctx.BinaryADCPtr)) - base, j65CtxOffBinaryADCPtr},
+		{"BinarySBCPtr", uintptr(unsafe.Pointer(&ctx.BinarySBCPtr)) - base, j65CtxOffBinarySBCPtr},
 	}
 
 	for _, tt := range tests {
 		if tt.got != tt.expected {
 			t.Errorf("JIT6502Context.%s: offset = %d, want %d", tt.name, tt.got, tt.expected)
 		}
+	}
+}
+
+func TestJIT6502_StatsResetWithCPUReset(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	cpu.jitStats.tier1Blocks.Store(1)
+	cpu.jitStats.bails.Store(2)
+	cpu.jitStats.invalidations.Store(3)
+	cpu.jitStats.chainExits.Store(4)
+	cpu.Reset()
+	if got := cpu.jit6502StatsSnapshot(); got != (p65JITStatsSnapshot{}) {
+		t.Fatalf("stats after reset=%+v, want zero", got)
 	}
 }
 
@@ -327,13 +348,14 @@ func TestJIT6502_BaseCycles_Representative(t *testing.T) {
 // ===========================================================================
 
 func TestJIT6502_IsCompilable_DocumentedOpcodes(t *testing.T) {
-	// All documented opcodes should be compilable except BRK and RTI
+	// Every documented NMOS opcode is admitted to the native frontend.
 	documented := []byte{
+		0x00,
 		0x01, 0x05, 0x06, 0x08, 0x09, 0x0A, 0x0D, 0x0E, // ORA, ASL, PHP
 		0x10, 0x11, 0x15, 0x16, 0x18, 0x19, 0x1D, 0x1E, // BPL, ORA, CLC
 		0x20, 0x21, 0x24, 0x25, 0x26, 0x28, 0x29, 0x2A, 0x2C, 0x2D, 0x2E, // JSR, AND, BIT, ROL, PLP
 		0x30, 0x31, 0x35, 0x36, 0x38, 0x39, 0x3D, 0x3E, // BMI, AND, SEC
-		0x41, 0x45, 0x46, 0x48, 0x49, 0x4A, 0x4C, 0x4D, 0x4E, // EOR, LSR, PHA, JMP
+		0x40, 0x41, 0x45, 0x46, 0x48, 0x49, 0x4A, 0x4C, 0x4D, 0x4E, // RTI, EOR, LSR, PHA, JMP
 		0x50, 0x51, 0x55, 0x56, 0x58, 0x59, 0x5D, 0x5E, // BVC, EOR, CLI
 		0x60, 0x61, 0x65, 0x66, 0x68, 0x69, 0x6A, 0x6C, 0x6D, 0x6E, // RTS, ADC, ROR, PLA, JMP ind
 		0x70, 0x71, 0x75, 0x76, 0x78, 0x79, 0x7D, 0x7E, // BVS, ADC, SEI
@@ -354,12 +376,9 @@ func TestJIT6502_IsCompilable_DocumentedOpcodes(t *testing.T) {
 	}
 }
 
-func TestJIT6502_IsCompilable_BRKAndRTI_NotCompilable(t *testing.T) {
-	if jit6502IsCompilable[0x00] {
-		t.Error("BRK (0x00) should not be compilable")
-	}
-	if jit6502IsCompilable[0x40] {
-		t.Error("RTI (0x40) should not be compilable")
+func TestJIT6502_IsCompilable_BRKAndRTI(t *testing.T) {
+	if !jit6502IsCompilable[0x00] || !jit6502IsCompilable[0x40] {
+		t.Error("BRK and RTI must be compilable documented opcodes")
 	}
 }
 
@@ -527,15 +546,15 @@ func TestJIT6502_ScanBlock_PcOffset(t *testing.T) {
 
 func TestJIT6502_NeedsFallback_BRK(t *testing.T) {
 	instrs := []JIT6502Instr{{opcode: 0x00}}
-	if !jit6502NeedsFallback(instrs) {
-		t.Error("BRK should need fallback")
+	if jit6502NeedsFallback(instrs) {
+		t.Error("BRK should be native")
 	}
 }
 
 func TestJIT6502_NeedsFallback_RTI(t *testing.T) {
 	instrs := []JIT6502Instr{{opcode: 0x40}}
-	if !jit6502NeedsFallback(instrs) {
-		t.Error("RTI should need fallback")
+	if jit6502NeedsFallback(instrs) {
+		t.Error("RTI should be native")
 	}
 }
 

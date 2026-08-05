@@ -33,6 +33,15 @@ type JIT6502Context struct {
 	_pad2               uint32  // 92: alignment padding
 	RTSCache1Addr       uintptr // 96: MRU RTS cache entry 1 — chain entry address
 	DirectPageBitmapPtr uintptr // 104: &directPageBitmap[0] (256 bytes, 0=direct 1=bail)
+	DecimalADCPtr       uintptr // 112: &p65DecimalADC[0]
+	DecimalSBCPtr       uintptr // 120: &p65DecimalSBC[0]
+	DispatchGenPtr      uintptr // 128: &cpu.jitDispatchGen
+	DispatchGeneration  uint64  // 136: generation expected by this native entry
+	BackendMarker       uint32  // 144: backend-specific native-entry provenance
+	_pad3               uint32  // 148: preserve 8-byte context alignment
+	NZTablePtr          uintptr // 152: &nzTable[0], canonical N/Z materialisation
+	BinaryADCPtr        uintptr // 160: &p65BinaryADC[0]
+	BinarySBCPtr        uintptr // 168: &p65BinarySBC[0]
 }
 
 // JIT6502Context field offsets (must match struct layout above)
@@ -55,7 +64,17 @@ const (
 	j65CtxOffRTSCache1PC         = 88
 	j65CtxOffRTSCache1Addr       = 96
 	j65CtxOffDirectPageBitmapPtr = 104
+	j65CtxOffDecimalADCPtr       = 112
+	j65CtxOffDecimalSBCPtr       = 120
+	j65CtxOffDispatchGenPtr      = 128
+	j65CtxOffDispatchGeneration  = 136
+	j65CtxOffBackendMarker       = 144
+	j65CtxOffNZTablePtr          = 152
+	j65CtxOffBinaryADCPtr        = 160
+	j65CtxOffBinarySBCPtr        = 168
 )
+
+const p65ARM64BackendMarker = 0x50363541 // "A65P"
 
 // CPU_6502 struct field offsets (from CpuPtr). Must match cpu_six5go2.go layout.
 const (
@@ -123,7 +142,101 @@ func newJIT6502Context(cpu *CPU_6502) *JIT6502Context {
 	}
 	ctx.CodePageBitmapPtr = uintptr(unsafe.Pointer(&cpu.codePageBitmap[0]))
 	ctx.DirectPageBitmapPtr = uintptr(unsafe.Pointer(&cpu.directPageBitmap[0]))
+	ctx.DecimalADCPtr = uintptr(unsafe.Pointer(&p65DecimalADC[0]))
+	ctx.DecimalSBCPtr = uintptr(unsafe.Pointer(&p65DecimalSBC[0]))
+	ctx.DispatchGenPtr = uintptr(unsafe.Pointer(&cpu.jitDispatchGen))
+	ctx.NZTablePtr = uintptr(unsafe.Pointer(&nzTable[0]))
+	ctx.BinaryADCPtr = uintptr(unsafe.Pointer(&p65BinaryADC[0]))
+	ctx.BinarySBCPtr = uintptr(unsafe.Pointer(&p65BinarySBC[0]))
 	return ctx
+}
+
+// p65DecimalResult is a two-byte native lookup entry. Flags contains exactly
+// C, V, N and Z; the emitted path preserves I, D, B and U from live SR.
+type p65DecimalResult struct {
+	A     byte
+	Flags byte
+}
+
+const p65DecimalTableSize = 1 << 17 // A, operand and carry/no-borrow input
+
+var (
+	p65DecimalADC [p65DecimalTableSize]p65DecimalResult
+	p65DecimalSBC [p65DecimalTableSize]p65DecimalResult
+	p65BinaryADC  [p65DecimalTableSize]p65DecimalResult
+	p65BinarySBC  [p65DecimalTableSize]p65DecimalResult
+)
+
+func init() {
+	for carry := 0; carry < 2; carry++ {
+		for a := 0; a < 256; a++ {
+			for operand := 0; operand < 256; operand++ {
+				index := a | operand<<8 | carry<<16
+				p65DecimalADC[index] = p65DecimalAdd(byte(a), byte(operand), byte(carry))
+				p65DecimalSBC[index] = p65DecimalSub(byte(a), byte(operand), byte(carry))
+				adc := &CPU_6502{A: byte(a), SR: byte(carry)}
+				adc.adc(byte(operand))
+				p65BinaryADC[index] = p65DecimalResult{adc.A, adc.SR & (CARRY_FLAG | OVERFLOW_FLAG | NEGATIVE_FLAG | ZERO_FLAG)}
+				sbc := &CPU_6502{A: byte(a), SR: byte(carry)}
+				sbc.sbc(byte(operand))
+				p65BinarySBC[index] = p65DecimalResult{sbc.A, sbc.SR & (CARRY_FLAG | OVERFLOW_FLAG | NEGATIVE_FLAG | ZERO_FLAG)}
+			}
+		}
+	}
+}
+
+func p65DecimalFlags(a, operand, result byte, carry, overflow bool) byte {
+	flags := byte(0)
+	if carry {
+		flags |= CARRY_FLAG
+	}
+	if overflow {
+		flags |= OVERFLOW_FLAG
+	}
+	if result == 0 {
+		flags |= ZERO_FLAG
+	}
+	if result&NEGATIVE_FLAG != 0 {
+		flags |= NEGATIVE_FLAG
+	}
+	return flags
+}
+
+// These mirror the established interpreter contract, including behaviour for
+// non-BCD nibbles accepted by the NMOS core.
+func p65DecimalAdd(a, operand, carryIn byte) p65DecimalResult {
+	lo := uint16(a&0x0F) + uint16(operand&0x0F) + uint16(carryIn)
+	carry := uint16(0)
+	if lo > 9 {
+		lo -= 10
+		carry = 1
+	}
+	hi := uint16(a>>4) + uint16(operand>>4) + carry
+	carry = 0
+	if hi > 9 {
+		hi -= 10
+		carry = 1
+	}
+	result := byte(hi<<4 | lo)
+	return p65DecimalResult{result, p65DecimalFlags(a, operand, result, carry == 1, (a^operand)&0x80 == 0 && (a^result)&0x80 != 0)}
+}
+
+func p65DecimalSub(a, operand, carryIn byte) p65DecimalResult {
+	borrow := uint16(1 - carryIn)
+	lo := uint16(a&0x0F) - uint16(operand&0x0F) - borrow
+	borrow = 0
+	if lo&0x10 != 0 {
+		lo = (lo - 6) & 0x0F
+		borrow = 1
+	}
+	hi := uint16(a>>4) - uint16(operand>>4) - borrow
+	borrow = 0
+	if hi&0x10 != 0 {
+		hi = (hi - 6) & 0x0F
+		borrow = 1
+	}
+	result := byte(hi<<4 | lo)
+	return p65DecimalResult{result, p65DecimalFlags(a, operand, result, borrow == 0, (a^operand)&0x80 != 0 && (a^result)&0x80 != 0)}
 }
 
 // ===========================================================================
@@ -231,19 +344,20 @@ var jit6502BaseCycles = [256]byte{
 // ===========================================================================
 
 // jit6502IsCompilable marks which opcodes the JIT can compile natively.
-// True for all documented opcodes except BRK ($00) and RTI ($40).
+// True for every documented NMOS 6502 opcode. Undocumented opcodes remain
+// explicit interpreter fallbacks; JAM/KIL remains a halt path.
 // False for all undocumented/illegal opcodes.
 var jit6502IsCompilable = [256]bool{
-	// 0x00-0x0F: BRK=no, ORA(ind,X)=yes, JAM=no, SLO=no, SKB=no, ORA zp=yes, ASL zp=yes, SLO=no, PHP=yes, ORA imm=yes, ASL A=yes, ANC=no, SKW=no, ORA abs=yes, ASL abs=yes, SLO=no
-	false, true, false, false, false, true, true, false, true, true, true, false, false, true, true, false,
+	// 0x00-0x0F: BRK=yes, ORA(ind,X)=yes, JAM=no, SLO=no, SKB=no, ORA zp=yes, ASL zp=yes, SLO=no, PHP=yes, ORA imm=yes, ASL A=yes, ANC=no, SKW=no, ORA abs=yes, ASL abs=yes, SLO=no
+	true, true, false, false, false, true, true, false, true, true, true, false, false, true, true, false,
 	// 0x10-0x1F: BPL=yes, ORA(ind),Y=yes, JAM=no, SLO=no, SKB=no, ORA zp,X=yes, ASL zp,X=yes, SLO=no, CLC=yes, ORA abs,Y=yes, NOP=no, SLO=no, SKW=no, ORA abs,X=yes, ASL abs,X=yes, SLO=no
 	true, true, false, false, false, true, true, false, true, true, false, false, false, true, true, false,
 	// 0x20-0x2F: JSR=yes, AND(ind,X)=yes, JAM=no, RLA=no, BIT zp=yes, AND zp=yes, ROL zp=yes, RLA=no, PLP=yes, AND imm=yes, ROL A=yes, ANC=no, BIT abs=yes, AND abs=yes, ROL abs=yes, RLA=no
 	true, true, false, false, true, true, true, false, true, true, true, false, true, true, true, false,
 	// 0x30-0x3F: BMI=yes, AND(ind),Y=yes, JAM=no, RLA=no, SKB=no, AND zp,X=yes, ROL zp,X=yes, RLA=no, SEC=yes, AND abs,Y=yes, NOP=no, RLA=no, SKW=no, AND abs,X=yes, ROL abs,X=yes, RLA=no
 	true, true, false, false, false, true, true, false, true, true, false, false, false, true, true, false,
-	// 0x40-0x4F: RTI=no, EOR(ind,X)=yes, JAM=no, SRE=no, SKB=no, EOR zp=yes, LSR zp=yes, SRE=no, PHA=yes, EOR imm=yes, LSR A=yes, ALR=no, JMP abs=yes, EOR abs=yes, LSR abs=yes, SRE=no
-	false, true, false, false, false, true, true, false, true, true, true, false, true, true, true, false,
+	// 0x40-0x4F: RTI=yes, EOR(ind,X)=yes, JAM=no, SRE=no, SKB=no, EOR zp=yes, LSR zp=yes, SRE=no, PHA=yes, EOR imm=yes, LSR A=yes, ALR=no, JMP abs=yes, EOR abs=yes, LSR abs=yes, SRE=no
+	true, true, false, false, false, true, true, false, true, true, true, false, true, true, true, false,
 	// 0x50-0x5F: BVC=yes, EOR(ind),Y=yes, JAM=no, SRE=no, SKB=no, EOR zp,X=yes, LSR zp,X=yes, SRE=no, CLI=yes, EOR abs,Y=yes, NOP=no, SRE=no, SKW=no, EOR abs,X=yes, LSR abs,X=yes, SRE=no
 	true, true, false, false, false, true, true, false, true, true, false, false, false, true, true, false,
 	// 0x60-0x6F: RTS=yes, ADC(ind,X)=yes, JAM=no, RRA=no, SKB=no, ADC zp=yes, ROR zp=yes, RRA=no, PLA=yes, ADC imm=yes, ROR A=yes, ARR=no, JMP ind=yes, ADC abs=yes, ROR abs=yes, RRA=no
@@ -266,6 +380,53 @@ var jit6502IsCompilable = [256]bool{
 	true, true, false, false, true, true, true, false, true, true, true, false, true, true, true, false,
 	// 0xF0-0xFF: BEQ=yes, SBC(ind),Y=yes, JAM=no, ISC=no, SKB=no, SBC zp,X=yes, INC zp,X=yes, ISC=no, SED=yes, SBC abs,Y=yes, NOP=no, ISC=no, SKW=no, SBC abs,X=yes, INC abs,X=yes, ISC=no
 	true, true, false, false, false, true, true, false, true, true, false, false, false, true, true, false,
+}
+
+type p65OpcodeDecision uint8
+
+const (
+	p65OpcodeInterpreterFallback p65OpcodeDecision = iota
+	p65OpcodeDirect
+	p65OpcodeHalt
+)
+
+// P65OpcodeManifest is the frontend's complete opcode inventory. Every byte
+// has an explicit execution decision, a representative encoding and the gate
+// that proves its selected path. Official NMOS forms are direct; undocumented
+// forms deliberately remain interpreter fallbacks; JAM/KIL halts.
+type P65OpcodeManifestEntry struct {
+	Opcode         byte
+	Representative [3]byte
+	Length         byte
+	Decision       p65OpcodeDecision
+	BackendPath    string
+	ProvingTest    string
+}
+
+var P65OpcodeManifest [256]P65OpcodeManifestEntry
+
+func init() {
+	for opcode := range P65OpcodeManifest {
+		decision := p65OpcodeInterpreterFallback
+		path := "interpreter-fallback"
+		switch byte(opcode) {
+		case 0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72, 0x92, 0xB2, 0xD2, 0xF2:
+			decision, path = p65OpcodeHalt, "halt"
+		default:
+			if jit6502IsCompilable[opcode] {
+				decision, path = p65OpcodeDirect, "native"
+			}
+		}
+		length := jit6502InstrLengths[opcode]
+		P65OpcodeManifest[opcode] = P65OpcodeManifestEntry{
+			Opcode:         byte(opcode),
+			Representative: [3]byte{byte(opcode), 0x00, 0x06},
+			Length:         length,
+			Decision:       decision,
+			BackendPath:    path,
+			ProvingTest:    "TestJIT6502_ManifestNativeAdmission",
+		}
+	}
 }
 
 // ===========================================================================
@@ -299,10 +460,17 @@ func jit6502IsBlockTerminator(opcode byte) bool {
 // size is reached. Block terminators ARE included in the returned block.
 // Uncompilable opcodes cause the block to end BEFORE them (not included).
 func jit6502ScanBlock(mem []byte, startPC uint16, memSize int) []JIT6502Instr {
+	return jit6502ScanBlockLimit(mem, startPC, memSize, jit6502MaxBlockSize)
+}
+
+func jit6502ScanBlockLimit(mem []byte, startPC uint16, memSize int, limit int) []JIT6502Instr {
 	instrs := make([]JIT6502Instr, 0, 32)
 	pc := startPC
+	if limit <= 0 || limit > jit6502MaxBlockSize {
+		limit = jit6502MaxBlockSize
+	}
 
-	for len(instrs) < jit6502MaxBlockSize {
+	for len(instrs) < limit {
 		if int(pc) >= memSize {
 			break
 		}
@@ -357,10 +525,6 @@ func jit6502NeedsFallback(instrs []JIT6502Instr) bool {
 		return true
 	}
 	opcode := instrs[0].opcode
-	// BRK, RTI, KIL — always fall back
-	if opcode == 0x00 || opcode == 0x40 {
-		return true
-	}
 	// KIL opcodes
 	switch opcode {
 	case 0x02, 0x12, 0x22, 0x32, 0x42, 0x52, 0x62, 0x72,

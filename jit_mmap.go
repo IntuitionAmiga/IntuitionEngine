@@ -126,7 +126,6 @@ func (em *ExecMem) Write(code []byte) (uintptr, error) {
 	// VA (where the fetch will occur). flushICacheDual issues both with
 	// the required DSB ISH / ISB barriers. No-op on amd64.
 	flushICacheDual(writableAddr, execAddr, uintptr(len(code)))
-
 	return execAddr, nil
 }
 

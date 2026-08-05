@@ -1736,6 +1736,37 @@ func TestScriptEngine_CPUJITStats_M68K(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_CPUJITStats_6502(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+	runner := NewCPU6502Runner(bus, CPU6502Config{})
+	runner.cpu.SetRunning(false)
+	runner.cpu.InstructionCount = 19
+	runner.cpu.jitStats.tier1Blocks.Store(7)
+	runner.cpu.jitStats.bails.Store(3)
+	runner.cpu.jitStats.invalidations.Store(2)
+	runner.cpu.jitStats.chainExits.Store(11)
+	runtimeStatus.setCPUs(runtimeCPU6502, nil, nil, nil, nil, nil, runner)
+	t.Cleanup(func() { runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil) })
+	if err := se.RunString(`
+		local stats = cpu.jit_stats()
+		if stats.instruction_count ~= 19 then error("instruction_count") end
+		if stats.tier1_blocks ~= 7 then error("tier1_blocks") end
+		if stats.native_entries ~= 0 then error("native_entries") end
+		if stats.bailouts ~= 3 then error("bailouts") end
+		if stats.invalidations ~= 2 then error("invalidations") end
+		if stats.chain_exits ~= 11 then error("chain_exits") end
+	`, "cpu_jit_stats_6502"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
 func TestScriptEngine_CPUJITControls_X86(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()

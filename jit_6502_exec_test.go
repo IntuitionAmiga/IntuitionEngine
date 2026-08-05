@@ -6,6 +6,7 @@ package main
 
 import (
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -63,6 +64,131 @@ func TestJIT6502_Exec_LDA_STA(t *testing.T) {
 	}
 	if cpu.A != 0x00 {
 		t.Errorf("A = 0x%02X, want 0x00", cpu.A)
+	}
+}
+
+func TestJIT6502_Exec_ExternalWriteInvalidatesPersistentBlock(t *testing.T) {
+	if !jit6502Available {
+		t.Skip("native 6502 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	cpu.SetRDYLine(true)
+	cpu.jitEnabled = true
+	cpu.jitPersist = true
+	defer func() {
+		cpu.jitPersist = false
+		cpu.freeJIT6502()
+	}()
+
+	bus.Write8(0x0600, 0xA9) // LDA #imm
+	bus.Write8(0x0601, 0x42)
+	bus.Write8(0x0602, haltOpcode)
+	cpu.PC = 0x0600
+	cpu.SetRunning(true)
+	cpu.ExecuteJIT6502()
+	if cpu.A != 0x42 {
+		t.Fatalf("first cached block A=%02X, want 42", cpu.A)
+	}
+
+	// This is an external bus writer, not a native self-modifying store. The
+	// next dispatcher boundary must drain its generation and recompile $0600.
+	bus.Write8(0x0601, 0x99)
+	cpu.PC = 0x0600
+	cpu.SetRunning(true)
+	cpu.ExecuteJIT6502()
+	if cpu.A != 0x99 {
+		t.Fatalf("external write left stale native immediate: A=%02X, want 99", cpu.A)
+	}
+}
+
+func TestJIT6502_Exec_NativeSMCPublishesToPeerInvalidators(t *testing.T) {
+	if !jit6502Available {
+		t.Skip("native 6502 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	cpu.SetRDYLine(true)
+	cpu.jitEnabled = true
+	// LDA #$EA; STA $0605; JAM. The direct native store changes the code
+	// page and reaches the SMC exit instead of a MachineBus write method.
+	for offset, value := range []byte{0xA9, 0xEA, 0x8D, 0x05, 0x06, haltOpcode} {
+		bus.Write8(0x0600+uint32(offset), value)
+	}
+	var gotAddr, gotSize uint64
+	unregister := bus.RegisterP65JITInvalidator(func(addr, size uint64) {
+		gotAddr, gotSize = addr, size
+	})
+	defer unregister()
+	cpu.PC = 0x0600
+	cpu.SetRunning(true)
+	cpu.ExecuteJIT6502()
+	if gotAddr != 0x0600 || gotSize != 256 {
+		t.Fatalf("native SMC publication=(%#x,%d), want=(0x600,256)", gotAddr, gotSize)
+	}
+}
+
+func TestJIT6502_Exec_ConcurrentCPUCompilation(t *testing.T) {
+	if !jit6502Available {
+		t.Skip("native 6502 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	bus.Write8(0x0600, 0xA9)
+	bus.Write8(0x0601, 0x42)
+	bus.Write8(0x0602, haltOpcode)
+	bus.Write8(0x0700, 0xA9)
+	bus.Write8(0x0701, 0x99)
+	bus.Write8(0x0702, haltOpcode)
+	first := NewCPU_6502(bus)
+	second := NewCPU_6502(bus)
+	first.PC, second.PC = 0x0600, 0x0700
+	first.SetRDYLine(true)
+	second.SetRDYLine(true)
+	first.SetRunning(true)
+	second.SetRunning(true)
+	first.jitEnabled = true
+	second.jitEnabled = true
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() { defer group.Done(); first.ExecuteJIT6502() }()
+	go func() { defer group.Done(); second.ExecuteJIT6502() }()
+	group.Wait()
+	if first.A != 0x42 || second.A != 0x99 {
+		t.Fatalf("concurrent JIT results A1=%02X A2=%02X", first.A, second.A)
+	}
+}
+
+func TestJIT6502_Exec_ExternalWriteBreaksPatchedChain(t *testing.T) {
+	if !jit6502Available {
+		t.Skip("native 6502 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	cpu.SetRDYLine(true)
+	cpu.jitEnabled = true
+	// NOP; JMP $0600. The cache patches this exit back to its own chain entry.
+	bus.Write8(0x0600, 0xEA)
+	bus.Write8(0x0601, 0x4C)
+	bus.Write8(0x0602, 0x00)
+	bus.Write8(0x0603, 0x06)
+	cpu.PC = 0x0600
+	cpu.SetRunning(true)
+	done := make(chan struct{})
+	go func() { cpu.ExecuteJIT6502(); close(done) }()
+	for !cpu.executing.Load() {
+		runtime.Gosched()
+	}
+	// Replacing the chain head with JAM publishes a dispatch generation. A
+	// stale patched jump must return to Go before it can keep chaining.
+	bus.Write8(0x0600, haltOpcode)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		cpu.SetRunning(false)
+		t.Fatal("external write did not break patched native chain")
+	}
+	if cpu.Running() {
+		t.Fatal("CPU still running after chain-head replacement")
 	}
 }
 
@@ -136,6 +262,128 @@ func TestJIT6502_Exec_IOBail(t *testing.T) {
 
 	if cpu.Running() {
 		t.Error("CPU should be stopped")
+	}
+}
+
+func TestJIT6502_Exec_PCWrapSourceRange(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	// LDA #$42 begins at $FFFE and its successor is at $0000. The JIT must
+	// retain and validate the wrapped source range without panicking.
+	bus.Write8(0xFFFE, 0xA9)
+	bus.Write8(0xFFFF, 0x42)
+	bus.Write8(0x0000, 0xEA)
+	bus.Write8(0x0001, haltOpcode)
+	cpu.PC = 0xFFFE
+	cpu.SetRDYLine(true)
+	cpu.SetRunning(true)
+	cpu.jitEnabled = true
+	cpu.ExecuteJIT6502()
+	if cpu.Running() || cpu.A != 0x42 || cpu.PC != 0x0002 {
+		t.Fatalf("wrapped JIT execution running=%v A=%02X PC=%04X, want stopped A=42 PC=0002", cpu.Running(), cpu.A, cpu.PC)
+	}
+}
+
+func TestJIT6502_Exec_BRKMappedStackBails(t *testing.T) {
+	bus := NewMachineBus()
+	stack := [256]byte{}
+	var writes int
+	bus.MapIO(0x0100, 0x01FF,
+		func(addr uint32) uint32 { return uint32(stack[byte(addr)]) },
+		func(addr uint32, value uint32) { stack[byte(addr)], writes = byte(value), writes+1 })
+	bus.Write8(IRQ_VECTOR, 0x34)
+	bus.Write8(IRQ_VECTOR+1, 0x12)
+	cpu := NewCPU_6502(bus)
+	bus.Write8(0x0600, 0x00)
+	cpu.PC, cpu.SP = 0x0600, 0xFF
+	cpu.SetRDYLine(true)
+	cpu.SetRunning(true)
+	cpu.jitEnabled = true
+	cpu.jitTestStopAfter = 1
+	cpu.ExecuteJIT6502()
+	if writes != 3 || cpu.PC != 0x1234 || cpu.jit6502StatsSnapshot().bails == 0 {
+		t.Fatalf("BRK mapped-stack bail writes=%d PC=%04X bails=%d", writes, cpu.PC, cpu.jit6502StatsSnapshot().bails)
+	}
+}
+
+func TestJIT6502_Exec_BRKMappedVectorBails(t *testing.T) {
+	bus := NewMachineBus()
+	var reads int
+	bus.MapIO(IRQ_VECTOR, IRQ_VECTOR+1,
+		func(addr uint32) uint32 {
+			reads++
+			if addr == IRQ_VECTOR {
+				return 0x78
+			}
+			return 0x56
+		},
+		func(uint32, uint32) {})
+	cpu := NewCPU_6502(bus)
+	bus.Write8(0x0600, 0x00)
+	cpu.PC, cpu.SP = 0x0600, 0xFF
+	cpu.SetRDYLine(true)
+	cpu.SetRunning(true)
+	cpu.jitEnabled = true
+	cpu.jitTestStopAfter = 1
+	cpu.ExecuteJIT6502()
+	if reads != 2 || cpu.PC != 0x5678 || cpu.jit6502StatsSnapshot().bails == 0 {
+		t.Fatalf("BRK mapped-vector bail reads=%d PC=%04X bails=%d", reads, cpu.PC, cpu.jit6502StatsSnapshot().bails)
+	}
+}
+
+func TestJIT6502_Exec_RTIMappedStackBails(t *testing.T) {
+	bus := NewMachineBus()
+	stack := [256]byte{0xFD: CARRY_FLAG | BREAK_FLAG, 0xFE: 0x78, 0xFF: 0x56}
+	var reads int
+	bus.MapIO(0x0100, 0x01FF,
+		func(addr uint32) uint32 { reads++; return uint32(stack[byte(addr)]) },
+		func(uint32, uint32) {})
+	cpu := NewCPU_6502(bus)
+	bus.Write8(0x0600, 0x40)
+	cpu.PC, cpu.SP = 0x0600, 0xFC
+	cpu.SetRDYLine(true)
+	cpu.SetRunning(true)
+	cpu.jitEnabled = true
+	cpu.jitTestStopAfter = 1
+	cpu.ExecuteJIT6502()
+	if reads != 3 || cpu.PC != 0x5678 || cpu.SR&BREAK_FLAG != 0 || cpu.jit6502StatsSnapshot().bails == 0 {
+		t.Fatalf("RTI mapped-stack bail reads=%d PC=%04X SR=%02X bails=%d", reads, cpu.PC, cpu.SR, cpu.jit6502StatsSnapshot().bails)
+	}
+}
+
+func TestJIT6502_Exec_TestStopDoesNotCollapseMMIOPollLoop(t *testing.T) {
+	if !jit6502Available {
+		t.Skip("native 6502 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	bus.MapIO(translateIO8Bit_6502(0xF000), translateIO8Bit_6502(0xF000),
+		func(uint32) uint32 { return 2 },
+		func(uint32, uint32) {})
+	cpu := NewCPU_6502(bus)
+	cpu.SetRDYLine(true)
+
+	// LDA $F000; AND #$02; BNE $0600. This is recognised as a polling loop
+	// in normal execution. Test control asks for exactly one guest instruction,
+	// which must leave the later AND/branch untouched.
+	bus.Write8(0x0600, 0xAD)
+	bus.Write8(0x0601, 0x00)
+	bus.Write8(0x0602, 0xF0)
+	bus.Write8(0x0603, 0x29)
+	bus.Write8(0x0604, 0x02)
+	bus.Write8(0x0605, 0xD0)
+	bus.Write8(0x0606, 0xF9)
+	cpu.PC = 0x0600
+	cpu.SetRunning(true)
+	cpu.jitEnabled = true
+	cpu.jitTestStopAfter = 1
+	cpu.jitTestBlockLimit = 1
+	cpu.ExecuteJIT6502()
+
+	if got, want := cpu.jitTestRetired, uint64(1); got != want {
+		t.Fatalf("retired=%d, want %d", got, want)
+	}
+	if cpu.PC != 0x0603 || cpu.A != 2 || cpu.Cycles != 4 {
+		t.Fatalf("after one MMIO load: PC=$%04X A=$%02X cycles=%d, want PC=$0603 A=$02 cycles=4", cpu.PC, cpu.A, cpu.Cycles)
 	}
 }
 

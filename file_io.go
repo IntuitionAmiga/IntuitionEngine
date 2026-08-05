@@ -192,6 +192,11 @@ func (f *FileIODevice) writeGuest8(addr uint64, value uint8) bool {
 	}
 	if f.bus.backing != nil && addr < f.bus.backing.Size() {
 		f.bus.backing.Write8(addr, value)
+		// File I/O can stage into sparse physical RAM. Publish this direct
+		// backing mutation through the common generation service just as the
+		// low-RAM path above does, so a subscribed 6502 cache cannot retain a
+		// stale physical page.
+		invalidateM68KJITForGuestWrite(f.bus, addr, 1)
 		return true
 	}
 	return false

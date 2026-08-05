@@ -1,12 +1,8 @@
 // jit_6502_policy.go - 6502 JIT tier policy and diagnostics.
 
-//go:build amd64 && (linux || windows || darwin)
-
 package main
 
 import (
-	"fmt"
-	"os"
 	"sync/atomic"
 )
 
@@ -17,49 +13,50 @@ var p65TierController = func() *TierController {
 	return applyPerfTuningProfileToTierController("p65", c)
 }()
 
-func p65JITStatsEnabled() bool {
-	return os.Getenv("P65_JIT_STATS") == "1"
-}
-
 type p65JITStats struct {
 	tier1Blocks   atomic.Uint64
+	nativeEntries atomic.Uint64
 	bails         atomic.Uint64
 	invalidations atomic.Uint64
 	chainExits    atomic.Uint64
 }
 
-var globalP65JITStats p65JITStats
-
 type p65JITStatsSnapshot struct {
 	tier1Blocks   uint64
+	nativeEntries uint64
 	bails         uint64
 	invalidations uint64
 	chainExits    uint64
 }
 
-func p65JITStatsLoad() p65JITStatsSnapshot {
+func (s *p65JITStats) snapshot() p65JITStatsSnapshot {
 	return p65JITStatsSnapshot{
-		tier1Blocks:   globalP65JITStats.tier1Blocks.Load(),
-		bails:         globalP65JITStats.bails.Load(),
-		invalidations: globalP65JITStats.invalidations.Load(),
-		chainExits:    globalP65JITStats.chainExits.Load(),
+		tier1Blocks:   s.tier1Blocks.Load(),
+		nativeEntries: s.nativeEntries.Load(),
+		bails:         s.bails.Load(),
+		invalidations: s.invalidations.Load(),
+		chainExits:    s.chainExits.Load(),
 	}
 }
 
 func (s p65JITStatsSnapshot) Sub(base p65JITStatsSnapshot) p65JITStatsSnapshot {
 	return p65JITStatsSnapshot{
 		tier1Blocks:   s.tier1Blocks - base.tier1Blocks,
+		nativeEntries: s.nativeEntries - base.nativeEntries,
 		bails:         s.bails - base.bails,
 		invalidations: s.invalidations - base.invalidations,
 		chainExits:    s.chainExits - base.chainExits,
 	}
 }
 
-func (s p65JITStatsSnapshot) Print() {
-	fmt.Printf("6502 JIT stats: tier1=%d bails=%d invalidations=%d chain_exits=%d\n",
-		s.tier1Blocks,
-		s.bails,
-		s.invalidations,
-		s.chainExits,
-	)
+func (cpu *CPU_6502) resetJITStats() {
+	cpu.jitStats.tier1Blocks.Store(0)
+	cpu.jitStats.nativeEntries.Store(0)
+	cpu.jitStats.bails.Store(0)
+	cpu.jitStats.invalidations.Store(0)
+	cpu.jitStats.chainExits.Store(0)
+}
+
+func (cpu *CPU_6502) jit6502StatsSnapshot() p65JITStatsSnapshot {
+	return cpu.jitStats.snapshot()
 }

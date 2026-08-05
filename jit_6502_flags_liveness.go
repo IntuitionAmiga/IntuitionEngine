@@ -132,15 +132,11 @@ var p65OverwritesNZ = [256]bool{
 var p65NeverBails = [256]bool{
 	// Immediate-mode loads/CMP/ALU.
 	//
-	// NOTE: ADC #imm (0x69) and SBC #imm (0xE9) are deliberately
-	// EXCLUDED from this list. Even though their addressing mode is
-	// pure-immediate, the JIT emits a decimal-mode bail check
-	// (emit6502DecimalBailCheck) ahead of the actual ADC/SBC: when
-	// SR.D is set, the block bails so the interpreter handles BCD
-	// arithmetic. That bail is a hidden CCR consumer — pending NZ
-	// from upstream must materialise into guest SR before resuming.
+	// Decimal ADC/SBC use a native context-owned lookup table, so immediate
+	// forms have no hidden decimal-mode bail.
 	0xA9: true, 0xA2: true, 0xA0: true,
 	0xC9: true, 0xE0: true, 0xC0: true,
+	0x69: true, 0xE9: true,
 	0x29: true, 0x09: true, 0x49: true,
 	// Accumulator-mode shifts.
 	0x0A: true, 0x4A: true, 0x2A: true, 0x6A: true,

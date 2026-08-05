@@ -70,6 +70,10 @@ func runSingleInstruction(t *testing.T, cpu *CPU_6502, start uint16) {
 }
 
 func runUntilPC(t *testing.T, cpu *CPU_6502, target uint16, timeout time.Duration) {
+	runUntilPCWithMode(t, cpu, target, timeout, false)
+}
+
+func runUntilPCWithMode(t *testing.T, cpu *CPU_6502, target uint16, timeout time.Duration, jit bool) {
 	t.Helper()
 
 	// Ensure CPU is running (may have been stopped from previous call)
@@ -77,7 +81,11 @@ func runUntilPC(t *testing.T, cpu *CPU_6502, target uint16, timeout time.Duratio
 
 	done := make(chan struct{})
 	go func() {
-		cpu.Execute()
+		if jit {
+			cpu.ExecuteJIT6502()
+		} else {
+			cpu.Execute()
+		}
 		close(done)
 	}()
 
@@ -104,6 +112,10 @@ func runUntilPC(t *testing.T, cpu *CPU_6502, target uint16, timeout time.Duratio
 }
 
 func runUntilCondition(t *testing.T, cpu *CPU_6502, timeout time.Duration, condition func() bool) {
+	runUntilConditionWithMode(t, cpu, timeout, condition, false)
+}
+
+func runUntilConditionWithMode(t *testing.T, cpu *CPU_6502, timeout time.Duration, condition func() bool, jit bool) {
 	t.Helper()
 
 	// Ensure CPU is running (may have been stopped from previous call)
@@ -111,7 +123,11 @@ func runUntilCondition(t *testing.T, cpu *CPU_6502, timeout time.Duration, condi
 
 	done := make(chan struct{})
 	go func() {
-		cpu.Execute()
+		if jit {
+			cpu.ExecuteJIT6502()
+		} else {
+			cpu.Execute()
+		}
 		close(done)
 	}()
 

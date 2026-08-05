@@ -50,7 +50,7 @@ flowchart LR
         C6502["6502 interpreter"]
         X86["x86 interpreter / amd64, Linux arm64 and wasm JIT paths"]
         JIE64["IE64 JIT<br/>amd64 + arm64"]
-        J6502["6502 JIT<br/>amd64"]
+        J6502["6502 JIT<br/>Linux amd64 + arm64 + wasm"]
         JM68K["M68K JIT<br/>amd64 + arm64 + wasm"]
         JZ80["Z80 JIT<br/>amd64 only"]
         JX86["x86 JIT<br/>amd64 + Linux arm64 + wasm"]
@@ -289,7 +289,7 @@ flowchart LR
 flowchart TB
     HOST["Host runtime<br/>main.go flags, memory sizing,<br/>debug monitor, Lua/IEScript"]
     EXEC["Guest execution<br/>ProgramExecutor + CoprocessorManager<br/>IE32, IE64, M68K, Z80, 6502, x86"]
-    JIT["JIT dispatch<br/>IE64: amd64/arm64/wasm<br/>M68K: amd64/arm64/wasm<br/>6502, Z80: amd64<br/>x86: amd64/linux-arm64/wasm"]
+    JIT["JIT dispatch<br/>IE64: amd64/arm64/wasm<br/>M68K: amd64/arm64/wasm<br/>6502: linux-amd64/linux-arm64/wasm<br/>Z80: amd64<br/>x86: amd64/linux-arm64/wasm"]
     BUS["MachineBus<br/>host-sized RAM, profile clamps,<br/>MapIO / MapIOByte / MapIO64,<br/>ioPageBitmap fast path"]
     MEM["Memory discovery<br/>SYSINFO_TOTAL_RAM_LO/HI<br/>SYSINFO_ACTIVE_RAM_LO/HI<br/>IE64 CR_RAM_SIZE_BYTES"]
     OS["OS and loader shims<br/>EmuTOS + GEMDOS/XBIOS<br/>AROS + DOS/audio DMA<br/>Boot HostFS"]
@@ -455,7 +455,7 @@ flowchart LR
 | Subsystem | Runtime surface | Primary files | Wired registration / dispatch |
 |-----------|-----------------|---------------|-------------------------------|
 | CPU cores | IE32, IE64, M68K, Z80, 6502, x86 | `cpu_*.go`, `cpu_*_runner.go` | `main.go` selects runners by file extension, OS mode, or EXEC MMIO |
-| JIT | IE64 and M68K on amd64, arm64 and wasm; 6502 and Z80 on amd64; x86 on amd64, Linux arm64 and wasm | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch*.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch*.go` | Build tags plus `runtime.GOARCH`; unsupported hosts use dispatch stubs. Linux arm64 x86 executes a native direct subset and resumes remaining forms through the interpreter; js/wasm x86 uses the WebAssembly driver cache and declines activation entirely when SIMD support is absent |
+| JIT | IE64 and M68K on amd64, arm64 and wasm; 6502 on Linux amd64 and arm64 plus js/wasm; Z80 on amd64; x86 on amd64, Linux arm64 and wasm | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_6502_dispatch_wasm.go`, `jit_m68k_dispatch*.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch*.go` | Build tags plus `runtime.GOARCH`; unsupported hosts use dispatch stubs. Linux arm64 and js/wasm 6502 lower the documented NMOS set in eligible direct RAM and resume through the interpreter at observation boundaries; js/wasm x86 uses the WebAssembly driver cache and declines activation entirely when SIMD support is absent |
 | Bus and RAM | Host-sized guest RAM, profile clamps, MMIO, byte/64-bit handlers | `machine_bus.go`, `memory_sizing.go`, `profile_bounds.go`, `sysinfo_mmio.go` | `main.go` registers devices before execution; `MachineBus.SealMappings` prevents late maps |
 | Machine lifecycle | Load resolution, reset quiesce, CPU/profile recreation, monitor/runtime rewiring | `machine_lifecycle.go`, `main.go` | `main.go` owns concrete devices; `Machine` applies reset/load orchestration through injected dependencies and profile targets |
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
@@ -560,12 +560,12 @@ never emitted unless the host supports them.
 | Host platform | JIT-enabled guest cores | Dispatch files |
 |---------------|-------------------------|----------------|
 | Linux amd64 | IE64, 6502, M68K, Z80, x86 | `jit_dispatch.go`, amd64 per-core dispatch files |
-| Linux arm64 | IE64, M68K, x86 | `jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_x86_dispatch_arm64.go`; x86 executes a verified direct subset and uses interpreter resume for remaining forms |
-| Windows amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
+| Linux arm64 | IE64, M68K, 6502, x86 | `jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_6502_dispatch.go`, `jit_x86_dispatch_arm64.go`; 6502 lowers the documented NMOS set in eligible direct RAM and resumes through the interpreter at observation boundaries |
+| Windows amd64 | IE64, M68K, Z80, x86 | amd64 per-core dispatch files |
 | Windows arm64 | IE64, M68K | IE64 and M68K dispatch; other non-IE64 cores use stubs |
-| macOS amd64 | IE64, 6502, M68K, Z80, x86 | amd64 per-core dispatch files |
+| macOS amd64 | IE64, M68K, Z80, x86 | amd64 per-core dispatch files |
 | macOS arm64 | IE64, M68K | IE64 and M68K dispatch plus Darwin arm64 JIT write-protect helpers |
-| Browser (js/wasm) | IE64, M68K and x86 (wasm bytecode backends) | `jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_x86_dispatch_wasm.go` |
+| Browser (js/wasm) | IE64, M68K, 6502 and x86 (wasm bytecode backends) | `jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_6502_dispatch_wasm.go`, `jit_x86_dispatch_wasm.go` |
 
 On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles. IE64 and M68K have arm64 backends; the other guest cores remain interpreter-only.
 
@@ -899,7 +899,7 @@ build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
 | `novulkan` | `-tags novulkan` | Voodoo uses the software backend and does not require the Vulkan SDK. Guest Voodoo registers remain mapped. |
 | `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
 | `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
-| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE64, M68K, and x86 use WebAssembly bytecode JIT backends for supported instruction blocks, with interpreter fallback for unsupported instructions. `IE64_WASM_JIT=0`, `M68K_WASM_JIT=0`, and `X86_WASM_JIT=0` disable the corresponding browser backend; x86 also requires WebAssembly SIMD. IE32, 6502, and Z80 interpret. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
+| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE64, M68K, 6502, and x86 use WebAssembly JIT backends. The 6502 backend lowers documented NMOS instructions in eligible direct RAM and uses interpreter resume at mapping and observation boundaries. `IE64_WASM_JIT=0`, `M68K_WASM_JIT=0`, `P65_WASM_JIT=0`, and `X86_WASM_JIT=0` disable the corresponding browser backend; x86 also requires WebAssembly SIMD. IE32 and Z80 interpret. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
 
 Headless stubs should be treated as backend substitutes, not as a different
 machine model. A test can still write video or audio MMIO and inspect guest

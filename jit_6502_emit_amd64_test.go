@@ -54,6 +54,24 @@ func (r *jit6502TestRig) cleanup() {
 // compileAndRun compiles a 6502 program placed at startPC and executes it via JIT.
 func (r *jit6502TestRig) compileAndRun(t *testing.T, program []byte, startPC uint16) {
 	t.Helper()
+	// These emitter unit tests historically used a trailing BRK as a scanner
+	// sentinel. BRK is now deliberately native, so retain the intended test
+	// boundary by replacing only a complete final BRK instruction with JAM.
+	// Dedicated BRK tests pass a one-byte program and remain untouched.
+	program = append([]byte(nil), program...)
+	if len(program) > 1 {
+		for off := 0; off < len(program); {
+			length := int(jit6502InstrLengths[program[off]])
+			if length == 0 || off+length > len(program) {
+				break
+			}
+			if off+length == len(program) && program[off] == 0x00 {
+				program[off] = haltOpcode
+				break
+			}
+			off += length
+		}
+	}
 
 	// Place program in memory
 	for i, b := range program {
@@ -70,6 +88,14 @@ func (r *jit6502TestRig) compileAndRun(t *testing.T, program []byte, startPC uin
 	instrs := jit6502ScanBlock(mem, startPC, len(mem))
 	if len(instrs) == 0 {
 		t.Fatal("scanner returned empty block")
+	}
+	// JAM is the test-only block delimiter above, never an instruction whose
+	// fallback side effect belongs in the emitter assertion.
+	if instrs[len(instrs)-1].opcode == haltOpcode {
+		instrs = instrs[:len(instrs)-1]
+	}
+	if len(instrs) == 0 {
+		t.Fatal("scanner produced only the test delimiter")
 	}
 
 	// Compile block
@@ -101,8 +127,8 @@ func TestJIT6502_AMD64_NOP_RegisterRoundTrip(t *testing.T) {
 	rig.cpu.PC = 0x0600
 	rig.cpu.SR = 0xA5
 
-	// Program: NOP + BRK (BRK terminates the block)
-	rig.compileAndRun(t, []byte{0xEA, 0x00}, 0x0600)
+	// Program: NOP + JMP (a non-mutating block terminator).
+	rig.compileAndRun(t, []byte{0xEA, 0x4C, 0x04, 0x06}, 0x0600)
 
 	// Verify registers are preserved through prologue/epilogue
 	if rig.cpu.A != 0x42 {
@@ -128,28 +154,12 @@ func TestJIT6502_AMD64_NOP_RetPC(t *testing.T) {
 
 	rig.cpu.PC = 0x0600
 
-	// NOP (1 byte) — block scanner will also include BRK as terminator
-	// But NOP alone won't terminate the block. Let's just use a single NOP
-	// followed by a BRK to end the block.
-	rig.compileAndRun(t, []byte{0xEA, 0x00}, 0x0600)
-
-	// NOP is at 0x0600 (1 byte), BRK at 0x0601 terminates block.
-	// The scanner includes BRK in the block. Since BRK bails to interpreter
-	// (needsFallback), the block is only [NOP]. Wait, the scanner includes
-	// BRK because it's a block terminator.
-	// Actually: BRK IS compilable=false and IS a block terminator.
-	// The scanner includes block terminators. BRK is included.
-	// But in compileBlock6502, BRK will hit the default case and bail.
-	// For this test, the block is [NOP, BRK]. The NOP emits nothing,
-	// then BRK hits the default and bails.
-	//
-	// Hmm, that means the bail sets RetPC = 0x0601 (BRK's PC).
-	// Let me verify.
-	if rig.ctx.RetPC != 0x0601 {
-		t.Errorf("RetPC = 0x%04X, want 0x0601 (BRK bail)", rig.ctx.RetPC)
+	rig.compileAndRun(t, []byte{0xEA, 0x4C, 0x04, 0x06}, 0x0600)
+	if rig.ctx.RetPC != 0x0604 {
+		t.Errorf("RetPC = 0x%04X, want 0x0604", rig.ctx.RetPC)
 	}
-	if rig.ctx.NeedBail != 1 {
-		t.Errorf("NeedBail = %d, want 1 (BRK should bail)", rig.ctx.NeedBail)
+	if rig.ctx.NeedBail != 0 {
+		t.Errorf("NeedBail = %d, want 0", rig.ctx.NeedBail)
 	}
 }
 
@@ -159,15 +169,14 @@ func TestJIT6502_AMD64_NOP_Cycles(t *testing.T) {
 
 	rig.cpu.PC = 0x0600
 
-	// 3 NOPs + BRK. The 3 NOPs should accumulate 6 cycles (3 x 2).
-	// BRK will bail, so we only get cycles for the NOPs.
-	rig.compileAndRun(t, []byte{0xEA, 0xEA, 0xEA, 0x00}, 0x0600)
+	// 3 NOPs + JMP. The three NOPs contribute six cycles.
+	rig.compileAndRun(t, []byte{0xEA, 0xEA, 0xEA, 0x4C, 0x06, 0x06}, 0x0600)
 
-	if rig.ctx.RetCycles != 6 {
-		t.Errorf("RetCycles = %d, want 6 (3 NOPs x 2 cycles)", rig.ctx.RetCycles)
+	if rig.ctx.RetCycles != 9 {
+		t.Errorf("RetCycles = %d, want 9", rig.ctx.RetCycles)
 	}
-	if rig.ctx.RetCount != 3 {
-		t.Errorf("RetCount = %d, want 3 (3 NOPs before BRK bail)", rig.ctx.RetCount)
+	if rig.ctx.RetCount != 4 {
+		t.Errorf("RetCount = %d, want 4", rig.ctx.RetCount)
 	}
 }
 
@@ -177,18 +186,72 @@ func TestJIT6502_AMD64_MultipleNOPs_PC(t *testing.T) {
 
 	rig.cpu.PC = 0x0600
 
-	// 5 NOPs + BRK
-	rig.compileAndRun(t, []byte{0xEA, 0xEA, 0xEA, 0xEA, 0xEA, 0x00}, 0x0600)
+	// 5 NOPs + JMP
+	rig.compileAndRun(t, []byte{0xEA, 0xEA, 0xEA, 0xEA, 0xEA, 0x4C, 0x08, 0x06}, 0x0600)
 
-	// BRK is at 0x0605, bail sets RetPC to BRK's address
-	if rig.ctx.RetPC != 0x0605 {
-		t.Errorf("RetPC = 0x%04X, want 0x0605", rig.ctx.RetPC)
+	if rig.ctx.RetPC != 0x0608 {
+		t.Errorf("RetPC = 0x%04X, want 0x0608", rig.ctx.RetPC)
 	}
-	if rig.ctx.RetCount != 5 {
-		t.Errorf("RetCount = %d, want 5", rig.ctx.RetCount)
+	if rig.ctx.RetCount != 6 {
+		t.Errorf("RetCount = %d, want 6", rig.ctx.RetCount)
 	}
-	if rig.ctx.RetCycles != 10 {
-		t.Errorf("RetCycles = %d, want 10 (5 NOPs x 2)", rig.ctx.RetCycles)
+	if rig.ctx.RetCycles != 13 {
+		t.Errorf("RetCycles = %d, want 13", rig.ctx.RetCycles)
+	}
+}
+
+func TestJIT6502_AMD64_BRK_VectorAndStack(t *testing.T) {
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+	rig.cpu.PC = 0x0600
+	rig.cpu.SP = 0xFF
+	rig.cpu.SR = CARRY_FLAG | DECIMAL_FLAG | UNUSED_FLAG
+	rig.bus.Write8(IRQ_VECTOR, 0x34)
+	rig.bus.Write8(IRQ_VECTOR+1, 0x12)
+	rig.compileAndRun(t, []byte{0x00}, 0x0600)
+	if rig.ctx.NeedBail != 0 || rig.ctx.RetPC != 0x1234 || rig.ctx.RetCount != 1 || rig.ctx.RetCycles != 7 {
+		t.Fatalf("BRK return state bail=%d pc=%04X count=%d cycles=%d", rig.ctx.NeedBail, rig.ctx.RetPC, rig.ctx.RetCount, rig.ctx.RetCycles)
+	}
+	if rig.cpu.SP != 0xFC || rig.bus.Read8(0x01FF) != 0x06 || rig.bus.Read8(0x01FE) != 0x02 {
+		t.Fatalf("BRK stack SP=%02X hi=%02X lo=%02X", rig.cpu.SP, rig.bus.Read8(0x01FF), rig.bus.Read8(0x01FE))
+	}
+	status := rig.bus.Read8(0x01FD)
+	if status&(BREAK_FLAG|UNUSED_FLAG) != BREAK_FLAG|UNUSED_FLAG || rig.cpu.SR&BREAK_FLAG != 0 || rig.cpu.SR&INTERRUPT_FLAG == 0 {
+		t.Fatalf("BRK status pushed=%02X live=%02X", status, rig.cpu.SR)
+	}
+}
+
+func TestJIT6502_AMD64_BRK_WrapsReturnAddress(t *testing.T) {
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+	rig.cpu.PC = 0xFFFF
+	rig.cpu.SP = 0xFF
+	rig.bus.Write8(IRQ_VECTOR, 0x34)
+	rig.bus.Write8(IRQ_VECTOR+1, 0x12)
+	rig.compileAndRun(t, []byte{0x00}, 0xFFFF)
+
+	if rig.ctx.NeedBail != 0 || rig.ctx.RetPC != 0x1234 {
+		t.Fatalf("BRK return state bail=%d pc=%04X", rig.ctx.NeedBail, rig.ctx.RetPC)
+	}
+	if rig.bus.Read8(0x01FF) != 0x00 || rig.bus.Read8(0x01FE) != 0x01 {
+		t.Fatalf("BRK wrapped return stack hi=%02X lo=%02X", rig.bus.Read8(0x01FF), rig.bus.Read8(0x01FE))
+	}
+}
+
+func TestJIT6502_AMD64_RTI_RestoresStatusAndPC(t *testing.T) {
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+	rig.cpu.PC = 0x0600
+	rig.cpu.SP = 0xFC
+	rig.bus.Write8(0x01FD, CARRY_FLAG|BREAK_FLAG|DECIMAL_FLAG)
+	rig.bus.Write8(0x01FE, 0x78)
+	rig.bus.Write8(0x01FF, 0x56)
+	rig.compileAndRun(t, []byte{0x40}, 0x0600)
+	if rig.ctx.NeedBail != 0 || rig.ctx.RetPC != 0x5678 || rig.ctx.RetCount != 1 || rig.ctx.RetCycles != 6 {
+		t.Fatalf("RTI return state bail=%d pc=%04X count=%d cycles=%d", rig.ctx.NeedBail, rig.ctx.RetPC, rig.ctx.RetCount, rig.ctx.RetCycles)
+	}
+	if rig.cpu.SP != 0xFF || rig.cpu.SR != CARRY_FLAG|DECIMAL_FLAG|UNUSED_FLAG {
+		t.Fatalf("RTI restored SP=%02X SR=%02X", rig.cpu.SP, rig.cpu.SR)
 	}
 }
 
@@ -823,7 +886,7 @@ func TestJIT6502_AMD64_ADC_Binary_Overflow(t *testing.T) {
 	}
 }
 
-func TestJIT6502_AMD64_ADC_DecimalBail(t *testing.T) {
+func TestJIT6502_AMD64_ADC_Decimal(t *testing.T) {
 	rig := newJIT6502TestRig(t)
 	defer rig.cleanup()
 
@@ -831,14 +894,26 @@ func TestJIT6502_AMD64_ADC_DecimalBail(t *testing.T) {
 	rig.cpu.A = 0x10
 	rig.cpu.SR = DECIMAL_FLAG // D=1
 
-	// ADC #$20 — decimal mode, should bail
+	// ADC #$20 — decimal mode executes through the native lookup.
 	rig.compileAndRun(t, []byte{0x69, 0x20, 0x00}, 0x0600)
 
-	if rig.ctx.NeedBail != 1 {
-		t.Errorf("NeedBail = %d, want 1 (decimal mode)", rig.ctx.NeedBail)
+	if rig.ctx.NeedBail != 0 {
+		t.Errorf("NeedBail = %d, want 0 (decimal mode is native)", rig.ctx.NeedBail)
 	}
-	if rig.ctx.RetPC != 0x0600 {
-		t.Errorf("RetPC = 0x%04X, want 0x0600", rig.ctx.RetPC)
+	if rig.cpu.A != 0x30 || rig.cpu.SR&DECIMAL_FLAG == 0 {
+		t.Errorf("decimal ADC A=%02X SR=%02X, want A=30 and D preserved", rig.cpu.A, rig.cpu.SR)
+	}
+}
+
+func TestJIT6502_AMD64_SBC_Decimal(t *testing.T) {
+	rig := newJIT6502TestRig(t)
+	defer rig.cleanup()
+	rig.cpu.PC = 0x0600
+	rig.cpu.A = 0x50
+	rig.cpu.SR = DECIMAL_FLAG | CARRY_FLAG
+	rig.compileAndRun(t, []byte{0xE9, 0x10, 0x00}, 0x0600)
+	if rig.ctx.NeedBail != 0 || rig.cpu.A != 0x40 || rig.cpu.SR&DECIMAL_FLAG == 0 || rig.cpu.SR&CARRY_FLAG == 0 {
+		t.Errorf("decimal SBC bail=%d A=%02X SR=%02X", rig.ctx.NeedBail, rig.cpu.A, rig.cpu.SR)
 	}
 }
 

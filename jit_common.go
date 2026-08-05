@@ -1068,6 +1068,10 @@ type JITBlock struct {
 	guestHash      uint64
 	guestHashValid bool
 	execReleased   bool
+	// p65Source is the exact decoded byte range for a 6502 block. Other
+	// backends leave it nil. The 6502 dispatcher compares it before entry as a
+	// second validity fence in addition to physical page generations.
+	p65Source []byte
 }
 
 type chainPatchRef struct {

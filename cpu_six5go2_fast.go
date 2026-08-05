@@ -226,10 +226,20 @@ func (cpu *CPU_6502) fastReadByte(addr uint16) byte {
 // fastWriteByte writes a byte honoring the direct-page bitmap.
 func (cpu *CPU_6502) fastWriteByte(addr uint16, val byte) {
 	if cpu.directPageBitmap[addr>>8] == 0 {
-		cpu.fastAdapter.memDirect[addr] = val
+		cpu.fastWriteDirect(addr, val)
 		return
 	}
 	cpu.fastAdapter.Write(addr, val)
+}
+
+// fastWriteDirect keeps the fast interpreter's raw-RAM store path visible to
+// persistent 6502 JIT caches on the same MachineBus. The atomic count avoids
+// any callback lock on the normal interpreter-only path.
+func (cpu *CPU_6502) fastWriteDirect(addr uint16, val byte) {
+	cpu.fastAdapter.memDirect[addr] = val
+	if bus := cpu.fastAdapter.machineBus; bus != nil && bus.p65JITInvalidatorCnt.Load() != 0 {
+		bus.notifyP65JITRAMWrite(uint64(addr), 1)
+	}
 }
 
 // ensureDirectPageBitmap seals MachineBus mappings (if the adapter is backed
@@ -763,7 +773,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				}
 				pc++
 				if dpb[0] == 0 {
-					memDirect[zp] = a
+					cpu_6502.fastWriteDirect(uint16(zp), a)
 				} else {
 					adapter.Write(uint16(zp), a)
 				}
@@ -778,7 +788,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				}
 				pc++
 				if dpb[0] == 0 {
-					memDirect[zp] = x
+					cpu_6502.fastWriteDirect(uint16(zp), x)
 				} else {
 					adapter.Write(uint16(zp), x)
 				}
@@ -793,7 +803,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				}
 				pc++
 				if dpb[0] == 0 {
-					memDirect[zp] = y
+					cpu_6502.fastWriteDirect(uint16(zp), y)
 				} else {
 					adapter.Write(uint16(zp), y)
 				}
@@ -809,7 +819,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				pc++
 				addr := uint16(byte(zp + x))
 				if dpb[0] == 0 {
-					memDirect[addr] = a
+					cpu_6502.fastWriteDirect(addr, a)
 				} else {
 					adapter.Write(addr, a)
 				}
@@ -825,7 +835,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				pc++
 				addr := uint16(byte(zp + y))
 				if dpb[0] == 0 {
-					memDirect[addr] = x
+					cpu_6502.fastWriteDirect(addr, x)
 				} else {
 					adapter.Write(addr, x)
 				}
@@ -841,7 +851,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				pc++
 				addr := uint16(byte(zp + x))
 				if dpb[0] == 0 {
-					memDirect[addr] = y
+					cpu_6502.fastWriteDirect(addr, y)
 				} else {
 					adapter.Write(addr, y)
 				}
@@ -864,7 +874,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				pc++
 				addr := uint16(lo) | uint16(hi)<<8
 				if dpb[addr>>8] == 0 {
-					memDirect[addr] = a
+					cpu_6502.fastWriteDirect(addr, a)
 				} else {
 					adapter.Write(addr, a)
 				}
@@ -887,7 +897,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				pc++
 				addr := uint16(lo) | uint16(hi)<<8
 				if dpb[addr>>8] == 0 {
-					memDirect[addr] = x
+					cpu_6502.fastWriteDirect(addr, x)
 				} else {
 					adapter.Write(addr, x)
 				}
@@ -910,7 +920,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				pc++
 				addr := uint16(lo) | uint16(hi)<<8
 				if dpb[addr>>8] == 0 {
-					memDirect[addr] = y
+					cpu_6502.fastWriteDirect(addr, y)
 				} else {
 					adapter.Write(addr, y)
 				}
@@ -933,7 +943,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				pc++
 				addr := (uint16(lo) | uint16(hi)<<8) + uint16(x)
 				if dpb[addr>>8] == 0 {
-					memDirect[addr] = a
+					cpu_6502.fastWriteDirect(addr, a)
 				} else {
 					adapter.Write(addr, a)
 				}
@@ -956,7 +966,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				pc++
 				addr := (uint16(lo) | uint16(hi)<<8) + uint16(y)
 				if dpb[addr>>8] == 0 {
-					memDirect[addr] = a
+					cpu_6502.fastWriteDirect(addr, a)
 				} else {
 					adapter.Write(addr, a)
 				}
@@ -981,7 +991,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				}
 				addr := uint16(lo) | uint16(hi)<<8
 				if dpb[addr>>8] == 0 {
-					memDirect[addr] = a
+					cpu_6502.fastWriteDirect(addr, a)
 				} else {
 					adapter.Write(addr, a)
 				}
@@ -1005,7 +1015,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				}
 				addr := (uint16(lo) | uint16(hi)<<8) + uint16(y)
 				if dpb[addr>>8] == 0 {
-					memDirect[addr] = a
+					cpu_6502.fastWriteDirect(addr, a)
 				} else {
 					adapter.Write(addr, a)
 				}
@@ -2696,9 +2706,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[zp]
-					memDirect[zp] = v
+					cpu_6502.fastWriteDirect(uint16(zp), v)
 					sr, r = asl6502(sr, v)
-					memDirect[zp] = r
+					cpu_6502.fastWriteDirect(uint16(zp), r)
 				} else {
 					v = adapter.Read(uint16(zp))
 					adapter.Write(uint16(zp), v)
@@ -2719,9 +2729,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = asl6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -2749,9 +2759,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = asl6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -2779,9 +2789,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = asl6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -2801,9 +2811,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[zp]
-					memDirect[zp] = v
+					cpu_6502.fastWriteDirect(uint16(zp), v)
 					sr, r = lsr6502(sr, v)
-					memDirect[zp] = r
+					cpu_6502.fastWriteDirect(uint16(zp), r)
 				} else {
 					v = adapter.Read(uint16(zp))
 					adapter.Write(uint16(zp), v)
@@ -2824,9 +2834,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = lsr6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -2854,9 +2864,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = lsr6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -2884,9 +2894,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = lsr6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -2906,9 +2916,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[zp]
-					memDirect[zp] = v
+					cpu_6502.fastWriteDirect(uint16(zp), v)
 					sr, r = rol6502(sr, v)
-					memDirect[zp] = r
+					cpu_6502.fastWriteDirect(uint16(zp), r)
 				} else {
 					v = adapter.Read(uint16(zp))
 					adapter.Write(uint16(zp), v)
@@ -2929,9 +2939,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = rol6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -2959,9 +2969,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = rol6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -2989,9 +2999,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = rol6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -3011,9 +3021,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[zp]
-					memDirect[zp] = v
+					cpu_6502.fastWriteDirect(uint16(zp), v)
 					sr, r = ror6502(sr, v)
-					memDirect[zp] = r
+					cpu_6502.fastWriteDirect(uint16(zp), r)
 				} else {
 					v = adapter.Read(uint16(zp))
 					adapter.Write(uint16(zp), v)
@@ -3034,9 +3044,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = ror6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -3064,9 +3074,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = ror6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -3094,9 +3104,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = ror6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -3120,9 +3130,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[zp]
-					memDirect[zp] = v
+					cpu_6502.fastWriteDirect(uint16(zp), v)
 					sr, r = inc6502(sr, v)
-					memDirect[zp] = r
+					cpu_6502.fastWriteDirect(uint16(zp), r)
 				} else {
 					v = adapter.Read(uint16(zp))
 					adapter.Write(uint16(zp), v)
@@ -3143,9 +3153,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = inc6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -3173,9 +3183,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = inc6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -3203,9 +3213,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = inc6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -3225,9 +3235,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[zp]
-					memDirect[zp] = v
+					cpu_6502.fastWriteDirect(uint16(zp), v)
 					sr, r = dec6502(sr, v)
-					memDirect[zp] = r
+					cpu_6502.fastWriteDirect(uint16(zp), r)
 				} else {
 					v = adapter.Read(uint16(zp))
 					adapter.Write(uint16(zp), v)
@@ -3248,9 +3258,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[0] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = dec6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -3278,9 +3288,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = dec6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -3308,9 +3318,9 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				var v, r byte
 				if dpb[addr>>8] == 0 {
 					v = memDirect[addr]
-					memDirect[addr] = v
+					cpu_6502.fastWriteDirect(addr, v)
 					sr, r = dec6502(sr, v)
-					memDirect[addr] = r
+					cpu_6502.fastWriteDirect(addr, r)
 				} else {
 					v = adapter.Read(addr)
 					adapter.Write(addr, v)
@@ -3492,7 +3502,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 
 			case 0x48: // PHA
 				if dpb[1] == 0 {
-					memDirect[0x0100|uint16(sp)] = a
+					cpu_6502.fastWriteDirect(0x0100|uint16(sp), a)
 				} else {
 					adapter.Write(0x0100|uint16(sp), a)
 				}
@@ -3512,7 +3522,7 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 			case 0x08: // PHP
 				val := sr | BREAK_FLAG | UNUSED_FLAG
 				if dpb[1] == 0 {
-					memDirect[0x0100|uint16(sp)] = val
+					cpu_6502.fastWriteDirect(0x0100|uint16(sp), val)
 				} else {
 					adapter.Write(0x0100|uint16(sp), val)
 				}
@@ -3601,13 +3611,13 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				// operand byte, so retPC = pc (without further increment).
 				retPC := pc
 				if dpb[1] == 0 {
-					memDirect[0x0100|uint16(sp)] = byte(retPC >> 8)
+					cpu_6502.fastWriteDirect(0x0100|uint16(sp), byte(retPC>>8))
 				} else {
 					adapter.Write(0x0100|uint16(sp), byte(retPC>>8))
 				}
 				sp--
 				if dpb[1] == 0 {
-					memDirect[0x0100|uint16(sp)] = byte(retPC)
+					cpu_6502.fastWriteDirect(0x0100|uint16(sp), byte(retPC))
 				} else {
 					adapter.Write(0x0100|uint16(sp), byte(retPC))
 				}
@@ -3656,19 +3666,19 @@ func (cpu_6502 *CPU_6502) ExecuteFast() {
 				}
 				pc++ // legacy cpu_6502.PC++
 				if dpb[1] == 0 {
-					memDirect[0x0100|uint16(sp)] = byte(pc >> 8)
+					cpu_6502.fastWriteDirect(0x0100|uint16(sp), byte(pc>>8))
 				} else {
 					adapter.Write(0x0100|uint16(sp), byte(pc>>8))
 				}
 				sp--
 				if dpb[1] == 0 {
-					memDirect[0x0100|uint16(sp)] = byte(pc)
+					cpu_6502.fastWriteDirect(0x0100|uint16(sp), byte(pc))
 				} else {
 					adapter.Write(0x0100|uint16(sp), byte(pc))
 				}
 				sp--
 				if dpb[1] == 0 {
-					memDirect[0x0100|uint16(sp)] = sr | BREAK_FLAG | UNUSED_FLAG
+					cpu_6502.fastWriteDirect(0x0100|uint16(sp), sr|BREAK_FLAG|UNUSED_FLAG)
 				} else {
 					adapter.Write(0x0100|uint16(sp), sr|BREAK_FLAG|UNUSED_FLAG)
 				}

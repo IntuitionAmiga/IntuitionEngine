@@ -1,12 +1,9 @@
 // jit_6502_exec.go - 6502 JIT dispatcher loop and CPU integration
 
-// 6502 JIT is amd64-only (per CLAUDE.md: only IE64 has arm64 JIT).
-// The aspirational `arm64 && linux` tag from earlier wiring rounds was
-// never followed by an arm64 emit/compile implementation, so cross-
-// builds fail with "undefined: compileBlock6502". Narrow to amd64-only
-// until the arm64 emitter actually lands.
+// Native 6502 JIT execution is implemented for Linux AMD64 and ARM64.
+// Other targets use the dispatcher stub until their backend is available.
 
-//go:build amd64 && (linux || windows || darwin)
+//go:build (amd64 || arm64) && linux
 
 package main
 
@@ -41,6 +38,11 @@ func (cpu *CPU_6502) initJIT6502() error {
 	cpu.jitExecMem = execMem
 	cpu.jitCache = NewCodeCache()
 	cpu.jitCtx = newJIT6502Context(cpu)
+	if adapter, ok := cpu.memory.(*Bus6502Adapter); ok {
+		if bus, ok := adapter.bus.(*MachineBus); ok {
+			cpu.jitBusUnregister = bus.RegisterP65JITInvalidator(cpu.noteP65JITWrite)
+		}
+	}
 	return nil
 }
 
@@ -58,6 +60,61 @@ func (cpu *CPU_6502) freeJIT6502() {
 	}
 	cpu.jitCache = nil
 	cpu.jitCtx = nil
+	if cpu.jitBusUnregister != nil {
+		cpu.jitBusUnregister()
+		cpu.jitBusUnregister = nil
+	}
+}
+
+// noteP65JITWrite is safe for any bus writer. It publishes affected 256-byte
+// 6502 code pages but never changes the cache itself.
+func (cpu *CPU_6502) noteP65JITWrite(addr, size uint64) {
+	if size == 0 || addr > 0xFFFF {
+		return
+	}
+	end := addr + size - 1
+	if end < addr {
+		return
+	}
+	if end > 0xFFFF {
+		end = 0xFFFF
+	}
+	for page := addr >> 8; page <= end>>8; page++ {
+		cpu.jitCodeGen[page].Add(1)
+	}
+	cpu.jitDispatchGen.Add(1)
+}
+
+// drainP65JITInvalidations performs the CPU-owned cache mutation promised by
+// the bus callback contract. It runs only at dispatcher block boundaries.
+func (cpu *CPU_6502) drainP65JITInvalidations(ctx *JIT6502Context) {
+	for page := range cpu.jitCodeGen {
+		generation := cpu.jitCodeGen[page].Load()
+		if generation == cpu.jitSeenCodeGen[page] {
+			continue
+		}
+		cpu.jitSeenCodeGen[page] = generation
+		lo := uint64(page << 8)
+		hi := lo + 256
+		cpu.jitCache.UnpatchChainsInRange(lo, hi)
+		cpu.jitCache.InvalidateRange(lo, hi)
+		cpu.codePageBitmap[page] = 0
+		cpu.jitStats.invalidations.Add(1)
+		ctx.RTSCache0PC, ctx.RTSCache0Addr = 0, 0
+		ctx.RTSCache1PC, ctx.RTSCache1Addr = 0, 0
+	}
+}
+
+func p65BlockSourceMatches(mem []byte, pc uint16, block *JITBlock) bool {
+	if block == nil || len(block.p65Source) == 0 || uint64(pc) != block.startPC {
+		return false
+	}
+	for i, value := range block.p65Source {
+		if mem[uint16(uint32(pc)+uint32(i))] != value {
+			return false
+		}
+	}
+	return true
 }
 
 // interpret6502One executes one 6502 instruction at cpu.PC using the interpreter.
@@ -115,15 +172,6 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 	var diagCacheHits uint64
 	var diagCacheMisses uint64
 	var diagFallbackInstr uint64
-	p65Stats := p65JITStatsEnabled()
-	p65StatsBase := p65JITStatsSnapshot{}
-	if p65Stats {
-		p65StatsBase = p65JITStatsLoad()
-		defer func() {
-			p65JITStatsLoad().Sub(p65StatsBase).Print()
-		}()
-	}
-
 	interpretFallback := func(reason DeoptReason) {
 		var interpT0 time.Time
 		if perfAcctOn {
@@ -144,6 +192,7 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		if cpu.debugHandleBreakIn(uint64(cpu.PC)) {
 			break
 		}
+		cpu.drainP65JITInvalidations(ctx)
 		// ── Per-block checks (every block boundary) ──
 
 		// Pause at instruction boundary if Reset() requests it
@@ -179,23 +228,50 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			cpu.running.Store(false)
 			break
 		}
-		if adapter, ok := cpu.memory.(*Bus6502Adapter); ok {
-			if matched, retired := cpu.tryFast6502MMIOPollLoop(adapter); matched {
-				if perfEnabled {
-					cpu.InstructionCount += uint64(retired)
+		// BRK is native only when no fault observer is attached. The observer
+		// must see the original opcode PC before BRK changes architectural
+		// state, which is exactly the interpreter's observation point.
+		if mem[pc] == 0x00 && cpu.debugFaults != nil {
+			interpretFallback(DeoptUnsupported)
+			diagFallbackInstr++
+			if !cpu.running.Load() {
+				break
+			}
+			if perfEnabled {
+				cpu.InstructionCount++
+			}
+			if cpu.jitTestRetire(1) {
+				break
+			}
+			continue
+		}
+		// The MMIO poll accelerator retires a whole recognised loop at once.
+		// Deterministic parity tests request an exact guest-instruction boundary,
+		// so execute the normal one-instruction native/bail path in that mode.
+		if cpu.jitTestStopAfter == 0 {
+			if adapter, ok := cpu.memory.(*Bus6502Adapter); ok {
+				if matched, retired := cpu.tryFast6502MMIOPollLoop(adapter); matched {
+					if perfEnabled {
+						cpu.InstructionCount += uint64(retired)
+					}
+					if perfAcctOn {
+						cpu.perfAcct.AddInstrs(uint64(retired))
+					}
+					continue
 				}
-				if perfAcctOn {
-					cpu.perfAcct.AddInstrs(uint64(retired))
-				}
-				continue
 			}
 		}
 
 		// Try cached block
 		block := cpu.jitCache.Get(uint64(pc))
+		if block != nil && !p65BlockSourceMatches(mem, pc, block) {
+			cpu.jitCache.UnpatchChainsInRange(block.startPC, block.endPC)
+			cpu.jitCache.InvalidateRange(block.startPC, block.endPC)
+			block = nil
+		}
 		if block == nil {
 			// Scan and potentially compile a new block
-			instrs := jit6502ScanBlock(mem, pc, memSize)
+			instrs := jit6502ScanBlockLimit(mem, pc, memSize, cpu.jitTestBlockLimit)
 			if jit6502NeedsFallback(instrs) {
 				// BRK, RTI, KIL, undocumented — use interpreter for single instruction
 				interpretFallback(DeoptUnsupported)
@@ -207,6 +283,9 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 				// matching the interpreter's accounting (cpu_six5go2.go:1622)
 				if perfEnabled {
 					cpu.InstructionCount++
+				}
+				if cpu.jitTestRetire(1) {
+					break
 				}
 				continue
 			}
@@ -239,9 +318,7 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 				}
 			}
 			cpu.jitCache.Put(block)
-			if p65Stats {
-				globalP65JITStats.tier1Blocks.Add(1)
-			}
+			cpu.jitStats.tier1Blocks.Add(1)
 
 			// Bidirectional chain patching:
 			// 1. Existing blocks exiting to this block → patch their slots
@@ -252,7 +329,7 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			for i := range block.chainSlots {
 				slot := &block.chainSlots[i]
 				if target := cpu.jitCache.Get(slot.targetPC); target != nil && target.chainEntry != 0 {
-					PatchRel32At(slot.patchAddr, target.chainEntry)
+					patchChainSlot(*slot, target.chainEntry)
 				}
 			}
 
@@ -276,7 +353,12 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		// callNative round trip, so allow longer patched chains while still
 		// returning well below jitBudget for interrupt/reset polling.
 		ctx.ChainBudget = 1024
+		if cpu.jitTestStopAfter != 0 {
+			ctx.ChainBudget = 1
+		}
 		ctx.ChainCount = 0
+		ctx.DispatchGeneration = cpu.jitDispatchGen.Load()
+		ctx.BackendMarker = 0
 
 		// Execute the native code block
 		var jitT0 time.Time
@@ -284,6 +366,7 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			jitT0 = time.Now()
 		}
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
+		cpu.jitStats.nativeEntries.Add(1)
 		if perfAcctOn {
 			cpu.perfAcct.AddJitSince(jitT0)
 		}
@@ -296,18 +379,24 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		if executed == 0 && ctx.ChainCount > 0 {
 			executed = ctx.ChainCount
 		}
-		if p65Stats && ctx.ChainCount > 0 {
-			globalP65JITStats.chainExits.Add(1)
+		if ctx.ChainCount > 0 {
+			cpu.jitStats.chainExits.Add(1)
 		}
 		ctx.RetCount = 0
 
 		// ── Handle NeedInval (self-mod: page-granular invalidation) ──
 		if ctx.NeedInval != 0 {
 			recordBlockDeopt(&cpu.deoptStats, block, DeoptSMC)
-			if p65Stats {
-				globalP65JITStats.invalidations.Add(1)
-			}
+			cpu.jitStats.invalidations.Add(1)
 			page := ctx.InvalPage
+			// Native stores bypass MachineBus.Write8. Once a store has reached
+			// the SMC exit, publish the affected physical page to every other
+			// 6502 cache as well as invalidating this CPU's local block map.
+			if adapter, ok := cpu.memory.(*Bus6502Adapter); ok {
+				if bus, ok := adapter.bus.(*MachineBus); ok {
+					bus.notifyP65JITRAMWrite(uint64(page)<<8, 256)
+				}
+			}
 			lo := page << 8
 			hi := lo + 256
 			// Unpatch chain slots targeting invalidated range, then remove blocks
@@ -328,9 +417,7 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			ctx.NeedBail = 0
 			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
 			block.ioBails++
-			if p65Stats {
-				globalP65JITStats.bails.Add(1)
-			}
+			cpu.jitStats.bails.Add(1)
 			var interpT0 time.Time
 			if perfAcctOn {
 				interpT0 = time.Now()
@@ -368,6 +455,9 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 					cpu.lastPerfReport = now
 				}
 			}
+		}
+		if cpu.jitTestRetire(executed) {
+			break
 		}
 	}
 }
