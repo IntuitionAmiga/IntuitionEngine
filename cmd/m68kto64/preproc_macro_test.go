@@ -69,7 +69,7 @@ func TestPreproc_MacroUniqLabel(t *testing.T) {
 	// Collect label-definition lines (`.loop_N:`) — there should be two
 	// distinct counter values, one per invocation.
 	var labelLines []string
-	for _, ln := range strings.Split(out, "\n") {
+	for ln := range strings.SplitSeq(out, "\n") {
 		if strings.HasPrefix(ln, ".loop_") && strings.HasSuffix(ln, ":") {
 			labelLines = append(labelLines, ln)
 		}

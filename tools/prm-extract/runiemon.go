@@ -169,7 +169,7 @@ func luaStepTable(steps []IemonStep) string {
 // luaQuote returns a Lua long-bracket string so embedded quotes/newlines
 // don't need escaping. We pick a bracket level not present in the input.
 func luaQuote(s string) string {
-	for lvl := 0; lvl < 20; lvl++ {
+	for lvl := range 20 {
 		eq := strings.Repeat("=", lvl)
 		end := "]" + eq + "]"
 		if !strings.Contains(s, end) {
@@ -324,15 +324,15 @@ func parseIemonChildOutput(body string, steps []IemonStep) ([]ReportStep, error)
 	var segs []seg
 	var cur *seg
 	for _, ln := range lines {
-		if strings.HasPrefix(ln, "STEP ") {
-			rest := strings.TrimPrefix(ln, "STEP ")
-			sp := strings.IndexByte(rest, ' ')
-			if sp < 0 {
+		if after, ok := strings.CutPrefix(ln, "STEP "); ok {
+			rest := after
+			before, after, ok := strings.Cut(rest, " ")
+			if !ok {
 				continue
 			}
 			idx := 0
-			fmt.Sscanf(rest[:sp], "%d", &idx)
-			marker := rest[sp+1:]
+			fmt.Sscanf(before, "%d", &idx)
+			marker := after
 			s := seg{idx: idx}
 			switch {
 			case strings.HasPrefix(marker, "CMD:"):

@@ -168,10 +168,7 @@ func (c *Converter) emitDirective(e *Emit, l Line) bool {
 		// to keep output lines a sane length.
 		const chunk = 64
 		for off := int64(0); off < n; off += chunk {
-			end := off + chunk
-			if end > n {
-				end = n
-			}
+			end := min(off+chunk, n)
 			vals := make([]string, end-off)
 			for i := range vals {
 				vals[i] = vExpr

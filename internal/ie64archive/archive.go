@@ -176,7 +176,7 @@ func Parse(data []byte) (*Archive, error) {
 				if 4+count*4 <= len(payload) {
 					names := payload[4+count*4:]
 					pos := 0
-					for i := 0; i < count; i++ {
+					for i := range count {
 						end := bytes.IndexByte(names[pos:], 0)
 						if end < 0 {
 							break
@@ -196,8 +196,8 @@ func Parse(data []byte) (*Archive, error) {
 		}
 		name := strings.TrimSuffix(rawName, "/")
 		body := payload
-		if strings.HasPrefix(rawName, "#1/") {
-			n, e := strconv.Atoi(strings.TrimPrefix(rawName, "#1/"))
+		if after, ok := strings.CutPrefix(rawName, "#1/"); ok {
+			n, e := strconv.Atoi(after)
 			if e != nil || n < 0 || n > len(payload) {
 				return nil, fmt.Errorf("invalid BSD archive name")
 			}

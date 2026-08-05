@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -68,8 +69,8 @@ func (p *preprocCtx) topActive() bool {
 
 func (p *preprocCtx) emit(s string) { p.out = append(p.out, s) }
 
-func (p *preprocCtx) errAt(source string, lineNum int, format string, args ...interface{}) {
-	fmt.Fprintf(p.stderrW, "%s:%d: "+format+"\n", append([]interface{}{source, lineNum}, args...)...)
+func (p *preprocCtx) errAt(source string, lineNum int, format string, args ...any) {
+	fmt.Fprintf(p.stderrW, "%s:%d: "+format+"\n", append([]any{source, lineNum}, args...)...)
 	p.errors++
 }
 
@@ -100,12 +101,10 @@ func (p *preprocCtx) resolveInclude(name, includerPath string) (string, error) {
 }
 
 func (p *preprocCtx) processFile(path string) {
-	for _, on := range p.fileStack {
-		if on == path {
-			fmt.Fprintf(p.stderrW, "include cycle: %s already on stack (%v)\n", path, p.fileStack)
-			p.errors++
-			return
-		}
+	if slices.Contains(p.fileStack, path) {
+		fmt.Fprintf(p.stderrW, "include cycle: %s already on stack (%v)\n", path, p.fileStack)
+		p.errors++
+		return
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -268,7 +267,7 @@ func (p *preprocCtx) processLines(lines []string, source string) {
 					p.errAt(source, lineNum, "unterminated rept")
 					return
 				}
-				for j := int64(0); j < count; j++ {
+				for range count {
 					p.uniqCounter++
 					p.atStack = append(p.atStack, p.uniqCounter)
 					p.processLines(body, source+":<rept>")

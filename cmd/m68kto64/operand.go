@@ -9,23 +9,23 @@ import (
 type AddrMode int
 
 const (
-	AMUnknown    AddrMode = iota
-	AMDataReg             // Dn
-	AMAddrReg             // An
-	AMIndirect            // (An)
-	AMPostInc             // (An)+
-	AMPreDec              // -(An)
-	AMDispAn              // (d16,An) or d16(An)
-	AMIndexAn             // (d8,An,Xn.size*scale) or d8(An,Xn.size*scale)
-	AMAbsW                // (xxx).w
-	AMAbsL                // (xxx).l or bare label/symbol
-	AMDispPC              // (d16,PC) or d16(PC)
-	AMIndexPC             // (d8,PC,Xn.size*scale) or d8(PC,Xn.size*scale)
-	AMImmediate           // #imm
-	AMRegList             // d0-d3/a0/a4-a6 (for MOVEM)
-	AMCCR                 // ccr
-	AMSR                  // sr
-	AMUSP                 // usp
+	AMUnknown   AddrMode = iota
+	AMDataReg            // Dn
+	AMAddrReg            // An
+	AMIndirect           // (An)
+	AMPostInc            // (An)+
+	AMPreDec             // -(An)
+	AMDispAn             // (d16,An) or d16(An)
+	AMIndexAn            // (d8,An,Xn.size*scale) or d8(An,Xn.size*scale)
+	AMAbsW               // (xxx).w
+	AMAbsL               // (xxx).l or bare label/symbol
+	AMDispPC             // (d16,PC) or d16(PC)
+	AMIndexPC            // (d8,PC,Xn.size*scale) or d8(PC,Xn.size*scale)
+	AMImmediate          // #imm
+	AMRegList            // d0-d3/a0/a4-a6 (for MOVEM)
+	AMCCR                // ccr
+	AMSR                 // sr
+	AMUSP                // usp
 )
 
 func (a AddrMode) String() string {
@@ -418,10 +418,11 @@ func parenWraps(s string) bool {
 // balanced (..) group (callers will already have handled that case).
 //
 // Examples:
-//   "8(a0)"                              -> 1
-//   "(SMALL_YPOS*WIDTH)+SMALL_XPOS(a2)"  -> index of "(a2"
-//   "(8,a0)"                             -> 0
-//   "no_parens"                          -> -1
+//
+//	"8(a0)"                              -> 1
+//	"(SMALL_YPOS*WIDTH)+SMALL_XPOS(a2)"  -> index of "(a2"
+//	"(8,a0)"                             -> 0
+//	"no_parens"                          -> -1
 func findTrailingParenStart(s string) int {
 	if len(s) == 0 || s[len(s)-1] != ')' {
 		return -1
@@ -451,7 +452,7 @@ func looksLikeRegList(s string) bool {
 	for _, sep := range []string{"/", "-"} {
 		s = strings.ReplaceAll(s, sep, " ")
 	}
-	for _, tok := range strings.Fields(s) {
+	for tok := range strings.FieldsSeq(s) {
 		if !IsRegisterName(tok) {
 			return false
 		}

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -412,7 +413,7 @@ func getActiveConnectionStateReason(obj dbus.BusObject) (uint32, error) {
 		if len(reason) >= 2 {
 			return reason[1], nil
 		}
-	case []interface{}:
+	case []any:
 		if len(reason) >= 2 {
 			return uint32FromDBusValue(reason[1])
 		}
@@ -779,12 +780,7 @@ func validSSID(ssid string) bool {
 	if ssid == "" || len([]byte(ssid)) > 32 {
 		return false
 	}
-	for _, b := range []byte(ssid) {
-		if b == 0 {
-			return false
-		}
-	}
-	return true
+	return !slices.Contains([]byte(ssid), 0)
 }
 
 func readPassword(stdin io.Reader) ([]byte, error) {
@@ -796,10 +792,8 @@ func readPassword(stdin io.Reader) ([]byte, error) {
 	if len(password) > maxWiFiPasswordBytes {
 		return nil, fmt.Errorf("too long")
 	}
-	for _, b := range password {
-		if b == 0 {
-			return nil, fmt.Errorf("contains NUL")
-		}
+	if slices.Contains(password, 0) {
+		return nil, fmt.Errorf("contains NUL")
 	}
 	return password, nil
 }

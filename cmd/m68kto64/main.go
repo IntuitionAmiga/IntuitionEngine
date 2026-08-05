@@ -139,8 +139,8 @@ func (d defineFlag) Set(v string) error {
 	if d.defs == nil {
 		return fmt.Errorf("defineFlag uninitialized")
 	}
-	eq := strings.IndexByte(v, '=')
-	if eq < 0 {
+	before, after, ok := strings.Cut(v, "=")
+	if !ok {
 		name := v
 		if name == "" {
 			return fmt.Errorf("empty -D name")
@@ -151,8 +151,8 @@ func (d defineFlag) Set(v string) error {
 		d.defs[name] = 1
 		return nil
 	}
-	name := v[:eq]
-	val := v[eq+1:]
+	name := before
+	val := after
 	if strings.ContainsAny(name, " \t") || strings.ContainsAny(val, " \t") {
 		return fmt.Errorf("-D %q: whitespace around '=' not allowed", v)
 	}

@@ -40,8 +40,8 @@ type Line struct {
 func SplitComment(line string) (code, comment string) {
 	// Whole-line "*" comment.
 	trimmedFront := strings.TrimLeft(line, " \t")
-	if strings.HasPrefix(trimmedFront, "*") {
-		return "", strings.TrimLeft(strings.TrimPrefix(trimmedFront, "*"), " \t")
+	if after, ok := strings.CutPrefix(trimmedFront, "*"); ok {
+		return "", strings.TrimLeft(after, " \t")
 	}
 	inQuote := false
 	quoteChar := byte(0)
@@ -170,7 +170,7 @@ var directiveSet = map[string]struct{}{
 	"ifb": {}, "ifnb": {},
 	"macro": {}, "endm": {}, "mexit": {},
 	"rept": {}, "endr": {},
-	"end": {},
+	"end":    {},
 	"output": {}, "opt": {},
 	"rs": {}, "rsreset": {},
 }

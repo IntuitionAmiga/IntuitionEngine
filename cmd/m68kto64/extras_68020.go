@@ -347,12 +347,12 @@ func (c *Converter) emitRetm(e *Emit, l Line) error {
 
 // splitPair splits "Dh:Dl" (or "DhDl") into (high, low) IE64 register names.
 func splitPair(s string) (hi, lo string, err error) {
-	i := strings.Index(s, ":")
-	if i < 0 {
+	before, after, ok := strings.Cut(s, ":")
+	if !ok {
 		return "", "", fmt.Errorf("expected Dh:Dl, got %q", s)
 	}
-	hiTok := strings.TrimSpace(s[:i])
-	loTok := strings.TrimSpace(s[i+1:])
+	hiTok := strings.TrimSpace(before)
+	loTok := strings.TrimSpace(after)
 	rh, ok1 := LookupRegister(hiTok)
 	rl, ok2 := LookupRegister(loTok)
 	if !ok1 || !ok2 {
@@ -467,12 +467,12 @@ func (c *Converter) emitBfextu(e *Emit, l Line, signed bool) error {
 			strings.TrimSpace(srcText[:bopen]))
 	}
 	field := strings.TrimSpace(srcText[bopen+1 : bclose])
-	colon := strings.Index(field, ":")
-	if colon < 0 {
+	before, after, ok0 := strings.Cut(field, ":")
+	if !ok0 {
 		return fmt.Errorf("%s: expected #off:#wid in {}", l.Mnemonic)
 	}
-	off := strings.TrimPrefix(strings.TrimSpace(field[:colon]), "#")
-	wid := strings.TrimPrefix(strings.TrimSpace(field[colon+1:]), "#")
+	off := strings.TrimPrefix(strings.TrimSpace(before), "#")
+	wid := strings.TrimPrefix(strings.TrimSpace(after), "#")
 	rd := dst.Reg.IE64
 	rs := srcReg.IE64
 	// shift = 32 - offset - width
@@ -544,7 +544,7 @@ func (c *Converter) emitMovep(e *Emit, l Line) error {
 		// MSB-first byte stride. Number of bytes = size.
 		// For .w: shift 8, store low byte then shift 0.
 		// For .l: shift 24, 16, 8, 0.
-		for i := 0; i < size; i++ {
+		for i := range size {
 			shift := 8 * (size - 1 - i)
 			if shift != 0 {
 				e.Lf("lsr.l %s, %s, #%d", ScrV1, dn.Reg.IE64, shift)
@@ -570,7 +570,7 @@ func (c *Converter) emitMovep(e *Emit, l Line) error {
 		} else {
 			// .l — full 32-bit overwrite.
 			e.Lf("move.l %s, #0", dn.Reg.IE64)
-			for i := 0; i < 4; i++ {
+			for i := range 4 {
 				shift := 8 * (3 - i)
 				e.Lf("load.b %s, %d(%s)", ScrV1, i*2, ScrEA)
 				e.Lf("and.l %s, %s, #$FF", ScrV1, ScrV1)

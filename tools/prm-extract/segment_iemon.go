@@ -85,7 +85,7 @@ func segmentIemon(f RawFence, cpu string) ([]Case, error) {
 
 	allowBare := f.Directives.CPU != ""
 
-	for _, raw := range strings.Split(f.Body, "\n") {
+	for raw := range strings.SplitSeq(f.Body, "\n") {
 		line := raw
 		// Bracketed form: `(cpu)> cmd`
 		if m := promptRe.FindStringSubmatch(line); m != nil {

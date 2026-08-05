@@ -129,7 +129,6 @@ func TestMain_AcceptsAllFlags(t *testing.T) {
 		{"-I", "/tmp/a", "-D", "X=1", "-strip-cond", "-no-default-seeds"},
 	}
 	for _, args := range cases {
-		args := args
 		t.Run(strings.Join(args, "_"), func(t *testing.T) {
 			full := append(append([]string{}, args...), "-o", out, in)
 			var stderr bytes.Buffer
@@ -149,13 +148,12 @@ func TestMain_RejectsBadDefine(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := []string{
-		"FOO = 5",  // whitespace around =
-		"=5",       // empty name
-		"FOO=abc",  // non-numeric value
-		"FOO=",     // empty value
+		"FOO = 5", // whitespace around =
+		"=5",      // empty name
+		"FOO=abc", // non-numeric value
+		"FOO=",    // empty value
 	}
 	for _, def := range cases {
-		def := def
 		t.Run(def, func(t *testing.T) {
 			var stderr bytes.Buffer
 			rc := run([]string{"-D", def, "-o", filepath.Join(tmp, "out.s"), in}, &stderr)

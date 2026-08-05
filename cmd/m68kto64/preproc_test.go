@@ -21,14 +21,12 @@ func TestPreproc_ByteIdentityPassthrough(t *testing.T) {
 		"testdata/golden_pre_extension/tier3_conditionals",
 	}
 	for _, dir := range tiers {
-		dir := dir
 		t.Run(filepath.Base(dir), func(t *testing.T) {
 			files, err := filepath.Glob(filepath.Join(dir, "*.s"))
 			if err != nil || len(files) == 0 {
 				t.Fatalf("no fixtures in %s: %v", dir, err)
 			}
 			for _, f := range files {
-				f := f
 				t.Run(filepath.Base(f), func(t *testing.T) {
 					data, err := os.ReadFile(f)
 					if err != nil {
@@ -153,7 +151,6 @@ func TestPreproc_SetMutable(t *testing.T) {
 		{"equ/equ", "FOO equ 1\nFOO equ 2\n", true, 1},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			var stderr bytes.Buffer
 			r, errs := Preprocess([]byte(c.src), "test.s", DefaultPreprocOpts(), &stderr)
@@ -218,7 +215,6 @@ func TestPreproc_DefinePrecedence(t *testing.T) {
 		{"D_then_equ_errors", "FOO equ 2\n", map[string]int64{"FOO": 1}, true, 1},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			opts := DefaultPreprocOpts()
 			opts.Defines = c.defs

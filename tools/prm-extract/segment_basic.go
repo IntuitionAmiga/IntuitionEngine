@@ -27,6 +27,7 @@ package main
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -146,7 +147,7 @@ func segmentBasic(f RawFence) ([]Case, error) {
 func splitGroups(body string) [][]string {
 	var groups [][]string
 	var cur []string
-	for _, ln := range strings.Split(body, "\n") {
+	for ln := range strings.SplitSeq(body, "\n") {
 		if strings.TrimSpace(ln) == "" {
 			if len(cur) > 0 {
 				groups = append(groups, cur)
@@ -171,11 +172,8 @@ func inferBasicMode(groups [][]string) string {
 	}
 	hasNumbered := false
 	for _, g := range groups {
-		for _, ln := range g {
-			if numberedLineRe.MatchString(ln) {
-				hasNumbered = true
-				break
-			}
+		if slices.ContainsFunc(g, numberedLineRe.MatchString) {
+			hasNumbered = true
 		}
 		if hasNumbered {
 			break

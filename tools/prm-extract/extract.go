@@ -97,8 +97,8 @@ func extractFile(path, repoRoot string) ([]RawFence, error) {
 
 		if !inFence {
 			trim := strings.TrimRight(raw, " \t")
-			if strings.HasPrefix(trim, "```") {
-				info := strings.TrimSpace(strings.TrimPrefix(trim, "```"))
+			if after, ok := strings.CutPrefix(trim, "```"); ok {
+				info := strings.TrimSpace(after)
 				dirs := parseDirectiveBlock(prevCommentBlock)
 				inFence = true
 				fenceStart = lineNum
@@ -216,7 +216,7 @@ func classifyFence(f RawFence) (kind, cpu string) {
 		return
 	}
 	if kind == "" {
-		for _, ln := range strings.Split(f.Body, "\n") {
+		for ln := range strings.SplitSeq(f.Body, "\n") {
 			t := strings.TrimSpace(ln)
 			if t == "" {
 				continue
@@ -234,7 +234,7 @@ func classifyFence(f RawFence) (kind, cpu string) {
 			cpu = f.Directives.CPU
 			return
 		}
-		for _, ln := range strings.Split(f.Body, "\n") {
+		for ln := range strings.SplitSeq(f.Body, "\n") {
 			t := strings.TrimSpace(ln)
 			if t == "" {
 				continue

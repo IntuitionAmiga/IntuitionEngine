@@ -232,16 +232,16 @@ func runIESCase(c Case, build, root, binary string) ReportCase {
 }
 
 func sliceBetween(s, start, end string) (string, bool) {
-	i := strings.Index(s, start)
-	if i < 0 {
+	_, after, ok := strings.Cut(s, start)
+	if !ok {
 		return "", false
 	}
-	rest := s[i+len(start):]
-	j := strings.Index(rest, end)
-	if j < 0 {
+	rest := after
+	before, _, ok := strings.Cut(rest, end)
+	if !ok {
 		return "", false
 	}
-	out := rest[:j]
+	out := before
 	out = strings.TrimPrefix(out, "\n")
 	out = strings.TrimSuffix(out, "\n")
 	return out, true

@@ -1123,14 +1123,14 @@ func expandRegList(list string) ([]string, error) {
 	canonical := []string{"d0", "d1", "d2", "d3", "d4", "d5", "d6", "d7",
 		"a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"}
 	include := map[string]bool{}
-	for _, chunk := range strings.Split(list, "/") {
+	for chunk := range strings.SplitSeq(list, "/") {
 		chunk = strings.TrimSpace(chunk)
 		if chunk == "" {
 			continue
 		}
-		if i := strings.Index(chunk, "-"); i >= 0 {
-			lo := strings.TrimSpace(chunk[:i])
-			hi := strings.TrimSpace(chunk[i+1:])
+		if before, after, ok := strings.Cut(chunk, "-"); ok {
+			lo := strings.TrimSpace(before)
+			hi := strings.TrimSpace(after)
 			loIdx := indexOf(canonical, strings.ToLower(lo))
 			hiIdx := indexOf(canonical, strings.ToLower(hi))
 			if loIdx < 0 || hiIdx < 0 || loIdx > hiIdx {

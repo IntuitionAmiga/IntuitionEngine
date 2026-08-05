@@ -95,35 +95,35 @@ func TestStatusDoc_DocMarkersMatch(t *testing.T) {
 
 	want := map[string]string{
 		// mnemonic → expected status marker present in the §8 row covering it
-		"ADDX":   "✅",
-		"SUBX":   "✅",
-		"NEGX":   "✅",
-		"ROXL":   "✅",
-		"ROXR":   "✅",
-		"CHK2":   "✅",
-		"TRAPcc": "✅",
-		"CAS2":    "⚠",
-		"MOVES":   "⚠",
-		"CALLM":   "⚠",
-		"RTM":     "⚠",
-		"RETM":    "⚠",
-		"BSET":    "✅",
-		"BCLR":    "✅",
-		"BCHG":    "✅",
-		"TAS":     "✅",
-		"EXG":     "✅",
-		"CMPM":    "✅",
-		"ILLEGAL": "✅",
-		"RTE":     "✅",
-		"STOP":    "✅",
-		"RESET":   "✅",
-		"FSAVE":   "✅",
+		"ADDX":     "✅",
+		"SUBX":     "✅",
+		"NEGX":     "✅",
+		"ROXL":     "✅",
+		"ROXR":     "✅",
+		"CHK2":     "✅",
+		"TRAPcc":   "✅",
+		"CAS2":     "⚠",
+		"MOVES":    "⚠",
+		"CALLM":    "⚠",
+		"RTM":      "⚠",
+		"RETM":     "⚠",
+		"BSET":     "✅",
+		"BCLR":     "✅",
+		"BCHG":     "✅",
+		"TAS":      "✅",
+		"EXG":      "✅",
+		"CMPM":     "✅",
+		"ILLEGAL":  "✅",
+		"RTE":      "✅",
+		"STOP":     "✅",
+		"RESET":    "✅",
+		"FSAVE":    "✅",
 		"FRESTORE": "✅",
 	}
 	for mn, marker := range want {
 		// Find at least one line containing the mnemonic AND the marker.
 		ok := false
-		for _, ln := range strings.Split(doc, "\n") {
+		for ln := range strings.SplitSeq(doc, "\n") {
 			if strings.Contains(ln, mn) && strings.Contains(ln, marker) {
 				ok = true
 				break

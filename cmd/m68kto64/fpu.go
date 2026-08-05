@@ -776,7 +776,7 @@ func (c *Converter) emitFSave(e *Emit, l Line) error {
 	}
 	e.L("; m68kto64: FSAVE → IE64-shaped 80-byte state frame (see §11)")
 	// FP0..FP7 at offsets 0..56.
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		e.Lf("dstore.d %s, %d(%s)", FPGuestRegToHost(i), i*8, ScrEA)
 	}
 	// FPCR at +64.
@@ -832,7 +832,7 @@ func (c *Converter) emitFRestore(e *Emit, l Line) error {
 	done := e.NewLabel("frestore_done")
 	e.Lf("bne %s, %s, %s", ScrV1, ScrV2, nullPath)
 	// Magic match — restore FP0..FP7 from +0..+56.
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		e.Lf("dload.d %s, %d(%s)", FPGuestRegToHost(i), i*8, ScrEA)
 	}
 	// FPCR at +64.
@@ -848,12 +848,12 @@ func (c *Converter) emitFRestore(e *Emit, l Line) error {
 	e.Label(nullPath)
 	e.L("; m68kto64: null/foreign frame → clear FPU (matches m68881 null-frame cold init)")
 	e.Lf("move.l %s, #0", ScrV1)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		// dcvtif fp, Dn := 0 produces +0.0 in the target FP reg.
 		e.Lf("dcvtif %s, %s", FPGuestRegToHost(i), ScrV1)
 	}
-	e.Lf("fmovcc %s", ScrV1)         // FPCR := 0
-	e.Lf("fmovsc %s", ScrV1)         // FPSR sticky bits := 0
+	e.Lf("fmovcc %s", ScrV1)          // FPCR := 0
+	e.Lf("fmovsc %s", ScrV1)          // FPSR sticky bits := 0
 	e.Lf("move.l %s, #0", ShadowFPCC) // ShadowFPCC := 0
 	e.Label(done)
 	if postIncReg != "" {

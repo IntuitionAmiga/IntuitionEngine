@@ -29,7 +29,6 @@ func TestGolden_RoundTrip(t *testing.T) {
 	}
 
 	for _, src := range srcs {
-		src := src
 		name := strings.TrimSuffix(filepath.Base(src), ".s")
 		t.Run(name, func(t *testing.T) {
 			data, err := os.ReadFile(src)

@@ -339,7 +339,7 @@ func (c *Converter) emitAddxSubx(e *Emit, l Line, isAdd bool) error {
 	//   SUB: V = (d XOR s) AND (d XOR r), sign bit.
 	// d = ShadowSnap (already width-masked), s = ShadowTmp1, r = ScrAux masked.
 	// Use ShadowTmp2 to hold (d XOR r), ShadowV as workspace.
-	e.Lf("and.l %s, %s, #%s", ShadowTmp2, ScrAux, mask) // masked result
+	e.Lf("and.l %s, %s, #%s", ShadowTmp2, ScrAux, mask)          // masked result
 	e.Lf("eor.q %s, %s, %s", ShadowTmp2, ShadowTmp2, ShadowSnap) // d XOR r
 	e.Lf("eor.q %s, %s, %s", ShadowV, ShadowSnap, ShadowTmp1)    // d XOR s
 	if isAdd {
@@ -652,7 +652,8 @@ func (c *Converter) emitUnpk(e *Emit, l Line) error {
 // =====================================================================
 //
 // CAS Dc,Du,<ea>:  if (ea) == Dc:  (ea) := Du  (Z=1)
-//                  else:           Dc := (ea)  (Z=0)
+//
+//	else:           Dc := (ea)  (Z=0)
 //
 // IE64 has no atomic primitive yet; fallback as plain load-cmp-store-or-update.
 func (c *Converter) emitCas(e *Emit, l Line) error {
@@ -722,11 +723,11 @@ func (c *Converter) emitCas(e *Emit, l Line) error {
 
 // splitColonPair splits "lhs:rhs" into two trimmed parts.
 func splitColonPair(s string) (lhs, rhs string, err error) {
-	i := strings.Index(s, ":")
-	if i < 0 {
+	before, after, ok := strings.Cut(s, ":")
+	if !ok {
 		return "", "", fmt.Errorf("expected Lhs:Rhs, got %q", s)
 	}
-	return strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+1:]), nil
+	return strings.TrimSpace(before), strings.TrimSpace(after), nil
 }
 
 func (c *Converter) emitCas2(e *Emit, l Line) error {
@@ -854,12 +855,12 @@ func parseBitfieldOperand(s string) (bitfieldOperand, error) {
 	}
 	head := strings.TrimSpace(s[:bopen])
 	field := strings.TrimSpace(s[bopen+1 : bclose])
-	colon := strings.Index(field, ":")
-	if colon < 0 {
+	before, after, ok := strings.Cut(field, ":")
+	if !ok {
 		return bitfieldOperand{}, fmt.Errorf("bit-field expects {#off:#wid}")
 	}
-	off := strings.TrimPrefix(strings.TrimSpace(field[:colon]), "#")
-	wid := strings.TrimPrefix(strings.TrimSpace(field[colon+1:]), "#")
+	off := strings.TrimPrefix(strings.TrimSpace(before), "#")
+	wid := strings.TrimPrefix(strings.TrimSpace(after), "#")
 	out := bitfieldOperand{off: off, wid: wid}
 	if r, ok := LookupRegister(head); ok && r.Class == RegData {
 		out.isReg = true
@@ -1010,12 +1011,12 @@ func (c *Converter) emitBfffo(e *Emit, l Line) error {
 // emitBfShiftMask is the shared shift+mask kernel for BFINS/BFCLR/BFSET/BFCHG
 // with Dn destination.
 //
-//   shift = 32 - off - wid
-//   mask  = ((1 << wid) - 1) << shift
-//   ins  : dst = (dst & ~mask) | ((src & ((1<<wid)-1)) << shift)
-//   clr  : dst = dst & ~mask
-//   set  : dst = dst | mask
-//   chg  : dst = dst ^ mask
+//	shift = 32 - off - wid
+//	mask  = ((1 << wid) - 1) << shift
+//	ins  : dst = (dst & ~mask) | ((src & ((1<<wid)-1)) << shift)
+//	clr  : dst = dst & ~mask
+//	set  : dst = dst | mask
+//	chg  : dst = dst ^ mask
 func (c *Converter) emitBfShiftMask(e *Emit, dstReg, srcReg, off, wid, kind string) {
 	// shift → ScrV1
 	e.Lf("move.l %s, #32", ScrV1)

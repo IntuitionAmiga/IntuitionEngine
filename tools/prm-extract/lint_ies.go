@@ -71,7 +71,7 @@ func segmentIES(f RawFence) ([]Case, error) {
 
 func stripCommentPrefix(block string) string {
 	var out []string
-	for _, ln := range strings.Split(block, "\n") {
+	for ln := range strings.SplitSeq(block, "\n") {
 		t := strings.TrimSpace(ln)
 		if t == "" {
 			continue
@@ -111,7 +111,7 @@ func loadSymbolSet() map[string]struct{} {
 		return cachedSymbols
 	}
 	cachedSymbols = make(map[string]struct{})
-	for _, ln := range strings.Split(embeddedSymbols, "\n") {
+	for ln := range strings.SplitSeq(embeddedSymbols, "\n") {
 		t := strings.TrimSpace(ln)
 		if t == "" || strings.HasPrefix(t, "#") {
 			continue
