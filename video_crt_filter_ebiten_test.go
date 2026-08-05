@@ -59,8 +59,11 @@ func gateCRTFilter() error {
 			return fmt.Errorf("enabled CRT alpha at byte %d = %d, want 255", i, filtered[i])
 		}
 	}
-	if sameBytes(filtered[:3], filtered[4:7]) {
-		return fmt.Errorf("Guest-Advanced phosphor-mask columns are byte-identical: %v %v", filtered[:4], filtered[4:8])
+	centreRow := height / 2
+	left := (centreRow*width + 3) * BYTES_PER_PIXEL
+	right := left + BYTES_PER_PIXEL
+	if sameBytes(filtered[left:left+3], filtered[right:right+3]) {
+		return fmt.Errorf("Guest-Advanced phosphor-mask columns are byte-identical: %v %v", filtered[left:left+4], filtered[right:right+4])
 	}
 	// A one-to-one framebuffer has no vertical space between guest scanlines.
 	// The scaled compositor fixture below is the meaningful Guest-Advanced
@@ -88,8 +91,8 @@ func gateCRTFilter() error {
 	if equalBytes(hardware, frame) {
 		return fmt.Errorf("enabled CRT left hardware compositor output byte-identical")
 	}
-	first := luminance(hardware, width, 0, 0)
-	withinGuestLine := luminance(hardware, width, 0, 2)
+	first := luminance(hardware, width, width/2, 0)
+	withinGuestLine := luminance(hardware, width, width/2, 2)
 	if first == withinGuestLine {
 		return fmt.Errorf("hardware CRT lost native 2x2 scanline phase: rows 0 and 2 are equal")
 	}
@@ -129,6 +132,9 @@ func gateCRTFilter() error {
 	if err := gateCRTHardwareTogglePreservesSparse320x200Layer(); err != nil {
 		return err
 	}
+	if err := gateCRTIEMonOverlayUsesFinalCurvedPresentation(); err != nil {
+		return err
+	}
 
 	// A bad Kage program latches a session fallback. The first Draw after that
 	// failure must be unfiltered rather than showing a blank frame or retrying.
@@ -153,6 +159,36 @@ func gateCRTFilter() error {
 	fallback.Draw(screen)
 	if got := readCRTGPUImage(screen, width, height); !equalBytes(got, frame) {
 		return fmt.Errorf("first fallback frame was not unfiltered")
+	}
+	return nil
+}
+
+// gateCRTIEMonOverlayUsesFinalCurvedPresentation exercises the real IEMon
+// overlay route. The monitor is a host-visible screen mode as well, and must
+// use the same final CRT face rather than bypassing it or inheriting a guest
+// mode's temporal targets.
+func gateCRTIEMonOverlayUsesFinalCurvedPresentation() error {
+	const width, height = 1920, 1080
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("IEMon output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("IEMon display: %w", err)
+	}
+	monitor := NewMachineMonitor(NewMachineBus())
+	eo.AttachMonitor(monitor)
+	monitor.Activate()
+	screen := ebiten.NewImage(width, height)
+	eo.Draw(screen)
+	if got := eo.crtFilter.guest.activeModeKey; got != "monitor-overlay" {
+		return fmt.Errorf("IEMon presentation mode = %q, want monitor-overlay", got)
+	}
+	pixels := readCRTGPUImage(screen, width, height)
+	if got := luminance(pixels, width, 0, 0); got != 0 {
+		return fmt.Errorf("IEMon curved CRT corner luminance = %d, want 0", got)
 	}
 	return nil
 }
@@ -381,6 +417,18 @@ func gateCRTGuestAdvancedNativeScreenModes() error {
 		if pixels[i+3] != 0xFF {
 			return fmt.Errorf("Guest-Advanced %s alpha = %d, want 255", mode.name, pixels[i+3])
 		}
+		// A solid native source makes the convex CRT face observable at every
+		// real guest mode: its centre stays lit while a physical screen corner
+		// lies outside the warped sampling coordinate and becomes black. This
+		// catches a regression that applies the warp only to one source mode.
+		if mode.destX == 0 && mode.destY == 0 && mode.destWidth == presentationWidth && mode.destHeight == presentationHeight {
+			if got := luminance(pixels, presentationWidth, 0, 0); got != 0 {
+				return fmt.Errorf("Guest-Advanced %s lacks convex corner blanking: luminance=%d", mode.name, got)
+			}
+			if got := luminance(pixels, presentationWidth, presentationWidth/2, presentationHeight/2); got == 0 {
+				return fmt.Errorf("Guest-Advanced %s convex warp darkened the CRT centre", mode.name)
+			}
+		}
 		if sameBytes(pixels[i:i+3], pixels[i+BYTES_PER_PIXEL:i+BYTES_PER_PIXEL+3]) {
 			return fmt.Errorf("Guest-Advanced %s lost the output-space RGB mask at 1080p", mode.name)
 		}
@@ -455,6 +503,55 @@ func gateCRTGuestAdvancedEffects() error {
 	}
 	if err := gateCRTGuestAdvancedPreparatoryPasses(); err != nil {
 		return err
+	}
+	if err := gateCRTGuestAdvancedCurvedGlowAlignment(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// gateCRTGuestAdvancedCurvedGlowAlignment isolates source 2 of the final
+// pass. A one-pixel Gaussian contribution is placed only at the coordinate
+// reached by the convex warp; sampling source 2 at the unwarped destination
+// must therefore leave the assertion black.
+func gateCRTGuestAdvancedCurvedGlowAlignment() error {
+	const width, height = 64, 64
+	g, err := newGuestAdvancedCRT()
+	if err != nil {
+		return fmt.Errorf("Guest-Advanced final shader: %w", err)
+	}
+	defer g.disposeTargets()
+	base := ebiten.NewImage(width, height)
+	base.WritePixels(solidTestFrame(width, height, 0, 0, 0, 0xFF))
+	bloom := ebiten.NewImage(width, height)
+	bloom.WritePixels(solidTestFrame(width, height, 0, 0, 0, 0xFF))
+	glow := ebiten.NewImage(width, height)
+	const outputX, outputY = 4, 4
+	// Deliberately use the upstream-supported 0.20 range here rather than the
+	// subtle production default. It separates the two samples by multiple
+	// texels, making this a true source-coordinate regression rather than a
+	// filter-footprint test.
+	const fixtureCurvature float32 = 0.20
+	warpedX, warpedY := guestAdvancedWarpUV(float32(outputX)/width, float32(outputY)/height, fixtureCurvature, fixtureCurvature, guestAdvancedCurvatureShape)
+	sampleX, sampleY := int(warpedX*width), int(warpedY*height)
+	if sampleX == outputX || sampleY == outputY {
+		return fmt.Errorf("curved-glow fixture did not move output (%d,%d): sampled (%d,%d)", outputX, outputY, sampleX, sampleY)
+	}
+	glowPixels := make([]byte, width*height*BYTES_PER_PIXEL)
+	i := (sampleY*width + sampleX) * BYTES_PER_PIXEL
+	glowPixels[i], glowPixels[i+1], glowPixels[i+2], glowPixels[i+3] = 255, 255, 255, 255
+	glow.WritePixels(glowPixels)
+
+	screen := ebiten.NewImage(width, height)
+	op := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{
+		"BloomStrength": float32(0), "GlowStrength": float32(1), "MaskStrength": float32(0),
+		"TexelSize": []float32{1 / float32(width), 1 / float32(height)}, "ScreenSize": []float32{width, height},
+		"CurvatureX": fixtureCurvature, "CurvatureY": fixtureCurvature, "CurvatureShape": guestAdvancedCurvatureShape,
+	}}
+	op.Images[0], op.Images[1], op.Images[2] = base, bloom, glow
+	screen.DrawRectShader(width, height, g.final, op)
+	if got := luminance(readCRTGPUImage(screen, width, height), width, outputX, outputY); got == 0 {
+		return fmt.Errorf("curved Gaussian glow detached from warped output (%d,%d)", outputX, outputY)
 	}
 	return nil
 }

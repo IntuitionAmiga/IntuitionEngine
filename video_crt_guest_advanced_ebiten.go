@@ -4,11 +4,36 @@ package main
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/hajimehoshi/ebiten/v2"
 )
 
-const guestAdvancedPersistence float32 = 0.32
+const (
+	guestAdvancedPersistence float32 = 0.32
+	// These are the restrained convex-screen values documented by the upstream
+	// Guest-Advanced profile. They warp the final CRT face, never individual
+	// guest layers, so every native mode shares one physical screen shape.
+	guestAdvancedCurvatureX     float32 = 0.03
+	guestAdvancedCurvatureY     float32 = 0.04
+	guestAdvancedCurvatureShape float32 = 0.25
+)
+
+// guestAdvancedWarpUV is the upstream convex-screen transform in normalised
+// presentation coordinates. Keeping it in Go gives the screen geometry a
+// non-GPU oracle; guestAdvancedFinalShaderSource carries the same calculation
+// for the displayed image.
+func guestAdvancedWarpUV(u, v, curvatureX, curvatureY, shape float32) (float32, float32) {
+	if shape <= 0 {
+		return u, v
+	}
+	x, y := u*2-1, v*2-1
+	warpedX := x / float32(math.Sqrt(float64(1-shape*y*y)))
+	warpedY := y / float32(math.Sqrt(float64(1-shape*x*x)))
+	x = x + (warpedX-x)*curvatureX/shape
+	y = y + (warpedY-y)*curvatureY/shape
+	return x*0.5 + 0.5, y*0.5 + 0.5
+}
 
 // guestAdvancedCRT is the screen-only part of CRT-Guest-Advanced. It keeps
 // its intermediate images explicitly because Guest-Advanced is a pass graph:
@@ -203,7 +228,11 @@ func (g *guestAdvancedCRT) finish(screen, input *ebiten.Image) {
 	bloomVertical.Images[0] = g.bloomHorizontalTarget
 	g.bloomVertical.DrawRectShader(w, h, g.bloomVerticalPass, bloomVertical)
 
-	final := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{"BloomStrength": float32(0.28), "GlowStrength": float32(0.12), "MaskStrength": float32(0.34), "TexelSize": texel}}
+	final := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy, Uniforms: map[string]any{
+		"BloomStrength": float32(0.28), "GlowStrength": float32(0.12), "MaskStrength": float32(0.34), "TexelSize": texel,
+		"ScreenSize": []float32{float32(w), float32(h)},
+		"CurvatureX": guestAdvancedCurvatureX, "CurvatureY": guestAdvancedCurvatureY, "CurvatureShape": guestAdvancedCurvatureShape,
+	}}
 	final.Images[0], final.Images[1], final.Images[2] = g.linear, g.bloomVertical, g.gaussianVertical
 	screen.DrawRectShader(w, h, g.final, final)
 
@@ -365,15 +394,31 @@ var BloomStrength float
 var GlowStrength float
 var MaskStrength float
 var TexelSize vec2
+var ScreenSize vec2
+var CurvatureX float
+var CurvatureY float
+var CurvatureShape float
+func warpUV(uv vec2) vec2 {
+	if CurvatureShape <= 0.0 { return uv }
+	p := uv*2.0-vec2(1.0)
+	warped := vec2(p.x/sqrt(1.0-CurvatureShape*p.y*p.y), p.y/sqrt(1.0-CurvatureShape*p.x*p.x))
+	p = p+(warped-p)*vec2(CurvatureX, CurvatureY)/CurvatureShape
+	return p*0.5+vec2(0.5)
+}
 func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
-	p0 := imageSrc0Origin()+srcPos
-	p1 := imageSrc1Origin()+srcPos
+	uv := warpUV(srcPos/ScreenSize)
+	// The curved face has no signal outside its nominal raster. This avoids
+	// edge-clamp streaks at the convex corners and keeps the full screen opaque.
+	if uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 { return vec4(0.0, 0.0, 0.0, 1.0) }
+	p0 := imageSrc0Origin()+uv*ScreenSize
+	p1 := imageSrc1Origin()+uv*ScreenSize
+	p2 := imageSrc2Origin()+uv*ScreenSize
 	base := imageSrc0At(p0)
 	// Small channel offsets reproduce convergence error before the phosphor mask.
 	r := imageSrc0At(p0+vec2(0.35, 0.0)).r
 	g := base.g
 	b := imageSrc0At(p0-vec2(0.35, 0.0)).b
-	c := vec3(r, g, b) + imageSrc2At(imageSrc2Origin()+srcPos).rgb*GlowStrength + imageSrc1At(p1).rgb*BloomStrength
+	c := vec3(r, g, b) + imageSrc2At(p2).rgb*GlowStrength + imageSrc1At(p1).rgb*BloomStrength
 	c = pow(max(c, vec3(0.0)), vec3(1.0/2.2))
 	phase := mod(floor(dstPos.x-imageDstOrigin().x), 3.0)
 	mask := vec3(1.0-MaskStrength)

@@ -15,6 +15,7 @@ import (
 
 func init() {
 	gpuGateBodies["iescript_presentation_screenshot"] = gateIEScriptCapturesFinalPresentation
+	gpuGateBodies["iescript_curved_1080p_presentation"] = gateIEScriptCapturesCurved1080pPresentation
 	gpuGateBodies["iescript_composition_screenshot"] = gateIEScriptCapturesGPUComposition
 	gpuGateBodies["iescript_hardware_composition_screenshot"] = gateIEScriptCapturesHardwareGPUComposition
 }
@@ -46,6 +47,76 @@ func TestIEScriptControlsHostCRTPresentation(t *testing.T) {
 
 func TestIEScriptCapturesFinalPresentation(t *testing.T) {
 	runGPUGate(t, "iescript_presentation_screenshot")
+}
+
+// TestIEScriptCapturesCurved1080pPresentation uses the public IEScript
+// screenshot API rather than a private render target. It proves the final
+// display image, including an upscaled 320x200 guest mode, has one convex CRT
+// face after composition.
+func TestIEScriptCapturesCurved1080pPresentation(t *testing.T) {
+	runGPUGate(t, "iescript_curved_1080p_presentation")
+}
+
+func gateIEScriptCapturesCurved1080pPresentation() error {
+	const width, height = 1920, 1080
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("NewEbitenOutput: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("SetDisplayConfig: %w", err)
+	}
+	if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{
+		FrameID: 1, PresentationWidth: width, PresentationHeight: height, HasContent: true,
+		Layers: []CompositorFrameLayer{{SourceID: 1, SourceWidth: 320, SourceHeight: 200, DestWidth: width, DestHeight: height, Opaque: true, Buffer: solidTestFrame(320, 200, 180, 180, 180, 0xFF)}},
+	}); err != nil {
+		return fmt.Errorf("UpdateHardwareCompositorFrame: %w", err)
+	}
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(eo), NewTerminalMMIO())
+	dir, err := os.MkdirTemp("", "ie-curved-presentation-screenshot-")
+	if err != nil {
+		return fmt.Errorf("create screenshot directory: %w", err)
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "curved-320x200-1080p.png")
+	if err := se.RunString(`rec.screenshot_screen("curved-320x200-1080p.png")`, filepath.Join(dir, "curved-presentation.ies")); err != nil {
+		return fmt.Errorf("RunString: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	eo.Draw(screen)
+	if err := waitForScriptStop(se, 5*time.Second); err != nil {
+		return err
+	}
+	if err := se.LastError(); err != nil {
+		return fmt.Errorf("script failed: %w", err)
+	}
+	return validateCurvedIEScriptScreenshot(path, width, height)
+}
+
+func validateCurvedIEScriptScreenshot(path string, width, height int) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open curved presentation screenshot: %w", err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		return fmt.Errorf("decode curved presentation screenshot: %w", err)
+	}
+	if gotX, gotY := img.Bounds().Dx(), img.Bounds().Dy(); gotX != width || gotY != height {
+		return fmt.Errorf("curved presentation screenshot size = %dx%d, want %dx%d", gotX, gotY, width, height)
+	}
+	cornerR, cornerG, cornerB, cornerA := img.At(0, 0).RGBA()
+	if cornerR != 0 || cornerG != 0 || cornerB != 0 || cornerA != 0xFFFF {
+		return fmt.Errorf("curved presentation corner = (%d, %d, %d, %d), want opaque black", cornerR, cornerG, cornerB, cornerA)
+	}
+	centreR, centreG, centreB, centreA := img.At(width/2, height/2).RGBA()
+	if centreR == 0 || centreG == 0 || centreB == 0 || centreA != 0xFFFF {
+		return fmt.Errorf("curved presentation centre = (%d, %d, %d, %d), want lit opaque CRT", centreR, centreG, centreB, centreA)
+	}
+	return nil
 }
 
 func gateIEScriptCapturesFinalPresentation() error {

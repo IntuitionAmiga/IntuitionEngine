@@ -2,7 +2,42 @@
 
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestGuestAdvancedConvexWarpGeometry(t *testing.T) {
+	centreX, centreY := guestAdvancedWarpUV(0.5, 0.5, guestAdvancedCurvatureX, guestAdvancedCurvatureY, guestAdvancedCurvatureShape)
+	if centreX != 0.5 || centreY != 0.5 {
+		t.Fatalf("convex warp moved screen centre to (%v, %v)", centreX, centreY)
+	}
+
+	cornerX, cornerY := guestAdvancedWarpUV(0, 0, guestAdvancedCurvatureX, guestAdvancedCurvatureY, guestAdvancedCurvatureShape)
+	if cornerX >= 0 || cornerY >= 0 {
+		t.Fatalf("convex warp did not move top-left corner outside the CRT face: (%v, %v)", cornerX, cornerY)
+	}
+
+	leftX, leftY := guestAdvancedWarpUV(0.25, 0.25, guestAdvancedCurvatureX, guestAdvancedCurvatureY, guestAdvancedCurvatureShape)
+	rightX, rightY := guestAdvancedWarpUV(0.75, 0.75, guestAdvancedCurvatureX, guestAdvancedCurvatureY, guestAdvancedCurvatureShape)
+	if leftX >= 0.25 || leftY >= 0.25 || rightX <= 0.75 || rightY <= 0.75 {
+		t.Fatalf("convex warp lacks symmetric outward curvature: left=(%v,%v) right=(%v,%v)", leftX, leftY, rightX, rightY)
+	}
+
+	plainX, plainY := guestAdvancedWarpUV(0.25, 0.75, guestAdvancedCurvatureX, guestAdvancedCurvatureY, 0)
+	if plainX != 0.25 || plainY != 0.75 {
+		t.Fatalf("zero curvature shape changed coordinates to (%v, %v)", plainX, plainY)
+	}
+}
+
+func TestGuestAdvancedFinalWarpSamplesGaussianGlow(t *testing.T) {
+	if !strings.Contains(guestAdvancedFinalShaderSource, "p2 := imageSrc2Origin()+uv*ScreenSize") {
+		t.Fatal("final CRT pass does not derive Gaussian-glow coordinates from the convex warp")
+	}
+	if strings.Contains(guestAdvancedFinalShaderSource, "imageSrc2Origin()+srcPos") {
+		t.Fatal("final CRT pass still samples Gaussian glow at the unwarped coordinate")
+	}
+}
 
 func TestCRTProfileGuestAdvancedIsDefault(t *testing.T) {
 	out, err := NewEbitenOutput()
