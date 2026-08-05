@@ -1,0 +1,20 @@
+-- Stress the physical-F7 equivalent without long settling delays. This
+-- catches a presentation target that only fails when host CRT transitions
+-- occur on consecutive compositor frames.
+local function phase(expected, name)
+    if video.is_crt_enabled() ~= expected then
+        error("CRT state mismatch at " .. name)
+    end
+    rec.screenshot_screen("diag_crt_rotozoomer_fast_" .. string.lower(name) .. ".png")
+    sys.print("CRT_ROTOZOOMER_FAST_" .. name .. " hash=0x" .. string.format("%X", video.frame_hash()))
+end
+
+sys.wait_frames(30)
+phase(true, "INITIAL")
+for _, state in ipairs({false, true, false, true, false, true}) do
+    video.toggle_crt()
+    term.key_press(keys.F7)
+    sys.wait_frames(1)
+    phase(state, state and "ON" or "OFF")
+end
+sys.exit(0)

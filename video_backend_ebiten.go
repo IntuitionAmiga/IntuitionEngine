@@ -22,7 +22,9 @@ package main
 
 import (
 	"fmt"
+	"image"
 	"image/color"
+	"image/png"
 	"os"
 	"runtime"
 	"strings"
@@ -54,12 +56,15 @@ type EbitenOutput struct {
 	statusBarKey   string
 	// presentation is the reusable final image. Every selected route is
 	// composed here before it is copied or filtered onto the display.
-	presentation *ebiten.Image
+	presentation       *ebiten.Image
+	compositionCapture *ebiten.Image
 	// crtPresentationOverlay stages post-compositor host elements. Hardware
 	// guest layers are filtered while scaling their native textures, whereas the
 	// cursor and status bar must receive their own final-presentation CRT pass.
 	crtPresentationOverlay *ebiten.Image
+	crtMu                  sync.Mutex
 	crtRequested           bool
+	presentationReset      atomic.Bool
 	crtProfile             crtProfile
 	crtState               crtFilterState
 	crtFilter              *crtFilter
@@ -104,14 +109,17 @@ type EbitenOutput struct {
 	hideSystemCursor bool
 	relativeMouse    relativeMouseCaptureState
 
-	recorder         *VideoRecorder
-	screenCaptureBuf []byte
-	hwFrameID        uint64
-	hwPresentationW  int
-	hwPresentationH  int
-	hwHasContent     bool
-	hwLayers         []ebitenHardwareLayer
-	hwCopyShader     *ebiten.Shader
+	recorder           *VideoRecorder
+	screenCaptureBuf   []byte
+	presentationShot   *presentationScreenshotRequest
+	compositionShot    *presentationScreenshotRequest
+	presentationShotMu sync.Mutex
+	hwFrameID          uint64
+	hwPresentationW    int
+	hwPresentationH    int
+	hwHasContent       bool
+	hwLayers           []ebitenHardwareLayer
+	hwCopyShader       *ebiten.Shader
 	// hwUploadCount counts hardware-layer WritePixels uploads, for the retained-
 	// layer tests to prove an unchanged frame performs no upload.
 	hwUploadCount atomic.Uint64
@@ -120,6 +128,11 @@ type EbitenOutput struct {
 	// ROM desktops that draw into VRAM set noSoftwareCursor to avoid duplicates.
 	cursorImage      *ebiten.Image
 	noSoftwareCursor bool
+}
+
+type presentationScreenshotRequest struct {
+	path string
+	done chan error
 }
 
 type ebitenHardwareLayer struct {
@@ -195,8 +208,9 @@ var DestOrigin vec2
 var Opaque float
 
 func Fragment(dstPos vec4, srcPos vec2, color vec4) vec4 {
-	localX := floor(dstPos.x - DestOrigin.x)
-	localY := floor(dstPos.y - DestOrigin.y)
+	local := floor(dstPos.xy - imageDstOrigin() - DestOrigin)
+	localX := local.x
+	localY := local.y
 	srcX := floor(localX * SrcSize.x / RectSize.x)
 	srcY := floor(localY * SrcSize.y / RectSize.y)
 	srcX = clamp(srcX, 0, SrcSize.x - 1)
@@ -237,6 +251,34 @@ func NewEbitenOutput() (VideoOutput, error) {
 	// can drive the guest keyboard on touch devices. No-op on native.
 	registerWasmInput(eo)
 	return eo, nil
+}
+
+// crtIsRequested, setCRTRequested and toggleCRTRequested are shared by the
+// host F7 handler and IEScript. Scripts run on a separate goroutine, so keep
+// presentation control independent from the render thread's frame buffers.
+func (eo *EbitenOutput) crtIsRequested() bool {
+	eo.crtMu.Lock()
+	defer eo.crtMu.Unlock()
+	return eo.crtRequested
+}
+
+func (eo *EbitenOutput) setCRTRequested(enabled bool) {
+	eo.crtMu.Lock()
+	changed := eo.crtRequested != enabled
+	eo.crtRequested = enabled
+	eo.crtMu.Unlock()
+	if changed {
+		eo.presentationReset.Store(true)
+	}
+}
+
+func (eo *EbitenOutput) toggleCRTRequested() bool {
+	eo.crtMu.Lock()
+	eo.crtRequested = !eo.crtRequested
+	enabled := eo.crtRequested
+	eo.crtMu.Unlock()
+	eo.presentationReset.Store(true)
+	return enabled
 }
 
 func (eo *EbitenOutput) Start() error {
@@ -711,7 +753,13 @@ func (eo *EbitenOutput) Update() error {
 		}
 	}
 	if decideEbitenF7Action(inpututil.IsKeyJustPressed(ebiten.KeyF7)) {
-		eo.crtRequested = !eo.crtRequested
+		eo.toggleCRTRequested()
+		eo.bufferMutex.RLock()
+		compositor := eo.compositor
+		eo.bufferMutex.RUnlock()
+		if compositor != nil {
+			compositor.RequestFullComposite()
+		}
 	}
 
 	// F10: Hard reset - must be checked before the monitor input
@@ -1573,7 +1621,8 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	// browser demo keeps its loading overlay up until this fires, because the
 	// canvas element exists long before anything has been drawn to it.
 	eo.firstFrameOnce.Do(hostSignalFirstFrame)
-	effectiveCRT := eo.crtRequested && eo.ensureCRTFilter()
+	effectiveCRT := eo.crtIsRequested() && eo.ensureCRTFilter()
+	eo.resetPresentationTargetsAfterToggle()
 	// F7 disables presentation entirely, so Guest-Advanced's finish pass does
 	// not run to replace its history texture. Latch a reset for the next
 	// enabled frame instead of allowing stale phosphor light to flash back in.
@@ -1605,6 +1654,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 			eo.crtFilter.guest.setSourceMode("monitor-overlay")
 		}
 		eo.monitorOverlay.Draw(presentation)
+		eo.completeCompositionScreenshot(presentation)
 		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
 		return
 	}
@@ -1613,6 +1663,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 			eo.crtFilter.guest.setSourceMode("lua-overlay")
 		}
 		eo.luaOverlay.Draw(presentation)
+		eo.completeCompositionScreenshot(presentation)
 		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
 		return
 	}
@@ -1621,6 +1672,7 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 			eo.crtFilter.guest.setSourceMode("host-overlay")
 		}
 		eo.hostOverlay.Draw(presentation)
+		eo.completeCompositionScreenshot(presentation)
 		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
 		return
 	}
@@ -1630,6 +1682,11 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	if usedHardware {
 		if effectiveCRT && eo.crtProfile == crtProfileGuestAdvanced {
 			eo.crtFilter.guest.setSourceMode(crtHardwareGuestModeKey(eo.hwLayers))
+		}
+		if effectiveCRT && eo.compositionScreenshotPending() {
+			rawComposition := eo.compositionCaptureImage(screen.Bounds().Dx(), screen.Bounds().Dy())
+			eo.drawHardwareCompositorLocked(rawComposition, false, nil)
+			eo.completeCompositionScreenshot(rawComposition)
 		}
 		eo.drawHardwareCompositorLocked(presentation, effectiveCRT, eo.crtFilter)
 	} else {
@@ -1645,6 +1702,12 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	compositor := eo.compositor
 	eo.bufferMutex.Unlock()
 	if !usedHardware {
+		if effectiveCRT && eo.crtProfile == crtProfileGuestAdvanced && eo.compositionScreenshotPending() {
+			rawComposition := eo.compositionCaptureImage(screen.Bounds().Dx(), screen.Bounds().Dy())
+			rawComposition.Clear()
+			rawComposition.DrawImage(eo.window, &ebiten.DrawImageOptions{Blend: ebiten.BlendCopy})
+			eo.completeCompositionScreenshot(rawComposition)
+		}
 		if effectiveCRT && eo.crtProfile == crtProfileGuestAdvanced {
 			eo.crtFilter.guest.setSourceMode(fmt.Sprintf("framebuffer:%dx%d", eo.width, eo.height))
 			eo.crtFilter.guest.drawRaster(presentation, eo.window, guestAdvancedRasterUniforms(eo.width, eo.height, presentation.Bounds().Dx(), presentation.Bounds().Dy()), nil, nil)
@@ -1652,6 +1715,9 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 			presentation.DrawImage(eo.window, nil)
 		}
 	}
+	// This is the diagnostic GPU compositor boundary: guest pixels are present,
+	// while host cursor and status-bar pixels have not yet been composed.
+	eo.completeCompositionScreenshot(presentation)
 	postCompositor := presentation
 	if effectiveCRT && (usedHardware || eo.crtProfile == crtProfileGuestAdvanced) {
 		postCompositor = eo.crtPresentationOverlayImage(screen.Bounds().Dx(), screen.Bounds().Dy())
@@ -1740,6 +1806,51 @@ func (eo *EbitenOutput) presentationImage(width, height int) *ebiten.Image {
 	return eo.presentation
 }
 
+// compositionCaptureImage owns the unfiltered GPU target used by
+// rec.screenshot_composed. Hardware CRT applies a layer shader while writing
+// presentation, so that target cannot provide a pre-CRT diagnostic image.
+func (eo *EbitenOutput) compositionCaptureImage(width, height int) *ebiten.Image {
+	if eo.compositionCapture == nil || eo.compositionCapture.Bounds().Dx() != width || eo.compositionCapture.Bounds().Dy() != height {
+		if eo.compositionCapture != nil {
+			eo.compositionCapture.Deallocate()
+		}
+		eo.compositionCapture = ebiten.NewImage(width, height)
+	}
+	return eo.compositionCapture
+}
+
+// resetPresentationTargetsAfterToggle makes the first frame following F7
+// independent of GPU render targets from the preceding presentation mode.
+// Hardware layers remain GPU-composited; their source textures are simply
+// uploaded again on that first frame.
+func (eo *EbitenOutput) resetPresentationTargetsAfterToggle() {
+	if !eo.presentationReset.Swap(false) {
+		return
+	}
+	if eo.presentation != nil {
+		eo.presentation.Deallocate()
+		eo.presentation = nil
+	}
+	if eo.compositionCapture != nil {
+		eo.compositionCapture.Deallocate()
+		eo.compositionCapture = nil
+	}
+	if eo.crtPresentationOverlay != nil {
+		eo.crtPresentationOverlay.Deallocate()
+		eo.crtPresentationOverlay = nil
+	}
+	if eo.crtFilter != nil && eo.crtFilter.guest != nil {
+		eo.crtFilter.guest.disposeTargets()
+		eo.crtFilter.guest.resetAfterglow()
+	}
+	eo.bufferMutex.Lock()
+	for i := range eo.hwLayers {
+		eo.hwLayers[i].haveUpload = false
+		eo.hwLayers[i].geomValid = false
+	}
+	eo.bufferMutex.Unlock()
+}
+
 func (eo *EbitenOutput) crtPresentationOverlayImage(width, height int) *ebiten.Image {
 	if eo.crtPresentationOverlay == nil || eo.crtPresentationOverlay.Bounds().Dx() != width || eo.crtPresentationOverlay.Bounds().Dy() != height {
 		if eo.crtPresentationOverlay != nil {
@@ -1783,12 +1894,119 @@ func (eo *EbitenOutput) finishPresentation(screen, presentation *ebiten.Image, e
 	} else {
 		screen.DrawImage(presentation, nil)
 	}
+	eo.completePresentationScreenshot(screen)
 
 	eo.frameCount.Add(1)
 	select {
 	case eo.vsyncChan <- struct{}{}:
 	default:
 	}
+}
+
+// TakeCompositionScreenshot captures the GPU-composed image immediately
+// before CRT presentation. It distinguishes a compositor failure from a
+// final-presentation failure without treating a CPU compositor screenshot as
+// evidence of what the GPU actually drew.
+func (eo *EbitenOutput) TakeCompositionScreenshot(path string) error {
+	if path == "" {
+		return fmt.Errorf("composition screenshot path is required")
+	}
+	req := &presentationScreenshotRequest{path: path, done: make(chan error, 1)}
+	eo.presentationShotMu.Lock()
+	if eo.compositionShot != nil {
+		eo.presentationShotMu.Unlock()
+		return fmt.Errorf("composition screenshot already pending")
+	}
+	eo.compositionShot = req
+	eo.presentationShotMu.Unlock()
+	return eo.waitForScreenshotRequest(req, func() {
+		eo.presentationShotMu.Lock()
+		if eo.compositionShot == req {
+			eo.compositionShot = nil
+		}
+		eo.presentationShotMu.Unlock()
+	})
+}
+
+func (eo *EbitenOutput) compositionScreenshotPending() bool {
+	eo.presentationShotMu.Lock()
+	pending := eo.compositionShot != nil
+	eo.presentationShotMu.Unlock()
+	return pending
+}
+
+// TakePresentationScreenshot captures the next final Ebiten frame. It is used
+// by IEScript when an acceptance test needs the visible CRT presentation rather
+// than the pre-presentation compositor frame.
+func (eo *EbitenOutput) TakePresentationScreenshot(path string) error {
+	if path == "" {
+		return fmt.Errorf("presentation screenshot path is required")
+	}
+	req := &presentationScreenshotRequest{path: path, done: make(chan error, 1)}
+	eo.presentationShotMu.Lock()
+	if eo.presentationShot != nil {
+		eo.presentationShotMu.Unlock()
+		return fmt.Errorf("presentation screenshot already pending")
+	}
+	eo.presentationShot = req
+	eo.presentationShotMu.Unlock()
+
+	return eo.waitForScreenshotRequest(req, func() {
+		eo.presentationShotMu.Lock()
+		if eo.presentationShot == req {
+			eo.presentationShot = nil
+		}
+		eo.presentationShotMu.Unlock()
+	})
+}
+
+func (eo *EbitenOutput) waitForScreenshotRequest(req *presentationScreenshotRequest, cancel func()) error {
+	select {
+	case err := <-req.done:
+		return err
+	case <-time.After(5 * time.Second):
+		cancel()
+		return fmt.Errorf("timed out waiting for presentation frame")
+	}
+}
+
+func (eo *EbitenOutput) completePresentationScreenshot(screen *ebiten.Image) {
+	eo.presentationShotMu.Lock()
+	req := eo.presentationShot
+	eo.presentationShot = nil
+	eo.presentationShotMu.Unlock()
+	if req == nil {
+		return
+	}
+	eo.completeScreenshot(req, screen)
+}
+
+func (eo *EbitenOutput) completeCompositionScreenshot(composition *ebiten.Image) {
+	eo.presentationShotMu.Lock()
+	req := eo.compositionShot
+	eo.compositionShot = nil
+	eo.presentationShotMu.Unlock()
+	eo.completeScreenshot(req, composition)
+}
+
+func (eo *EbitenOutput) completeScreenshot(req *presentationScreenshotRequest, source *ebiten.Image) {
+	if req == nil {
+		return
+	}
+	w, h := source.Bounds().Dx(), source.Bounds().Dy()
+	pixels := make([]byte, w*h*BYTES_PER_PIXEL)
+	source.ReadPixels(pixels)
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	copy(img.Pix, pixels)
+	f, err := os.Create(req.path)
+	if err == nil {
+		err = png.Encode(f, img)
+		closeErr := f.Close()
+		if err == nil {
+			err = closeErr
+		}
+	}
+	req.done <- err
 }
 
 func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image, crtActive bool, filter *crtFilter) {

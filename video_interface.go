@@ -147,8 +147,8 @@ type CompositorFrameLayer struct {
 	// unchanged pixels; a source without generation tracking gets a per-frame
 	// unique value, which forces an upload every frame (the conservative
 	// fallback: never claim unchanged when it cannot be proven).
-	ContentGen   uint64
-	DirtyRects   []FrameDirtyRect
+	ContentGen uint64
+	DirtyRects []FrameDirtyRect
 	// Indexed carries the layer as palette indices instead of RGBA. It is set
 	// only when the frame is going to a backend that converts on the GPU, and
 	// Buffer is then nil until something on the CPU side asks for pixels.

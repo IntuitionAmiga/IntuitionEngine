@@ -38,14 +38,17 @@ func gateCRTFilter() error {
 	}
 
 	screen := ebiten.NewImage(width, height)
-	eo.crtRequested = false
+	eo.setCRTRequested(false)
 	eo.Draw(screen)
 	raw := readCRTGPUImage(screen, width, height)
 	if !equalBytes(raw, frame) {
 		return fmt.Errorf("disabled CRT changed normal framebuffer output")
 	}
+	if err := gateCRTRawPresentationCopiesTransparentRGB(); err != nil {
+		return err
+	}
 
-	eo.crtRequested = true
+	eo.setCRTRequested(true)
 	eo.Draw(screen)
 	filtered := readCRTGPUImage(screen, width, height)
 	if equalBytes(filtered, frame) {
@@ -93,6 +96,12 @@ func gateCRTFilter() error {
 	if err := gateCRTTransparentLayerPreservesLower(); err != nil {
 		return err
 	}
+	if err := gateCRTRawHardwareLayerPromotesZeroAlphaRGB(); err != nil {
+		return err
+	}
+	if err := gateCRTRawHardwareMixedNativeLayers(); err != nil {
+		return err
+	}
 	if err := gateCRTOpaqueLayerForcesAlpha(); err != nil {
 		return err
 	}
@@ -112,6 +121,12 @@ func gateCRTFilter() error {
 		return err
 	}
 	if err := gateCRTGuestAdvancedToggleClearsAfterglow(); err != nil {
+		return err
+	}
+	if err := gateCRTHardwareTogglePreservesGuestLayer(); err != nil {
+		return err
+	}
+	if err := gateCRTHardwareTogglePreservesSparse320x200Layer(); err != nil {
 		return err
 	}
 
@@ -138,6 +153,34 @@ func gateCRTFilter() error {
 	fallback.Draw(screen)
 	if got := readCRTGPUImage(screen, width, height); !equalBytes(got, frame) {
 		return fmt.Errorf("first fallback frame was not unfiltered")
+	}
+	return nil
+}
+
+// gateCRTRawPresentationCopiesTransparentRGB covers guest framebuffers whose
+// colour bytes are meaningful even when their alpha byte is zero. CRT-on uses
+// a copy pass, so F7 must use the same presentation semantics rather than
+// source-over blending those guest pixels away.
+func gateCRTRawPresentationCopiesTransparentRGB() error {
+	const width, height = 8, 8
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("transparent-RGB output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	eo.crtRequested = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("transparent-RGB display: %w", err)
+	}
+	frame := solidTestFrame(width, height, 200, 120, 40, 0)
+	if err := eo.UpdateFrame(frame); err != nil {
+		return fmt.Errorf("transparent-RGB frame: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	eo.Draw(screen)
+	if got := readCRTGPUImage(screen, width, height); !equalBytes(got, frame) {
+		return fmt.Errorf("raw CRT-off presentation blended away transparent-alpha RGB")
 	}
 	return nil
 }
@@ -208,6 +251,85 @@ func gateCRTGuestAdvancedToggleClearsAfterglow() error {
 	return nil
 }
 
+// gateCRTHardwareTogglePreservesGuestLayer covers the retained compositor path
+// used by Copper demos. F7 must only change presentation treatment: it must
+// never remove the current guest layer while CRT is disabled or restored.
+func gateCRTHardwareTogglePreservesGuestLayer() error {
+	const width, height = 24, 24
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("hardware CRT-toggle output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("hardware CRT-toggle display: %w", err)
+	}
+	frame := solidTestFrame(width, height, 200, 120, 40, 0xFF)
+	if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{
+		FrameID: 1, PresentationWidth: width, PresentationHeight: height, HasContent: true,
+		Layers: []CompositorFrameLayer{{SourceID: 7, SourceWidth: width, SourceHeight: height, DestWidth: width, DestHeight: height, Opaque: true, ContentGen: 1, Buffer: frame}},
+	}); err != nil {
+		return fmt.Errorf("hardware CRT-toggle frame: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	eo.Draw(screen)
+
+	eo.crtRequested = false
+	eo.Draw(screen)
+	if got := readCRTGPUImage(screen, width, height); !equalBytes(got, frame) {
+		return fmt.Errorf("hardware guest layer disappeared when CRT was disabled")
+	}
+
+	eo.crtRequested = true
+	eo.Draw(screen)
+	pixels := readCRTGPUImage(screen, width, height)
+	if luminance(pixels, width, width/2, height/2) == 0 {
+		return fmt.Errorf("hardware guest layer disappeared when CRT was re-enabled")
+	}
+	return nil
+}
+
+// gateCRTHardwareTogglePreservesSparse320x200Layer mirrors a wireframe demo:
+// a mostly uniform 320x200 background with a sparse bright guest drawing. It
+// catches a toggle path that preserves the background but loses the foreground.
+func gateCRTHardwareTogglePreservesSparse320x200Layer() error {
+	const sourceWidth, sourceHeight = 320, 200
+	const width, height = 1920, 1080
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("sparse CRT-toggle output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("sparse CRT-toggle display: %w", err)
+	}
+	frame := solidTestFrame(sourceWidth, sourceHeight, 8, 24, 80, 0xFF)
+	for x := 100; x < 220; x++ {
+		i := (100*sourceWidth + x) * BYTES_PER_PIXEL
+		frame[i], frame[i+1], frame[i+2] = 255, 255, 255
+	}
+	if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{
+		FrameID: 1, PresentationWidth: width, PresentationHeight: height, HasContent: true,
+		Layers: []CompositorFrameLayer{{SourceID: 11, SourceWidth: sourceWidth, SourceHeight: sourceHeight, DestWidth: width, DestHeight: height, Opaque: true, ContentGen: 1, Buffer: frame}},
+	}); err != nil {
+		return fmt.Errorf("sparse CRT-toggle frame: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	for _, enabled := range []bool{true, false, true, false, true} {
+		eo.setCRTRequested(enabled)
+		eo.Draw(screen)
+		pixels := readCRTGPUImage(screen, width, height)
+		// Source row 100 occupies y=540 after 200->1080 expansion. Its bright
+		// horizontal line must survive both raw and filtered presentation.
+		if got := luminance(pixels, width, 960, 540); got == 0 {
+			return fmt.Errorf("sparse 320x200 foreground disappeared with CRT enabled=%t", enabled)
+		}
+	}
+	return nil
+}
+
 // gateCRTGuestAdvancedNativeScreenModes exercises the actual guest modes used
 // by IE demos at their 1080p presentation size. It catches a regression where
 // a filter only works on a toy integer scale but loses its source geometry on
@@ -264,6 +386,22 @@ func gateCRTGuestAdvancedNativeScreenModes() error {
 			if got := pixels[3]; got != 0 {
 				return fmt.Errorf("Guest-Advanced %s wrote outside its destination rect, alpha=%d", mode.name, got)
 			}
+		}
+
+		// The hardware compositor remains the source of truth when F7 changes
+		// presentation treatment. Exercise the actual 1080p source geometry so
+		// a toggle cannot discard a 320x200 or 640x480 guest layer.
+		eo.setCRTRequested(false)
+		eo.Draw(screen)
+		raw := readCRTGPUImage(screen, presentationWidth, presentationHeight)
+		if raw[i] == 0 && raw[i+1] == 0 && raw[i+2] == 0 {
+			return fmt.Errorf("Guest-Advanced %s lost the guest layer when CRT was disabled", mode.name)
+		}
+		eo.setCRTRequested(true)
+		eo.Draw(screen)
+		reenabled := readCRTGPUImage(screen, presentationWidth, presentationHeight)
+		if reenabled[i] == 0 && reenabled[i+1] == 0 && reenabled[i+2] == 0 {
+			return fmt.Errorf("Guest-Advanced %s lost the guest layer when CRT was re-enabled", mode.name)
 		}
 	}
 	return nil
@@ -478,6 +616,90 @@ func gateCRTTransparentLayerPreservesLower() error {
 	combined := readCRTGPUImage(screen, width, height)
 	if !equalBytes(combined, lowerOnly) {
 		return fmt.Errorf("transparent CRT layer overwrote the filtered lower layer")
+	}
+	return nil
+}
+
+// gateCRTRawHardwareLayerPromotesZeroAlphaRGB pins the software compositor's
+// compatibility rule for old guest renderers: non-black RGB with no alpha is
+// visible, while a fully zero pixel is transparent. Copper wireframes use this
+// representation. It must remain true while CRT is disabled because F7 only
+// changes the presentation filter, never guest-layer visibility.
+func gateCRTRawHardwareLayerPromotesZeroAlphaRGB() error {
+	const width, height = 8, 8
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("zero-alpha hardware output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	eo.crtRequested = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("zero-alpha hardware display: %w", err)
+	}
+	lower := solidTestFrame(2, 2, 12, 24, 48, 0xFF)
+	upper := make([]byte, 2*2*BYTES_PER_PIXEL)
+	// Guest pixels are RGBA. This bright non-black pixel has zero alpha, which
+	// the software compositor promotes to opaque before blending it.
+	upper[0], upper[1], upper[2] = 240, 180, 60
+	if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{
+		FrameID: 1, PresentationWidth: width, PresentationHeight: height, HasContent: true,
+		Layers: []CompositorFrameLayer{
+			{SourceID: 1, SourceWidth: 2, SourceHeight: 2, DestWidth: width, DestHeight: height, Opaque: true, Buffer: lower},
+			{SourceID: 2, SourceWidth: 2, SourceHeight: 2, DestWidth: width, DestHeight: height, Buffer: upper},
+		},
+	}); err != nil {
+		return fmt.Errorf("zero-alpha hardware update: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	eo.Draw(screen)
+	got := readCRTGPUImage(screen, width, height)
+	if got[0] != 240 || got[1] != 180 || got[2] != 60 || got[3] != 0xFF {
+		return fmt.Errorf("raw hardware compositor lost zero-alpha RGB pixel: got %v", got[:4])
+	}
+	return nil
+}
+
+// gateCRTRawHardwareMixedNativeLayers is the Copper/VGA presentation shape:
+// an opaque 960x540 Copper layer under a 320x200 foreground. The raw F7 path
+// must draw the foreground after the background at its native geometry.
+func gateCRTRawHardwareMixedNativeLayers() error {
+	const presentationWidth, presentationHeight = 1920, 1080
+	const backgroundWidth, backgroundHeight = 960, 540
+	const foregroundWidth, foregroundHeight = 320, 200
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("mixed native-layer output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	eo.crtRequested = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: presentationWidth, Height: presentationHeight, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("mixed native-layer display: %w", err)
+	}
+	background := solidTestFrame(backgroundWidth, backgroundHeight, 12, 36, 72, 0)
+	foreground := make([]byte, foregroundWidth*foregroundHeight*BYTES_PER_PIXEL)
+	for i := 3; i < len(foreground); i += BYTES_PER_PIXEL {
+		foreground[i] = 0xFF
+	}
+	// A bright 320x200 source pixel maps to the centre of the 1080p output.
+	center := (100*foregroundWidth + 160) * BYTES_PER_PIXEL
+	foreground[center], foreground[center+1], foreground[center+2] = 250, 200, 50
+	if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{
+		FrameID: 1, PresentationWidth: presentationWidth, PresentationHeight: presentationHeight, HasContent: true,
+		Layers: []CompositorFrameLayer{
+			{SourceID: 1, SourceWidth: backgroundWidth, SourceHeight: backgroundHeight, DestWidth: presentationWidth, DestHeight: presentationHeight, Opaque: true, Buffer: background},
+			{SourceID: 2, SourceWidth: foregroundWidth, SourceHeight: foregroundHeight, DestWidth: presentationWidth, DestHeight: presentationHeight, Buffer: foreground},
+		},
+	}); err != nil {
+		return fmt.Errorf("mixed native-layer update: %w", err)
+	}
+	screen := ebiten.NewImage(presentationWidth, presentationHeight)
+	eo.Draw(screen)
+	got := readCRTGPUImage(screen, presentationWidth, presentationHeight)
+	i := (presentationHeight/2*presentationWidth + presentationWidth/2) * BYTES_PER_PIXEL
+	if got[i] != 250 || got[i+1] != 200 || got[i+2] != 50 || got[i+3] != 0xFF {
+		return fmt.Errorf("raw mixed native layers lost 320x200 foreground: got %v", got[i:i+4])
 	}
 	return nil
 }

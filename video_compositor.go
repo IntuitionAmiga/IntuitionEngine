@@ -274,6 +274,93 @@ type VideoCompositor struct {
 	loopDone          chan struct{}
 }
 
+// crtPresentationController is deliberately narrower than VideoOutput. It
+// lets IEScript control the host presentation effect without exposing backend
+// implementation details to guest-facing video APIs.
+type crtPresentationController interface {
+	crtIsRequested() bool
+	setCRTRequested(bool)
+	toggleCRTRequested() bool
+}
+
+type presentationScreenshotOutput interface {
+	TakePresentationScreenshot(path string) error
+}
+
+type compositionScreenshotOutput interface {
+	TakeCompositionScreenshot(path string) error
+}
+
+func (c *VideoCompositor) CRTEnabled() (bool, bool) {
+	c.outputMu.Lock()
+	defer c.outputMu.Unlock()
+	controller, ok := c.output.(crtPresentationController)
+	if !ok {
+		return false, false
+	}
+	return controller.crtIsRequested(), true
+}
+
+func (c *VideoCompositor) SetCRTEnabled(enabled bool) bool {
+	c.outputMu.Lock()
+	controller, ok := c.output.(crtPresentationController)
+	c.outputMu.Unlock()
+	if !ok {
+		return false
+	}
+	controller.setCRTRequested(enabled)
+	c.mu.Lock()
+	c.forceFullFrame = true
+	c.mu.Unlock()
+	return true
+}
+
+func (c *VideoCompositor) ToggleCRT() (bool, bool) {
+	c.outputMu.Lock()
+	controller, ok := c.output.(crtPresentationController)
+	c.outputMu.Unlock()
+	if !ok {
+		return false, false
+	}
+	enabled := controller.toggleCRTRequested()
+	c.mu.Lock()
+	c.forceFullFrame = true
+	c.mu.Unlock()
+	return enabled, true
+}
+
+// RequestFullComposite invalidates the unchanged-frame fast path after a host
+// presentation mode transition changes the selected compositor backend.
+func (c *VideoCompositor) RequestFullComposite() {
+	c.mu.Lock()
+	c.forceFullFrame = true
+	c.mu.Unlock()
+}
+
+// TakePresentationScreenshot captures the next displayed frame when the
+// selected video output supports final-presentation capture.
+func (c *VideoCompositor) TakePresentationScreenshot(path string) error {
+	c.outputMu.Lock()
+	defer c.outputMu.Unlock()
+	output, ok := c.output.(presentationScreenshotOutput)
+	if !ok {
+		return fmt.Errorf("presentation screenshot unavailable")
+	}
+	return output.TakePresentationScreenshot(path)
+}
+
+// TakeCompositionScreenshot captures the GPU composition before presentation
+// filtering. It is a diagnostic counterpart to TakePresentationScreenshot.
+func (c *VideoCompositor) TakeCompositionScreenshot(path string) error {
+	c.outputMu.Lock()
+	defer c.outputMu.Unlock()
+	output, ok := c.output.(compositionScreenshotOutput)
+	if !ok {
+		return fmt.Errorf("composition screenshot unavailable")
+	}
+	return output.TakeCompositionScreenshot(path)
+}
+
 type blendStripJob struct {
 	srcFrame []byte
 	width    int

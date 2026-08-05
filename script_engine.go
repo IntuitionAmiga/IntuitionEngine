@@ -952,6 +952,9 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 	L.SetGlobal("audio", audio)
 
 	video := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
+		"is_crt_enabled":        se.luaVideoCRTEnabled(),
+		"set_crt_enabled":       se.luaVideoSetCRTEnabled(),
+		"toggle_crt":            se.luaVideoToggleCRT(),
 		"write_reg":             se.luaVideoWriteReg(),
 		"read_reg":              se.luaVideoReadReg(),
 		"get_dimensions":        se.luaVideoGetDimensions(),
@@ -1021,12 +1024,14 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 	L.SetGlobal("video", video)
 
 	rec := L.SetFuncs(L.NewTable(), map[string]lua.LGFunction{
-		"screenshot":   se.luaRecScreenshot(),
-		"start":        se.luaRecStart(),
-		"start_screen": se.luaRecStartScreen(),
-		"stop":         se.luaRecStop(),
-		"is_recording": se.luaRecIsRecording(),
-		"frame_count":  se.luaRecFrameCount(),
+		"screenshot":          se.luaRecScreenshot(),
+		"screenshot_composed": se.luaRecScreenshotComposed(),
+		"screenshot_screen":   se.luaRecScreenshotScreen(),
+		"start":               se.luaRecStart(),
+		"start_screen":        se.luaRecStartScreen(),
+		"stop":                se.luaRecStop(),
+		"is_recording":        se.luaRecIsRecording(),
+		"frame_count":         se.luaRecFrameCount(),
 	})
 	L.SetGlobal("rec", rec)
 
@@ -3225,6 +3230,51 @@ func (se *ScriptEngine) luaVideoWriteReg() lua.LGFunction {
 	}
 }
 
+func (se *ScriptEngine) luaVideoCRTEnabled() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if se.compositor == nil {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		enabled, available := se.compositor.CRTEnabled()
+		if !available {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		L.Push(lua.LBool(enabled))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaVideoSetCRTEnabled() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if se.compositor == nil {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		if !se.compositor.SetCRTEnabled(L.CheckBool(1)) {
+			L.RaiseError("host CRT control is unavailable for this video output")
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaVideoToggleCRT() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if se.compositor == nil {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		enabled, available := se.compositor.ToggleCRT()
+		if !available {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		L.Push(lua.LBool(enabled))
+		return 1
+	}
+}
+
 func (se *ScriptEngine) luaVideoReadReg() lua.LGFunction {
 	return func(L *lua.LState) int {
 		addr := uint32(L.CheckInt64(1))
@@ -4119,6 +4169,44 @@ func (se *ScriptEngine) luaRecScreenshot() lua.LGFunction {
 			return 0
 		}
 		if err := se.TakeScreenshot(validated); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaRecScreenshotScreen() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if se.compositor == nil {
+			L.RaiseError("compositor unavailable")
+			return 0
+		}
+		if err := se.compositor.TakePresentationScreenshot(validated); err != nil {
+			L.RaiseError("%v", err)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaRecScreenshotComposed() lua.LGFunction {
+	return func(L *lua.LState) int {
+		path := L.CheckString(1)
+		validated, err := se.validateScriptPath(path, pathOpWrite)
+		if err != nil {
+			L.RaiseError("%v", err)
+			return 0
+		}
+		if se.compositor == nil {
+			L.RaiseError("compositor unavailable")
+			return 0
+		}
+		if err := se.compositor.TakeCompositionScreenshot(validated); err != nil {
 			L.RaiseError("%v", err)
 		}
 		return 0

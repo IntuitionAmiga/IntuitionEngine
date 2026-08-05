@@ -630,6 +630,12 @@ audio.psg_stop()
 
 Video chip, VGA, ULA, ANTIC/GTIA, TED, Voodoo 3D, Copper coprocessor, Blitter, and frame inspection.
 
+`video.is_crt_enabled()` - Return whether the host CRT presentation filter is enabled. Raises if the selected output has no CRT presentation controller. Returns: boolean.
+
+`video.set_crt_enabled(on)` - Enable or disable the host CRT presentation filter. This is the same host action as F7 and does not inject a guest key. Raises if the selected output has no CRT presentation controller. Returns: nothing.
+
+`video.toggle_crt()` - Toggle the host CRT presentation filter, equivalent to F7. Raises if the selected output has no CRT presentation controller. Returns: boolean, the new enabled state.
+
 ### General
 
 `video.write_reg(addr, value)` - Write a 32-bit `value` to a video register at bus address `addr` (MMIO). Returns: nothing.
@@ -859,6 +865,10 @@ repl.hide()
 Recording and screenshot capture.
 
 `rec.screenshot(path)` - Capture the current compositor frame as a PNG file at script-relative `path`. Pure Go implementation - no external dependencies. Returns: nothing. Raises on path validation or screenshot errors.
+
+`rec.screenshot_composed(path)` - Capture the next GPU-composed image before CRT presentation, cursor and status-bar processing as a PNG file at script-relative `path`. This is a diagnostic capture for separating compositor and final-presentation faults. Returns: nothing. Raises on path validation, capture or timeout errors.
+
+`rec.screenshot_screen(path)` - Capture the next final displayed frame, including CRT presentation, host cursor and status bar, as a PNG file at script-relative `path`. Waits for the Ebiten draw that fulfils the request. Returns: nothing. Raises on path validation, capture or timeout errors.
 
 `rec.start(path)` - Start recording video (and audio) to an MP4 file at script-relative `path`. Requires FFmpeg in `PATH`. Returns: nothing. Raises on path validation or recorder errors.
 
@@ -1784,10 +1794,13 @@ Compact reference for IEScript API functions.
 | `audio.midi_is_playing()` | boolean |
 | `audio.midi_metadata()` | table |
 
-### video (65)
+### video (68)
 
 | Function | Returns |
 |----------|---------|
+| `video.is_crt_enabled()` | boolean |
+| `video.set_crt_enabled(on)` | - |
+| `video.toggle_crt()` | boolean |
 | `video.write_reg(addr, value)` | - |
 | `video.read_reg(addr)` | number |
 | `video.get_dimensions()` | width, height |
