@@ -26,8 +26,31 @@ const (
 	crtFilterFailed
 )
 
+// crtProfile deliberately separates the quality-first Guest-Advanced
+// presentation pipeline from the retained single-pass Zfast fallback. F7
+// controls whether CRT is requested; it does not silently substitute one look
+// for the other.
+type crtProfile uint8
+
+const (
+	crtProfileGuestAdvanced crtProfile = iota
+	crtProfileZfast
+)
+
+func (p crtProfile) String() string {
+	switch p {
+	case crtProfileGuestAdvanced:
+		return "Guest-Advanced"
+	case crtProfileZfast:
+		return "Zfast"
+	default:
+		return "Unknown"
+	}
+}
+
 type crtFilter struct {
 	shader *ebiten.Shader
+	guest  *guestAdvancedCRT
 	err    error
 }
 
@@ -65,6 +88,14 @@ func newCRTFilter(source []byte) *crtFilter {
 		return &crtFilter{err: fmt.Errorf("compile CRT shader: %w", err)}
 	}
 	return &crtFilter{shader: shader}
+}
+
+func newGuestAdvancedCRTFilter() *crtFilter {
+	guest, err := newGuestAdvancedCRT()
+	if err != nil {
+		return &crtFilter{err: err}
+	}
+	return &crtFilter{guest: guest}
 }
 
 // zfastCRTShaderSource retains the fixed Zfast fine-mask profile from the

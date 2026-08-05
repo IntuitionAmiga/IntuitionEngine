@@ -45,10 +45,10 @@ for (let i = 0; i < 300 && !await evaluate("!!window.ieFirstFrame"); i++) await 
 if (!await evaluate("!!window.ieFirstFrame")) throw new Error("demo did not render a first frame");
 await sleep(500);
 const before = (await cdp("Page.captureScreenshot", { format: "png" })).data;
-await evaluate(`(() => {
-  const target = document.querySelector('canvas');
-  for (const type of ['keydown', 'keyup']) target.dispatchEvent(new KeyboardEvent(type, {key: 'F7', code: 'F7', bubbles: true}));
-})()`);
+// Ebiten's key state is fed by browser input events, not merely DOM listeners.
+// Drive the CDP input pipeline so inpututil.IsKeyJustPressed observes F7.
+await cdp("Input.dispatchKeyEvent", { type: "keyDown", key: "F7", code: "F7", windowsVirtualKeyCode: 118, nativeVirtualKeyCode: 118 });
+await cdp("Input.dispatchKeyEvent", { type: "keyUp", key: "F7", code: "F7", windowsVirtualKeyCode: 118, nativeVirtualKeyCode: 118 });
 await sleep(500);
 const after = (await cdp("Page.captureScreenshot", { format: "png" })).data;
 if (before === after) throw new Error("F7 did not change the browser presentation");

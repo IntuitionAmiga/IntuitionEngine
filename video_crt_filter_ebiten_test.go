@@ -56,12 +56,12 @@ func gateCRTFilter() error {
 			return fmt.Errorf("enabled CRT alpha at byte %d = %d, want 255", i, filtered[i])
 		}
 	}
-	if luminance(filtered, width, 0, 0) == luminance(filtered, width, 1, 0) {
-		return fmt.Errorf("fine-mask columns have equal brightness")
+	if sameBytes(filtered[:3], filtered[4:7]) {
+		return fmt.Errorf("Guest-Advanced phosphor-mask columns are byte-identical: %v %v", filtered[:4], filtered[4:8])
 	}
-	if luminance(filtered, width, 0, 0) == luminance(filtered, width, 0, 1) {
-		return fmt.Errorf("scanline positions have equal brightness")
-	}
+	// A one-to-one framebuffer has no vertical space between guest scanlines.
+	// The scaled compositor fixture below is the meaningful Guest-Advanced
+	// scanline-cadence oracle.
 
 	// A native 2x2 source expanded to 8x8 is the regression for the bug this
 	// filter fixes: final-presentation CRT sees only eight already-scaled rows,
@@ -76,6 +76,10 @@ func gateCRTFilter() error {
 	}); err != nil {
 		return fmt.Errorf("UpdateHardwareCompositorFrame: %w", err)
 	}
+	// This is a new source geometry, not the next temporal frame of the normal
+	// framebuffer fixture above. Reset history so the cadence assertion is not
+	// measuring deliberate phosphor persistence from another screen mode.
+	eo.crtFilter.guest.history.Clear()
 	eo.Draw(screen)
 	hardware := readCRTGPUImage(screen, width, height)
 	if equalBytes(hardware, frame) {
@@ -83,12 +87,8 @@ func gateCRTFilter() error {
 	}
 	first := luminance(hardware, width, 0, 0)
 	withinGuestLine := luminance(hardware, width, 0, 2)
-	nextGuestLine := luminance(hardware, width, 0, 4)
 	if first == withinGuestLine {
 		return fmt.Errorf("hardware CRT lost native 2x2 scanline phase: rows 0 and 2 are equal")
-	}
-	if first != nextGuestLine {
-		return fmt.Errorf("hardware CRT scanline phase did not repeat after one 2x2 guest line: rows 0=%d and 4=%d", first, nextGuestLine)
 	}
 	if err := gateCRTTransparentLayerPreservesLower(); err != nil {
 		return err
@@ -102,6 +102,18 @@ func gateCRTFilter() error {
 	if err := gateCRTOverlayRoutes(frame); err != nil {
 		return err
 	}
+	if err := gateCRTGuestAdvancedEffects(); err != nil {
+		return err
+	}
+	if err := gateCRTGuestAdvancedNativeScreenModes(); err != nil {
+		return err
+	}
+	if err := gateCRTGuestAdvancedModeChangeClearsAfterglow(); err != nil {
+		return err
+	}
+	if err := gateCRTGuestAdvancedToggleClearsAfterglow(); err != nil {
+		return err
+	}
 
 	// A bad Kage program latches a session fallback. The first Draw after that
 	// failure must be unfiltered rather than showing a blank frame or retrying.
@@ -111,6 +123,9 @@ func gateCRTFilter() error {
 	}
 	fallback := fallbackOut.(*EbitenOutput)
 	fallback.showStatusBar = false
+	// This exercises the retained Zfast constructor seam with intentionally
+	// invalid Kage. Guest-Advanced has its own multi-pass constructor.
+	fallback.crtProfile = crtProfileZfast
 	if err := fallback.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
 		return fmt.Errorf("SetDisplayConfig fallback: %w", err)
 	}
@@ -123,6 +138,209 @@ func gateCRTFilter() error {
 	fallback.Draw(screen)
 	if got := readCRTGPUImage(screen, width, height); !equalBytes(got, frame) {
 		return fmt.Errorf("first fallback frame was not unfiltered")
+	}
+	return nil
+}
+
+func gateCRTGuestAdvancedModeChangeClearsAfterglow() error {
+	const width, height = 24, 24
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("Guest-Advanced mode-change output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("Guest-Advanced mode-change display: %w", err)
+	}
+	if err := eo.UpdateFrame(solidTestFrame(width, height, 200, 200, 200, 0xFF)); err != nil {
+		return fmt.Errorf("Guest-Advanced mode-change source frame: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	eo.Draw(screen)
+	black := solidTestFrame(2, 2, 0, 0, 0, 0xFF)
+	if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{
+		FrameID: 1, PresentationWidth: width, PresentationHeight: height, HasContent: true,
+		Layers: []CompositorFrameLayer{{SourceID: 1, SourceWidth: 2, SourceHeight: 2, DestWidth: width, DestHeight: height, Opaque: true, Buffer: black}},
+	}); err != nil {
+		return fmt.Errorf("Guest-Advanced mode-change hardware frame: %w", err)
+	}
+	eo.Draw(screen)
+	pixels := readCRTGPUImage(screen, width, height)
+	if luminance(pixels, width, width/2, height/2) != 0 {
+		return fmt.Errorf("Guest-Advanced afterglow leaked across source-mode change")
+	}
+	return nil
+}
+
+// gateCRTGuestAdvancedToggleClearsAfterglow covers F7's presentation path.
+// Disabling CRT skips finish, so the next enabled frame must explicitly
+// discard the retained phosphor history even when its source mode is unchanged.
+func gateCRTGuestAdvancedToggleClearsAfterglow() error {
+	const width, height = 24, 24
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("Guest-Advanced toggle output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("Guest-Advanced toggle display: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	if err := eo.UpdateFrame(solidTestFrame(width, height, 200, 200, 200, 0xFF)); err != nil {
+		return fmt.Errorf("Guest-Advanced toggle bright frame: %w", err)
+	}
+	eo.Draw(screen)
+
+	black := solidTestFrame(width, height, 0, 0, 0, 0xFF)
+	eo.crtRequested = false
+	if err := eo.UpdateFrame(black); err != nil {
+		return fmt.Errorf("Guest-Advanced toggle disabled frame: %w", err)
+	}
+	eo.Draw(screen)
+	eo.crtRequested = true
+	eo.Draw(screen)
+	pixels := readCRTGPUImage(screen, width, height)
+	if got := luminance(pixels, width, width/2, height/2); got != 0 {
+		return fmt.Errorf("Guest-Advanced afterglow survived an off/on CRT toggle: luminance=%d", got)
+	}
+	return nil
+}
+
+// gateCRTGuestAdvancedNativeScreenModes exercises the actual guest modes used
+// by IE demos at their 1080p presentation size. It catches a regression where
+// a filter only works on a toy integer scale but loses its source geometry on
+// 320x200 or 640x480 output.
+func gateCRTGuestAdvancedNativeScreenModes() error {
+	const presentationWidth, presentationHeight = 1920, 1080
+	for _, mode := range []struct {
+		name         string
+		sourceWidth  int
+		sourceHeight int
+		destX        int
+		destY        int
+		destWidth    int
+		destHeight   int
+	}{
+		{name: "320x200", sourceWidth: 320, sourceHeight: 200, destWidth: presentationWidth, destHeight: presentationHeight},
+		{name: "640x480", sourceWidth: 640, sourceHeight: 480, destWidth: presentationWidth, destHeight: presentationHeight},
+		{name: "320x200 aspect-fit", sourceWidth: 320, sourceHeight: 200, destX: 160, destY: 40, destWidth: 1600, destHeight: 1000},
+	} {
+		out, err := NewEbitenOutput()
+		if err != nil {
+			return fmt.Errorf("Guest-Advanced %s output: %w", mode.name, err)
+		}
+		eo := out.(*EbitenOutput)
+		eo.showStatusBar = false
+		if err := eo.SetDisplayConfig(DisplayConfig{Width: presentationWidth, Height: presentationHeight, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+			return fmt.Errorf("Guest-Advanced %s display: %w", mode.name, err)
+		}
+		frame := solidTestFrame(mode.sourceWidth, mode.sourceHeight, 180, 180, 180, 0xFF)
+		if err := eo.UpdateHardwareCompositorFrame(CompositorFrameUpdate{
+			FrameID: 1, PresentationWidth: presentationWidth, PresentationHeight: presentationHeight, HasContent: true,
+			Layers: []CompositorFrameLayer{{
+				SourceID: 1, SourceWidth: mode.sourceWidth, SourceHeight: mode.sourceHeight,
+				DestX: mode.destX, DestY: mode.destY, DestWidth: mode.destWidth, DestHeight: mode.destHeight, Opaque: true, Buffer: frame,
+			}},
+		}); err != nil {
+			return fmt.Errorf("Guest-Advanced %s compositor frame: %w", mode.name, err)
+		}
+		screen := ebiten.NewImage(presentationWidth, presentationHeight)
+		eo.Draw(screen)
+		pixels := readCRTGPUImage(screen, presentationWidth, presentationHeight)
+		x, y := mode.destX+mode.destWidth/2, mode.destY+mode.destHeight/2
+		i := (y*presentationWidth + x) * BYTES_PER_PIXEL
+		if pixels[i] == 0 && pixels[i+1] == 0 && pixels[i+2] == 0 {
+			return fmt.Errorf("Guest-Advanced %s produced a black 1080p presentation", mode.name)
+		}
+		if pixels[i+3] != 0xFF {
+			return fmt.Errorf("Guest-Advanced %s alpha = %d, want 255", mode.name, pixels[i+3])
+		}
+		if sameBytes(pixels[i:i+3], pixels[i+BYTES_PER_PIXEL:i+BYTES_PER_PIXEL+3]) {
+			return fmt.Errorf("Guest-Advanced %s lost the output-space RGB mask at 1080p", mode.name)
+		}
+		if mode.destX != 0 || mode.destY != 0 {
+			if got := pixels[3]; got != 0 {
+				return fmt.Errorf("Guest-Advanced %s wrote outside its destination rect, alpha=%d", mode.name, got)
+			}
+		}
+	}
+	return nil
+}
+
+// gateCRTGuestAdvancedEffects pins the properties that distinguish the default
+// pipeline from Zfast: RGB phosphor phases, spatial bloom and frame-to-frame
+// persistence. Values are intentionally relationship checks, not a brittle
+// whole-image golden tied to one GPU driver's rounding.
+func gateCRTGuestAdvancedEffects() error {
+	const width, height = 24, 24
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("Guest-Advanced output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if eo.crtProfile != crtProfileGuestAdvanced {
+		return fmt.Errorf("Guest-Advanced is not the default CRT profile")
+	}
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("Guest-Advanced display: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	white := solidTestFrame(width, height, 180, 180, 180, 0xFF)
+	if err := eo.UpdateFrame(white); err != nil {
+		return fmt.Errorf("Guest-Advanced white frame: %w", err)
+	}
+	eo.Draw(screen)
+	masked := readCRTGPUImage(screen, width, height)
+	p0 := masked[(12*width+3)*BYTES_PER_PIXEL:]
+	p1 := masked[(12*width+4)*BYTES_PER_PIXEL:]
+	p2 := masked[(12*width+5)*BYTES_PER_PIXEL:]
+	if !(p0[0] > p0[1] && p0[0] > p0[2] && p1[1] > p1[0] && p1[1] > p1[2] && p2[2] > p2[0] && p2[2] > p2[1]) {
+		return fmt.Errorf("Guest-Advanced RGB phosphor phases missing: %v %v %v", p0[:3], p1[:3], p2[:3])
+	}
+
+	black := solidTestFrame(width, height, 0, 0, 0, 0xFF)
+	if err := eo.UpdateFrame(black); err != nil {
+		return fmt.Errorf("Guest-Advanced black frame: %w", err)
+	}
+	eo.Draw(screen)
+	persisted := readCRTGPUImage(screen, width, height)
+	if luminance(persisted, width, 12, 12) == 0 {
+		return fmt.Errorf("Guest-Advanced afterglow did not retain light into the next frame")
+	}
+	if err := gateCRTGuestAdvancedBloom(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func gateCRTGuestAdvancedBloom() error {
+	const width, height = 24, 24
+	out, err := NewEbitenOutput()
+	if err != nil {
+		return fmt.Errorf("Guest-Advanced bloom output: %w", err)
+	}
+	eo := out.(*EbitenOutput)
+	eo.showStatusBar = false
+	if err := eo.SetDisplayConfig(DisplayConfig{Width: width, Height: height, Scale: 1, PixelFormat: PixelFormatRGBA}); err != nil {
+		return fmt.Errorf("Guest-Advanced bloom display: %w", err)
+	}
+	frame := solidTestFrame(width, height, 0, 0, 0, 0xFF)
+	centre := (12*width + 12) * BYTES_PER_PIXEL
+	frame[centre], frame[centre+1], frame[centre+2] = 255, 255, 255
+	if err := eo.UpdateFrame(frame); err != nil {
+		return fmt.Errorf("Guest-Advanced bloom frame: %w", err)
+	}
+	screen := ebiten.NewImage(width, height)
+	eo.Draw(screen)
+	pixels := readCRTGPUImage(screen, width, height)
+	if luminance(pixels, width, 15, 12) == 0 {
+		return fmt.Errorf("Guest-Advanced bloom did not spread bright-phosphor light")
+	}
+	if luminance(pixels, width, 15, 12) >= luminance(pixels, width, 12, 12) {
+		return fmt.Errorf("Guest-Advanced bloom is not lower than its bright source")
 	}
 	return nil
 }

@@ -60,6 +60,7 @@ type EbitenOutput struct {
 	// cursor and status bar must receive their own final-presentation CRT pass.
 	crtPresentationOverlay *ebiten.Image
 	crtRequested           bool
+	crtProfile             crtProfile
 	crtState               crtFilterState
 	crtFilter              *crtFilter
 	firstFrameOnce         sync.Once
@@ -230,6 +231,7 @@ func NewEbitenOutput() (VideoOutput, error) {
 		doneOnce:      &sync.Once{},
 		showStatusBar: true,
 		crtRequested:  true,
+		crtProfile:    crtProfileGuestAdvanced,
 	}
 	// Browser build only: expose ieTypeText/ieKey so the demo page's text input
 	// can drive the guest keyboard on touch devices. No-op on native.
@@ -1572,6 +1574,12 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	// canvas element exists long before anything has been drawn to it.
 	eo.firstFrameOnce.Do(hostSignalFirstFrame)
 	effectiveCRT := eo.crtRequested && eo.ensureCRTFilter()
+	// F7 disables presentation entirely, so Guest-Advanced's finish pass does
+	// not run to replace its history texture. Latch a reset for the next
+	// enabled frame instead of allowing stale phosphor light to flash back in.
+	if !effectiveCRT && eo.crtProfile == crtProfileGuestAdvanced && eo.crtFilter != nil && eo.crtFilter.guest != nil {
+		eo.crtFilter.guest.resetAfterglow()
+	}
 	presentation := eo.presentationImage(screen.Bounds().Dx(), screen.Bounds().Dy())
 	// Routes are mutually exclusive. Clearing the retained staging image keeps
 	// an overlay from inheriting guest, cursor, or status pixels from the
@@ -1593,16 +1601,25 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 
 	// When monitor is active, draw the overlay instead
 	if eo.monitorOverlay != nil && eo.monitorOverlay.monitor.IsActive() {
+		if effectiveCRT && eo.crtProfile == crtProfileGuestAdvanced {
+			eo.crtFilter.guest.setSourceMode("monitor-overlay")
+		}
 		eo.monitorOverlay.Draw(presentation)
 		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
 		return
 	}
 	if eo.luaOverlay != nil && eo.luaOverlay.IsActive() {
+		if effectiveCRT && eo.crtProfile == crtProfileGuestAdvanced {
+			eo.crtFilter.guest.setSourceMode("lua-overlay")
+		}
 		eo.luaOverlay.Draw(presentation)
 		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
 		return
 	}
 	if eo.hostOverlay != nil && eo.hostOverlay.IsActive() {
+		if effectiveCRT && eo.crtProfile == crtProfileGuestAdvanced {
+			eo.crtFilter.guest.setSourceMode("host-overlay")
+		}
 		eo.hostOverlay.Draw(presentation)
 		eo.finishPresentation(screen, presentation, effectiveCRT, defaultCRTPresentationGeometry())
 		return
@@ -1611,6 +1628,9 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	eo.bufferMutex.Lock()
 	usedHardware := eo.hwFrameID != 0
 	if usedHardware {
+		if effectiveCRT && eo.crtProfile == crtProfileGuestAdvanced {
+			eo.crtFilter.guest.setSourceMode(crtHardwareGuestModeKey(eo.hwLayers))
+		}
 		eo.drawHardwareCompositorLocked(presentation, effectiveCRT, eo.crtFilter)
 	} else {
 		if eo.window == nil {
@@ -1625,10 +1645,15 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	compositor := eo.compositor
 	eo.bufferMutex.Unlock()
 	if !usedHardware {
-		presentation.DrawImage(eo.window, nil)
+		if effectiveCRT && eo.crtProfile == crtProfileGuestAdvanced {
+			eo.crtFilter.guest.setSourceMode(fmt.Sprintf("framebuffer:%dx%d", eo.width, eo.height))
+			eo.crtFilter.guest.drawRaster(presentation, eo.window, guestAdvancedRasterUniforms(eo.width, eo.height, presentation.Bounds().Dx(), presentation.Bounds().Dy()), nil, nil)
+		} else {
+			presentation.DrawImage(eo.window, nil)
+		}
 	}
 	postCompositor := presentation
-	if usedHardware && effectiveCRT {
+	if effectiveCRT && (usedHardware || eo.crtProfile == crtProfileGuestAdvanced) {
 		postCompositor = eo.crtPresentationOverlayImage(screen.Bounds().Dx(), screen.Bounds().Dy())
 		postCompositor.Clear()
 	}
@@ -1654,14 +1679,36 @@ func (eo *EbitenOutput) Draw(screen *ebiten.Image) {
 	}
 	// Hardware layers have already received Zfast while sampling their native
 	// textures. Do not run the composed guest through a second CRT pass.
-	eo.finishPresentation(screen, presentation, effectiveCRT && !usedHardware, defaultCRTPresentationGeometry())
+	// Zfast is fully applied while compositing hardware layers. Guest-Advanced
+	// needs a final viewport bloom/mask/deconvergence stage after those layers.
+	eo.finishPresentation(screen, presentation, effectiveCRT && (!usedHardware || eo.crtProfile == crtProfileGuestAdvanced), defaultCRTPresentationGeometry())
 }
 
 // ensureCRTFilter lazily compiles once. A backend that cannot compile or run
 // Kage falls back for the rest of the session instead of attempting work every
 // frame, and the current Draw already observes the false effective state.
 func (eo *EbitenOutput) ensureCRTFilter() bool {
+	if eo.crtProfile == crtProfileGuestAdvanced {
+		return eo.initialiseGuestAdvancedCRTFilter()
+	}
 	return eo.initialiseCRTFilter([]byte(zfastCRTShaderSource))
+}
+
+func (eo *EbitenOutput) initialiseGuestAdvancedCRTFilter() bool {
+	switch eo.crtState {
+	case crtFilterAvailable:
+		return true
+	case crtFilterFailed:
+		return false
+	}
+	eo.crtFilter = newGuestAdvancedCRTFilter()
+	if eo.crtFilter.err != nil {
+		eo.crtState = crtFilterFailed
+		fmt.Printf("Ebiten: Guest-Advanced unavailable, using unfiltered presentation: %v\n", eo.crtFilter.err)
+		return false
+	}
+	eo.crtState = crtFilterAvailable
+	return true
 }
 
 // initialiseCRTFilter keeps source selection at the construction boundary so
@@ -1707,6 +1754,10 @@ func (eo *EbitenOutput) crtPresentationOverlayImage(width, height int) *ebiten.I
 // elements and source-over composites them onto native-source CRT guest layers.
 // Applying the shader to presentation instead would filter the guest twice.
 func (eo *EbitenOutput) compositeCRTPresentationOverlay(presentation, overlay *ebiten.Image) {
+	if eo.crtProfile == crtProfileGuestAdvanced {
+		eo.crtFilter.guest.drawRaster(presentation, overlay, guestAdvancedOverlayUniforms(overlay.Bounds().Dx(), overlay.Bounds().Dy()), nil, nil)
+		return
+	}
 	op := &ebiten.DrawRectShaderOptions{}
 	op.Images[0] = overlay
 	op.Uniforms = map[string]any{
@@ -1718,13 +1769,17 @@ func (eo *EbitenOutput) compositeCRTPresentationOverlay(presentation, overlay *e
 
 func (eo *EbitenOutput) finishPresentation(screen, presentation *ebiten.Image, effectiveCRT bool, geometry crtPresentationGeometry) {
 	if effectiveCRT {
-		op := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy}
-		op.Images[0] = presentation
-		op.Uniforms = map[string]any{
-			"ScanlinePeriod": geometry.scanlinePeriod,
-			"ScanlineOrigin": geometry.scanlineOrigin,
+		if eo.crtProfile == crtProfileGuestAdvanced {
+			eo.crtFilter.guest.finish(screen, presentation)
+		} else {
+			op := &ebiten.DrawRectShaderOptions{Blend: ebiten.BlendCopy}
+			op.Images[0] = presentation
+			op.Uniforms = map[string]any{
+				"ScanlinePeriod": geometry.scanlinePeriod,
+				"ScanlineOrigin": geometry.scanlineOrigin,
+			}
+			screen.DrawRectShader(presentation.Bounds().Dx(), presentation.Bounds().Dy(), eo.crtFilter.shader, op)
 		}
-		screen.DrawRectShader(presentation.Bounds().Dx(), presentation.Bounds().Dy(), eo.crtFilter.shader, op)
 	} else {
 		screen.DrawImage(presentation, nil)
 	}
@@ -1840,6 +1895,10 @@ func (eo *EbitenOutput) drawHardwareCompositorLocked(screen *ebiten.Image, crtAc
 		shader := eo.hwCopyShader
 		if crtActive && filter != nil && filter.shader != nil {
 			shader = filter.shader
+			op = &ebiten.DrawTrianglesShaderOptions{Blend: ebiten.BlendCopy, Uniforms: crtHardwareLayerUniforms(layer)}
+			op.Images[0] = src
+		} else if crtActive && filter != nil && filter.guest != nil {
+			shader = filter.guest.raster
 			op = &ebiten.DrawTrianglesShaderOptions{Blend: ebiten.BlendCopy, Uniforms: crtHardwareLayerUniforms(layer)}
 			op.Images[0] = src
 		}
