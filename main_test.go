@@ -1,13 +1,14 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestCLIModeFromExtension_AcceptsTypedBinariesAndScripts(t *testing.T) {
+func TestCLIModeFromExtension_AcceptsTypedBinariesScriptsAndMedia(t *testing.T) {
 	tests := []struct {
 		path string
 		want string
@@ -24,6 +25,29 @@ func TestCLIModeFromExtension_AcceptsTypedBinariesAndScripts(t *testing.T) {
 		{"song.midi", "midi"},
 		{"song.mus", "midi"},
 		{"PROGRAM.IE68", "m68k"},
+		{"tune.sid", "sid"},
+		{"track.ym", "psg"},
+		{"track.ay", "psg"},
+		{"track.sndh", "psg"},
+		{"track.vtx", "psg"},
+		{"track.vt", "psg"},
+		{"track.pt3", "psg"},
+		{"track.pt2", "psg"},
+		{"track.pt1", "psg"},
+		{"track.stc", "psg"},
+		{"track.sqt", "psg"},
+		{"track.asc", "psg"},
+		{"track.ftc", "psg"},
+		{"track.vgm", "psg"},
+		{"track.vgz", "psg"},
+		{"track.snd", "psg"},
+		{"tune.ted", "ted"},
+		{"tune.prg", "ted"},
+		{"module.ahx", "ahx"},
+		{"tune.sap", "pokey"},
+		{"module.mod", "mod"},
+		{"sound.wav", "wav"},
+		{"TUNE.SID", "sid"},
 	}
 
 	for _, tt := range tests {
@@ -39,13 +63,21 @@ func TestCLIModeFromExtension_AcceptsTypedBinariesAndScripts(t *testing.T) {
 	}
 }
 
-func TestCLIModeFromExtension_RejectsNonTypedLaunchFiles(t *testing.T) {
-	for _, path := range []string{"program.bin", "program", "program.txt", "emutos.tos", "emutos.img", "music.sid", "music.mod"} {
+func TestCLIModeFromExtension_RejectsUnsupportedLaunchFiles(t *testing.T) {
+	for _, path := range []string{"program.bin", "program", "program.txt", "emutos.tos", "emutos.img"} {
 		t.Run(path, func(t *testing.T) {
 			if got, err := cliModeFromExtension(path); err == nil {
 				t.Fatalf("cliModeFromExtension(%q) = %q, want error", path, got)
 			}
 		})
+	}
+}
+
+func TestCLIModeFromExtension_UnsupportedErrorListsOnlySupportedExtensions(t *testing.T) {
+	_, err := cliModeFromExtension("notes.md")
+	want := fmt.Sprintf("unsupported extension \".md\" for auto-detect; supported extensions: %s", cliAutoDetectExtensions())
+	if err == nil || err.Error() != want {
+		t.Fatalf("cliModeFromExtension error = %v, want %q", err, want)
 	}
 }
 

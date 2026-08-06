@@ -1465,7 +1465,7 @@ RUN "sdk/examples/prebuilt/robocop_intro_z80.ie80"
 RUN "sdk/examples/prebuilt/robocop_intro_65.bin"
 ```
 
-The CLI and `RUN` command auto-detect typed Intuition Engine binaries from `.ie*` extensions. Raw `.bin` files still require an explicit CPU mode such as `-m6502` plus any needed load/entry options.
+The CLI auto-detects typed Intuition Engine binaries and all supported music files from their extensions. Use a plain music filename for standard playback; use `-sid+`, `-psg+`, `-pokey+`, `-ted+`, or `-ahx+` only when selecting that enhanced mode. The `RUN` command auto-detects typed Intuition Engine binaries. Raw `.bin` files still require an explicit CPU mode such as `-m6502` plus any needed load/entry options.
 
 ## Expected Output
 

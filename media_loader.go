@@ -36,6 +36,39 @@ type MediaLoader struct {
 	mu sync.Mutex
 }
 
+type mediaExtensionDefinition struct {
+	extension string
+	typ       uint32
+}
+
+var mediaExtensionDefinitions = []mediaExtensionDefinition{
+	{extension: ".sid", typ: MEDIA_TYPE_SID},
+	{extension: ".ym", typ: MEDIA_TYPE_PSG},
+	{extension: ".ay", typ: MEDIA_TYPE_PSG},
+	{extension: ".sndh", typ: MEDIA_TYPE_PSG},
+	{extension: ".vtx", typ: MEDIA_TYPE_PSG},
+	{extension: ".vt", typ: MEDIA_TYPE_PSG},
+	{extension: ".pt3", typ: MEDIA_TYPE_PSG},
+	{extension: ".pt2", typ: MEDIA_TYPE_PSG},
+	{extension: ".pt1", typ: MEDIA_TYPE_PSG},
+	{extension: ".stc", typ: MEDIA_TYPE_PSG},
+	{extension: ".sqt", typ: MEDIA_TYPE_PSG},
+	{extension: ".asc", typ: MEDIA_TYPE_PSG},
+	{extension: ".ftc", typ: MEDIA_TYPE_PSG},
+	{extension: ".vgm", typ: MEDIA_TYPE_PSG},
+	{extension: ".vgz", typ: MEDIA_TYPE_PSG},
+	{extension: ".snd", typ: MEDIA_TYPE_PSG},
+	{extension: ".ted", typ: MEDIA_TYPE_TED},
+	{extension: ".prg", typ: MEDIA_TYPE_TED},
+	{extension: ".ahx", typ: MEDIA_TYPE_AHX},
+	{extension: ".sap", typ: MEDIA_TYPE_POKEY},
+	{extension: ".mod", typ: MEDIA_TYPE_MOD},
+	{extension: ".wav", typ: MEDIA_TYPE_WAV},
+	{extension: ".mid", typ: MEDIA_TYPE_MIDI},
+	{extension: ".midi", typ: MEDIA_TYPE_MIDI},
+	{extension: ".mus", typ: MEDIA_TYPE_MIDI},
+}
+
 func (m *MediaLoader) SetSymbolTable(symbols *SymbolTable) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -550,28 +583,13 @@ func (m *MediaLoader) refreshStatusLocked() {
 }
 
 func detectMediaType(path string) uint32 {
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".sid":
-		return MEDIA_TYPE_SID
-	case ".ym", ".ay", ".sndh",
-		".vtx", ".vt", ".pt3", ".pt2", ".pt1", ".stc", ".sqt", ".asc", ".ftc",
-		".vgm", ".vgz", ".snd":
-		return MEDIA_TYPE_PSG
-	case ".ted", ".prg":
-		return MEDIA_TYPE_TED
-	case ".ahx":
-		return MEDIA_TYPE_AHX
-	case ".sap":
-		return MEDIA_TYPE_POKEY
-	case ".mod":
-		return MEDIA_TYPE_MOD
-	case ".wav":
-		return MEDIA_TYPE_WAV
-	case ".mid", ".midi", ".mus":
-		return MEDIA_TYPE_MIDI
-	default:
-		return MEDIA_TYPE_NONE
+	extension := strings.ToLower(filepath.Ext(path))
+	for _, definition := range mediaExtensionDefinitions {
+		if definition.extension == extension {
+			return definition.typ
+		}
 	}
+	return MEDIA_TYPE_NONE
 }
 
 func mediaSymbolCPU(typ uint32) string {

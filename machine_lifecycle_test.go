@@ -177,20 +177,25 @@ func TestMachineLoad_ScriptPathRunsWithoutMachineReset(t *testing.T) {
 	}
 }
 
-func TestMachineLoad_MIDIPathDispatchesWithoutMachineReset(t *testing.T) {
-	machine := NewMachine(MachineDeps{})
-	media := &fakeMachineMedia{}
-	machine.SetMediaLoader(media)
-	machine.SetProgramReset(func(path string) error {
-		t.Fatalf("reset called for MIDI path %q", path)
-		return nil
-	})
+func TestMachineLoad_AutoDetectedMediaDispatchesWithoutMachineReset(t *testing.T) {
+	for _, definition := range mediaExtensionDefinitions {
+		t.Run(definition.extension, func(t *testing.T) {
+			machine := NewMachine(MachineDeps{})
+			media := &fakeMachineMedia{}
+			machine.SetMediaLoader(media)
+			machine.SetProgramReset(func(path string) error {
+				t.Fatalf("reset called for media path %q", path)
+				return nil
+			})
 
-	if err := machine.LaunchProgramOrScript("song.mid"); err != nil {
-		t.Fatalf("LaunchProgramOrScript returned error: %v", err)
-	}
-	if media.path != "song.mid" || media.subsong != 0 {
-		t.Fatalf("media dispatch = (%q, %d), want (song.mid, 0)", media.path, media.subsong)
+			path := "song" + definition.extension
+			if err := machine.LaunchProgramOrScript(path); err != nil {
+				t.Fatalf("LaunchProgramOrScript returned error: %v", err)
+			}
+			if media.path != path || media.subsong != 0 {
+				t.Fatalf("media dispatch = (%q, %d), want (%q, 0)", media.path, media.subsong, path)
+			}
+		})
 	}
 }
 

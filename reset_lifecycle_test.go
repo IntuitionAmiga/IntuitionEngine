@@ -294,6 +294,64 @@ func TestIPC_ValidateRejectsBadExtension(t *testing.T) {
 	}
 }
 
+func TestIPC_ValidateAcceptsAllAutoDetectedMediaExtensions(t *testing.T) {
+	extensions := []string{
+		".sid",
+		".ym", ".ay", ".sndh", ".vtx", ".vt", ".pt3", ".pt2", ".pt1", ".stc", ".sqt", ".asc", ".ftc", ".vgm", ".vgz", ".snd",
+		".ted", ".prg",
+		".ahx",
+		".sap",
+		".mod",
+		".wav",
+		".mid", ".midi", ".mus",
+	}
+
+	dir := t.TempDir()
+	for _, ext := range extensions {
+		path := filepath.Join(dir, "music"+ext)
+		if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", ext, err)
+		}
+		if err := validateIPCPath(path); err != nil {
+			t.Errorf("validateIPCPath(%q): %v", path, err)
+		}
+	}
+}
+
+func TestIPC_AutoDetectedMediaDispatchesThroughMachineLauncher(t *testing.T) {
+	for _, definition := range mediaExtensionDefinitions {
+		t.Run(definition.extension, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "music"+definition.extension)
+			if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
+				t.Fatalf("write media file: %v", err)
+			}
+
+			machine := NewMachine(MachineDeps{})
+			media := &fakeMachineMedia{}
+			machine.SetMediaLoader(media)
+			machine.SetProgramReset(func(path string) error {
+				t.Fatalf("reset called for IPC media path %q", path)
+				return nil
+			})
+
+			server, err := newIPCServerAt(testSocketPath(t), machine.LaunchProgramOrScript)
+			if err != nil {
+				t.Fatalf("newIPCServerAt: %v", err)
+			}
+			server.Start()
+			defer server.Stop()
+
+			if err := sendIPCOpenAt(server.sockPath, path); err != nil {
+				t.Fatalf("sendIPCOpenAt: %v", err)
+			}
+			if media.path != path || media.subsong != 0 {
+				t.Fatalf("media dispatch = (%q, %d), want (%q, 0)", media.path, media.subsong, path)
+			}
+		})
+	}
+}
+
 // TestIPC_StaleSocketCleanup tests stale socket detection and cleanup.
 func TestIPC_StaleSocketCleanup(t *testing.T) {
 	sockPath := testSocketPath(t)

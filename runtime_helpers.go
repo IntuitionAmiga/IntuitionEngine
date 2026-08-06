@@ -25,7 +25,15 @@ import (
 	"strings"
 )
 
-const cliAutoDetectExtensions = ".iex, .ie32, .ie64, .ie65, .ie68, .ie80, .ie86, .ies, .mid, .midi, .mus"
+const cliTypedAutoDetectExtensions = ".iex, .ie32, .ie64, .ie65, .ie68, .ie80, .ie86, .ies"
+
+func cliAutoDetectExtensions() string {
+	extensions := strings.Split(cliTypedAutoDetectExtensions, ", ")
+	for _, definition := range mediaExtensionDefinitions {
+		extensions = append(extensions, definition.extension)
+	}
+	return strings.Join(extensions, ", ")
+}
 
 func modeFromExtension(path string) (string, error) {
 	switch strings.ToLower(filepath.Ext(path)) {
@@ -68,10 +76,34 @@ func cliModeFromExtension(path string) (string, error) {
 		return "x86", nil
 	case ".ies":
 		return "script", nil
-	case ".mid", ".midi", ".mus":
-		return "midi", nil
 	default:
-		return "", fmt.Errorf("unsupported extension %q for auto-detect; supported extensions: %s. Raw binaries require an explicit CPU mode flag", filepath.Ext(path), cliAutoDetectExtensions)
+		if mode := cliMediaMode(detectMediaType(path)); mode != "" {
+			return mode, nil
+		}
+		return "", fmt.Errorf("unsupported extension %q for auto-detect; supported extensions: %s", filepath.Ext(path), cliAutoDetectExtensions())
+	}
+}
+
+func cliMediaMode(typ uint32) string {
+	switch typ {
+	case MEDIA_TYPE_SID:
+		return "sid"
+	case MEDIA_TYPE_PSG:
+		return "psg"
+	case MEDIA_TYPE_TED:
+		return "ted"
+	case MEDIA_TYPE_AHX:
+		return "ahx"
+	case MEDIA_TYPE_POKEY:
+		return "pokey"
+	case MEDIA_TYPE_MOD:
+		return "mod"
+	case MEDIA_TYPE_WAV:
+		return "wav"
+	case MEDIA_TYPE_MIDI:
+		return "midi"
+	default:
+		return ""
 	}
 }
 

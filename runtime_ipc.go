@@ -30,12 +30,6 @@ import (
 
 const ipcMaxRequestSize = 4096
 
-var allowedExtensions = map[string]bool{
-	".ie32": true, ".iex": true, ".ie64": true,
-	".ie65": true, ".ie68": true, ".ie80": true, ".ie86": true, ".ies": true,
-	".mid": true, ".midi": true, ".mus": true,
-}
-
 type ipcRequest struct {
 	Cmd  string `json:"cmd"`
 	Path string `json:"path"`
@@ -152,8 +146,8 @@ func validateIPCPath(path string) error {
 	if !filepath.IsAbs(path) {
 		return fmt.Errorf("absolute path required")
 	}
-	ext := strings.ToLower(filepath.Ext(path))
-	if !allowedExtensions[ext] {
+	if _, err := cliModeFromExtension(path); err != nil {
+		ext := strings.ToLower(filepath.Ext(path))
 		return fmt.Errorf("unsupported extension: %s", ext)
 	}
 	info, err := os.Lstat(path)

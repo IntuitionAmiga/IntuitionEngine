@@ -74,9 +74,16 @@ CLI auto-detection supports:
 | `.ie80` | Z80 |
 | `.ie86` | x86 |
 | `.ies` | IEScript |
+| `.sid` | SID player |
+| `.ym`, `.ay`, `.sndh`, `.vtx`, `.vt`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc`, `.vgm`, `.vgz`, `.snd` | PSG player |
+| `.ted`, `.prg` | TED player |
+| `.ahx` | AHX player |
+| `.sap` | POKEY player |
+| `.mod` | MOD player |
+| `.wav` | WAV player |
 | `.mid`, `.midi`, `.mus` | MIDI/MUS player |
 
-Raw binaries, ROM images, EmuTOS `.tos`/`.img` files, and most audio formats require an explicit flag:
+Raw binaries, ROM images, and EmuTOS `.tos`/`.img` files require an explicit flag:
 
 ```bash
 ./bin/IntuitionEngine -basic
@@ -99,14 +106,21 @@ Raw binaries, ROM images, EmuTOS `.tos`/`.img` files, and most audio formats req
 Audio playback examples:
 
 ```bash
-./bin/IntuitionEngine -psg music.ym
-./bin/IntuitionEngine -sid music.sid
-./bin/IntuitionEngine -pokey music.sap
-./bin/IntuitionEngine -ted music.ted
-./bin/IntuitionEngine -ahx music.ahx
-./bin/IntuitionEngine -mod music.mod
-./bin/IntuitionEngine -wav sound.wav
-./bin/IntuitionEngine -midi song.mid
+./bin/IntuitionEngine music.ym
+./bin/IntuitionEngine music.sid
+./bin/IntuitionEngine music.sap
+./bin/IntuitionEngine music.ted
+./bin/IntuitionEngine music.ahx
+./bin/IntuitionEngine music.mod
+./bin/IntuitionEngine sound.wav
+./bin/IntuitionEngine song.mid
+
+# Enhanced playback remains opt-in
+./bin/IntuitionEngine -psg+ music.ym
+./bin/IntuitionEngine -sid+ music.sid
+./bin/IntuitionEngine -pokey+ music.sap
+./bin/IntuitionEngine -ted+ music.ted
+./bin/IntuitionEngine -ahx+ music.ahx
 ```
 
 Useful runtime flags:

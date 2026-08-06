@@ -38,7 +38,7 @@ Programs can be run from the command line or from the EhBASIC interpreter:
 RUN "program.iex"
 ```
 
-The CLI and `RUN` command auto-detect typed Intuition Engine formats by extension: `.iex`/`.ie32` (IE32), `.ie64` (IE64), `.ie68` (M68K), `.ie80` (Z80), `.ie65` (6502), `.ie86` (x86), and `.ies` (IEScript). Raw `.bin` files require an explicit CPU mode and load/entry options when needed.
+The CLI auto-detects typed Intuition Engine formats by extension: `.iex`/`.ie32` (IE32), `.ie64` (IE64), `.ie68` (M68K), `.ie80` (Z80), `.ie65` (6502), `.ie86` (x86), and `.ies` (IEScript). It also auto-detects SID, PSG, TED, AHX, POKEY, MOD, WAV, and MIDI/MUS music files. The `RUN` command auto-detects typed Intuition Engine formats. Raw `.bin` files require an explicit CPU mode and load/entry options when needed.
 
 ## Built-in Assemblers
 

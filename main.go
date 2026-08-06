@@ -411,7 +411,7 @@ func main() {
 	if filename != "" && os.Getenv("IE_NO_IPC") == "" {
 		absPath, absErr := filepath.Abs(filename)
 		if absErr == nil {
-			if _, extErr := modeFromExtension(absPath); extErr == nil {
+			if _, extErr := cliModeFromExtension(absPath); extErr == nil {
 				if err := SendIPCOpen(absPath); err == nil {
 					fmt.Printf("Sent %s to running instance\n", filepath.Base(filename))
 					exitProfiled(0)
@@ -486,6 +486,20 @@ func main() {
 			filename = ""
 			modeBasic = true
 			modeIE64 = true
+		case "sid":
+			modeSID = true
+		case "psg":
+			modePSG = true
+		case "ted":
+			modeTED = true
+		case "ahx":
+			modeAHX = true
+		case "pokey":
+			modePOKEY = true
+		case "mod":
+			modeMOD = true
+		case "wav":
+			modeWAV = true
 		case "midi":
 			modeMIDI = true
 		}

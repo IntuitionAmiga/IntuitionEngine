@@ -346,38 +346,42 @@ The `RUN` command auto-detects the CPU core from the file extension.
 
 ### Music Playback
 
+The command line auto-detects every supported music extension. Use the plain
+filename for standard playback. The `+` switches below remain explicit opt-ins
+for their enhanced player modes.
+
 ```bash
 # PSG (AY-3-8910/YM2149; VGM SN76489 writes route to native SN)
-./bin/IntuitionEngine -psg track.ym       # Atari ST YM format
-./bin/IntuitionEngine -psg track.ay       # ZXAYEMUL (ZX Spectrum/Amstrad CPC/MSX auto-detected)
-./bin/IntuitionEngine -psg track.vgm      # VGM stream (AY-3-8910 + native SN76489)
-./bin/IntuitionEngine -psg track.vgz      # VGM compressed (AY-3-8910 + native SN76489)
-./bin/IntuitionEngine -psg track.sndh     # Atari ST SNDH (with embedded M68K code)
-./bin/IntuitionEngine -psg track.vtx      # Vortex Tracker (LHA-compressed YM)
-./bin/IntuitionEngine -psg track.pt3      # ProTracker 3 (Z80 tracker)
-./bin/IntuitionEngine -psg track.stc      # Sound Tracker Compiled (Z80 tracker)
-./bin/IntuitionEngine -psg track.pt2      # ProTracker 2 (Z80 tracker)
-./bin/IntuitionEngine -psg track.pt1      # ProTracker 1 (Z80 tracker)
-./bin/IntuitionEngine -psg track.sqt      # SQ-Tracker (Z80 tracker)
-./bin/IntuitionEngine -psg track.asc      # ASC Sound Master (Z80 tracker)
-./bin/IntuitionEngine -psg track.ftc      # Fast Tracker ZX (Z80 tracker)
+./bin/IntuitionEngine track.ym            # Atari ST YM format
+./bin/IntuitionEngine track.ay            # ZXAYEMUL (ZX Spectrum/Amstrad CPC/MSX auto-detected)
+./bin/IntuitionEngine track.vgm           # VGM stream (AY-3-8910 + native SN76489)
+./bin/IntuitionEngine track.vgz           # VGM compressed (AY-3-8910 + native SN76489)
+./bin/IntuitionEngine track.sndh          # Atari ST SNDH (with embedded M68K code)
+./bin/IntuitionEngine track.vtx           # Vortex Tracker (LHA-compressed YM)
+./bin/IntuitionEngine track.pt3           # ProTracker 3 (Z80 tracker)
+./bin/IntuitionEngine track.stc           # Sound Tracker Compiled (Z80 tracker)
+./bin/IntuitionEngine track.pt2           # ProTracker 2 (Z80 tracker)
+./bin/IntuitionEngine track.pt1           # ProTracker 1 (Z80 tracker)
+./bin/IntuitionEngine track.sqt           # SQ-Tracker (Z80 tracker)
+./bin/IntuitionEngine track.asc           # ASC Sound Master (Z80 tracker)
+./bin/IntuitionEngine track.ftc           # Fast Tracker ZX (Z80 tracker)
 ./bin/IntuitionEngine -psg+ track.ym      # Enhanced audio
 
 # SID (Commodore 64)
-./bin/IntuitionEngine -sid tune.sid       # PSID/RSID playback
+./bin/IntuitionEngine tune.sid            # PSID/RSID playback
 ./bin/IntuitionEngine -sid+ tune.sid      # Enhanced audio
 ./bin/IntuitionEngine -sid-pal tune.sid   # PAL timing
 ./bin/IntuitionEngine -sid-ntsc tune.sid  # NTSC timing
 
 # POKEY (Atari 8-bit)
-./bin/IntuitionEngine -pokey track.sap
+./bin/IntuitionEngine track.sap
 ./bin/IntuitionEngine -pokey+ track.sap   # Enhanced audio
 
 # TED (Commodore Plus/4)
-./bin/IntuitionEngine -ted track.prg
+./bin/IntuitionEngine track.prg
 
 # AHX (Amiga)
-./bin/IntuitionEngine -ahx module.ahx
+./bin/IntuitionEngine module.ahx
 ./bin/IntuitionEngine -ahx+ module.ahx   # Enhanced with stereo spread
 ```
 
