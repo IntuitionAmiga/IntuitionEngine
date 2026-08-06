@@ -2201,6 +2201,51 @@ Execute this pass in ascending reader order:
    forbidden-term and dash scans, strict publication, and PDF generation in
    that order. PDFs are always the final generated artefact.
 
+## Current IE Script CRT Presentation Pass
+
+The current public IE Script surface adds explicit control over the final CRT
+presentation mode and separate captures of the composed and displayed frames.
+This is a programming contract for IE Script, but it is not a new video chip,
+MMIO block, or guest framebuffer format.
+
+Document only these reader-visible contracts:
+
+- `video.is_crt_enabled()`, `video.set_crt_enabled(on)`, and
+  `video.toggle_crt()` retain their boolean compatibility behaviour.
+- `video.get_crt_mode()`, `video.set_crt_mode(mode)`, and
+  `video.cycle_crt_mode()` use the exact mode names `flat`, `curved`, and
+  `off`.
+- The cycle order is `flat`, `curved`, `off`, then `flat` again.
+- Boolean enable selects `flat`; boolean toggle switches between `flat` and
+  `off` and does not select `curved`.
+- Script control changes final presentation without changing guest video
+  registers, framebuffer bytes, or the F7 key state seen by the guest.
+- `rec.screenshot_composed(path)` captures composition before CRT processing,
+  cursor, and status bar.
+- `rec.screenshot_screen(path)` captures the final displayed frame after those
+  presentation steps.
+- Controls or captures that the selected output cannot provide raise a script
+  error. Invalid mode names also raise a script error.
+
+Do not document shader passes, glow or bloom algorithms, render targets,
+retained hardware-layer implementation, graphics-library details, browser
+automation state, fallback implementation, or platform availability. Those
+are author verification evidence, not part of the PRG reader path.
+
+Execute this pass in ascending reader order:
+
+1. Chapter 34: add the six mode controls, the two capture functions, their
+   status and error behaviour, and one typed IE Script example that captures
+   both stages and restores the original mode.
+2. Chapter 44: make two-stage capture a task-first presentation diagnostic
+   while retaining `video.frame_hash()` as the ordinary guest-output check.
+3. Appendix L: add concise lookup entries for CRT presentation modes and both
+   capture stages.
+4. Claim ledger: record canonical code and focused tests, reader workflow,
+   expected files, and the explicit exclusion of presentation internals.
+5. Run focused script tests, documentation checks, forbidden-term and dash
+   scans, strict publication, and PDF generation in that order.
+
 ## Uniform Chapter Taxonomy
 
 Name hardware chapters after the hardware block, not after every file

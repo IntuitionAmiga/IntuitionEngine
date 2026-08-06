@@ -630,11 +630,22 @@ audio.psg_stop()
 
 Video chip, VGA, ULA, ANTIC/GTIA, TED, Voodoo 3D, Copper coprocessor, Blitter, and frame inspection.
 
-`video.is_crt_enabled()` - Return whether the host CRT presentation filter is enabled. Raises if the selected output has no CRT presentation controller. Returns: boolean.
+`video.get_crt_mode()`, `video.set_crt_mode(mode)`, and
+`video.cycle_crt_mode()` expose the full flat, curved, off cycle used by F7.
+The boolean functions remain compatibility controls: enabling selects flat and
+their toggle only switches flat and off.
 
-`video.set_crt_enabled(on)` - Enable or disable the host CRT presentation filter. This is the same host action as F7 and does not inject a guest key. Raises if the selected output has no CRT presentation controller. Returns: nothing.
+`video.is_crt_enabled()` - Return whether the host CRT presentation mode is flat or curved rather than off. Raises if the selected output has no CRT presentation controller. Returns: boolean.
 
-`video.toggle_crt()` - Toggle the host CRT presentation filter, equivalent to F7. Raises if the selected output has no CRT presentation controller. Returns: boolean, the new enabled state.
+`video.set_crt_enabled(on)` - Select flat CRT mode when `on` is true or off when false. This is a host presentation action and does not inject a guest key. Raises if the selected output has no CRT presentation controller. Returns: nothing.
+
+`video.toggle_crt()` - Toggle between off and flat CRT mode. Unlike F7, this boolean compatibility API does not select curved mode. Raises if the selected output has no CRT presentation controller. Returns: boolean, the new enabled state.
+
+`video.get_crt_mode()` - Return the requested host CRT presentation mode: `"flat"`, `"curved"`, or `"off"`. Raises if the selected output has no CRT presentation controller. Returns: string.
+
+`video.set_crt_mode(mode)` - Select the host CRT presentation mode. `mode` must be `"flat"`, `"curved"`, or `"off"`. This is a host presentation action and does not inject a guest key. Raises for an invalid mode or if the selected output has no CRT presentation controller. Returns: nothing.
+
+`video.cycle_crt_mode()` - Advance flat → curved → off → flat, exactly matching F7's host presentation transition. Unlike a physical F7 keypress, it does not inject a guest key. Raises if the selected output has no CRT presentation controller. Returns: string, the new mode.
 
 ### General
 
@@ -866,9 +877,9 @@ Recording and screenshot capture.
 
 `rec.screenshot(path)` - Capture the current compositor frame as a PNG file at script-relative `path`. Pure Go implementation - no external dependencies. Returns: nothing. Raises on path validation or screenshot errors.
 
-`rec.screenshot_composed(path)` - Capture the next GPU-composed image before CRT presentation, cursor and status-bar processing as a PNG file at script-relative `path`. This is a diagnostic capture for separating compositor and final-presentation faults. Returns: nothing. Raises on path validation, capture or timeout errors.
+`rec.screenshot_composed(path)` captures the GPU-composed image before CRT, cursor, and status-bar processing. It writes the next such image as a PNG file at script-relative `path`. This is a diagnostic capture for separating compositor and final-presentation faults. Returns: nothing. Raises on path validation, capture or timeout errors.
 
-`rec.screenshot_screen(path)` - Capture the next final displayed frame, including CRT presentation, host cursor and status bar, as a PNG file at script-relative `path`. Waits for the Ebiten draw that fulfils the request. Returns: nothing. Raises on path validation, capture or timeout errors.
+`rec.screenshot_screen(path)` captures the final displayed frame after host presentation processing. It writes the next such frame, including CRT presentation, host cursor and status bar, as a PNG file at script-relative `path`. The call waits for the Ebiten draw that fulfils the request. Returns: nothing. Raises on path validation, capture or timeout errors.
 
 `rec.start(path)` - Start recording video (and audio) to an MP4 file at script-relative `path`. Requires FFmpeg in `PATH`. Returns: nothing. Raises on path validation or recorder errors.
 
@@ -1794,13 +1805,16 @@ Compact reference for IEScript API functions.
 | `audio.midi_is_playing()` | boolean |
 | `audio.midi_metadata()` | table |
 
-### video (68)
+### video (71)
 
 | Function | Returns |
 |----------|---------|
 | `video.is_crt_enabled()` | boolean |
 | `video.set_crt_enabled(on)` | - |
 | `video.toggle_crt()` | boolean |
+| `video.get_crt_mode()` | string |
+| `video.set_crt_mode(mode)` | - |
+| `video.cycle_crt_mode()` | string |
 | `video.write_reg(addr, value)` | - |
 | `video.read_reg(addr)` | number |
 | `video.get_dimensions()` | width, height |
@@ -1880,11 +1894,13 @@ Compact reference for IEScript API functions.
 | `repl.scroll_down([n])` | - |
 | `repl.line_count()` | number |
 
-### rec (6)
+### rec (8)
 
 | Function | Returns |
 |----------|---------|
 | `rec.screenshot(path)` | - |
+| `rec.screenshot_composed(path)` | - |
+| `rec.screenshot_screen(path)` | - |
 | `rec.start(path)` | - |
 | `rec.start_screen(path)` | - |
 | `rec.stop()` | - |

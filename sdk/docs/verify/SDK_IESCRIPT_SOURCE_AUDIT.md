@@ -32,10 +32,13 @@
 | IEScript | api contract | `mem.write32(addr, value) returns nothing and truncates addr to uint32` | `script_engine.go` `luaMemWrite32` `uint32(L.CheckInt(1))` |
 | IEScript | api contract | `mem.write8(addr, value) returns nothing and truncates addr to uint32` | `script_engine.go` `luaMemWrite8` `uint32(L.CheckInt(1))` |
 | IEScript | api contract | `mem.write_block(addr, bytes) writes a raw byte string and returns nothing` | `script_engine.go` `luaMemWriteBlock` byte loop |
+| IEScript | api contract | `rec.screenshot_composed(path) captures the GPU-composed image before CRT, cursor, and status-bar processing` | `script_engine.go` `luaRecScreenshotComposed`, `video_backend_ebiten.go` composition capture stage, and `video_crt_script_ebiten_test.go` |
+| IEScript | api contract | `rec.screenshot_screen(path) captures the final displayed frame after host presentation processing` | `script_engine.go` `luaRecScreenshotScreen`, `video_backend_ebiten.go` final screen capture stage, and `video_crt_script_ebiten_test.go` |
 | IEScript | api contract | `rec.start() and rec.start_screen() follow wall-clock time; after an encoder stall they discard missed video-frame debt and matching oldest buffered audio instead of producing an unbounded catch-up burst` | `video_recorder.go` `loop`/`audioPump`/`sampleRing.discard`, `video_recorder_test.go` discard and cursor-protocol coverage |
 | IEScript | api contract | `rec.start() and rec.start_screen() pump video and audio independently; frozen or unchanged video is held, and audio starvation beyond 500 ms produces silence instead of stalling` | `video_recorder.go` wall-clock `loop`, independent `audioPump`, and `recorderAudioGraceTicks`; `video_recorder_test.go` audio-starvation coverage |
 | IEScript | api contract | `sys.perf_report() returns a string subsystem performance report; it is empty when IE_PERF_ACCT is off or no subsystem counters have recorded work` | `script_engine.go` `luaSysPerfReport`, `perf_accounting_subsys.go` `Report` |
 | IEScript | api contract | `sys.perf_reset() resets subsystem performance counters and returns nothing` | `script_engine.go` `luaSysPerfReset`, `perf_accounting_subsys.go` `Reset` |
+| IEScript | api contract | `video.get_crt_mode(), video.set_crt_mode(mode), and video.cycle_crt_mode() expose the full flat, curved, off cycle used by F7. The boolean functions remain compatibility controls: enabling selects flat and their toggle only switches flat and off.` | `script_engine.go` mode bindings, `video_compositor.go` mode controller, `video_backend_ebiten.go` shared F7 transition, and `script_crt_control_test.go` |
 | IEScript | binding | `audio.ahx_is_playing` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `audio.ahx_load` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `audio.ahx_play` | `script_engine.go` `registerModules` binding |
@@ -287,6 +290,8 @@
 | IEScript | binding | `rec.frame_count` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `rec.is_recording` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `rec.screenshot` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `rec.screenshot_composed` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `rec.screenshot_screen` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `rec.start` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `rec.start_screen` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `rec.stop` | `script_engine.go` `registerModules` binding |
@@ -357,7 +362,9 @@
 | IEScript | binding | `video.copper_enable` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.copper_is_running` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.copper_set_program` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `video.cycle_crt_mode` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.frame_hash` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `video.get_crt_mode` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.get_dimensions` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.get_pixel` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.get_region` | `script_engine.go` `registerModules` binding |
@@ -366,8 +373,11 @@
 | IEScript | binding | `video.gtia_player_pos` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.gtia_player_size` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.gtia_priority` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `video.is_crt_enabled` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.is_enabled` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.read_reg` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `video.set_crt_enabled` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `video.set_crt_mode` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ted_charset` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ted_colors` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ted_cursor` | `script_engine.go` `registerModules` binding |
@@ -376,6 +386,7 @@
 | IEScript | binding | `video.ted_is_enabled` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ted_mode` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ted_video_base` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `video.toggle_crt` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ula_border` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ula_enable` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ula_get_dimensions` | `script_engine.go` `registerModules` binding |

@@ -96,6 +96,28 @@ func TestCRTPresentationModeCyclesFlatCurvedOff(t *testing.T) {
 	}
 }
 
+func TestEbitenCRTModeControllerUsesF7Cycle(t *testing.T) {
+	out, err := NewEbitenOutput()
+	if err != nil {
+		t.Fatalf("NewEbitenOutput: %v", err)
+	}
+	eo := out.(*EbitenOutput)
+	for _, want := range []string{"curved", "off", "flat"} {
+		if got := eo.cycleCRTModeRequested(); got != want {
+			t.Fatalf("IEScript CRT cycle = %q, want %q", got, want)
+		}
+	}
+	if !eo.setCRTModeRequested("curved") {
+		t.Fatal("setCRTModeRequested rejected curved")
+	}
+	if got := eo.crtModeRequested(); got != "curved" {
+		t.Fatalf("selected CRT mode = %q, want curved", got)
+	}
+	if eo.setCRTModeRequested("barrel") {
+		t.Fatal("setCRTModeRequested accepted an invalid CRT mode")
+	}
+}
+
 func TestCRTPresentationModeNamesAreBrowserStable(t *testing.T) {
 	for mode, want := range map[crtPresentationMode]string{
 		crtModeFlat:   "flat",

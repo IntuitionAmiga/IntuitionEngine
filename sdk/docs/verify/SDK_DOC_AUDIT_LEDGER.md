@@ -3527,6 +3527,81 @@ The current tracked changes from `SDK-DOC-0096` were retained and audited as
 part of the combined source state.
 Disposition: KEEP.
 
+ID: SDK-DOC-0098
+Status: FIXED
+Document: `sdk/docs/architecture.md`, `sdk/docs/iescript.md`, their empirical
+source inventories, and companion-document gates.
+Section: CRT final-presentation architecture and script-visible capture/control
+contracts.
+Claim: Commits `154df71d` through `d661c2dd` add an Ebiten CRT presentation
+pipeline, make Guest-Advanced the default profile, preserve native guest-layer
+geometry through hardware presentation, add composed/final screenshot stages,
+and define F7 as a flat-to-curved-to-off cycle. The IEScript control remains a
+two-state compatibility API: enabled means flat or curved, setting true selects
+flat, and toggling switches only between flat and off.
+Purpose judgement: Final host presentation, compositor boundaries, capture
+stages, and observable fallback behaviour belong in the whole-machine
+architecture manual. Script function arguments, return values, errors, and
+stage semantics belong in the IEScript manual. No CPU ISA or IEMon command
+contract changed.
+Canonical sources checked: every commit in `6006ea3b..d661c2dd`;
+`video_backend_ebiten.go`, `video_crt_filter_ebiten.go`,
+`video_crt_guest_advanced_ebiten.go`, `video_compositor.go`,
+`video_interface.go`, `script_engine.go`, CRT GPU/browser/script tests, and the
+current build tags. The IEDoom binary, wasm asset, dependency refresh, and Go
+1.26 source-only fixes add no separate five-book contract.
+Runnable verification: `go test -tags headless -count=1 -run
+'TestSDKISAInventory|TestSDKIEMonSourceInventory|TestSDKIEScriptSourceInventory|TestSDKArchitectureSourceInventory|TestSDKCompanionDocs|TestSDKDocAuditLedger'
+.` plus CRT GPU-gated tests and `make test-wasm-crt-browser`.
+Observed result: Corrected the false F7-equivalence claims for
+`video.set_crt_enabled` and `video.toggle_crt`; documented flat/curved/off
+state, default Guest-Advanced presentation, layer geometry and final-pass
+ownership; documented both capture stages; and corrected the `rec` quick
+reference from six to eight functions. Added semantic inventory rows and
+positive/negative gates. IE64 ISA, IE32 ISA, and IEMon Markdown remain
+unchanged.
+Action: Updated the two affected manuals, source inventory generator and
+goldens, companion-document tests, and this ledger. The five PDFs and render
+manifest must be regenerated after all pre-render gates pass.
+Notes: The protected `sdk/docs/refman/` and `sdk/docs/refman.publish/` trees are
+excluded from edits and checksum-verified after rendering.
+Disposition: KEEP.
+
+ID: SDK-DOC-0099
+Status: FIXED
+Document: `sdk/docs/iescript.md`, its empirical source inventory, and
+companion-document gates.
+Section: Full host CRT presentation-mode controls.
+Claim: Current tracked source adds `video.get_crt_mode()`,
+`video.set_crt_mode(mode)`, and `video.cycle_crt_mode()`. The accepted and
+returned mode names are `flat`, `curved`, and `off`; cycling follows
+flat-to-curved-to-off-to-flat and matches the host transition performed by F7.
+The script calls do not inject a guest key. Physical F7 independently remains
+in the guest keyboard maps and therefore continues to reach the guest.
+Purpose judgement: These functions are public IEScript API and require full
+argument, return, error, and state-transition documentation. They do not alter
+CPU ISA or IEMon contracts. Architecture already records the corresponding
+host presentation cycle and guest-key forwarding.
+Canonical sources checked: tracked changes in `script_engine.go`,
+`video_compositor.go`, `video_backend_ebiten.go`,
+`video_crt_filter_ebiten.go`, `script_crt_control_test.go`, and
+`video_backend_ebiten_status_test.go`; the full committed range
+`6006ea3b..d661c2dd` was also rechecked for five-book impact.
+Runnable verification: `go test -tags headless -count=1 -run
+'TestIEScriptCRT|TestSDKISAInventory|TestSDKIEMonSourceInventory|TestSDKIEScriptSourceInventory|TestSDKArchitectureSourceInventory|TestSDKCompanionDocs|TestSDKDocAuditLedger'
+.` plus the native CRT mode-controller tests.
+Observed result: Added the three functions to the IEScript module reference and
+quick reference, raised the video binding count from 68 to 71, added empirical
+binding and semantic-contract rows, and extended the positive source/manual
+gate. The existing boolean functions remain documented as flat/off
+compatibility helpers.
+Action: Updated the affected manual, source inventory generator and golden,
+companion-document gate, and this ledger. All five PDFs and the render manifest
+must be regenerated after the final pre-render gates pass.
+Notes: `README.md` is not one of the five books, but its tracked F7 wording was
+checked against the same executable guest-forwarding path.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -3564,23 +3639,25 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0086`, `SDK-DOC-0087`, `SDK-DOC-0088`,
 `SDK-DOC-0089`, `SDK-DOC-0090`, `SDK-DOC-0091`,
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
-`SDK-DOC-0096` and `SDK-DOC-0097` corrections and
+`SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, and `SDK-DOC-0099`
+corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
 `go test -tags headless -run
 'TestSDKISAInventory|TestSDKIEMonSourceInventory|TestSDKIEScriptSourceInventory|TestSDKArchitectureSourceInventory|TestSDKCompanionDocs'
 .`
 The generated files are non-empty and contain 84 pages for `IE64_ISA.pdf`,
-41 pages for `IE32_ISA.pdf`, 33 pages for `iemon.pdf`, 46 pages for
+41 pages for `IE32_ISA.pdf`, 33 pages for `iemon.pdf`, 47 pages for
 `iescript.pdf`, and 51 pages for `architecture.pdf`.
 The render command was `scripts/sdk-companion-pdf.sh`, which copies the
 published preface and five shipped Markdown files into an isolated temporary
 source tree, invokes `scripts/refman-pdf.sh`, and copies only the five companion
 PDFs back to `sdk/docs/`.
 The render pipeline used Google Chrome headless through
-`scripts/refman-pdf.sh`. `SDK_DOC_PDF_RENDER_MANIFEST.sha256` records
-1302 SHA-256 rows covering root source files, audit tests, empirical
-inventories, shipped manuals, the render script, and generated PDFs.
+`scripts/refman-pdf.sh`. `SDK_DOC_PDF_RENDER_MANIFEST.sha256` covers every root
+Go source file plus the
+audit tests, empirical inventories, shipped manuals, render scripts, and
+generated PDFs required by the manifest gate.
 Action: Regenerated `sdk/docs/IE64_ISA.pdf`,
 `sdk/docs/IE32_ISA.pdf`, `sdk/docs/iemon.pdf`,
 `sdk/docs/iescript.pdf`, and `sdk/docs/architecture.pdf`.
@@ -3645,7 +3722,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0097` and
+Open claim-group backlog: none for this run after `SDK-DOC-0099` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate

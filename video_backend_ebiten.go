@@ -286,6 +286,29 @@ func (eo *EbitenOutput) toggleCRTRequested() bool {
 	return next.enabled()
 }
 
+func (eo *EbitenOutput) crtModeRequested() string {
+	return eo.crtPresentationMode().String()
+}
+
+func (eo *EbitenOutput) setCRTModeRequested(mode string) bool {
+	next, ok := crtPresentationModeFromString(mode)
+	if !ok {
+		return false
+	}
+	eo.crtMu.Lock()
+	changed := eo.crtMode != next
+	eo.crtMode = next
+	eo.crtMu.Unlock()
+	if changed {
+		eo.presentationReset.Store(true)
+	}
+	return true
+}
+
+func (eo *EbitenOutput) cycleCRTModeRequested() string {
+	return eo.cycleCRTMode().String()
+}
+
 func (eo *EbitenOutput) cycleCRTMode() crtPresentationMode {
 	eo.crtMu.Lock()
 	eo.crtMode = eo.crtMode.next()

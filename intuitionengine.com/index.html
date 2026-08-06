@@ -231,6 +231,36 @@
       letter-spacing: 0.02em;
     }
 
+    .hero-basic-shot {
+      overflow: hidden;
+      margin: 1.4rem 0 1rem;
+      border: 1px solid var(--line);
+      border-radius: 0.45rem;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .hero-basic-shot a {
+      display: block;
+      overflow: hidden;
+      aspect-ratio: 4 / 3;
+    }
+
+    .hero-basic-shot img {
+      display: block;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: left top;
+      image-rendering: pixelated;
+    }
+
+    .hero-basic-shot figcaption {
+      padding: 0.75rem 0.9rem;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
     .eyebrow {
       display: inline-flex;
       align-items: center;
@@ -843,13 +873,19 @@
         <p class="tagline">Six rival home computers on one bus.</p>
         <p class="lead">A 64-bit RISC re-imagining of the 8, 16 and 32-bit machines from Commodore, Atari, Sinclair, BBC, Amstrad and IBM, with a touch of SNES-style Mode 7 affine texturing and a 3DFX Voodoo thrown in, rebuilt on a single shared bus.</p>
         <p class="lead">A 6502 can play a SID tune while an x86 draws Atari ANTIC graphics or a 68020 drives a copper down PC VGA modes; all six architectures live on the same bus at once, in combinations no silicon ever shipped. The whole machine is free and open source.</p>
-        <p class="lead">It is two things at once: a demoscene platform built on hardware combinations that never existed on any real board, and a home computer waiting for its first generation of programmers, where you learn game and demo programming from scratch, on the machine, for the machine. I have been building it since 1991, for the people who still write a rotozoomer by hand and for the people about to write their first.</p>
+        <p class="lead">Intuition Engine is a demoscene platform built from hardware combinations no physical board ever carried. It is also a home computer for learning game and demo programming from scratch, on the machine, for the machine. I have been building it since 1991, for people who still write rotozoomers by hand and people writing their first.</p>
         <div class="actions">
           <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
           <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://youtube.com/@IntuitionAmiga">YouTube</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
         </div>
+        <figure class="hero-basic-shot">
+          <a href="/demo/" aria-label="Launch IE64 BASIC in your browser">
+            <img src="/assets/IE64%20BASIC.png" width="1920" height="1080" alt="IE64 BASIC showing the source listing for the wobble zoom demo">
+          </a>
+          <figcaption>IE64 BASIC running directly on the machine. Load, inspect and change the supplied examples from the Ready prompt.</figcaption>
+        </figure>
         <p style="max-width: 820px; margin: 1rem 0 0; color: var(--muted); font-size: 0.95rem;">Your first minute, and the first thing on screen is yours, not a demo off the disk. Launch the browser demo and type this at the Ready prompt:</p>
         <pre class="code-panel" style="max-width: 820px"><code>SCREEN &amp;H13
 PALETTE 1, 63, 0, 0
@@ -857,7 +893,7 @@ PLOT 160, 100, 1
 POKE32 &amp;HF0800, 1 : REM switch the sound chip on
 SOUND 0, 440, 200, 0, 128
 GATE 0, ON : REM play the note</code></pre>
-        <p style="max-width: 820px; margin: 0.6rem 0 0; color: var(--muted); font-size: 0.95rem;">A red dot appears in the middle of the screen and a tone plays. That is the whole machine answering the first thing you wrote. From here <code>RUN AOT</code> compiles your own BASIC to native IE64 code on the spot, and <code>DIR "Demos"</code> lists the rotozoomers to pull apart. Two ways in: <a href="#guide">make your first effect</a>, or <a href="#architecture">see the hardware</a>.</p>
+        <p style="max-width: 820px; margin: 0.6rem 0 0; color: var(--muted); font-size: 0.95rem;">A red dot appears in the middle of the screen and a tone plays. Your programme has written directly to the video and sound hardware. From here, <code>RUN AOT</code> compiles the same BASIC to native IE64 code, while <code>DIR "Demos"</code> lists the supplied rotozoomers. Two ways in: <a href="#guide">make your first effect</a>, or <a href="#architecture">see the hardware</a>.</p>
 
 
         <div class="hero-grid">
@@ -897,8 +933,8 @@ GATE 0, ON : REM play the note</code></pre>
 
         <article class="card" style="margin-bottom: 1rem">
           <span class="kicker">One effect, every way in</span>
-          <h3>The same rotozoomer, thirteen origins</h3>
-          <p>One Mode 7 affine transform, written again and again. Six CPUs run identical maths down to the same VideoChip registers; IE64 BASIC and IEScript reach those registers from a higher level; EmuTOS and AROS drive them as guest operating systems. The picture is the same. The point is where it comes from. The IE64 build even scores it with a stereo SAP tune spread across two Atari POKEY chips at once.</p>
+          <h3>Thirteen implementations of one effect</h3>
+          <p>Thirteen versions produce the same picture through different CPUs, languages and guest operating systems. Six CPUs perform the same calculations and write the same VideoChip registers. IE64 BASIC and IEScript reach those registers through their own interfaces, while EmuTOS and AROS use guest drivers and applications. The IE64 version plays a stereo SAP tune through two Atari POKEY chips.</p>
           <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-DEMO-ROTO" data-id="P52ripOFWJQ"><button type="button" class="lty-playbtn" aria-label="Play rotozoomer comparison demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
           <div class="tag-row" style="margin-top: 0.8rem">
             <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_ie64.asm">IE64 &middot; rotozoomer_ie64.asm</a>
@@ -929,8 +965,8 @@ GATE 0, ON : REM play the note</code></pre>
         </div>
 
         <div class="subhead">
-          <h3>Real video chips, signature modes</h3>
-          <p>Not one framebuffer. Authentic VGA, the TED 121-colour model, the ZX Spectrum ULA, and ANTIC/GTIA, each in its defining mode, each driven by a CPU that never shipped with it.</p>
+          <h3>Separate video systems and their signature modes</h3>
+          <p>The machine implements VGA, the TED 121-colour model, the ZX Spectrum ULA and ANTIC/GTIA as separate video systems. Each runs in one of its characteristic modes under a CPU that was never originally paired with it.</p>
         </div>
         <div class="thumb-grid">
           <article class="thumb">
@@ -999,14 +1035,14 @@ GATE 0, ON : REM play the note</code></pre>
 
         <div class="subhead">
           <h3>Full games on the live image</h3>
-          <p>Not effect demos. Complete, playable ports. Mario Kart 64 splits its work across four processors and a Voodoo; the same Chocolate Doom engine runs on both x86 and the 68020, proving the shared-bus contract at game scale. The full porting story is <a href="#guide">Part VIII of the Reference Guide</a>.</p>
+          <p>The live image includes complete, playable ports. Mario Kart 64 divides its work between four processors and a Voodoo. The same Chocolate Doom engine runs on x86 and the 68020, exercising the shared bus through two instruction sets. <a href="#guide">Part VIII of the Reference Guide</a> covers the full porting process.</p>
         </div>
         <div class="grid two">
           <article id="mariokart" class="demo-card">
             <span class="kicker">Coprocessor case study</span>
             <h3>Mario Kart 64</h3>
             <div class="runtime">4 CPUs + Voodoo</div>
-            <p>mk64-ie runs four processors at once inside a single <code>mariokart64.ie68</code>: a main 68020 building each display list, a second 68020 translating it into draw calls, a third 68020 running the audio sequencer, and an IE64 worker doing transform and lighting, with the geometry feeding a Voodoo. The two 68020 workers are the M68K type's two instances, real work behind a real port. <a href="#coprocessors">How the four CPUs split the work</a>.</p>
+            <p>mk64-ie runs four processors at once inside a single <code>mariokart64.ie68</code>: a main 68020 building each display list, a second 68020 translating it into draw calls, a third 68020 running the audio sequencer, and an IE64 worker doing transform and lighting, with the geometry feeding a Voodoo. The two additional 68020 CPU cores use the M68K worker type's two available instances. <a href="#coprocessors">How the four CPUs split the work</a>.</p>
             <div class="yt-lite pending" data-placeholder="publish-blocking" data-asset="AL-D028-SHOT" data-id="3f11zTtFd6s"><button type="button" class="lty-playbtn" aria-label="Play mariokart64.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
           </article>
           <article class="demo-card">
@@ -1040,7 +1076,7 @@ GATE 0, ON : REM play the note</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>Write your own demo</h2>
-          <p>Intuition Engine is a machine to make things on, not only to watch. Start at the BASIC prompt and stay on one machine all the way down: <code>RUN</code> interprets your programme, <code>RUN AOT</code> compiles the same source to native IE64 code, <code>TRANSPILE</code> writes it out as assembly you can read and edit, and the same bus is still under you when you retarget any of the six CPUs. The copper, the nine-operation blitter, Mode 7, the Voodoo and the chip-music players are reachable from the first line you type. For a guided route, <a href="#guide">Part VII of the Reference Guide</a> builds a complete intro from a first frame loop.</p>
+          <p>Start at the BASIC prompt and use the same machine throughout. <code>RUN</code> interprets your programme, <code>RUN AOT</code> compiles it to native IE64 code, and <code>TRANSPILE</code> writes readable assembly. You can then target any of the six CPUs through the same MachineBus devices. The copper, blitter, Mode 7, Voodoo and music players are available from BASIC. <a href="#guide">Part VII of the Reference Guide</a> builds a complete intro from its first frame loop.</p>
         </div>
         <div class="grid three">
           <article class="card">
@@ -1071,7 +1107,7 @@ GATE 0, ON : REM play the note</code></pre>
           </article>
           <article class="card">
             <span class="kicker">Effects</span>
-            <h3>The hardware sceners reach for</h3>
+            <h3>Copper, blitter and Voodoo</h3>
             <p>A copper that rewrites registers in step with the beam, and can point itself at any chip on the bus, not just the video registers; a blitter with copy, fill, line, masked and alpha copy, colour expand, scale, Mode 7 and raw memory copy; and the Voodoo for textured 3D. Mix a CPU, a video chip and a sound chip that never shared a board. <a href="#demos">Watch the same rotozoomer written thirteen ways</a>, then write the fourteenth.</p>
           </article>
           <article class="card">
@@ -1095,7 +1131,7 @@ SOUND STOP</code></pre>
         </div>
         <div class="subhead" style="margin-top: 1.4rem">
           <h3>Make one, then release it</h3>
-          <p>A finished production here is source you can pass to someone else. Here is a real one.</p>
+          <p>A finished production can be shared as source and assets. <code>wobble_zoom.bas</code> is one complete example.</p>
         </div>
         <article class="card">
           <span class="kicker">A complete demo, start to finish</span>
@@ -1210,13 +1246,13 @@ SOUND STOP</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>Six CPU views, one bus</h2>
-          <p>A profile boots the machine into one of six instruction sets and sets its loader and RAM ceiling. Any CPU can then start the others as concurrent workers, and every core reaches the same MachineBus RAM, SYSINFO, MMIO devices, video and audio engines, files, debug state, and coprocessor services. This is the hardware in full, for when you want it; nothing here is needed to start making things at the BASIC prompt.</p>
+          <p>A profile boots the machine into one of six instruction sets and sets its loader and RAM ceiling. Any CPU can then start the others as concurrent workers, and every core reaches the same MachineBus RAM, SYSINFO, MMIO devices, video and audio engines, files, debug state, and coprocessor services. None of these details is required before starting at the BASIC prompt.</p>
         </div>
         <div class="grid three">
           <article class="card">
             <span class="kicker">CPU views</span>
             <h3>CPU view matrix</h3>
-            <p>Every CPU keeps its native idioms, and they all reach the same bus. A Z80 port write, an x86 IN/OUT, a 6502 paged or banked access, and a 68020 absolute address all land on the same MachineBus devices and RAM that IE64 sees. Old CPU habits become first-class routes into one modern machine.</p>
+            <p>Every CPU keeps its native idioms, and they all reach the same bus. A Z80 port write, an x86 IN/OUT, a 6502 paged or banked access, and a 68020 absolute address all land on the same MachineBus devices and RAM that IE64 sees. Guest code keeps the access patterns natural to its own CPU while reaching the same devices.</p>
             <p><a href="docs/IE64_ISA.pdf">IE64 ISA</a> and <a href="docs/IE32_ISA.pdf">IE32 ISA</a></p>
           </article>
           <article class="card">
@@ -1311,7 +1347,7 @@ SOUND STOP</code></pre>
         <article class="card" style="margin-top: 1rem">
           <span class="kicker">JIT</span>
           <h3>JIT compilers for five CPUs</h3>
-          <p>In the live image, IE64, M68K, x86, Z80 and 6502 compile guest code to x86-64 machine code as it runs; only IE32 stays interpreted. In the browser, IE64, M68K, 6502 and x86 have WebAssembly JITs; IE32 and Z80 stay interpreted. The x86 JIT requires WebAssembly SIMD. Unsupported instructions return to the relevant interpreter with the guest state preserved. The compilers handle self-modifying code and include CPU-specific floating-point paths such as the M68K 68881 and x86 x87.</p>
+          <p>In the live image, IE64, M68K, x86, Z80 and 6502 compile guest code to x86-64 machine code as it runs; only IE32 stays interpreted. In the browser, IE64, M68K, 6502 and x86 have WebAssembly JITs; IE32 and Z80 stay interpreted. The x86 JIT requires WebAssembly SIMD. Every available JIT starts enabled, including programmes launched from BASIC and JIT-capable coprocessor services. If a backend is unavailable, execution stays with the relevant interpreter. Unsupported instructions return to the relevant interpreter with the guest state preserved. The compilers handle self-modifying code and include CPU-specific floating-point paths such as the M68K 68881 and x86 x87.</p>
           <p>Even with the paged MMU enabled, IE64 code stays JIT-compiled: the dispatcher keys native blocks by translation state, and data, stack, floating-point and control-flow accesses that need address translation take a helper exit and resume in native code instead of bailing the whole block.</p>
         </article>
       </div>
@@ -1450,7 +1486,7 @@ Mode: 960 x 540 RGBA32, stride 3840</code></pre>
           </article>
           <article class="card">
             <span class="kicker">IntuitionOS &middot; security</span>
-            <h3>Capabilities, not trust</h3>
+            <h3>Capability-based isolation</h3>
             <p>A task only reaches the memory and hardware it was granted. Shared memory is handed out as opaque capability handles, reference-counted and scrubbed to zero when the last mapping drops, and MMIO maps only through explicit grants. The IE64 MMU gives every task its own page tables with separate code, stack and data and W^X enforcement, guard pages catch overruns, and the kernel validates every user pointer before it reads across the supervisor boundary.</p>
             <p>At build time, programmes are position-independent for ASLR, no segment may be both writable and executable, and the ELF loader rejects dynamic linking, external-symbol relocation and text relocations. Kernel ASLR and a stack canary are in progress.</p>
           </article>
@@ -1473,7 +1509,7 @@ Mode: 960 x 540 RGBA32, stride 3840</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>CPUs can be devices for another CPU</h2>
-          <p>Type <code>COSTART</code> at the BASIC prompt and a second processor wakes up and starts working for you, while your own program carries on. That worker is a real 6502, Z80, 68020, x86, IE32 or IE64, not a library call: one CPU hands work to another across the bus, waits on a ticket, and reads the answer back. It is the whole machine made literal: six processors on one board, the classic silicon beside the engine's own cores, each able to serve the others, in combinations no real computer ever shipped.</p>
+          <p>Type <code>COSTART</code> at the BASIC prompt and a separate processor starts working while your programme continues. The worker executes 6502, Z80, 68020, x86, IE32 or IE64 instructions and communicates through shared RAM, mailbox rings and tickets. One CPU can therefore provide a service to another without reducing the worker to a host library call.</p>
           <p>There is no central bus arbiter. Every CPU carries its own interrupt lines, while devices use their defined targets and delivery paths. The processors cooperate over shared RAM and the same devices rather than through a master. Any CPU can bring the others online: M68K, x86 and IE64 each run two worker instances and IE32, the 6502 and the Z80 run one, for up to nine workers at once, all executing concurrently. A caller queues a request and polls or waits on a ticket; BASIC drives it through named commands, while assembly and C write the coprocessor MMIO block and mailbox rings directly.</p>
         </div>
         <div class="card">
@@ -1536,7 +1572,7 @@ COSTOP cpuType, instance</code></pre>
         <div class="grid two" style="margin-bottom: 1rem">
           <article class="card">
             <span class="kicker">IE SoundChip</span>
-            <h3>A synth in its own right</h3>
+            <h3>The native SoundChip synthesiser</h3>
             <p>The native SoundChip is not a retro clone. Ten FLEX voices and 32 SFX sample channels, each voice with its own oscillator (square/pulse, triangle, sine, sawtooth and nine noise modes), ADSR envelope, sweep, PWM, ring modulation, hard sync and signed 8-bit DAC input. A global stage adds filter, overdrive and reverb, then auto-levelling, compression and limiting, ahead of the block-rendered mixer.</p>
             <p>It also carries RawlandMini, a built-in GM-style patch table, so Standard MIDI Files, Doom MUS and live MIDI play straight through the chip across 16 MIDI channels and 10 active voices, with GM-style programme families and a drum channel.</p>
             <pre class="code-panel"><code>FLEX ch0-3   0xF0A80-0xF0B7F
@@ -1583,7 +1619,7 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
 
         <article class="card" style="margin-bottom: 1rem">
           <span class="kicker">Plus mode</span>
-          <h3>The classic chips, or something more</h3>
+          <h3>Optional enhanced rendering</h3>
           <p>Five classic engines, PSG, SID, POKEY, TED and AHX, each have an optional Plus mode. Leave it off for the authentic chip, or switch it on for an enhanced render path with drive, stereo spread, room and per-voice balance, straight from BASIC with <code>PSG PLUS ON</code>, <code>SID PLUS ON</code> and the rest. The sound registers do not change; only the rendering does.</p>
         </article>
 
@@ -1638,6 +1674,12 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
         </div>
 
         <article class="card" style="margin-bottom: 1rem">
+          <span class="kicker">CRT presentation</span>
+          <h3>CRT presentation after composition</h3>
+          <p>CRT presentation is enabled by default in the live image and browser build. Compositor layers retain their source resolution for scanline spacing, while phosphor persistence, glow, bloom, a colour mask and deconvergence shape the completed frame. Several composited video chips appear as light on one display rather than as separately filtered screens. Press <code>F7</code> to cycle between flat CRT, curved CRT and unfiltered output.</p>
+        </article>
+
+        <article class="card" style="margin-bottom: 1rem">
           <span class="kicker">IE VideoChip</span>
           <h3>Framebuffer, blitter and copper</h3>
           <p>Layer 0 of the compositor and the native display. A framebuffer up to 1920 x 1080 in RGBA32 or CLUT8, fed straight from main memory, with a nine-operation blitter: copy, fill, line, masked and alpha copy, colour expand, nearest-neighbour scale, memory copy, and SNES-style Mode 7 affine texture mapping, plus sixteen raster-op draw modes such as AND, OR and XOR for combining pixels with the destination.</p>
@@ -1648,7 +1690,7 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
           <span class="kicker">Voodoo 3D</span>
           <h3>A 3dfx-style 3D accelerator</h3>
           <p>Voodoo is a hardware triangle rasteriser: flat and Gouraud shading, textures up to 256 x 256 in paletted, intensity, alpha and ARGB formats, a depth buffer, alpha test and blend, per-pixel fog, chroma key, stipple and dithering, published through a double-buffered swap. It renders 640 x 480 by default, up to 800 x 600.</p>
-          <p>It runs on the host GPU through a Vulkan backend, or a software rasteriser, with SIMD-accelerated fills on x86-64, on <code>novulkan</code> and headless builds, with swap jobs running asynchronously. Guest CPUs feed it triangles directly, or an IE64 coprocessor runs the transform and lighting first, as in the Mario Kart 64 game port.</p>
+          <p>The live image runs Voodoo on the GPU, while the browser build uses the software rasteriser. Swap jobs run asynchronously. Guest CPUs feed it triangles directly, or an IE64 coprocessor runs the transform and lighting first, as in the Mario Kart 64 game port.</p>
         </article>
 
         <div class="table-wrap" style="margin-top: 1rem">
@@ -1750,7 +1792,7 @@ macro frame d pc 8; r</code></pre>
           <article class="card">
             <span class="kicker">Always one key away</span>
             <h3>Press F9</h3>
-            <p>The monitor is built into the machine, not a separate tool. Press <code>F9</code> at any moment, mid-demo, mid-game, mid-boot, and the whole machine freezes under your cursor, music halted mid-note, in the tradition of the Action Replay cartridge. Press <code>Esc</code> and everything carries on as if nothing happened.</p>
+            <p>Press <code>F9</code> to freeze the running machine, including every CPU and the current audio state. IE Mon then opens over the frozen display. Press <code>Esc</code> to close the monitor and resume execution.</p>
           </article>
           <article class="card">
             <span class="kicker">Symbols and source</span>
@@ -1781,11 +1823,13 @@ macro frame d pc 8; r</code></pre>
           <article class="card">
             <span class="kicker">Visual checks</span>
             <h3>Frames, hashes, recordings</h3>
-            <p>Scripts wait on compositor frames, pixels, settled frame hashes, or custom visual predicates, so a demo can be automated and then verified pixel-for-pixel across runs. The recording module captures screenshots in pure Go with no external dependencies, and MP4 video with audio when FFmpeg is on the PATH, for demo clips and visual regressions.</p>
+            <p>Scripts wait on compositor frames, pixels, settled frame hashes, or custom visual predicates, so a demo can be automated and then verified pixel-for-pixel across runs. Scripts can select flat, curved or off CRT presentation. They can capture either the composed guest image before CRT and host overlays or the final displayed frame after presentation. The recording module captures screenshots in pure Go with no external dependencies, and MP4 video with audio when FFmpeg is on the PATH, for demo clips and visual regressions.</p>
             <pre class="code-panel"><code>sys.wait_frames(2)
 video.wait_stable(3, 120)
 hash = video.frame_hash()
-rec.screenshot("frame.png")
+video.set_crt_mode("curved")
+rec.screenshot_composed("guest.png")
+rec.screenshot_screen("screen.png")
 rec.start_screen("run.mp4")
 rec.stop()</code></pre>
           </article>

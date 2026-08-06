@@ -178,7 +178,8 @@ term.wait_output('Ready', 2000)
 sys.capture_output_off()
 ```
 
-For video repros, prefer a stable frame hash before saving a screenshot:
+For ordinary video repros, prefer a stable frame hash before saving a
+screenshot:
 
 ```ies
 sys.wait_frames(3)
@@ -187,7 +188,28 @@ sys.print(h)
 rec.screenshot('frame.png')
 ```
 
-The hash is the quick comparison. The screenshot is the human check.
+The hash is the quick comparison. The screenshot is the human check. A frame
+hash describes the guest picture and is the right first test for drawing,
+palette, blitter, and compositor faults.
+
+When the composed picture is correct but the displayed picture is not, capture
+the two presentation stages separately:
+
+```ies
+old_mode = video.get_crt_mode()
+video.set_crt_mode('curved')
+sys.wait_frames(2)
+rec.screenshot_composed('before.png')
+rec.screenshot_screen('after.png')
+video.set_crt_mode(old_mode)
+```
+
+`before.png` is the composition before CRT processing, cursor, and status bar.
+`after.png` is the final displayed frame. If the fault appears in both, begin
+with the video card, blitter, or compositor. If it appears only in
+`after.png`, investigate final presentation. These calls raise a script error
+when the selected output cannot provide the requested control or capture
+stage.
 
 ## 44.10 Use Performance Reports Carefully
 

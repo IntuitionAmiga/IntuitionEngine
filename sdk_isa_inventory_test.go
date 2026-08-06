@@ -173,7 +173,7 @@ func TestSDKISAInventoryRejectsStaleSourceComments(t *testing.T) {
 			required: []string{
 				"0x20-0x32 = TED video",
 				"TED video registers (0x20-0x32)",
-				"Enable Z80 JIT compiler on supported amd64 hosts",
+				"DisableJIT requests interpreter execution. The JIT is enabled by default.",
 			},
 		},
 		{

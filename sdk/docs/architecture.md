@@ -1455,6 +1455,22 @@ VideoChip Mode7 honours the `BLT_FLAGS` BPP field: RGBA32 samples and writes 4-b
 
 The compositor collects immutable frame snapshots from all enabled video sources and blends them in Z-order (layer 0 at the back, layer 20 at the front). For IEVideoChip CLUT8 mode, mapped VRAM and direct bus-backed VRAM are converted through the palette before compositing. CLUT8 conversion is cached only when `fbBase` points at the VideoChip-visible VRAM window; direct RAM-backed framebuffer modes are converted every frame because guest CPU stores can bypass VideoChip dirty tracking. Desktop startup uses a 1920x1080 fullscreen presentation by default, and the x64 live-image launcher locks it fullscreen through `IE_LIVE_IMAGE=1`. Native sources keep their requested dimensions. The default native mode is 960x540 for exact 2x 1080p presentation. Video compositor default scale mode is stretch-fill; F11 toggles non-16:9 sources to aspect-fit. `Shift+F11` toggles fullscreen/windowed mode when that mode is not locked.
 
+CRT processing is a final host presentation stage. Software-composited frames
+are filtered after composition; hardware layers retain native source geometry
+while scaling and filtering, then cursor, status-bar, and host-overlay content
+joins the final presentation path. Guest-Advanced is the default CRT profile
+and flat CRT is the initial presentation mode. F7 cycles flat, curved, and off
+while continuing to reach the guest. The cycle changes host presentation only.
+Guest-Advanced uses preparation, luminance, Gaussian glow, bloom, and final
+screen passes; curved mode warps the image, glow, and bloom together in the
+final screen pass. If shader
+initialisation fails, presentation remains unfiltered rather than reporting an
+active CRT mode.
+
+This routing preserves scanline phase for low-resolution guest layers and
+keeps transparent and opaque layer rules identical with CRT
+enabled or disabled.
+
 Two rendering paths:
 
 1. **Scanline-aware path** - used when at least one enabled source implements `ScanlineAware`. The compositor advances scanline-capable sources in sorted layer order for each scanline, then blends all enabled sources in the global layer order. If exactly one source also implements `ScanlineBatchAware`, it advances the whole scanline range under one source lock. Multi-source scanline composition keeps per-scanline interleaving because that ordering is guest-visible.
@@ -2016,6 +2032,10 @@ audio while preserving the newest output batch. This prevents a blocked encoder
 from replaying stale media in an unbounded catch-up burst after it resumes.
 Video and audio recording pumps are independent; frozen or unchanged video is
 held, and audio starvation beyond 500 ms produces silence instead of stalling.
+IEScript can capture two diagnostic stages independently:
+`rec.screenshot_composed` captures the GPU-composed image before CRT, cursor,
+and status-bar processing, while `rec.screenshot_screen` waits for and captures
+the final displayed frame after host presentation processing.
 
 ### IEMon Reverse-Debug Snapshot Contract
 
@@ -2035,13 +2055,14 @@ graph LR
     TB["Triple Buffer<br/>Publish"]
     GF["Compositor<br/>GetFrame() atomic swap"]
     ZO["Z-order Compositing<br/>Layers 0-10-12-13-15-20"]
-    EB["Ebiten UpdateFrame<br/>RGBA"]
+    EB["Ebiten composition<br/>RGBA / retained layers"]
+    CRT["Final presentation<br/>CRT + host overlays"]
     DSP["Display @ 60Hz"]
 
-    EX --> BW --> VR --> TB --> GF --> ZO --> EB --> DSP
+    EX --> BW --> VR --> TB --> GF --> ZO --> EB --> CRT --> DSP
 
     classDef flow fill:#228B22,stroke:#333,color:#fff
-    class EX,BW,VR,TB,GF,ZO,EB,DSP flow
+    class EX,BW,VR,TB,GF,ZO,EB,CRT,DSP flow
 ```
 
 ### Audio Pipeline

@@ -955,6 +955,9 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"is_crt_enabled":        se.luaVideoCRTEnabled(),
 		"set_crt_enabled":       se.luaVideoSetCRTEnabled(),
 		"toggle_crt":            se.luaVideoToggleCRT(),
+		"get_crt_mode":          se.luaVideoCRTMode(),
+		"set_crt_mode":          se.luaVideoSetCRTMode(),
+		"cycle_crt_mode":        se.luaVideoCycleCRTMode(),
 		"write_reg":             se.luaVideoWriteReg(),
 		"read_reg":              se.luaVideoReadReg(),
 		"get_dimensions":        se.luaVideoGetDimensions(),
@@ -3271,6 +3274,56 @@ func (se *ScriptEngine) luaVideoToggleCRT() lua.LGFunction {
 			return 0
 		}
 		L.Push(lua.LBool(enabled))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaVideoCRTMode() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if se.compositor == nil {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		mode, available := se.compositor.CRTMode()
+		if !available {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		L.Push(lua.LString(mode))
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaVideoSetCRTMode() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if se.compositor == nil {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		if _, available := se.compositor.CRTMode(); !available {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		mode := L.CheckString(1)
+		if !se.compositor.SetCRTMode(mode) {
+			L.RaiseError("invalid CRT mode %q; want flat, curved, or off", mode)
+		}
+		return 0
+	}
+}
+
+func (se *ScriptEngine) luaVideoCycleCRTMode() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if se.compositor == nil {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		mode, available := se.compositor.CycleCRTMode()
+		if !available {
+			L.RaiseError("host CRT control is unavailable for this video output")
+			return 0
+		}
+		L.Push(lua.LString(mode))
 		return 1
 	}
 }

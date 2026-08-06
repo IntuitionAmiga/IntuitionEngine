@@ -283,6 +283,15 @@ type crtPresentationController interface {
 	toggleCRTRequested() bool
 }
 
+// crtPresentationModeController exposes the full host presentation cycle to
+// IEScript. The string boundary keeps this optional controller available to
+// headless builds, which do not compile the Ebiten CRT mode type.
+type crtPresentationModeController interface {
+	crtModeRequested() string
+	setCRTModeRequested(string) bool
+	cycleCRTModeRequested() string
+}
+
 type presentationScreenshotOutput interface {
 	TakePresentationScreenshot(path string) error
 }
@@ -327,6 +336,43 @@ func (c *VideoCompositor) ToggleCRT() (bool, bool) {
 	c.forceFullFrame = true
 	c.mu.Unlock()
 	return enabled, true
+}
+
+func (c *VideoCompositor) CRTMode() (string, bool) {
+	c.outputMu.Lock()
+	defer c.outputMu.Unlock()
+	controller, ok := c.output.(crtPresentationModeController)
+	if !ok {
+		return "", false
+	}
+	return controller.crtModeRequested(), true
+}
+
+func (c *VideoCompositor) SetCRTMode(mode string) bool {
+	c.outputMu.Lock()
+	controller, ok := c.output.(crtPresentationModeController)
+	c.outputMu.Unlock()
+	if !ok || !controller.setCRTModeRequested(mode) {
+		return false
+	}
+	c.mu.Lock()
+	c.forceFullFrame = true
+	c.mu.Unlock()
+	return true
+}
+
+func (c *VideoCompositor) CycleCRTMode() (string, bool) {
+	c.outputMu.Lock()
+	controller, ok := c.output.(crtPresentationModeController)
+	c.outputMu.Unlock()
+	if !ok {
+		return "", false
+	}
+	mode := controller.cycleCRTModeRequested()
+	c.mu.Lock()
+	c.forceFullFrame = true
+	c.mu.Unlock()
+	return mode, true
 }
 
 // RequestFullComposite invalidates the unchanged-frame fast path after a host

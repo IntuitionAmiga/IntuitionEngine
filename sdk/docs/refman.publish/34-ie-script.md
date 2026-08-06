@@ -246,6 +246,50 @@ inspection:
 | `video.wait_pixel(...)` | Wait for one pixel to match. |
 | `video.wait_stable(frames, timeout)` | Wait for a stable frame hash. |
 | `video.wait_condition(fn, timeout)` | Wait until callback `fn` returns true. |
+| `video.is_crt_enabled()` | Return true for flat or curved CRT presentation. |
+| `video.set_crt_enabled(on)` | Select flat presentation when true, or turn CRT presentation off. |
+| `video.toggle_crt()` | Toggle between flat and off; return the new enabled state. |
+| `video.get_crt_mode()` | Return `"flat"`, `"curved"`, or `"off"`. |
+| `video.set_crt_mode(mode)` | Select `"flat"`, `"curved"`, or `"off"`. |
+| `video.cycle_crt_mode()` | Advance flat, curved, off, flat; return the new mode. |
+
+### 34.9.1 CRT presentation and two-stage capture
+
+CRT mode changes the final presentation of the completed picture. It does not
+change video registers, framebuffer bytes, palette values, or the composited
+pixel returned by `video.get_pixel`. The explicit mode calls use the same
+three-state order as F7, but they do not inject an F7 key into the running
+programme.
+
+The older boolean calls remain useful for scripts that need only on or off.
+Enabling selects flat mode. `video.toggle_crt()` changes flat or curved to off,
+and changes off to flat. It never selects curved mode.
+
+This example captures the picture on both sides of final presentation:
+
+```ies
+old_mode = video.get_crt_mode()
+video.set_crt_mode('curved')
+sys.wait_frames(2)
+
+rec.screenshot_composed('composed.png')
+rec.screenshot_screen('screen.png')
+
+video.set_crt_mode(old_mode)
+sys.print('RESTORED ' .. video.get_crt_mode())
+```
+
+`composed.png` contains the completed composition before CRT processing, the
+cursor, and the status bar. `screen.png` contains the final displayed frame.
+The script prints the mode restored in the final two lines. Use the pair when
+you need to decide whether a visible difference entered during composition or
+during final presentation.
+
+The CRT calls raise a script error when the selected output has no CRT
+controller. `video.set_crt_mode` also raises an error for any name other than
+`flat`, `curved`, or `off`. The two specialised screenshot calls raise an
+error when their capture stage is unavailable, when the path is invalid, or
+when capture fails or times out.
 
 ## 34.10 Recording Module
 
@@ -254,6 +298,8 @@ inspection:
 | Function | Purpose |
 |----------|---------|
 | `rec.screenshot(name)` | Save one frame. |
+| `rec.screenshot_composed(name)` | Save the composition before CRT, cursor, and status bar. |
+| `rec.screenshot_screen(name)` | Save the final displayed frame. |
 | `rec.start(name)` | Start recording. |
 | `rec.start_screen(name)` | Start screen recording. |
 | `rec.stop()` | Stop and finalise recording. |

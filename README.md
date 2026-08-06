@@ -125,7 +125,7 @@ Useful runtime flags:
 
 | Key | Action |
 |-----|--------|
-| `F7` | Toggle the default-on CRT presentation filter. The key also reaches the guest. |
+| `F7` | Cycle the default-on CRT presentation filter through flat, curved, and off. The key also reaches the guest. |
 | `F8` | Toggle the Lua REPL overlay, unless the Machine Monitor is active. |
 | `F9` | Toggle the Machine Monitor. |
 | `F10` | Hard reset to the configured boot profile; normal BASIC-launched sessions return to BASIC. |

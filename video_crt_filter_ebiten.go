@@ -82,6 +82,19 @@ func (m crtPresentationMode) String() string {
 	}
 }
 
+func crtPresentationModeFromString(value string) (crtPresentationMode, bool) {
+	switch value {
+	case "flat":
+		return crtModeFlat, true
+	case "curved":
+		return crtModeCurved, true
+	case "off":
+		return crtModeOff, true
+	default:
+		return crtModeOff, false
+	}
+}
+
 // crtPresentationState is a browser-automation contract. It deliberately
 // distinguishes a requested CRT mode from one whose shader failed to become
 // available, so a wasm smoke test cannot mistake an unfiltered fallback for

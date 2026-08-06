@@ -9,6 +9,14 @@ audio.configure_master_auto_level
 audio.configure_master_compressor
 audio.freeze
 audio.get_master_gain_db
+audio.midi_is_playing
+audio.midi_load
+audio.midi_metadata
+audio.midi_pause
+audio.midi_play
+audio.midi_resume
+audio.midi_set_volume
+audio.midi_stop
 audio.pokey_is_playing
 audio.pokey_load
 audio.pokey_play
@@ -62,6 +70,7 @@ cpu.execution_mode
 cpu.freeze
 cpu.is_running
 cpu.jit_enabled
+cpu.jit_stats
 cpu.load
 cpu.load_stopped
 cpu.mode
@@ -124,6 +133,7 @@ dbg.list_wp
 dbg.load_mem_file
 dbg.load_state
 dbg.macro
+dbg.mmio_stats
 dbg.on_fault
 dbg.open
 dbg.poll_faults
@@ -181,6 +191,8 @@ mem.write_block
 rec.frame_count
 rec.is_recording
 rec.screenshot
+rec.screenshot_composed
+rec.screenshot_screen
 rec.start
 rec.start_screen
 rec.stop
@@ -212,13 +224,15 @@ sys.frame_count
 sys.frame_time
 sys.log
 sys.mkdir
+sys.perf_report
+sys.perf_reset
 sys.print
 sys.quit
 sys.read_file
 sys.time_ms
 sys.wait_frames
-sys.wait_until
 sys.wait_ms
+sys.wait_until
 sys.write_file
 term.clear
 term.echo
@@ -227,6 +241,7 @@ term.mouse_click
 term.mouse_delta
 term.mouse_double_click
 term.mouse_move
+term.mouse_press
 term.mouse_release
 term.read
 term.scancode
@@ -248,7 +263,9 @@ video.blit_wait
 video.copper_enable
 video.copper_is_running
 video.copper_set_program
+video.cycle_crt_mode
 video.frame_hash
+video.get_crt_mode
 video.get_dimensions
 video.get_pixel
 video.get_region
@@ -257,8 +274,11 @@ video.gtia_player_gfx
 video.gtia_player_pos
 video.gtia_player_size
 video.gtia_priority
+video.is_crt_enabled
 video.is_enabled
 video.read_reg
+video.set_crt_enabled
+video.set_crt_mode
 video.ted_charset
 video.ted_colors
 video.ted_cursor
@@ -267,6 +287,7 @@ video.ted_get_dimensions
 video.ted_is_enabled
 video.ted_mode
 video.ted_video_base
+video.toggle_crt
 video.ula_border
 video.ula_enable
 video.ula_get_dimensions

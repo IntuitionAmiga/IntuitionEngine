@@ -83,6 +83,7 @@ symbols, and Appendix J gives the full memory map.
 | COWAIT | Chapter 2, Chapter 32, Chapter 43 |
 | CPU-local snapshots | Chapter 33, Chapter 34 |
 | CR_RAM_SIZE_BYTES | Chapter 25, Appendix I |
+| CRT presentation modes | Chapter 34, Chapter 44 |
 
 ## D
 
@@ -269,6 +270,8 @@ symbols, and Appendix J gives the full memory map.
 | Socket descriptor | Chapter 39 |
 | Socket byte order | Chapter 39 |
 | Save data | Chapter 35, Chapter 45, Chapter 65 |
+| Screenshot, composed stage | Chapter 34, Chapter 44 |
+| Screenshot, final screen stage | Chapter 34, Chapter 44 |
 | SFX | Chapter 11, Chapter 12, Appendix D |
 | SFX extended window | Chapter 11, Chapter 12, Chapter 24, Appendix D, Appendix J |
 | SFX Trigger monitor view | Chapter 33 |

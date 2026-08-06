@@ -1875,7 +1875,7 @@ func TestSDKCompanionDocs_IEScriptJITPlatformMatrixMatchesSource(t *testing.T) {
 		"IE64, M68K, 6502 and x86 use separate wasm bytecode",
 		"IE32 and Z80 interpret in the browser",
 	} {
-		if !strings.Contains(architecture, needle) {
+		if !normalizedContains(architecture, needle) {
 			t.Fatalf("architecture.md missing JIT default/browser contract: %s", needle)
 		}
 	}
@@ -1885,6 +1885,81 @@ func TestSDKCompanionDocs_IEScriptJITPlatformMatrixMatchesSource(t *testing.T) {
 	} {
 		if strings.Contains(architecture, obsolete) {
 			t.Fatalf("architecture.md contains obsolete browser JIT claim: %s", obsolete)
+		}
+	}
+}
+
+func TestSDKCompanionDocs_CRTPresentationAndCaptureContractsMatchSource(t *testing.T) {
+	filter := readAuditFile(t, "video_crt_filter_ebiten.go")
+	backend := readAuditFile(t, "video_backend_ebiten.go")
+	script := readAuditFile(t, "script_engine.go")
+	architecture := readAuditFile(t, "sdk/docs/architecture.md")
+	iescript := readAuditFile(t, "sdk/docs/iescript.md")
+
+	for _, needle := range []string{
+		"crtModeFlat crtPresentationMode = iota",
+		"case crtModeFlat:",
+		"return crtModeCurved",
+		"case crtModeCurved:",
+		"return crtModeOff",
+		"return m != crtModeOff",
+	} {
+		if !strings.Contains(filter, needle) {
+			t.Fatalf("CRT mode source contract changed; review companion manuals: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"crtMode:       crtModeFlat",
+		"crtProfile:    crtProfileGuestAdvanced",
+		"next := crtModeFromEnabled(enabled)",
+		"if !eo.crtMode.enabled()",
+		"eo.crtMode = eo.crtMode.next()",
+	} {
+		if !strings.Contains(backend, needle) {
+			t.Fatalf("Ebiten CRT presentation source contract changed: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		`"is_crt_enabled":`, `"set_crt_enabled":`, `"toggle_crt":`,
+		`"get_crt_mode":`, `"set_crt_mode":`, `"cycle_crt_mode":`,
+		`"screenshot_composed":`, `"screenshot_screen":`,
+	} {
+		if !strings.Contains(script, needle) {
+			t.Fatalf("IEScript CRT/capture binding changed: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"Guest-Advanced is the default CRT profile",
+		"F7 cycles flat, curved, and off",
+		"CRT processing is a final host presentation stage",
+		"`rec.screenshot_composed` captures the GPU-composed image before CRT",
+		"`rec.screenshot_screen` waits for and captures the final displayed frame",
+	} {
+		if !normalizedContains(architecture, needle) {
+			t.Fatalf("architecture.md missing CRT presentation contract: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"Return whether the host CRT presentation mode is flat or curved rather than off",
+		"Select flat CRT mode when `on` is true or off when false",
+		"Unlike F7, this boolean compatibility API does not select curved mode",
+		"expose the full flat, curved, off cycle used by F7",
+		"Advance flat → curved → off → flat, exactly matching F7's host presentation transition",
+		"### rec (8)",
+		"| `rec.screenshot_composed(path)` | - |",
+		"| `rec.screenshot_screen(path)` | - |",
+	} {
+		if !strings.Contains(iescript, needle) {
+			t.Fatalf("iescript.md missing CRT/capture contract: %s", needle)
+		}
+	}
+	for _, obsolete := range []string{
+		"same host action as F7",
+		"Toggle the host CRT presentation filter, equivalent to F7",
+		"### rec (6)",
+	} {
+		if strings.Contains(iescript, obsolete) {
+			t.Fatalf("iescript.md contains obsolete CRT/capture wording: %s", obsolete)
 		}
 	}
 }
