@@ -3602,6 +3602,47 @@ Notes: `README.md` is not one of the five books, but its tracked F7 wording was
 checked against the same executable guest-forwarding path.
 Disposition: KEEP.
 
+ID: SDK-DOC-0100
+Status: FIXED
+Document: `sdk/docs/architecture.md`, `sdk/docs/iescript.md`,
+`sdk/docs/iemon.md`, the architecture empirical inventory, and companion gates.
+Section: Z80 JIT parity, progressive Z80 playback, worker execution, and CLI
+media auto-detection.
+Claim: Commits `ff01dba6` and `744380ad` broaden command-line media extension
+routing and complete Z80 JIT execution on Linux arm64 and browser wasm. Every
+non-observation Z80 opcode-manifest row is emitted on those backends; port and
+block I/O use frozen canonical helpers. Z80 workers and bounded AY/tracker
+playback use available JIT dispatch, while debugger single-step remains an
+interpreter operation. Progressive playback stops at its rendered-sample
+frontier until the producer appends more absolute-time events.
+Purpose judgement: Host/platform dispatch, playback timing, and CLI routing
+belong in Architecture. Public script arguments, return tables, supported CPU
+paths, and JIT counters belong in IEScript. Monitor worker and observation
+behaviour belongs in IEMon. No IE32 or IE64 instruction-set contract changed.
+Canonical sources checked: full diffs for `f007b56a..744380ad` and the clean
+tracked tree; `runtime_helpers.go`, `media_loader.go`, `main.go`,
+`runtime_ipc.go`, `jit_z80_manifest.go`, `jit_z80_dispatch.go`,
+`jit_z80_dispatch_wasm.go`, `jit_z80_wasm_emit.go`, `z80_frozen_fetch.go`,
+`coproc_worker_z80.go`, `cpu_z80_runner.go`, `psg_engine.go`, `psg_player.go`,
+`tracker_z80_render.go`, `script_engine.go`, and their focused tests.
+Runnable verification: `go test -tags headless -count=1 -run
+'TestSDKISAInventory|TestSDKIEMonSourceInventory|TestSDKIEScriptSourceInventory|TestSDKArchitectureSourceInventory|TestSDKCompanionDocs|TestSDKDocAuditLedger|TestZ80JITDocumentationRejectsStalePartialBackendClaims'
+.` plus focused Z80 JIT/playback tests and the js/wasm build gate.
+Observed result: Corrected a stale Architecture claim that browser Z80 emitted
+only a few forms, removed IEMon's nonexistent per-worker `--nojit` launch
+claim, documented progressive playback-frontier semantics, and added the
+source-backed CLI media extension table. Existing commit edits for Z80
+`cpu.load_stopped`, JIT platform availability, diagnostics, and monitor
+observation boundaries were retained and verified. Updated modification dates
+only for the three changed manuals.
+Action: Updated the three affected manuals, architecture inventory generator
+and golden, companion gates, and this ledger. All five PDFs and the render
+manifest must be regenerated after all pre-render gates pass.
+Notes: Untracked planning, benchmark, image, and diagnostic files were excluded
+from the five-book source-of-truth surface. The protected reference-manual
+trees remain outside the edit scope.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -3639,16 +3680,16 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0086`, `SDK-DOC-0087`, `SDK-DOC-0088`,
 `SDK-DOC-0089`, `SDK-DOC-0090`, `SDK-DOC-0091`,
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
-`SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, and `SDK-DOC-0099`
+`SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
+`SDK-DOC-0100`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
 `go test -tags headless -run
 'TestSDKISAInventory|TestSDKIEMonSourceInventory|TestSDKIEScriptSourceInventory|TestSDKArchitectureSourceInventory|TestSDKCompanionDocs'
 .`
-The generated files are non-empty and contain 84 pages for `IE64_ISA.pdf`,
-41 pages for `IE32_ISA.pdf`, 33 pages for `iemon.pdf`, 47 pages for
-`iescript.pdf`, and 51 pages for `architecture.pdf`.
+The generated files are non-empty; `pdfinfo` and first-page text extraction
+verify each page count and manual title after every render.
 The render command was `scripts/sdk-companion-pdf.sh`, which copies the
 published preface and five shipped Markdown files into an isolated temporary
 source tree, invokes `scripts/refman-pdf.sh`, and copies only the five companion
@@ -3722,7 +3763,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0099` and
+Open claim-group backlog: none for this run after `SDK-DOC-0100` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate

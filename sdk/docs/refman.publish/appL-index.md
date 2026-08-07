@@ -79,6 +79,7 @@ symbols, and Appendix J gives the full memory map.
 | COSTOP | Chapter 2, Chapter 32, Chapter 43 |
 | COWAIT | Chapter 2, Chapter 32, Chapter 43 |
 | CPU-local snapshots | Chapter 33, Chapter 34 |
+| cpu.load_stopped | Chapter 34, Chapter 44 |
 | CR_RAM_SIZE_BYTES | Chapter 25, Appendix I |
 | CRT presentation modes | Chapter 34, Chapter 44 |
 

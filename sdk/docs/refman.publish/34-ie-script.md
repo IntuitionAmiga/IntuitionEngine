@@ -8,9 +8,9 @@ one command at a time; IE Script stores a sequence of commands and
 runs them as one job. Use it for repeatable setup, frame waits,
 VideoChip checks, breakpoint sessions, and fault capture.
 
-IE Script is not the normal way to write CPU programs. BASIC and
+IE Script is not the normal way to write CPU programmes. BASIC and
 IE Mon remain the native programming route. IE Script automates the
-machine while a program is running.
+machine while a programme is running.
 
 ## 34.1 Running a Script
 
@@ -114,8 +114,8 @@ buckets include video frame work, audio pulls, slow bus `Read32` and
 
 | Function | Purpose |
 |----------|---------|
-| `cpu.load(name)` | Load and start a stored CPU program. |
-| `cpu.load_stopped(name)` | Load a stored CPU program but leave it stopped. |
+| `cpu.load(name)` | Load and start a stored CPU programme. |
+| `cpu.load_stopped(name)` | Load a stored IE64, IE32, or Z80 programme but leave it stopped. |
 | `cpu.reset()` | Reset the selected CPU. |
 | `cpu.freeze()` | Stop the selected CPU for safe raw RAM access. |
 | `cpu.resume()` | Resume after `cpu.freeze()`. |
@@ -127,6 +127,36 @@ buckets include video frame work, audio pulls, slow bus `Read32` and
 
 Raw RAM access through `mem` requires the CPU to be frozen. MMIO
 access is allowed while the CPU is running.
+
+`cpu.load_stopped` is supported for IE64, IE32, and Z80. It reads the
+stored image, resets the selected CPU, loads the bytes, and leaves the
+CPU stopped so that registers, memory, and execution mode can be set
+before `cpu.start()`. IE64 and Z80 reject an oversized image before
+disturbing the running programme. A Z80 image starts at the selected
+Z80 load address and must fit within the banked visible range. Invalid
+storage names, read failures, oversized images, unavailable CPUs, and
+other CPU selections raise a script error.
+
+With Z80 selected, this script creates a two-byte programme, loads it
+while stopped, sets the accumulator, runs it, and inspects the result:
+
+```ies
+-- INC A; HALT
+sys.write_file('PROBE.IE80', string.char(0x3C, 0x76))
+cpu.load_stopped('PROBE.IE80')
+dbg.set_reg('A', 41)
+sys.print('STOPPED ' .. tostring(not cpu.is_running()))
+
+cpu.start()
+sys.wait_ms(10)
+cpu.stop()
+sys.print('A ' .. dbg.get_reg('A'))
+```
+
+The first printed line is `STOPPED true`, proving that loading did not
+start the CPU. The programme increments `A` once and halts. After the
+script stops the CPU, the second line is `A 42`. Try changing the value
+passed to `dbg.set_reg` from `41` to `9`; the final line becomes `A 10`.
 
 ## 34.5 Memory Module
 

@@ -1154,7 +1154,7 @@ SOUND STOP</code></pre>
           <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Live image for x86-64-v3 computers</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
         </div>
-        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos. IE64, 68020, 6502 and x86 code use WebAssembly JITs, with x86 JIT compilation available when the browser supports WebAssembly SIMD; IE32 and Z80 run through their interpreters. The live image bundles worked examples in BASIC, assembly and C, together with the host SDK archive. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
+        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos. IE64, 68020, Z80, 6502 and x86 code use WebAssembly JITs, with x86 JIT compilation available when the browser supports WebAssembly SIMD; only IE32 runs through its interpreter. The live image bundles worked examples in BASIC, assembly and C, together with the host SDK archive. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
       </div>
     </section>
 
@@ -1347,7 +1347,7 @@ SOUND STOP</code></pre>
         <article class="card" style="margin-top: 1rem">
           <span class="kicker">JIT</span>
           <h3>JIT compilers for five CPUs</h3>
-          <p>In the live image, IE64, M68K, x86, Z80 and 6502 compile guest code to x86-64 machine code as it runs; only IE32 stays interpreted. In the browser, IE64, M68K, 6502 and x86 have WebAssembly JITs; IE32 and Z80 stay interpreted. The x86 JIT requires WebAssembly SIMD. Every available JIT starts enabled, including programmes launched from BASIC and JIT-capable coprocessor services. If a backend is unavailable, execution stays with the relevant interpreter. Unsupported instructions return to the relevant interpreter with the guest state preserved. The compilers handle self-modifying code and include CPU-specific floating-point paths such as the M68K 68881 and x86 x87.</p>
+          <p>In the live image, IE64, M68K, x86, Z80 and 6502 compile guest code to x86-64 machine code as it runs; only IE32 stays interpreted. In the browser, IE64, M68K, Z80, 6502 and x86 have WebAssembly JITs; only IE32 stays interpreted. The x86 JIT requires WebAssembly SIMD. Every available JIT starts enabled, including programmes launched from BASIC and JIT-capable coprocessor services. If a backend is unavailable, execution stays with the relevant interpreter. Unsupported instructions return to the relevant interpreter with the guest state preserved. The compilers handle self-modifying code and include CPU-specific floating-point paths such as the M68K 68881 and x86 x87.</p>
           <p>Even with the paged MMU enabled, IE64 code stays JIT-compiled: the dispatcher keys native blocks by translation state, and data, stack, floating-point and control-flow accesses that need address translation take a helper exit and resume in native code instead of bailing the whole block.</p>
         </article>
       </div>

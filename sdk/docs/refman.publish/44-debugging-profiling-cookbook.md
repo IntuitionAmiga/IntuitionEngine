@@ -211,7 +211,32 @@ with the video card, blitter, or compositor. If it appears only in
 when the selected output cannot provide the requested control or capture
 stage.
 
-## 44.10 Use Performance Reports Carefully
+## 44.10 Inspect A Stopped Z80 Load
+
+When a Z80 programme needs register setup before its first instruction,
+load it while stopped, set the register, then start it:
+
+```ies
+-- INC A; HALT
+sys.write_file('PROBE.IE80', string.char(0x3C, 0x76))
+cpu.load_stopped('PROBE.IE80')
+dbg.set_reg('A', 41)
+sys.print('STOPPED ' .. tostring(not cpu.is_running()))
+
+cpu.start()
+sys.wait_ms(10)
+cpu.stop()
+sys.print('A ' .. dbg.get_reg('A'))
+```
+
+Run this with Z80 selected. The stored image is checked and loaded
+before execution begins. `STOPPED true` proves that no instruction ran
+during loading. The script then sets `A` to `41`; `INC A` changes it to
+`42`, and `HALT` prevents a second increment. The final line is `A 42`.
+This pattern is useful when a fault depends on initial register or
+memory state that must exist before the first instruction.
+
+## 44.11 Use Performance Reports Carefully
 
 `sys.perf_reset()` and `sys.perf_report()` measure instrumented
 subsystems when performance accounting is active:
@@ -228,7 +253,7 @@ instrumented path ran during the measured span. A non-empty report is a
 guide to where time went. It is not a promise that the same programme
 will take the same time on every machine.
 
-## 44.11 A Practical Debug Order
+## 44.12 A Practical Debug Order
 
 When a programme misbehaves, use this order:
 

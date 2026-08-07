@@ -31,7 +31,7 @@ func TestSDKArchitectureSourceInventoryGoldenMatchesSource(t *testing.T) {
 
 func TestZ80JITDocumentationRejectsStalePartialBackendClaims(t *testing.T) {
 	paths := []string{"z80_jit.md", "sdk/docs/architecture.md", "sdk/docs/iescript.md", "sdk/docs/iemon.md", "sdk/docs/wasm.md"}
-	stale := []string{"NOP and register-only loads", "remaining Z80 forms use frozen canonical helpers", "ARM64 direct coverage", "other forms use canonical helpers", "breaks on HALT"}
+	stale := []string{"NOP and register-only loads", "Z80 emits NOP, register-only loads", "frozen canonical helpers execute remaining forms", "remaining Z80 forms use frozen canonical helpers", "ARM64 direct coverage", "other forms use canonical helpers", "breaks on HALT"}
 	for _, path := range paths {
 		contents, err := os.ReadFile(path)
 		if err != nil {
@@ -623,6 +623,9 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"mem.* helpers are raw 32-bit bus helpers, not an above-4GiB IE64 RAM or CPU-virtual-address API.", "`script_engine.go` mem helpers cast addresses to `uint32`"},
 		{"Mutable devices join the snapshot contract through MachineMonitor.RegisterSnapshotDevice.", "`debug_monitor.go` `RegisterSnapshotDevice`, `main.go` registrations"},
 		{"Video compositor default scale mode is stretch-fill; F11 toggles non-16:9 sources to aspect-fit.", "`video_compositor.go` `NewVideoCompositor`/`ToggleScaleModeIfNonNative`, `video_compositor_test.go` default-scale regression"},
+		{"Browser Z80 emits every non-observation opcode-manifest row; port and block I/O use frozen canonical helpers with immutable decoded operands.", "`jit_z80_manifest.go` opcode inventory, `jit_z80_wasm_emit.go` emission, and `z80_frozen_fetch.go` canonical helper payload"},
+		{"AY and Z80 tracker playback stops at the exclusive rendered-sample frontier until the producer extends it, preserving absolute event timing.", "`psg_engine.go` `AppendEvents`/`tickSampleLocked` and `psg_player.go` progressive render loop"},
+		{"Command-line media auto-detection uses the shared media extension registry; EmuTOS .tos and .img files require an explicit EmuTOS mode.", "`runtime_helpers.go` `cliModeFromExtension`, `media_loader.go` `mediaExtensionDefinitions`, and `main.go` mode dispatch"},
 		{"Guest-Advanced is the default CRT profile and flat CRT is the initial presentation mode. F7 cycles flat, curved, and off while continuing to reach the guest.", "`video_backend_ebiten.go` `NewEbitenOutput`/`Update`/`handleKeyboardInput`, `video_crt_filter_ebiten.go` mode ordering, and `video_backend_ebiten_status_test.go`"},
 		{"CRT processing is a final host presentation stage. Software-composited frames are filtered after composition; hardware layers retain native source geometry while scaling and filtering, then cursor, status-bar, and host-overlay content joins the final presentation path.", "`video_backend_ebiten.go` hardware/software draw routes and `video_crt_filter_geometry_test.go`/`video_crt_filter_ebiten_test.go`"},
 		{"Guest-Advanced uses preparation, luminance, Gaussian glow, bloom, and final screen passes; curved mode warps the image, glow, and bloom together in the final screen pass.", "`video_crt_guest_advanced_ebiten.go` pass graph and final shader, `video_crt_profile_ebiten_test.go`"},

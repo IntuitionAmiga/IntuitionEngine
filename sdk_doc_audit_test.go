@@ -109,9 +109,9 @@ var britishEnglishAmericanisms = map[string]string{
 var sdkAuditLastModifiedDates = map[string]string{
 	"sdk/docs/IE64_ISA.md":     "2026-07-09",
 	"sdk/docs/IE32_ISA.md":     "2026-07-09",
-	"sdk/docs/iemon.md":        "2026-07-23",
-	"sdk/docs/iescript.md":     "2026-08-05",
-	"sdk/docs/architecture.md": "2026-08-05",
+	"sdk/docs/iemon.md":        "2026-08-07",
+	"sdk/docs/iescript.md":     "2026-08-07",
+	"sdk/docs/architecture.md": "2026-08-07",
 }
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
@@ -1844,9 +1844,9 @@ func TestSDKCompanionDocs_IEScriptJITPlatformMatrixMatchesSource(t *testing.T) {
 		"currently m68k, z80, x86, 6502, and ie64",
 		"6502 native backend is available on Linux AMD64, Linux arm64 and browser js/wasm",
 		"Windows and macOS retain interpreter support",
-		"Linux arm64 provides IE64, M68K, 6502, and x86 JITs",
+		"Linux arm64 provides IE64, M68K, 6502, Z80, and x86 JITs",
 		"Windows and macOS arm64 provide IE64 and M68K JITs",
-		"Browser builds provide IE64, M68K, 6502, and x86 WebAssembly JITs",
+		"Browser builds provide IE64, M68K, 6502, x86, and Z80 WebAssembly JITs",
 		"x86 availability additionally requires WebAssembly SIMD",
 		"Available backends start enabled during normal CPU and runner construction",
 		"primary command-line CPU starts disabled when `--nojit` is used",
@@ -1872,8 +1872,8 @@ func TestSDKCompanionDocs_IEScriptJITPlatformMatrixMatchesSource(t *testing.T) {
 	for _, needle := range []string{
 		"Every available JIT backend starts enabled for directly constructed CPUs",
 		"`--nojit` selects interpreter execution for the primary CPU",
-		"IE64, M68K, 6502 and x86 use separate wasm bytecode",
-		"IE32 and Z80 interpret in the browser",
+		"IE64, M68K, 6502, Z80 and x86 use separate wasm bytecode",
+		"IE32 interprets in the browser",
 	} {
 		if !normalizedContains(architecture, needle) {
 			t.Fatalf("architecture.md missing JIT default/browser contract: %s", needle)
@@ -1886,6 +1886,46 @@ func TestSDKCompanionDocs_IEScriptJITPlatformMatrixMatchesSource(t *testing.T) {
 		if strings.Contains(architecture, obsolete) {
 			t.Fatalf("architecture.md contains obsolete browser JIT claim: %s", obsolete)
 		}
+	}
+}
+
+func TestSDKCompanionDocs_Z80ParityAndCLIMediaContractsMatchSource(t *testing.T) {
+	architecture := readAuditFile(t, "sdk/docs/architecture.md")
+	iemon := readAuditFile(t, "sdk/docs/iemon.md")
+	media := readAuditFile(t, "media_loader.go")
+	playback := readAuditFile(t, "psg_engine.go")
+	worker := readAuditFile(t, "coproc_worker_z80.go")
+
+	for _, needle := range []string{
+		"Z80 emits every non-observation opcode-manifest row",
+		"port and block I/O use frozen canonical helpers",
+		"Playback stops at the exclusive rendered-sample frontier",
+		"cliModeFromExtension",
+		"EmuTOS `.tos` and `.img` files still require an explicit EmuTOS mode",
+	} {
+		if !normalizedContains(architecture, needle) {
+			t.Fatalf("architecture.md missing Z80/media contract: %s", needle)
+		}
+	}
+	for _, extension := range []string{".sid", ".ym", ".ay", ".sndh", ".vtx", ".vt", ".pt3", ".pt2", ".pt1", ".stc", ".sqt", ".asc", ".ftc", ".vgm", ".vgz", ".snd", ".ted", ".prg", ".ahx", ".sap", ".mod", ".wav", ".mid", ".midi", ".mus"} {
+		if !strings.Contains(media, `extension: "`+extension+`"`) {
+			t.Fatalf("media extension registry changed: %s", extension)
+		}
+		if !strings.Contains(architecture, "`"+extension+"`") {
+			t.Fatalf("architecture.md missing CLI media extension: %s", extension)
+		}
+	}
+	if !strings.Contains(playback, "currentSample >= e.renderedThrough") {
+		t.Fatal("PSG progressive frontier source contract changed")
+	}
+	if !strings.Contains(worker, "cpu.z80JitExecute()") {
+		t.Fatal("Z80 worker no longer uses normal JIT dispatch")
+	}
+	if !normalizedContains(iemon, "worker launch has no per-worker `--nojit` option") {
+		t.Fatal("iemon.md missing Z80 worker JIT control boundary")
+	}
+	if strings.Contains(iemon, "unless its launch selected `--nojit`") {
+		t.Fatal("iemon.md retains nonexistent per-worker --nojit launch claim")
 	}
 }
 

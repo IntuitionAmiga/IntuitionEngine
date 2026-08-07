@@ -2246,6 +2246,45 @@ Execute this pass in ascending reader order:
 5. Run focused script tests, documentation checks, forbidden-term and dash
    scans, strict publication, and PDF generation in that order.
 
+## Current Z80 IE Script Stopped-Load Pass
+
+The current IE Script CPU surface extends stopped programme loading to Z80.
+Document that public script contract without exposing execution-engine
+implementation.
+
+Document only these reader-visible contracts:
+
+- `cpu.load_stopped(path)` supports IE64, IE32, and Z80 programmes. It reads an
+  approved stored programme, resets the selected CPU, loads the image, and
+  leaves the CPU stopped. A rejected IE64 or Z80 image is checked before the
+  running programme is disturbed.
+- A Z80 image begins at the selected Z80 programme load address and must fit
+  within the Z80 banked visible range. Invalid paths, read failures, oversized
+  images, unavailable CPUs, and unsupported CPU selections raise script
+  errors.
+
+Do not document command-line mode selection, execution acceleration controls,
+execution statistics, platform support matrices, environment switches,
+native-code emitters, WebAssembly module construction, cache invalidation
+machinery, static-chain patching, playback worker implementation, or repository
+fixtures. Command-line music auto-detection and progressive player rendering do
+not change an IE-native programming contract and do not belong in this pass.
+
+Execute this pass in ascending reader order:
+
+1. Chapter 34: correct the supported `cpu.load_stopped` CPU set; add its exact
+   status and error behaviour and a typed stopped-Z80 example.
+2. Chapter 44: add a task-first recipe which loads a stored Z80 programme while
+   stopped, sets a register, runs a bounded programme, and inspects the result.
+3. Appendix L: add a concise lookup entry for stopped programme loading.
+4. Claim ledger: record the canonical functions, focused tests, reader
+   workflow, expected output shape, and exclusions.
+5. Confirm that `tools/prm-extract/symbols.txt` contains every documented IE
+   Script call. Regenerate it only if the source-owned inventory differs.
+6. Run focused script tests, the Chapter 34 and Chapter 44 PRG harnesses,
+   forbidden-term and dash scans, strict publication, and PDF generation in
+   that order.
+
 ## Uniform Chapter Taxonomy
 
 Name hardware chapters after the hardware block, not after every file

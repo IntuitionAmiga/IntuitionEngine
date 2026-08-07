@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-08-05*
+*Last modified: 2026-08-07*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -560,7 +560,7 @@ never emitted unless the host supports them.
 | Host platform | JIT-enabled guest cores | Dispatch files |
 |---------------|-------------------------|----------------|
 | Linux amd64 | IE64, 6502, M68K, Z80, x86 | `jit_dispatch.go`, amd64 per-core dispatch files |
-| Linux arm64 | IE64, M68K, 6502, Z80, x86 | `jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_6502_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch_arm64.go`; Z80 emits its tested safe subset and uses frozen canonical helpers at the remaining observation boundaries |
+| Linux arm64 | IE64, M68K, 6502, Z80, x86 | `jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_6502_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch_arm64.go`; Z80 emits every non-observation opcode-manifest row and uses frozen canonical helpers for port and block I/O |
 | Windows amd64 | IE64, M68K, Z80, x86 | amd64 per-core dispatch files |
 | Windows arm64 | IE64, M68K | IE64 and M68K dispatch; other non-IE64 cores use stubs |
 | macOS amd64 | IE64, M68K, Z80, x86 | amd64 per-core dispatch files |
@@ -569,11 +569,12 @@ never emitted unless the host supports them.
 
 Every available JIT backend starts enabled for directly constructed CPUs,
 normal runners, Program Executor launches, and JIT-capable coprocessor
-workers. Z80 AY and tracker playback also use the default JIT dispatcher with
-bounded frame execution; debugger single-step remains an explicit one-opcode
-interpreter operation. `--nojit` selects interpreter execution for the primary CPU started
+workers. `--nojit` selects interpreter execution for the primary CPU started
 from the command line. An unavailable backend always falls back to the
-interpreter; stopped primary CPUs can also be switched through IEScript.
+interpreter; stopped primary CPUs can also be switched through IEScript. Z80 AY
+and tracker playback use the default JIT dispatcher with bounded frame
+execution; debugger single-step remains an explicit one-opcode interpreter
+operation.
 
 The 6502 JIT is available only on Linux amd64, Linux arm64, and js/wasm;
 Windows and macOS use the interpreter. Native and wasm backends invalidate
@@ -585,8 +586,8 @@ On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, 
 On js/wasm the native backends are absent because the browser gives Go no
 executable memory. IE64, M68K, 6502, Z80 and x86 use separate wasm bytecode
 backends instead; see the backend sections below. IE32 interprets in the
-browser; Z80 emits its tested safe subset and uses frozen canonical helpers
-for the remaining forms.
+browser. Browser Z80 emits every non-observation opcode-manifest row; port and
+block I/O use frozen canonical helpers with immutable decoded operands.
 
 ### M68020 JIT Backends
 
@@ -913,7 +914,7 @@ build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
 | `novulkan` | `-tags novulkan` | Voodoo uses the software backend and does not require the Vulkan SDK. Guest Voodoo registers remain mapped. |
 | `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
 | `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
-| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE64, M68K, 6502, x86, and Z80 use WebAssembly JIT backends. Z80 emits NOP, register-only loads and unconditional static JP/JR modules from a source-stamped cache; its shared frontend eagerly forms bounded four-block static chains, then frozen canonical helpers execute remaining forms. The 6502 backend lowers documented NMOS instructions in eligible direct RAM and uses interpreter resume at mapping and observation boundaries. `IE64_WASM_JIT=0`, `M68K_WASM_JIT=0`, `P65_WASM_JIT=0`, `X86_WASM_JIT=0`, and `Z80_WASM_JIT=0` disable the corresponding browser backend; x86 also requires WebAssembly SIMD. IE32 interprets. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
+| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE64, M68K, 6502, x86, and Z80 use WebAssembly JIT backends. Z80 emits every non-observation opcode-manifest row from a source-stamped cache; port and block I/O use frozen canonical helpers, and its shared frontend eagerly forms bounded four-block static chains. The 6502 backend lowers documented NMOS instructions in eligible direct RAM and uses interpreter resume at mapping and observation boundaries. `IE64_WASM_JIT=0`, `M68K_WASM_JIT=0`, `P65_WASM_JIT=0`, `X86_WASM_JIT=0`, and `Z80_WASM_JIT=0` disable the corresponding browser backend; x86 also requires WebAssembly SIMD. IE32 interprets. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
 
 Headless stubs should be treated as backend substitutes, not as a different
 machine model. A test can still write video or audio MMIO and inspect guest
@@ -1154,6 +1155,29 @@ There is no stable bus/MMIO timer control ABI at present. Legacy include symbols
 Bare `.ie68` uses the active-visible RAM ceiling; EmuTOS and AROS M68K loader modes use profile bounds.
 
 AROS boot is selected by CLI mode (`-aros`, optional `-aros-image`), not file extension.
+
+### Command-Line Media Auto-Detection
+
+Command-line media auto-detection uses the shared media extension registry;
+EmuTOS `.tos` and `.img` files require an explicit EmuTOS mode.
+
+When no explicit mode flag is present, `cliModeFromExtension` routes these
+case-insensitive extensions through the shared media loader registry:
+
+| Extensions | Playback mode |
+|------------|---------------|
+| `.sid` | SID |
+| `.ym`, `.ay`, `.sndh`, `.vtx`, `.vt`, `.pt3`, `.pt2`, `.pt1`, `.stc`, `.sqt`, `.asc`, `.ftc`, `.vgm`, `.vgz`, `.snd` | PSG |
+| `.ted`, `.prg` | TED |
+| `.ahx` | AHX |
+| `.sap` | POKEY |
+| `.mod` | MOD |
+| `.wav` | WAV |
+| `.mid`, `.midi`, `.mus` | MIDI/MUS |
+
+The same registry is accepted by single-instance IPC handoff. EmuTOS `.tos`
+and `.img` files still require an explicit EmuTOS mode; they are not part of
+command-line auto-detection.
 
 ### Z80 Port I/O Bridge
 
@@ -1657,6 +1681,12 @@ Barrier writers drain the ring themselves rather than asking the renderer to dra
 The ring is enabled by default. With `IE_AUDIO_EVENT_RING=0`, the synchronous path is unchanged. With the ring enabled, a register write issued while the renderer is mixing costs about 170 ns instead of about 7.4 µs on the measured development host.
 
 The master normaliser separates setter-owned configuration from audio-thread-owned dynamics. Configuration setters publish a generation counter; the audio thread applies pending envelope and lookahead resets before the next normaliser step. Register-driven engine synchronisation can batch SoundChip writes through `HandleRegisterWrites`, preserving write order while taking the chip mutex once. Idle playback paths for SID, TED, MIDI, MOD, AHX, POKEY, and SFX use atomic gates before taking their engine or channel mutexes. POKEY event playback drains current-sample events through a reusable scratch buffer prepared when events are loaded.
+
+AY and Z80 tracker playback stops at the exclusive rendered-sample frontier
+until the producer extends it, preserving absolute event timing. Rendering is
+progressive through the Z80 JIT dispatcher, and events are appended in order
+with absolute sample positions. A new load generation cancels stale producer
+work before it can append to the replacement track.
 
 ### Engine and Player Routing
 

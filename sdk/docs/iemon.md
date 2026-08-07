@@ -1,6 +1,6 @@
 # Intuition Engine Machine Monitor
 
-*Last modified: 2026-07-23*
+*Last modified: 2026-08-07*
 
 ## Overview
 
@@ -772,8 +772,8 @@ separate monitor CPU ID; instance 0 keeps the bare label (`coproc:M68K`). The
 suffix is part of the label accepted by focus and offline commands.
 
 Slot count is independent of JIT availability. A Z80 worker starts with its
-available backend enabled, including the browser wasm backend, unless its
-launch selected `--nojit`. Monitor breakpoints and watchpoints remain
+available backend enabled, including the browser wasm backend; worker launch
+has no per-worker `--nojit` option. Monitor breakpoints and watchpoints remain
 instruction observation boundaries, so debugging a Z80 worker uses the
 interpreter path until normal execution resumes.
 
