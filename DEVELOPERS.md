@@ -1,439 +1,272 @@
 # Intuition Engine Developer Guide
 
-Build, test, and contribution guide for the Intuition Engine retro hardware emulator.
+This guide is the starting point for building, testing and contributing to
+Intuition Engine. For the project overview, see [README.md](README.md). The
+canonical architecture, instruction-set and JIT references are under
+[sdk/docs](sdk/docs/).
 
-For the project overview, see [README.md](README.md).
-For technical references, see the focused documents under [sdk/docs](sdk/docs/).
-For the SDK developer package, see [sdk/README.md](sdk/README.md).
+Intuition Engine is a multi-CPU fantasy computer implemented primarily in the
+root Go `main` package. It supports IE64, IE32, M68K, Z80, 6502 and x86 guest
+CPUs. Most hardware is shared through one guest bus and exposed through native
+MMIO or an architecture-specific I/O window.
 
----
+## 1. Prerequisites
 
-# Table of Contents
+Use the Go toolchain selected by `go.mod`, currently Go 1.26.4. The project uses
+the experimental `simd/archsimd` API, so another Go 1.26 patch release is not
+assumed to be compatible.
 
-1. [Prerequisites](#1-prerequisites)
-2. [Building](#2-building)
-3. [Build Profiles and Tags](#3-build-profiles-and-tags)
-4. [Version and Feature Introspection](#4-version-and-feature-introspection)
-5. [Toolchain Matrix](#5-toolchain-matrix)
-6. [Development Workflow](#6-development-workflow)
-7. [Include Files](#7-include-files)
-8. [Running Programs](#8-running-programs)
-9. [Testing](#9-testing)
-10. [Debugging](#10-debugging)
-11. [Platform Support](#11-platform-support)
-12. [Packaging and Distribution](#12-packaging-and-distribution)
-13. [Contributing](#13-contributing)
-14. [EmuTOS Integration](#14-emutos-integration)
-15. [AROS Integration](#15-aros-integration)
-16. [JIT Compilation](#16-jit-compilation)
+The default native build uses Ebiten, Oto and the Vulkan-backed Voodoo renderer.
+It therefore needs the normal native compiler, window-system, audio and Vulkan
+development dependencies for the host. If the Vulkan SDK is unavailable, use
+`make novulkan`. For CI or a fully portable build, use `make headless` or
+`make headless-novulkan`.
 
----
+Some guest toolchains are optional:
 
-# 1. Prerequisites
+| Guest | External toolchain |
+|-------|--------------------|
+| M68K | VASM using Motorola syntax |
+| Z80 | VASM using standard Z80 syntax |
+| 6502 | cc65 (`ca65` and `ld65`) |
+| x86 | NASM |
 
-- **Go 1.26** or later
-- `sstrip` and `upx` for binary optimisation (modify Makefile to skip if unavailable)
-- No extra system packages are required for the default runtime path (Ebiten + Oto)
+Individual examples and OS rebuilds may require additional cross-compilers.
+Their Makefile targets report missing prerequisites.
 
-Optional dependencies for advanced features:
-- **Vulkan** SDK/driver: required for the Voodoo Vulkan rasteriser path (not needed with `novulkan` profile)
-
----
-
-# 2. Building
-
-The build process uses the provided Makefile:
+## 2. Building
 
 ```bash
-# Build everything (VM + all tools)
+# VM and all first-party SDK tools
 make
 
-# Build only the VM
+# VM only
 make intuition-engine
 
-# Build individual tools
-make ie32asm           # IE32 assembler
-make ie64asm           # IE64 assembler
-make ie32to64          # IE32-to-IE64 converter
-make ie64dis           # IE64 disassembler
-make basic             # VM with embedded EhBASIC interpreter
-make emutos            # VM with embedded EmuTOS ROM
-make basic-emutos      # VM with embedded EhBASIC + EmuTOS ROM
-make emutos-rom        # Build EmuTOS ROM from source (auto-clones if needed)
+# VM without the Vulkan backend
+make novulkan
 
-# Install / uninstall
-make install           # Install to /usr/local/bin (all built tools)
-make uninstall         # Remove installed binaries
+# CI build without display, audio or Vulkan backends
+make headless
 
-# Housekeeping
-make clean             # Remove all build artefacts
-make distclean         # Remove generated/downloaded rebuild artefacts
-make list              # List compiled binaries with sizes
-make help              # Show all available targets
+# Pure-Go portable build
+make headless-novulkan
+
+# Browser build
+make wasm
+
+# Remove build artefacts
+make clean
+make distclean
+
+# List all supported targets
+make help
 ```
 
-Assembler regression coverage:
+The VM is written to `bin/IntuitionEngine`. First-party tools are written to
+`sdk/bin/`:
+
+| Tool | Purpose |
+|------|---------|
+| `ie32asm` | IE32 assembler |
+| `ie64asm` | IE64 assembler |
+| `ie64dis` | IE64 disassembler |
+| `ie32to64` | IE32-to-IE64 converter |
+| `m68kto64` | M68K-to-IE64 transpiler |
+| `ie64-cproc` | IE64 freestanding C compiler driver |
+| `ie64ld` | IE64 static linker |
+| `ie64-ar` | IE64 archive tool |
+| `ie64-ranlib` | IE64 archive indexer |
+
+The [Host SDK guide](sdk/docs/host-sdk-README.md) describes the packaged Linux
+x86-64 SDK, including its compiler components, runtime, libraries and public
+headers.
+
+### Makefile build baseline
+
+Makefile-driven builds export `GOEXPERIMENT=simd`. On amd64 they also export
+`GOAMD64=v3`, so those binaries require an x86-64-v3-compatible processor.
+`IE_SIMD=0` selects scalar kernels at runtime but does not lower that processor
+baseline.
+
+A bare `go build .` does not inherit `GOAMD64=v3`. It compiles scalar kernels
+unless `GOEXPERIMENT=simd` has been configured in the Go environment. Use the
+Makefile targets for release artefacts and performance measurements.
+
+### Build profiles
+
+| Profile | Command | Host backends |
+|---------|---------|---------------|
+| Default | `make` | Ebiten, Oto and Vulkan Voodoo |
+| No Vulkan | `make novulkan` | Ebiten, Oto and software Voodoo |
+| Headless | `make headless` | Display and audio stubs, software Voodoo |
+| Portable headless | `make headless-novulkan` | `CGO_ENABLED=0`, display and audio stubs, software Voodoo |
+| Browser | `make wasm` | WebGL, WebAudio, software Voodoo and WebAssembly JIT backends |
+
+Build tags change host backends, not the guest ISA or MMIO contracts.
+
+| Tag | Effect |
+|-----|--------|
+| `headless` | Replace GUI, audio and video presentation backends with test stubs |
+| `novulkan` | Use the software Voodoo renderer |
+| `goexperiment.simd` | Compile amd64 SIMD kernels when the Go experiment is enabled |
+| `embed_basic` | Embed the EhBASIC image |
+| `embed_emutos` | Embed the EmuTOS ROM |
+| `embed_aros` | Embed the AROS ROM |
+| `ie64` | Build the IE64 assembler entry point |
+| `ie64dis` | Build the IE64 disassembler entry point |
+| `m68k_test` | Enable M68K-specific tests |
+| `musashi` | Enable the Musashi reference core for M68K validation |
+| `empirical` | Enable empirical audio validation tests |
+| `empiricaljson` | Enable empirical audio JSON export tests |
+| `audiolong` | Enable long-running audio demonstrations |
+| `videolong` | Enable long-running video demonstrations |
+
+`GOOS=js GOARCH=wasm` selects the browser-specific implementation files. It is
+not a manually supplied build tag.
+
+### Generated IE64 opcode metadata
+
+`internal/ie64meta/table.go` is the source of truth for IE64 opcode constants
+and mnemonic tables. After changing it, regenerate the derived files and run
+the assembler and disassembler tests:
 
 ```bash
+go generate ./...
 go test ./assembler
 go test -tags ie64 ./assembler
+go test -tags ie64dis ./assembler
 go test -tags headless -run TestAssemblerExamples .
 ```
 
-IE64 opcode values and mnemonic/name tables are generated from
-`internal/ie64meta/table.go`. Re-run `go generate ./...` or
-`go run ./cmd/gen_ie64_opmeta` after changing opcode metadata, then run the
-assembler/disassembler parity tests. The IE64 assembler and disassembler must be
-built as the `./assembler` package under their build tags so the generated
-opcode files are included:
+The tagged tools must be built from the `assembler` package:
 
 ```bash
 go build -tags ie64 -o ie64asm ./assembler
 go build -tags ie64dis -o ie64dis ./assembler
 ```
 
-The assembler example test builds both assembler CLIs, assembles the curated shipped IE32/IE64 source manifest with `-o` into a temporary directory, and compares SHA-256 output hashes in `assembler/testdata/golden_hashes.txt`.
+## 3. Repository orientation
 
-Build outputs:
-```
-./bin/IntuitionEngine   # The virtual machine
-sdk/bin/ie32asm         # The IE32 assembler
-sdk/bin/ie64asm         # The IE64 assembler
-sdk/bin/ie32to64        # The IE32-to-IE64 converter
-sdk/bin/ie64dis         # The IE64 disassembler
-```
+| Path | Responsibility |
+|------|----------------|
+| `main.go` | CLI parsing and runtime assembly |
+| `machine_bus.go` | Guest RAM, MMIO dispatch and fast bus paths |
+| `machine_lifecycle.go` | Loading, reset and profile transitions |
+| `cpu_*.go`, `cpu_*_runner.go` | Guest CPU interpreters and execution routing |
+| `jit_*.go` | Shared and CPU-specific JIT implementations |
+| `video_chip.go`, `video_*.go` | Video hardware and host backends |
+| `audio_chip.go`, `*_engine.go`, `*_player.go` | Audio synthesis and playback |
+| `debug_*.go` | Machine Monitor, snapshots and debugging services |
+| `script_*.go` | Lua and IEScript integration |
+| `assembler/` | IE32 and IE64 assemblers and IE64 disassembler |
+| `cmd/` | Converters, compiler and SDK command-line tools |
+| `internal/ie64meta/` | Canonical IE64 opcode metadata |
+| `internal/ie64obj/`, `internal/ie64link/`, `internal/ie64archive/` | IE64 object, linker and archive support |
+| `sdk/include/` | Guest assembly includes, linker configuration and public C header |
+| `sdk/examples/` | Guest examples and assets |
+| `sdk/docs/` | Architecture, ISA, ABI and tool references |
 
-Version metadata (version, git commit, build date) is automatically injected via ldflags.
+Almost all runtime code belongs to the root `main` package. Keep new files with
+the subsystem they extend and follow the existing
+`{subsystem}_{component}[_variant].go` naming pattern.
 
----
+Before changing `sdk/intuitionos/` or `iexec_*.go`, read
+[`sdk/intuitionos/CLAUDE.md`](sdk/intuitionos/CLAUDE.md). It defines additional
+kernel, ELF loader and grant-model constraints.
 
-# 3. Build Profiles and Tags
+## 4. Canonical technical references
 
-## Profiles
+Do not infer guest behaviour from source comments alone. Check the implementation
+and the relevant maintained reference:
 
-| Profile | Command | CGO | Description |
-|---------|---------|-----|-------------|
-| **full** (default) | `make` | Yes | All features: Vulkan Voodoo, Ebiten display, Oto audio |
-| **novulkan** | `make novulkan` | Yes | Software Voodoo rasteriser only, no Vulkan SDK needed |
-| **headless** | `make headless` | Yes | No display, no audio, no Vulkan (CI/testing) |
-| **headless-novulkan** | `make headless-novulkan` | No | Fully portable `CGO_ENABLED=0` build, cross-compile safe |
+| Subject | Reference |
+|---------|-----------|
+| Machine architecture and MMIO | [architecture.md](sdk/docs/architecture.md) |
+| IE32 instruction set | [IE32_ISA.md](sdk/docs/IE32_ISA.md) |
+| IE64 instruction set | [IE64_ISA.md](sdk/docs/IE64_ISA.md) |
+| IE64 JIT | [IE64_JIT.md](sdk/docs/IE64_JIT.md) |
+| M68K JIT | [M68K_JIT.md](sdk/docs/M68K_JIT.md) |
+| 6502 JIT | [6502_JIT.md](sdk/docs/6502_JIT.md) |
+| x86 JIT | [x86_JIT.md](sdk/docs/x86_JIT.md) |
+| Machine Monitor | [iemon.md](sdk/docs/iemon.md) |
+| IEScript | [iescript.md](sdk/docs/iescript.md) |
 
-## Build Tags
+The include files are architecture-specific views of shared hardware. They do
+not all expose identical helpers or addresses:
 
-| Tag | Effect |
-|-----|--------|
-| `headless` | Disable GUI/audio/video backends (stubs only) |
-| `goexperiment.simd` | amd64 only; compile the `simd/archsimd` span kernels (compositor, blitter fill, software Voodoo untextured spans). Default-on for `make`; scalar fallback elsewhere; `IE_SIMD=0` reverts at runtime |
-| `novulkan` | Disable Vulkan backend, use software Voodoo rasteriser |
-| `embed_basic` | Embed pre-assembled EhBASIC binary for `-basic` flag |
-| `embed_emutos` | Embed EmuTOS ROM image for `-emutos` flag and BASIC `EMUTOS` command |
-| `embed_aros` | Embed AROS ROM image for `-aros` flag and BASIC `AROS` command |
-| `ie64` | IE64 assembler build tag |
-| `ie64dis` | IE64 disassembler build tag |
-| `m68k` | Enable M68K-specific tests |
-| `audiolong` | Enable long-running audio demonstration tests |
-| `videolong` | Enable long-running video demonstration tests |
+| Include | Guest syntax and notable differences |
+|---------|--------------------------------------|
+| `ie32.inc` | IE32 assembler constants and macros |
+| `ie64.inc` | IE64 constants, macros and coprocessor helpers |
+| `ie64_fp.inc` | IE64 floating-point library using raw FP64 calling-convention values and hardware FPU wrappers |
+| `ie65.inc`, `ie65.cfg` | cc65 constants, macros, zero-page allocation and linker layout; 6502 I/O uses its translated window |
+| `ie68.inc` | Motorola-syntax M68K constants and macros |
+| `ie80.inc` | Z80 constants and port mappings |
+| `ie86.inc` | NASM constants, port I/O and VGA definitions |
 
-## Profile Capability Matrix
+Consult the chosen include rather than assuming that a helper, register or
+native MMIO address exists on every CPU. In particular, ANTIC/GTIA is not
+addressable through the 6502 guest view, and deprecated timer constants are not
+an implemented timer device.
 
-| Feature | full | novulkan | headless | headless-novulkan |
-|---------|------|----------|----------|-------------------|
-| Ebiten display | Yes | Yes | Stub | Stub |
-| Oto audio | Yes | Yes | Stub | Stub |
-| Vulkan Voodoo | Yes | No | No | No |
-| Software Voodoo | Yes | Yes | Yes | Yes |
-| CGO required | Linux native only | Linux native only | Linux native only | No |
-| Cross-compile | Linux only | Windows/macOS safe, Linux needs toolchain | Linux only | Yes |
+### Guest RAM
 
-## Host Platform Matrix
+Production RAM sizing is derived from host memory through platform-specific
+discovery, after which a host reserve and the selected profile ceiling are
+applied. A legacy 32 MiB fallback exists for hosts where discovery is
+unavailable and for the default test bus. It is not the fixed machine size.
 
-| Host OS | GOARCH | GUI build | Release target | JIT-enabled guest cores |
-|---------|--------|-----------|----------------|-------------------------|
-| Linux | amd64 | Yes | Yes | IE64, 6502, M68K, Z80, x86 |
-| Linux | arm64 | Yes | Yes | IE64 |
-| Windows | amd64 | Yes (`novulkan`) | Yes | IE64, 6502, M68K, Z80, x86 |
-| Windows | arm64 | Yes (`novulkan`) | Yes | IE64 |
-| macOS | arm64 | Yes (`novulkan`) | Yes | IE64 |
+Guest software must discover memory through `SYSINFO_TOTAL_RAM_LO/HI`,
+`SYSINFO_ACTIVE_RAM_LO/HI`, or the corresponding CPU control register. IE32,
+x86 and M68K are bounded by their 32-bit guest address space. The 6502 and Z80
+use banked windows, and OS profiles may impose narrower source-owned layouts.
+See the architecture reference for the current ranges and profile bounds.
 
-## Direct go build
+## 5. Development workflow
 
-```bash
-# Quick build without compression (development)
-go build ./...
+1. Identify the guest-visible contract and the code that owns it.
+2. Add or update a focused test that observes the required behaviour.
+3. Make the smallest implementation change that satisfies that contract.
+4. Run the narrow test first, then the relevant subsystem or package tests.
+5. Update canonical documentation when an ISA, MMIO, ABI, tool or build contract
+   changes.
+6. Run the applicable verification gates before submitting the change.
 
-# With specific tags
-go build -tags novulkan .
-go build -tags headless .
-CGO_ENABLED=0 go build -tags "novulkan headless" .
-```
+Use `gofmt` on changed Go files. M68K assembly uses Motorola syntax, 6502 uses
+cc65 syntax, and x86 uses NASM syntax.
 
----
+### Change-specific verification
 
-# 4. Version and Feature Introspection
+| Change | Minimum relevant checks |
+|--------|-------------------------|
+| Root Go runtime | Focused test, then `go test -tags headless ./...` |
+| IE32 or IE64 assembler | Tagged assembler test plus `TestAssemblerExamples` |
+| CPU interpreter | Focused instruction tests and available differential suites |
+| JIT backend | Interpreter parity, backend-specific tests and target execution where available |
+| MMIO device | Register-level tests plus architecture documentation check |
+| Browser implementation | `make test-wasm-build` and `make test-wasm-node` |
+| SDK toolchain | `make test-ie64-toolchain` or the tool-specific package tests |
+| Documentation | `make check-docs` and `git diff --check` |
 
-```bash
-# Version, commit, build date, Go version, OS/arch
-./bin/IntuitionEngine -version
+Do not accept cross-compilation alone as proof that target-specific native code
+works. Linux arm64 JIT correctness should be executed on arm64 hardware or under
+QEMU when the relevant gate supports it.
 
-# Compiled-in feature flags and build profile
-./bin/IntuitionEngine -features
-```
+## 6. Testing and verification
 
----
-
-# 5. Toolchain Matrix
-
-| CPU Core | Assembler | File Extension | Install |
-|----------|-----------|----------------|---------|
-| IE32 | `ie32asm` (built-in) | `.iex` | `make ie32asm` |
-| IE64 | `ie64asm` (built-in) | `.ie64` | `make ie64asm` |
-| M68K | `vasmm68k_mot` | `.ie68` | [VASM](http://sun.hasenbraten.de/vasm/) (`make CPU=m68k SYNTAX=mot`) |
-| Z80 | `vasmz80_std` | `.ie80` | [VASM](http://sun.hasenbraten.de/vasm/) (`make CPU=z80 SYNTAX=std`) |
-| 6502 | `ca65` / `ld65` | `.ie65` | [cc65](https://cc65.github.io/) |
-| x86 | `nasm` | `.ie86` | [NASM](https://www.nasm.us/) |
-
-### Companion Tools
-
-| Tool | Purpose | Install |
-|------|---------|---------|
-| `ie32to64` | Convert IE32 binaries to IE64 format | `make ie32to64` |
-| `ie64dis` | Disassemble IE64 binaries | `make ie64dis` |
-
-See [IE32 to IE64 Migration](sdk/docs/ie32to64.md) for converter documentation.
-
-### Assembling Programs
-
-```bash
-# IE32
-sdk/bin/ie32asm program.asm                  # Produces program.iex
-
-# IE64
-sdk/bin/ie64asm program.asm                  # Produces program.ie64
-
-# M68K
-vasmm68k_mot -Fbin -m68020 -devpac -o out.ie68 input.asm
-
-# 6502 (via Makefile helper)
-make ie65asm SRC=sdk/examples/asm/program.asm  # Produces program.ie65
-
-# Z80 (via Makefile helper)
-make ie80asm SRC=sdk/examples/asm/program.asm  # Produces program.ie80
-
-# x86
-nasm -f bin -o program.ie86 program.asm
-```
-
----
-
-# 6. Development Workflow
-
-A typical development cycle:
-
-1. Write assembly (or BASIC) code
-2. Assemble:
-   ```bash
-   sdk/bin/ie32asm program.asm
-   ```
-3. Run:
-   ```bash
-   ./bin/IntuitionEngine -ie32 program.iex
-   ```
-4. Debug with the machine monitor (F9) or console output
-5. Iterate
-
-### Creating New Demonstrations
-
-When adding new test demonstrations:
-
-1. Use descriptive names that indicate what capability is being showcased
-2. Include detailed logging explaining expected effects and technical aspects
-3. Structure demos to progress from basic to complex effects
-4. Clean up resources properly when complete
-5. Add informative comments about algorithms and techniques used
-
----
-
-# 7. Include Files
-
-The `sdk/include/` directory provides hardware definition include files for each CPU architecture, plus the EhBASIC interpreter modules.
-
-| File | CPU | Assembler | Description |
-|------|-----|-----------|-------------|
-| `ie32.inc` | IE32 | ie32asm | Hardware constants (`.equ` directives) |
-| `ie64.inc` | IE64 | ie64asm | Hardware constants and macros |
-| `ie64_fp.inc` | IE64 | ie64asm | IEEE 754 FP32 math (hardware FPU wrappers) |
-| `ie65.inc` | 6502 | ca65 | Hardware constants, macros, zero page allocation |
-| `ie65.cfg` | 6502 | ld65 | Linker configuration |
-| `ie68.inc` | M68K | vasmm68k_mot | Hardware constants with M68K macros |
-| `ie80.inc` | Z80 | vasmz80_std | Hardware constants with Z80 macros |
-| `ie86.inc` | x86 | NASM | Hardware constants, port I/O, VGA registers |
-
-All include files provide:
-- **Video registers**: VIDEO_CTRL, VIDEO_MODE, VIDEO_STATUS, blitter, copper, raster band
-- **ANTIC/GTIA registers**: IE-native MMIO/port definitions for `0xF2100-0xF21FB`; 6502 intentionally has no ANTIC/GTIA surface because `$D400` is PSG
-- **Audio registers**: PSG, POKEY, SID, TED raw registers and player control
-- **Memory constants**: VRAM_START, SCREEN_W/H, LINE_BYTES
-- **Blitter operations**: BLT_OP_COPY, BLT_OP_FILL, BLT_OP_LINE, BLT_OP_MASKED, BLT_OP_ALPHA, BLT_OP_MODE7
-- **Copper opcodes**: COP_WAIT_MASK, COP_MOVE_RASTER_*, COP_END
-- **Timer registers**: TIMER_CTRL, TIMER_COUNT, TIMER_RELOAD
-- **Coprocessor helpers**: coproc_start, coproc_stop, coproc_enqueue, coproc_poll, coproc_wait
-
-### Include File Stability
-
-The `sdk/include/` directory is the canonical location for all include files.
-
-### Guest RAM Model
-
-Total guest RAM is autodetected from host `/proc/meminfo` minus a per-platform reserve at boot (`memory_sizing.go`). Each CPU/profile sees an active visible RAM bounded by its own ceiling:
-
-- **IE64**: large addressable; sees the full active visible RAM, which may exceed 4 GiB on hosts with sufficient memory. Discovers size via `CR_RAM_SIZE_BYTES` and the `SYSINFO_ACTIVE_RAM_LO/HI` MMIO pair.
-- **IE32 / x86 / M68K**: flat 32-bit guests; visible RAM is bounded by the 32-bit ceiling regardless of total guest RAM.
-- **6502 / Z80**: banked guests; the current bank-switching ABI caps visibility at 32 MiB.
-- **EmuTOS / AROS / EhBASIC**: source-owned profiles (`profile_bounds.go`) declare explicit memory-map contracts independent of the underlying CPU's architectural visible range. EmuTOS currently uses a 2 GiB profile cap with a 32 MiB minimum; AROS uses a 2 GiB profile cap with a minimum large enough to back its 0x1E00000-0x5DFFFFF direct VRAM window.
-
-Guest software discovers RAM via the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI` for total guest RAM, `SYSINFO_ACTIVE_RAM_LO/HI` for active visible RAM). Each pair is a little-endian 64-bit byte value assembled from the low/high 32-bit registers. Do not hardcode the appliance RAM size.
-
-### 8-Bit CPU Banking
-
-The 6502 and Z80 use a banking system to access the active visible RAM:
-
-| Window | Address Range | Purpose | Bank Register |
-|--------|---------------|---------|---------------|
-| Bank 1 | $2000-$3FFF | Sprite data | BANK1_REG_LO/HI |
-| Bank 2 | $4000-$5FFF | Font data | BANK2_REG_LO/HI |
-| Bank 3 | $6000-$7FFF | General data | BANK3_REG_LO/HI |
-| VRAM | $8000-$BFFF | Video memory (16KB) | VRAM_BANK_REG |
-
----
-
-# 8. Running Programs
-
-### CPU Modes
+Use the `headless` tag unless a test explicitly requires a host backend.
 
 ```bash
-# Default: start EhBASIC on IE64
-./bin/IntuitionEngine
+# One focused test
+go test -tags headless -run TestName ./...
 
-# Run programs on specific CPU cores
-./bin/IntuitionEngine -ie32 program.iex
-./bin/IntuitionEngine -ie64 program.ie64
-./bin/IntuitionEngine -m68k program.ie68
-./bin/IntuitionEngine -z80 program.ie80
-./bin/IntuitionEngine -x86 program.ie86
-./bin/IntuitionEngine -m6502 program.bin
-./bin/IntuitionEngine -m6502 --load-addr 0x0600 --entry 0x0600 program.bin
+# Main test suite
+go test -tags headless -timeout 10m -count=1 ./...
 
-# EhBASIC interpreter
-./bin/IntuitionEngine -basic              # Embedded image (requires make basic)
-./bin/IntuitionEngine -basic-image file   # Custom BASIC binary
-./bin/IntuitionEngine -term               # Console terminal (no GUI window)
-```
-
-### Running from EhBASIC
-
-Programs can also be launched from the BASIC interpreter prompt using `RUN`:
-
-```basic
-RUN "program.iex"                         : REM Load and run IE32 binary
-RUN "demo.ie64"                           : REM Load and run IE64 binary
-RUN "game.ie68"                           : REM Load and run M68K binary
-RUN "effect.ie80"                         : REM Load and run Z80 binary
-RUN "intro.ie86"                          : REM Load and run x86 binary
-RUN "test.ie65"                           : REM Load and run 6502 binary
-```
-
-The `RUN` command auto-detects the CPU core from the file extension.
-
-### Music Playback
-
-The command line auto-detects every supported music extension. Use the plain
-filename for standard playback. The `+` switches below remain explicit opt-ins
-for their enhanced player modes.
-
-```bash
-# PSG (AY-3-8910/YM2149; VGM SN76489 writes route to native SN)
-./bin/IntuitionEngine track.ym            # Atari ST YM format
-./bin/IntuitionEngine track.ay            # ZXAYEMUL (ZX Spectrum/Amstrad CPC/MSX auto-detected)
-./bin/IntuitionEngine track.vgm           # VGM stream (AY-3-8910 + native SN76489)
-./bin/IntuitionEngine track.vgz           # VGM compressed (AY-3-8910 + native SN76489)
-./bin/IntuitionEngine track.sndh          # Atari ST SNDH (with embedded M68K code)
-./bin/IntuitionEngine track.vtx           # Vortex Tracker (LHA-compressed YM)
-./bin/IntuitionEngine track.pt3           # ProTracker 3 (Z80 tracker)
-./bin/IntuitionEngine track.stc           # Sound Tracker Compiled (Z80 tracker)
-./bin/IntuitionEngine track.pt2           # ProTracker 2 (Z80 tracker)
-./bin/IntuitionEngine track.pt1           # ProTracker 1 (Z80 tracker)
-./bin/IntuitionEngine track.sqt           # SQ-Tracker (Z80 tracker)
-./bin/IntuitionEngine track.asc           # ASC Sound Master (Z80 tracker)
-./bin/IntuitionEngine track.ftc           # Fast Tracker ZX (Z80 tracker)
-./bin/IntuitionEngine -psg+ track.ym      # Enhanced audio
-
-# SID (Commodore 64)
-./bin/IntuitionEngine tune.sid            # PSID/RSID playback
-./bin/IntuitionEngine -sid+ tune.sid      # Enhanced audio
-./bin/IntuitionEngine -sid-pal tune.sid   # PAL timing
-./bin/IntuitionEngine -sid-ntsc tune.sid  # NTSC timing
-
-# POKEY (Atari 8-bit)
-./bin/IntuitionEngine track.sap
-./bin/IntuitionEngine -pokey+ track.sap   # Enhanced audio
-
-# TED (Commodore Plus/4)
-./bin/IntuitionEngine track.prg
-
-# AHX (Amiga)
-./bin/IntuitionEngine module.ahx
-./bin/IntuitionEngine -ahx+ module.ahx   # Enhanced with stereo spread
-```
-
-TED audio uses the Plus/4 `/8` sound clock divider and routes voice 2 noise to the SoundChip TED 8-bit LFSR mode. TED video exposes a 16 KiB private VRAM device with text, ECM, multicolor text, high-resolution bitmap, multicolor bitmap, scroll/window controls, base relocation, and pollable raster compare/status registers.
-
-### Enhanced Audio Modes (PLUS)
-
-The `+` variants (PSG+, SID+, POKEY+, TED+, AHX+) provide:
-- 4x oversampling
-- Second-order Butterworth lowpass filtering
-- Subtle drive saturation
-- Allpass diffuser room ambience
-
-SID+ additionally preserves per-channel filter sweeps. AHX+ adds authentic Amiga stereo panning (L-R-R-L) and hardware PWM.
-
-AHX playback is a native synthesis mapping, not an Amiga DMA sample stream: the replayer advances AHX notes, envelopes, filters, square modulation, vibrato, and portamento, then writes waveform/frequency/volume/duty/filter state into SoundChip channels 0-3. AHX+ keeps the same MMIO contract and adds the L-R-R-L pan spread plus enhanced processing.
-
-Register-mapped music players share the `PlayerControlState` helper for staged
-pointer/length registers, optional high pointer, bus reads, loop/status/error
-state, subsong selection, and async generation invalidation. SID, PSG/SN/SNDH,
-TED, POKEY/SAP, AHX, MOD, WAV, and MIDI/MUS should not grow private copies of
-that state.
-
-Headless and `novulkan` Voodoo builds both wrap `VoodooSoftwareBackend` through
-the shared `softwareVoodooBackend` adapter. Tagged Voodoo files should only
-register compiled features and select constructors; keep software forwarding
-methods in the shared wrapper so the two build profiles cannot drift.
-
-### Display Options
-
-```bash
-./bin/IntuitionEngine -width 1024 -height 768 -scale 2
-./bin/IntuitionEngine -perf                # Enable MIPS reporting
-```
-
-### Runtime Controls
-
-| Key | Action |
-|-----|--------|
-| F9 | Machine monitor (step-through debugger) |
-| F10 | Hard reset |
-| F12 | Toggle runtime status bar |
-
----
-
-# 9. Testing
-
-### Running Tests
-
-```bash
-# All tests (headless recommended for CI)
-go test -tags headless ./...
+# Static analysis and documentation
+go vet ./...
+make check-docs
 
 # Makefile quality gates
 make test
@@ -441,559 +274,178 @@ make vet
 make tidy
 make test-makefile
 
-# Single test
-go test -tags headless -run TestName
-
-# M68K Harte test suite
-make testdata-harte                       # Download test data (one-time)
-make test-harte                           # Full suite (~30 min)
-make test-harte-short                     # Sampling mode (~5 min)
-
-# x86 Harte test suite
-make testdata-x86
-make test-x86-harte
-make test-x86-harte-short
-
-# Long-running demonstrations
-go test -tags audiolong -run TestSineWave_BasicWaveforms
-go test -tags videolong -run TestFireEffect
-```
-
-### Performance Accounting and Benchstat Evidence
-
-Set `IE_PERF_ACCT=1` to collect the opt-in CPU accounting split in JIT
-dispatchers. `PerfAcct` records native JIT time, interpreter or fallback time,
-and retired guest instructions for IE64, M68K, Z80, 6502, and x86. The same gate
-enables subsystem counters for compositor frames, audio pulls, and 32-bit bus
-slow paths. JIT exits are classified through `DeoptReason` and feed
-`TierController.ShouldPromoteDeopt`.
-
-`IE_PERF_PROFILE` selects parameter-only tuning profiles. The default profile
-matches the current promotion thresholds and region floors exactly. `latency`
-lowers tier-promotion thresholds and the audio chunk size, while `throughput`
-raises them. Profiles must route through shared knobs such as `TierController`
-and `ReadSamples`; they must not introduce backend-specific code paths.
-
-JIT code-cache invalidation releases ExecMem leases through logical arenas
-layered over the platform RW/RX mapping. Keep block replacement, range
-invalidation, full invalidation, and explicit removal paths paired with
-`releaseJITBlockExecMem` so a fully evicted arena can be reused without waiting
-for a whole-cache reset.
-
-Use the Makefile benchstat workflow for performance items:
-
-```bash
-make bench-baseline BENCH_ITEM=m0_phase0 BENCH_REGEX='BenchmarkIE64_'
-make bench-after BENCH_ITEM=m0_phase0 BENCH_REGEX='BenchmarkIE64_'
-make bench-compare BENCH_ITEM=m0_phase0
-```
-
-The targets write raw captures and `benchstat.txt` under
-`benchmarks/<item>/`. Raw files include date, git SHA, CPU model, governor,
-GOAMD64, GOEXPERIMENT, tags, bench regex, benchtime, and count headers. Keep
-`bench/` for pprof files and use `benchmarks/` for before/after optimisation
-evidence.
-
-For SIMD span kernels the benchmark carries both variants as sub-benchmarks
-(`.../scalar` and `.../simd`) in one `GOEXPERIMENT=simd` binary, so benchstat
-compares them directly in a single run instead of before/after captures. The
-bench targets default `GOEXPERIMENT` to `simd` (override with
-`BENCH_GOEXPERIMENT=none` to measure the scalar world alone). A SIMD kernel merges
-only when its `simd` sub-benchmark clears the kernel's stop rule against `scalar`;
-`make test-simd` gates correctness (bit-exact differential, `-race`, and the
-`IE_SIMD=0` kill switch). See `SIMD_ACCELERATION_TDD_PLAN.md` for the per-phase
-evidence and no-go outcomes.
-
-### Audio Demonstration Tests
-
-| Test | Description |
-|------|-------------|
-| TestSineWave_BasicWaveforms | Pure sine wave generation |
-| TestSquareWave_DutyCycle | Variable duty cycle |
-| TestNoiseTypes | White, periodic, metallic noise |
-| TestADSR_Envelope | Envelope timing accuracy |
-| TestFilterModes | LP/HP/BP filter demonstration |
-
-### Video Demonstration Tests
-
-| Test | Description |
-|------|-------------|
-| TestFireEffect | Cellular automata fire |
-| TestPlasmaWaves | Dynamic colour plasma |
-| TestMetaballs | Organic blob rendering |
-| TestTunnelEffect | Texture-mapped tunnel |
-| TestRotozoom | Rotation and zoom effect |
-| TestStarfield | 3D star simulation |
-| TestMandelbrot | Fractal visualisation |
-| TestParticles | Physics-based particles |
-
-### IE64 Benchmarks
-
-The IE64 benchmark suite measures CPU throughput through both the interpreter and JIT compiler across five workload categories: integer ALU, floating-point, memory access, mixed, and subroutine call/return.
-
-```bash
-# Run all IE64 benchmarks (skip normal tests with -run='^$')
-go test -tags headless -run='^$' -bench BenchmarkIE64_ -benchtime 3s -count 3 ./...
-
-# Compare JIT vs interpreter
-go test -tags headless -run='^$' -bench 'BenchmarkIE64_(ALU|FPU|Memory|Mixed|Call|MMIO|MMU_Mixed)' -benchtime 3s ./...
-
-# Run only JIT benchmarks
-go test -tags headless -run='^$' -bench 'BenchmarkIE64_.*_JIT' -benchtime 3s ./...
-
-# Run only interpreter benchmarks
-go test -tags headless -run='^$' -bench 'BenchmarkIE64_.*_Interpreter' -benchtime 3s ./...
-```
-
-Benchmarks report ns/op and instructions/op. MIPS can be derived: `MIPS = instructions/op / ns/op * 1000`. JIT benchmarks skip automatically on platforms without JIT support. `MMIO` and `MMU_Mixed` cover helper-heavy paths used by resumable helper and micro-TLB work. See `ie64_benchmark_test.go` for detailed documentation of each workload and its instruction mix.
-
-Reference results on Intel Core i5-8365U @ 1.60 GHz (x86-64 JIT, `benchtime 3s`):
-
-| Workload | Interpreter | JIT | Speedup |
-|---|---|---|---|
-| ALU | 1,058 µs | 157 µs | 6.7x |
-| FPU | 1,242 µs | 372 µs | 3.3x |
-| Memory | 813 µs | 105 µs | 7.7x |
-| Mixed | 1,227 µs | 159 µs | 7.7x |
-| Call/Return | 583 µs | 7,036 µs | 0.08x |
-
-The Call benchmark is intentionally JIT-hostile (JSR/RTS exit the native block on every call). See [sdk/docs/IE64_JIT.md](sdk/docs/IE64_JIT.md) for full analysis.
-
-### 6502 Benchmarks
-
-The 6502 benchmark suite measures CPU throughput through both the fast interpreter (`ExecuteFast()` in `cpu_six5go2_fast.go`) and the 6502 JIT compiler across five workload categories: register ALU, zero-page memory, subroutine call/return, taken-branch loops, and a mixed workload interleaving all four.
-
-```bash
-# Run all 6502 benchmarks (skip normal tests with -run='^$')
-go test -tags headless -run='^$' -bench Benchmark6502_ -benchtime 3s -count 3 ./...
-
-# Compare JIT vs fast interpreter
-go test -tags headless -run='^$' -bench 'Benchmark6502_(ALU|Memory|Call|Branch|Mixed)' -benchtime 3s ./...
-
-# Run only JIT benchmarks
-go test -tags headless -run='^$' -bench 'Benchmark6502_.*_JIT' -benchtime 3s ./...
-
-# Run only fast-interpreter benchmarks
-go test -tags headless -run='^$' -bench 'Benchmark6502_.*_Interpreter' -benchtime 3s ./...
-```
-
-Each benchmark calls `bench6502GCQuiesce(b)` as its first statement to raise `GOGC` to 2000, disable the memory ceiling via `debug.SetMemoryLimit(math.MaxInt64)`, and drain setup-time garbage with a double `runtime.GC()` sweep before the measured window starts. This mirrors the GC tuning used in IntuitionSubtractor's real-time audio path and keeps run-to-run variance low.
-
-Reference results on Intel Core i5-8365U @ 1.60 GHz (fast interpreter + x86-64 JIT, `benchtime 3s`):
-
-| Workload | Fast Interpreter | JIT | Speedup |
-|---|---|---|---|
-| ALU | 178 MIPS | 1,496 MIPS | 8.4x |
-| Memory | 192 MIPS | 1,224 MIPS | 6.4x |
-| Call | 181 MIPS | 411 MIPS | 2.3x |
-| Branch | 187 MIPS | 1,008 MIPS | 5.4x |
-| Mixed | 186 MIPS | 1,508 MIPS | 8.1x |
-
-The fast interpreter itself is roughly 1.8-2.3x faster than the legacy generic interpreter that preceded it. See `bench/README.md` for the pprof-driven before/after comparison and `bench/interp_{baseline,final}.pprof` for captured CPU profiles. The Call benchmark has the lowest JIT speedup because JSR/RTS trigger a block exit on every call; see [sdk/docs/6502_JIT.md](sdk/docs/6502_JIT.md) for details.
-
-#### Portable benchmark binary
-
-For running the benchmarks on another machine without a Go toolchain, use the two bundled shell scripts:
-
-```bash
-# Build a fully static test binary (CGO_ENABLED=0 + osusergo + netgo +
-# headless + novulkan, -trimpath, stripped link flags). Both Interpreter
-# AND JIT benchmarks run in the static binary because the JIT trampoline
-# (jit_call.go) dispatches through runtime.asmcgocall instead of
-# runtime.cgocall. asmcgocall has no iscgo guard and is available in
-# CGO_ENABLED=0 builds.
-./build_6502_benchmarks.sh              # produces ./6502_bench.test (~13 MiB)
-
-# Run the binary locally and print a fixed-width comparison table
-./run_6502_bench_report.sh              # default BENCH_TIME=3s
-BENCH_TIME=5s ./run_6502_bench_report.sh
-
-# Ship to another machine with the same OS/architecture
-tar czf 6502_bench.tar.gz 6502_bench.test run_6502_bench_report.sh
-# On the target:
-tar xzf 6502_bench.tar.gz && ./run_6502_bench_report.sh
-```
-
-`run_6502_bench_report.sh` is bash + awk only, with no Python, no Go, and no codebase dependency. The friend unpacks the tarball and runs one script to see both Interpreter and JIT columns side by side plus a JIT/Interpreter speedup row.
-
-#### Profile-Guided Optimisation (evaluated, not adopted)
-
-Go's PGO (`default.pgo` at the repo root, auto-detected by `go build`) was evaluated on Go 1.26.1 against the five comparison workloads. Profile was captured with `./6502_bench.test -test.cpuprofile=default.pgo -test.benchtime=10s`, then both a PGO-enabled and a non-PGO build were measured with `-test.count 3 -test.benchtime 5s`:
-
-| Workload | Interpreter Δ | JIT Δ |
-|---|---:|---:|
-| ALU | -1.94% | +0.42% |
-| Memory | +1.08% | +0.18% |
-| Call | -2.12% | +1.30% |
-| Branch | -3.65% | +0.38% |
-| Mixed | -4.69% | +0.20% |
-
-PGO consistently regressed the fast interpreter by 2-5% and moved the JIT by noise-level amounts. The likely cause is that `ExecuteFast()` is already hand-inlined to the edge of Go's inliner budget; PGO's additional inlining bloats the dispatch loop in ways that hurt instruction-cache behaviour for our specific access pattern. The build scripts therefore do **not** commit or enable `default.pgo`. If you want to re-try PGO after significant `cpu_six5go2_fast.go` changes, capture and drop in a fresh profile, rebuild via `./build_6502_benchmarks.sh`, and compare with `-test.count 3 -test.benchtime 5s` before committing.
-
----
-
-# 10. Debugging
-
-### Machine Monitor (F9)
-
-Press F9 during execution to enter the step-through debugger. Supports all 6 CPU types with:
-- Breakpoints with hit counts and conditions
-- Trace logging and backstep history
-- Run-until with conditional stops
-- I/O register viewer for all hardware chips
-- Clipboard copy/cut/paste (Ctrl+Shift+C/X/V), text selection (Shift+Arrow), middle mouse paste
-
-See [docs/iemon.md](sdk/docs/iemon.md) for the full machine monitor reference.
-
-### Console Debug Output
-
-Write to the debug output register (`0xF0700`) to print values during execution:
-
-| CPU | Instruction |
-|-----|-------------|
-| IE32 | `STORE A, @0xF0700` |
-| IE64 | `store.l r1, 0xF0700(r0)` |
-| M68K | `move.l d0,$F0700.l` |
-| Z80 | `ld ($F700),a` |
-| 6502 | `sta $F700` |
-| x86 | `mov [0xF0700], eax` |
-
-### Hardware Status Registers
-
-| Register | Address | Purpose |
-|----------|---------|---------|
-| VIDEO_STATUS | `$F0008` | VBlank flag (bit 1) |
-| BLT_STATUS | `$F0044` | Blitter busy (bit 1) |
-| PSG_PLAY_STATUS | `$F0C1C` | PSG player status |
-| SID_PLAY_STATUS | `$F0E2C` | SID player status |
-| SAP_PLAY_STATUS | `$F0D1C` | SAP player status |
-
----
-
-# 11. Platform Support
-
-| Platform | Status | Graphics | Audio | Notes |
-|----------|--------|----------|-------|-------|
-| **Linux x86_64** | Official | Ebiten | Oto | Primary development platform |
-| **Linux aarch64** | Official | Ebiten | Oto | IE64 native JIT |
-| **Windows x86_64** | Official | Ebiten | Oto | Pure-Go `novulkan` build, full guest JIT parity with Linux amd64 |
-| **Windows ARM64** | Official | Ebiten | Oto | Pure-Go `novulkan` build, IE64 native JIT |
-| **macOS ARM64** | Official | Ebiten | Oto | Pure-Go `novulkan` build, IE64 native JIT |
-
-### Graphics Backend
-
-**Ebiten** (primary): hardware-accelerated rendering via OpenGL/Metal/DirectX, automatic display scaling, VSync synchronisation, cross-platform window management.
-
-**Headless** (testing): stub backend for CI/batch processing without a display.
-
-### Audio Backend
-
-**Oto** (primary): cross-platform audio output, low-latency playback (~20ms), 44.1kHz stereo.
-
-**Headless** (testing): stub backend, no audio output.
-
----
-
-# 12. Packaging and Distribution
-
-### Desktop Integration
-
-```bash
-# Install .desktop entry and MIME type (system-wide, requires root)
-make install-desktop-entry
-
-# Set as default handler for .ie* files (per-user)
-make set-default-handler
-```
-
-### Release Artefacts
-
-Build release archives with `make release-all` (or individual targets like `make release-linux`). Each target builds with embedded EhBASIC, EmuTOS, and AROS ROMs, plus the staged `sdk/` and `AROS/` runtime trees. The `EMUTOS` and `AROS` commands are available at the BASIC prompt in release builds.
-
-Each archive contains: `IntuitionEngine` at the root, `sdk/bin/` with `ie32asm`, `ie64asm`, `ie32to64`, `ie64dis`, plus `README.md`, `CHANGELOG.md`, `DEVELOPERS.md`, the full `sdk/` directory, and a sibling `AROS/` directory.
-
-Additional release targets:
-
-| Target | Description |
-|--------|-------------|
-| `make release-src` | Source archive via `git archive` (`.tar.xz`) |
-| `make release-sdk` | Standalone SDK archive (`.zip`) |
-
-| Platform | Format | Profile |
-|----------|--------|---------|
-| Linux amd64, arm64 | `.tar.xz` | full |
-| Windows amd64, arm64 | `.zip` | novulkan |
-| macOS arm64 | `.tar.xz` | novulkan |
-
-`make release-all` builds all of the above plus the source and SDK archives, and produces `SHA256SUMS` covering all artefacts.
-
----
-
-# 13. Contributing
-
-### Repository Structure
-
-```
-cpu_*.go              CPU emulators (IE32, IE64, M68K, Z80, 6502, x86)
-video_*.go            Video chips (VideoChip, VGA, ULA, TED, ANTIC, Voodoo)
-audio_chip.go         Audio engine core
-*_engine.go           Sound chip engines (PSG, SID, POKEY, TED)
-*_player.go           Music file format players
-machine_bus.go        Memory mapping and I/O dispatch
-machine_lifecycle.go  Machine reset/load/profile orchestration
-main.go               CLI entry point and runtime
-assembler/            Assembler tool package (ie32asm, ie64asm, ie64dis, ie32to64)
-internal/ie64meta/    Source table for generated IE64 opcode constants and names
-sdk/                  Curated SDK with examples and build scripts
-sdk/docs/             Technical documentation
-```
-
-### Code Style
-
-- **Go**: standard `gofmt`
-- **Assembly**: Motorola syntax for M68K, cc65 syntax for 6502, NASM for x86
-
-### Testing Guidelines
-
-- Run tests with `-tags headless` to avoid display/audio dependencies
-- Use `go test -v -run TestName` for targeted testing
-- Long-running demos require `audiolong` or `videolong` tags
-- See `make help` for all test-related targets
-
-### Build Verification Checklist
-
-Before submitting changes, verify:
-
-```bash
-# Code compiles
-go build ./...
-
-# Core tests pass
-go test -tags headless ./...
-
-# Build profiles still work
+# Portable build profiles
 go build -tags novulkan .
 CGO_ENABLED=0 go build -tags "novulkan headless" .
 ```
 
----
-
-# 14. EmuTOS Integration
-
-EmuTOS runs on the IE M68K core with GEM desktop, GEMDOS filesystem interception, and timer-driven interrupts.
-
-### Runtime Flags
-
-| Flag | Description |
-|------|-------------|
-| `-emutos` | Boot embedded EmuTOS ROM (requires `embed_emutos` build tag) |
-| `-emutos-image <path>` | Boot EmuTOS from external ROM image |
-| `-emutos-drive <dir>` | Host directory mapped as GEMDOS drive U: (default: `~/`) |
-
-### Key Files
-
-| File | Purpose |
-|------|---------|
-| `emutos_loader.go` | ROM loading, timer/VBlank IRQ generation, GEMDOS setup |
-| `emutos_embed.go` | `//go:embed` for ROM image (`embed_emutos` tag) |
-| `emutos_noembed.go` | Nil ROM fallback (`!embed_emutos` tag) |
-| `gemdos_intercept.go` | TRAP #1 filesystem interception (drive U: mapping) |
-| `gemdos_intercept_constants.go` | GEMDOS function numbers, error codes, DTA layout |
-| `sdk/emutos/` | C shim files for building EmuTOS against IE MMIO |
-| `sdk/docs/ie_emutos.md` | Full integration guide |
-
-### ProgramExecutor
-
-File extensions `.tos` and `.img` are detected as EmuTOS mode. The `EMUTOS` command at the BASIC prompt triggers boot via the `emutosSentinel` path. Guest software can write `EXEC_OP_HARD_RESET` (`5`) to `EXEC_CTRL` (`0xF2324`) to request the same hard reset to BASIC as the F10 runtime hotkey.
-
-### Build
+Relevant repository gates include:
 
 ```bash
-make emutos             # VM with embedded EmuTOS ROM
-make basic-emutos       # VM with embedded EhBASIC + EmuTOS ROM
-make emutos-rom         # Build ROM from source (auto-clones EmuTOS repo, needs GCC 13 m68k cross-compiler)
+make test-race
+make test-simd
+make test-6502-jit-parity
+make test-z80-jit-parity
+make test-x86-jit-parity
+make test-wasm-build
+make test-wasm-node
+make testdata-harte
+make test-harte-short
+make testdata-x86
+make test-x86-harte-short
 ```
 
-### GCC 13 -mshort Codegen Bug
+The Harte data targets download external test corpora. Full Harte runs are
+long-running and should be selected when the affected CPU semantics warrant
+them.
 
-EmuTOS compiled with `-mshort` (2-byte `size_t`) triggers a GCC 13 bug: pointer arithmetic in `win_start()` produces displacement `$10804` instead of `$0804` (off by `$10000`). The last WNODE's `w_next` points past the array into FNODE memory, causing a bus error on desktop folder view switch. Workaround: `fixWnodeChain()` in `gemdos_intercept.go` patches the WNODE chain after directory enumeration.
-
----
-
-# 15. AROS Integration
-
-AROS (Amiga Research Operating System) runs on the IE M68K core with a full Workbench desktop, Shell, and host filesystem access.
-
-### Runtime Flags
-
-| Flag | Description |
-|------|-------------|
-| `-aros` | Boot AROS from embedded or default ROM image |
-| `-aros-image <path>` | Boot AROS from external ROM image |
-| `-aros-drive <dir>` | Host directory mapped as IE: volume (default: generated AROSVision tree or bundled `AROS/`) |
-
-### Key Files
-
-| File | Purpose |
-|------|---------|
-| `aros_loader.go` | ROM loading, memory layout, IRQ generation, input handling |
-| `aros_dos_intercept.go` | DOS handler MMIO filesystem bridge (IE: volume) |
-| `aros_dos_constants.go` | AmigaDOS action codes, error codes, lock types |
-| `aros_audio_dma.go` | AROS Paula-style DMA shim |
-| `aros_audio_constants.go` | Audio DMA register addresses |
-| `aros_embed.go` | `//go:embed` for ROM image (`embed_aros` tag) |
-| `aros_noembed.go` | Nil ROM fallback (`!embed_aros` tag) |
-
-### ProgramExecutor
-
-The `AROS` command at the BASIC prompt triggers boot via the `arosSentinel` path. AROS mode is selected by CLI flags (`-aros`, `-aros-image`), not file extension.
-
-### Memory Layout
-
-| Region | Range | Size |
-|--------|-------|------|
-| Chip RAM A | `0x000000-0x09DFFF` | 630KB |
-| Chip RAM B | `0x200000-0x6FFFFF` | 5MB |
-| ROM | `0x600000-0x7FFFFF` | 2MB |
-| Fast RAM | `0x800000-0x1DFFFFF` | 22MB |
-| VRAM | `0x1E00000-0x5DFFFFF` | 64MB |
-
-Total: 27.6MB RAM (5.6MB chip + 22MB fast) plus 64MB direct VRAM
-
-### DOS Handler
-
-The DOS handler at MMIO `0xF2220-0xF225F` bridges AmigaDOS packet protocol to the host filesystem. Supported actions: LOCATE_OBJECT, FREE_LOCK, COPY_DIR (DupLock), EXAMINE_OBJECT, EXAMINE_NEXT, READ, WRITE, SEEK, FINDUPDATE, FINDINPUT, FINDOUTPUT, END, DELETE_OBJECT, RENAME_OBJECT, CREATE_DIR, SET_FILE_SIZE, SAME_LOCK, PARENT.
-
-### Build
+Long-running demonstration tests use `audiolong` or `videolong`:
 
 ```bash
-make aros-rom           # Build AROS ROM + filesystem from source
-make aros               # Build VM with embedded AROS ROM
+go test -tags audiolong -run TestSineWave_BasicWaveforms .
+go test -tags videolong -run TestFireEffect .
 ```
 
----
+### Performance work
 
-# 16. JIT Compilation
-
-The IE64 CPU core includes a JIT compiler that translates IE64 machine code into native ARM64 or x86-64 instructions at runtime. JIT is enabled by default on supported platforms (Linux/arm64, Linux/amd64) and can be disabled with `-nojit`.
-
-For full technical details (register mappings, return-channel contract, I/O dual-path, FPU categories, backward branch budget, fallback rules), see [sdk/docs/IE64_JIT.md](sdk/docs/IE64_JIT.md).
-
-IE64 helper exits on amd64 and arm64 can resume inside the current native block
-for integer LOAD, STORE, PUSH, and POP paths when the dispatcher verifies that
-interrupts, SMC, debug state, PTBR, and MMU mode are unchanged. Set
-`IE64_JIT_RESUME=0` to force the older exit-and-re-enter protocol. MMU
-LOAD/STORE helpers fill a small direct-mapped micro-TLB in `JITContext`; PTBR
-writes and TLB invalidation flush it before native code can reuse stale
-translations.
-
-IE64 amd64 regions form under MMU by default. Set `IE64_JIT_REGION_MMU=0` to
-disable MMU region promotion.
-The region scanner translates each virtual block through the active PTBR and
-stores the promoted block under the exact `(ptbr, pc)` MMU cache key. This is a
-formation and keying slice only; regions still use the fixed IE64
-register mapping.
-
-`CodeCache` has an optional 4096-entry direct-mapped dispatch cache in front of
-the Go map lookups. It is generation-tagged, so full and range invalidations
-expire entries in O(1). Set `IE_JIT_DISPATCH_CACHE=0` to bypass it.
-
-The x86 and IE64 JITs report self-modifying stores with a guest address and
-byte size, then remove only overlapping cached blocks through
-`CodeCache.InvalidateRange`. After a range invalidation, code-page bitmaps are
-rebuilt from surviving blocks so unrelated blocks on the same 256-byte page
-continue to protect SMC detection. Set `IE_JIT_SMC_RANGE=0` to restore the
-older whole-cache reset path. When a range invalidation removes the final live
-block, the shared exec-memory bump allocator is reset.
-
-The x86 JIT treats `jitRegs` as the canonical register file while native code
-is active. Debug break-in hooks and MMIO poll fast paths use JIT-specific
-helpers so named registers are synchronised only when a debugger hook,
-interrupt handler, fallback interpreter step, or final JIT exit actually needs
-that view.
-Multi-block x86 region promotion is experimental and disabled by default.
-Set `X86_JIT_REGIONS=1` to enable it.
-Compatible x86 block chaining is enabled by default; set
-`X86_JIT_CHAINS=0` to disable it.
-
-Audio engines that can advance state in chunks may implement `BlockTicker`
-beside `SampleTicker`. Implementations must match repeated `TickSample` calls
-exactly. PSG provides a lock-once block path; SID keeps a conservative wrapper
-so SoundChip synchronisation order stays unchanged.
-
-Video frame leases use `VideoFrameLeaseRing` for release-gated RGBA buffers and
-copy-on-snapshot debug safety. Hardware compositor layer collection and software
-output handoff use lease-backed buffers when `IE_VIDEO_FRAME_LEASES` is not `0`;
-Ebiten retains layer leases until replacement or clear, while non-lease callers
-and the lease kill switch keep the defensive staging/output copies. Lease alpha
-normalisation follows compositor semantics: zero-alpha colour is promoted to
-opaque, transparent black remains transparent.
-
-## Running JIT Tests
+Correctness and parity come before benchmark results. Use the recorded
+benchstat workflow rather than copying isolated local numbers into this guide:
 
 ```bash
-# x86-64 backend tests (on amd64)
-go test -v -run TestAMD64_ -tags headless ./...
-
-# ARM64 backend tests (on arm64)
-go test -v -run TestARM64_ -tags headless ./...
-
-# Cross-compile all supported targets. If qemu-user is installed, this also
-# executes the Linux/arm64 smoke tests through qemu-aarch64.
-QEMU_AARCH64=/usr/bin/qemu-aarch64 make test-cross
-
-# JIT-vs-interpreter parity (verifies JIT matches interpreter output)
-go test -v -run TestJIT_vs_Interpreter -tags headless ./...
-
-# Shared infrastructure (block scanner, code cache, register analysis)
-go test -v -run TestJIT_ -tags headless ./...
+make bench-baseline BENCH_ITEM=my_change BENCH_REGEX='BenchmarkIE64_'
+make bench-after BENCH_ITEM=my_change BENCH_REGEX='BenchmarkIE64_'
+make bench-compare BENCH_ITEM=my_change
 ```
 
-## JIT Source Files
+Captures are written under `benchmarks/<item>/`. Record the host, toolchain,
+build tags, environment switches and revision needed to reproduce the result.
 
-| File | Purpose |
-|------|---------|
-| `jit_common.go` | JITContext, CodeBuffer, block scanner, register analysis, code cache |
-| `jit_emit_arm64.go` | ARM64 code emitter (15 mapped registers) |
-| `jit_emit_amd64.go` | x86-64 code emitter (5 mapped registers) |
-| `jit_exec.go` | Dispatcher loop, timer handling |
-| `jit_call.go` | Native code invocation via `runtime.asmcgocall` |
-| `jit_mmap.go` / `jit_mmap_windows.go` / `jit_mmap_darwin_arm64.go` | Platform-specific executable memory allocation |
+## 7. JIT development
 
-## M68020 JIT
+JIT availability follows the dispatch implementation, not the presence of an
+emitter file:
 
-The M68020 CPU core includes a JIT compiler on Linux amd64 and Windows amd64. It handles variable-length instructions, big-endian memory with byte-swap, 12+ addressing modes, and a 5-bit condition code register (XNZVC). JIT is enabled by default on supported platforms and disabled with `-nojit`.
+| Host | JIT-enabled guest CPUs |
+|------|------------------------|
+| Linux amd64 | IE64, M68K, 6502, Z80 and x86 |
+| Linux arm64 | IE64, M68K, 6502, Z80 and x86 |
+| Windows amd64 | IE64, M68K, Z80 and x86 |
+| Windows arm64 | IE64 and M68K |
+| macOS amd64 | IE64, M68K, Z80 and x86 |
+| macOS arm64 | IE64 and M68K |
+| Browser, js/wasm | IE64, M68K, 6502, Z80 and x86 WebAssembly backends |
 
-Key optimisations:
-- **Block chaining**: Direct JMP rel32 between compiled blocks (BRA/JMP/JSR/BSR/RTS/Bcc/DBcc), avoiding Go dispatcher overhead. Budget counter (64 blocks) for interrupt safety.
-- **Lazy CCR**: Defers flag extraction from host EFLAGS, using direct x86 Jcc for M68K branch conditions. Eliminates ~12 instructions per flag-setter.
-- **2-entry MRU RTS cache**: Fast subroutine returns without dispatcher round-trip.
+IE32 currently interprets on every host. Unsupported JIT operations and hosts
+must retain interpreter fallback. `--nojit` is the primary CLI opt-out.
 
-For full technical details, see [sdk/docs/M68K_JIT.md](sdk/docs/M68K_JIT.md).
+The IE64 JIT supports native amd64 and arm64 hosts and a separate WebAssembly
+backend. Hot regions can retain selected guest GPR and FPU state across internal
+edges. Helper exits, invalidation, interrupt checks, MMU context and retired
+instruction accounting are part of its correctness contract. See
+[IE64_JIT.md](sdk/docs/IE64_JIT.md) rather than duplicating backend internals
+here.
 
-### Running M68K JIT Tests
+The M68K JIT supports native amd64 and arm64 hosts plus WebAssembly. Its native
+implementation includes block chaining, lazy CCR handling and an eight-entry
+RTS cache. See [M68K_JIT.md](sdk/docs/M68K_JIT.md) for current backend files,
+admission rules and verification.
+
+The 6502 JIT is restricted to Linux amd64, Linux arm64 and WebAssembly. Windows
+and macOS use the interpreter. Z80 and x86 have their own asymmetric host
+matrices as shown above. Use the CPU-specific JIT reference where one exists and
+the architecture reference for the combined matrix.
+
+Common runtime switches include:
+
+| Switch | Effect |
+|--------|--------|
+| `IE_JIT_DISPATCH_CACHE=0` | Disable the shared generation-tagged direct dispatch cache |
+| `IE_JIT_SMC_RANGE=0` | Use whole-cache invalidation instead of exact SMC ranges where supported |
+| `IE64_JIT_REGIONS=0` | Disable IE64 region promotion |
+| `IE64_JIT_REGION_MMU=0` | Disable IE64 region formation under MMU |
+| `X86_JIT_REGIONS=1` | Enable experimental x86 region promotion |
+| `X86_JIT_CHAINS=0` | Disable compatible x86 block chaining |
+
+Treat kill switches as diagnostic controls, not alternate guest semantics.
+
+## 8. Running and debugging a guest
+
+The VM selects a CPU explicitly or from a recognised file extension:
 
 ```bash
-# Infrastructure tests (scanner, length calc, liveness, chain infrastructure)
-go test -v -run TestM68KJIT_ -tags headless ./...
-
-# x86-64 emitter tests
-go test -v -run TestM68KJIT_AMD64_ -tags headless ./...
-
-# Integration tests (full dispatcher with chaining)
-go test -v -run TestM68KJIT_Exec_ -tags headless ./...
-
-# Benchmarks (JIT vs interpreter)
-go test -tags headless -run='^$' -bench 'BenchmarkM68K_.*_(JIT|Interpreter)' -benchtime 3s ./...
+./bin/IntuitionEngine -ie32 program.iex
+./bin/IntuitionEngine -ie64 program.ie64
+./bin/IntuitionEngine -m68k program.ie68
+./bin/IntuitionEngine -z80 program.ie80
+./bin/IntuitionEngine -m6502 program.ie65
+./bin/IntuitionEngine -x86 program.ie86
 ```
 
-### M68K JIT Source Files
+Use `--load-addr` and `--entry` when a raw 6502 or Z80 image does not carry the
+required placement information. Run `./bin/IntuitionEngine -help` for the live
+CLI contract.
 
-| File | Purpose |
-|------|---------|
-| `jit_m68k_common.go` | M68KJITContext (with chain/RTS cache fields), block scanner, instruction length calculator |
-| `jit_m68k_emit_amd64.go` | x86-64 code emitter: chain entry/exit, lazy CCR, 4 mapped registers |
-| `jit_m68k_exec.go` | Dispatcher: chain patching, budget init, RTS cache, STOP/interrupt semantics |
-| `jit_m68k_dispatch.go` | Platform routing |
-| `jit_common.go` | JITBlock (with chainEntry/chainSlots), CodeCache.PatchChainsTo, chainSlot |
-| `jit_mmap.go` | ExecMem + PatchRel32At for runtime chain patching |
+Runtime controls:
+
+| Key | Action |
+|-----|--------|
+| `F7` | Cycle the CRT presentation filter |
+| `F8` | Toggle the Lua REPL overlay when the Machine Monitor is inactive |
+| `F9` | Toggle the Machine Monitor |
+| `F10` | Hard reset to the configured boot profile |
+| `F11` | Toggle fit or stretch scaling when available |
+| `Shift+F11` | Toggle fullscreen mode when available |
+| `F12` | Toggle the runtime status bar |
+| `Ctrl+Alt` | Release captured relative mouse mode |
+
+Overlays consume their own input while active. Do not assume that a control key
+also reaches the guest in those states.
+
+The Machine Monitor supports all six CPU types. Its maintained command and UI
+reference is [iemon.md](sdk/docs/iemon.md). The shared debug-output register is
+at `0xF0700`; use the native address or I/O-window mapping defined by the chosen
+CPU include.
+
+Selected shared status registers:
+
+| Register | Native address | Meaning |
+|----------|----------------|---------|
+| `VIDEO_STATUS` | `0xF0008` | VBlank is bit 1 |
+| `BLT_STATUS` | `0xF0044` | Bit 0 `ERR`, bit 1 `DONE`, bit 2 `IRQ_PENDING` |
+| `PSG_PLAY_STATUS` | `0xF0C1C` | PSG player state |
+| `SAP_PLAY_STATUS` | `0xF0D1C` | SAP player state |
+| `SID_PLAY_STATUS` | `0xF0E2C` | SID player state |
+
+## 9. Platform and release support
+
+| Platform | Native profile | JIT coverage |
+|----------|----------------|--------------|
+| Linux amd64 and arm64 | Default, `novulkan`, headless and portable headless | See the JIT matrix above |
+| Windows amd64 and arm64 | Pure-Go `novulkan` release | See the JIT matrix above |
+| macOS amd64 and arm64 | Pure-Go `novulkan` release | See the JIT matrix above |
+| Browser | `make wasm` | IE64, M68K, 6502, Z80 and x86 WebAssembly JITs |
+
+Release archives are built with `make release-all`, or with the platform and SDK
+targets listed by `make help`. Current native release families are Linux amd64
+and arm64, Windows amd64 and arm64, and macOS amd64 and arm64. The release gate
+also produces source and SDK archives plus `SHA256SUMS`. Run
+`make release-verify` to validate the staged release artefacts.
+
+## 10. Contribution checklist
+
+Before submitting a change:
+
+- Keep the patch scoped to one coherent purpose.
+- Add tests for changed behaviour and failure paths.
+- Run `gofmt` on changed Go files.
+- Run the narrowest proving test and the appropriate broader gate.
+- Check every affected host build constraint and fallback path.
+- Update architecture, ISA, JIT or SDK documentation when its contract changes.
+- Run `make check-docs` for documentation changes.
+- Run `git diff --check`.
+- State which checks were run and which were skipped.
+
+Public documentation and comments should use British English, concrete technical
+language and current implementation evidence. Avoid copying temporary plans,
+benchmark snapshots or speculative explanations into maintained reference
+documents.
