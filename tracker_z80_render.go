@@ -29,9 +29,9 @@ type trackerFormatConfig struct {
 
 // renderTrackerZ80 runs a tracker module through its Z80 player routine,
 // capturing AY register writes as PSGEvents.
-func renderTrackerZ80(config trackerFormatConfig, moduleData []byte, sampleRate int, maxFrames int) (PSGMetadata, []PSGEvent, uint64, error) {
+func renderTrackerZ80(config trackerFormatConfig, moduleData []byte, sampleRate int, maxFrames int) (PSGMetadata, []PSGEvent, uint64, uint64, uint64, error) {
 	if config.playerBinary == nil || len(config.playerBinary) == 0 {
-		return PSGMetadata{}, nil, 0, fmt.Errorf("tracker: %s player binary not available", config.name)
+		return PSGMetadata{}, nil, 0, 0, 0, fmt.Errorf("tracker: %s player binary not available", config.name)
 	}
 	if maxFrames <= 0 {
 		maxFrames = 15000 // ~5 minutes at 50 Hz
@@ -39,11 +39,13 @@ func renderTrackerZ80(config trackerFormatConfig, moduleData []byte, sampleRate 
 
 	ram, err := buildTrackerZ80RAM(config, moduleData)
 	if err != nil {
-		return PSGMetadata{}, nil, 0, fmt.Errorf("tracker: %s RAM setup failed: %w", config.name, err)
+		return PSGMetadata{}, nil, 0, 0, 0, fmt.Errorf("tracker: %s RAM setup failed: %w", config.name, err)
 	}
 
-	bus := newAyPlaybackBusZ80(&ram, config.system, nil)
-	cpu := NewCPU_Z80(bus)
+	cpu, bus, err := newPlaybackZ80CPU(&ram, config.system, nil)
+	if err != nil {
+		return PSGMetadata{}, nil, 0, 0, 0, err
+	}
 
 	// Initialize CPU state
 	cpu.SP = 0x3FFF
@@ -97,7 +99,7 @@ func renderTrackerZ80(config trackerFormatConfig, moduleData []byte, sampleRate 
 		System: trackerSystemName(config.system),
 	}
 
-	return meta, events, samplePos, nil
+	return meta, events, samplePos, totalInstr, totalNanos, nil
 }
 
 // buildTrackerZ80RAM initializes 64K Z80 RAM with player routine and module data.
@@ -179,38 +181,8 @@ func buildTrackerStub(initAddr, playAddr, moduleBase uint16) []byte {
 // trackerRunIRQFrame executes one frame of Z80 code using IRQ-driven timing.
 func trackerRunIRQFrame(cpu *CPU_Z80, bus *ayPlaybackBusZ80, budget uint64) (uint64, uint64) {
 	start := time.Now()
-	idlePC := cpu.PC
-	startCycles := bus.cycles
-	irqAsserted := false
-	irqServiced := false
-	executed := false
-	var instrCount uint64
-
-	for bus.cycles-startCycles < budget {
-		if cpu.Halted && !irqAsserted {
-			cpu.SetIRQLine(true)
-			irqAsserted = true
-		}
-
-		prevIFF1 := cpu.IFF1
-		cpu.Step()
-		instrCount++
-		executed = true
-
-		if irqAsserted && prevIFF1 && !cpu.IFF1 && !irqServiced {
-			irqServiced = true
-			cpu.SetIRQLine(false)
-		}
-		if executed && cpu.PC == idlePC && irqServiced {
-			break
-		}
-	}
-
-	if irqAsserted && !irqServiced {
-		cpu.SetIRQLine(false)
-	}
-
-	return instrCount, uint64(time.Since(start).Nanoseconds())
+	instructions := runPlaybackZ80Frame(cpu, bus, budget)
+	return instructions, uint64(time.Since(start).Nanoseconds())
 }
 
 func trackerSystemName(system byte) string {

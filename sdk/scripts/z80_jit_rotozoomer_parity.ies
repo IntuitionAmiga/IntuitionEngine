@@ -1,0 +1,9 @@
+-- Run once normally and once with --nojit. The Go shadow gate uses the same
+-- committed image, asset root and four deterministic frame checkpoints.
+cpu.load_stopped("sdk/examples/prebuilt/rotozoomer_z80.ie80")
+sys.print("z80-rotozoomer before", cpu.execution_mode(), cpu.jit_stats())
+cpu.start()
+sys.wait_frames(4)
+rec.screenshot("/tmp/z80_jit_rotozoomer_parity.png")
+cpu.stop()
+sys.print("z80-rotozoomer after", cpu.execution_mode(), cpu.jit_stats())

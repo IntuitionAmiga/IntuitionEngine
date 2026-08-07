@@ -191,6 +191,12 @@ type MachineBus struct {
 	p65JITInvalidators   map[uint64]func(addr, size uint64)
 	p65JITInvalidatorID  atomic.Uint64
 	p65JITInvalidatorCnt atomic.Uint64
+	// z80JITInvalidators mirror the 6502 ownership rule: bus writers publish
+	// physical ranges, and each Z80 CPU drains and mutates only its own cache.
+	z80JITInvalidatorMu  sync.RWMutex
+	z80JITInvalidators   map[uint64]func(addr, size uint64)
+	z80JITInvalidatorID  atomic.Uint64
+	z80JITInvalidatorCnt atomic.Uint64
 	coprocCompletionWake func(addr, value uint32)
 }
 
@@ -430,6 +436,7 @@ func (bus *MachineBus) invalidateM68KJITRAMWrite(addr uint64, size uint64) {
 	}
 	bus.markPagesDirty(addr, size)
 	bus.notifyP65JITRAMWrite(addr, size)
+	bus.notifyZ80JITRAMWrite(addr, size)
 	if addr > uint64(^uint32(0)) {
 		return
 	}
@@ -474,6 +481,45 @@ func (bus *MachineBus) notifyP65JITRAMWrite(addr, size uint64) {
 	bus.p65JITInvalidatorMu.RLock()
 	defer bus.p65JITInvalidatorMu.RUnlock()
 	for _, fn := range bus.p65JITInvalidators {
+		fn(addr, size)
+	}
+}
+
+// RegisterZ80JITInvalidator subscribes one Z80 execution context to physical
+// RAM mutations. The callback is a generation publisher only; cache mutation
+// stays on the owning CPU execution thread.
+func (bus *MachineBus) RegisterZ80JITInvalidator(fn func(addr, size uint64)) func() {
+	if bus == nil || fn == nil {
+		return func() {}
+	}
+	id := bus.z80JITInvalidatorID.Add(1)
+	bus.z80JITInvalidatorMu.Lock()
+	if bus.z80JITInvalidators == nil {
+		bus.z80JITInvalidators = make(map[uint64]func(addr, size uint64))
+	}
+	bus.z80JITInvalidators[id] = fn
+	bus.z80JITInvalidatorCnt.Add(1)
+	bus.z80JITInvalidatorMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			bus.z80JITInvalidatorMu.Lock()
+			if _, ok := bus.z80JITInvalidators[id]; ok {
+				delete(bus.z80JITInvalidators, id)
+				bus.z80JITInvalidatorCnt.Add(^uint64(0))
+			}
+			bus.z80JITInvalidatorMu.Unlock()
+		})
+	}
+}
+
+func (bus *MachineBus) notifyZ80JITRAMWrite(addr, size uint64) {
+	if bus == nil || size == 0 || bus.z80JITInvalidatorCnt.Load() == 0 {
+		return
+	}
+	bus.z80JITInvalidatorMu.RLock()
+	defer bus.z80JITInvalidatorMu.RUnlock()
+	for _, fn := range bus.z80JITInvalidators {
 		fn(addr, size)
 	}
 }

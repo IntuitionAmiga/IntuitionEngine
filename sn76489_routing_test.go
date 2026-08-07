@@ -85,7 +85,7 @@ func TestPSGPlayer_MixedAYAndSN(t *testing.T) {
 	}
 }
 
-func TestPSGPlayer_NonVGMLoad_ClearsSNStream(t *testing.T) {
+func TestPSGPlayer_FailedLoadPreservesSNStream(t *testing.T) {
 	_, sn := newTestSN(t)
 	engine := NewPSGEngine(nil, SAMPLE_RATE)
 	player := NewPSGPlayer(engine)
@@ -100,8 +100,8 @@ func TestPSGPlayer_NonVGMLoad_ClearsSNStream(t *testing.T) {
 	for range 4 {
 		engine.TickSample()
 	}
-	if snWriteCount(sn) != 0 {
-		t.Fatalf("stale SN stream wrote %d bytes after failed load", snWriteCount(sn))
+	if got := snWriteCount(sn); got == 0 {
+		t.Fatal("failed load discarded the active SN stream")
 	}
 }
 

@@ -7,11 +7,13 @@ package main
 import "runtime"
 
 func init() {
-	// Z80 JIT is only functional on amd64. The arm64 emitter is a stub
-	// that does not execute instructions — enabling it would silently
-	// skip execution. Guard here so arm64 falls back to the interpreter.
-	z80JitAvailable = runtime.GOARCH == "amd64"
+	// amd64 has broad direct lowering. Linux ARM64 emits a tested safe subset
+	// and routes every remaining form through the frozen canonical helper, so
+	// it never skips guest work while direct lowering grows.
+	z80JitAvailable = runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64"
 }
+
+func z80JITBackend() string { return "native" }
 
 // z80JitExecute routes Z80 execution through JIT or interpreter based on
 // platform support, JIT enable flag, and debug mode.

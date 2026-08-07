@@ -1,0 +1,30 @@
+# item: z80_jit_parity_20260807
+# captured: 2026-08-07T17:10:26Z
+# git_sha: unknown
+# cpu: Intel(R) Xeon(R) W-11955M CPU @ 2.60GHz
+# governor: powersave
+# GOAMD64: v3
+# GOEXPERIMENT: none
+# launcher: env GOCACHE=/tmp/intuition-z80-go-cache
+# tags: headless
+# bench: BenchmarkZ80_(ALU|Memory|Mixed|Call)_JIT
+# benchtime: 1s
+# count: 3
+goos: linux
+goarch: amd64
+pkg: github.com/intuitionamiga/IntuitionEngine
+cpu: Intel(R) Xeon(R) W-11955M CPU @ 2.60GHz
+BenchmarkZ80_ALU_JIT-16       	  654106	      1878 ns/op	      1228 MIPS_host	      2307 instrs/op
+BenchmarkZ80_ALU_JIT-16       	  643357	      1922 ns/op	      1200 MIPS_host	      2307 instrs/op
+BenchmarkZ80_ALU_JIT-16       	  592788	      1916 ns/op	      1204 MIPS_host	      2307 instrs/op
+BenchmarkZ80_Memory_JIT-16    	  817773	      1396 ns/op	      1102 MIPS_host	      1539 instrs/op
+BenchmarkZ80_Memory_JIT-16    	  865088	      1353 ns/op	      1138 MIPS_host	      1539 instrs/op
+BenchmarkZ80_Memory_JIT-16    	  841665	      1358 ns/op	      1133 MIPS_host	      1539 instrs/op
+BenchmarkZ80_Mixed_JIT-16     	  320202	      3752 ns/op	       546.6 MIPS_host	      2051 instrs/op
+BenchmarkZ80_Mixed_JIT-16     	  338718	      3862 ns/op	       531.1 MIPS_host	      2051 instrs/op
+BenchmarkZ80_Mixed_JIT-16     	  297721	      3764 ns/op	       545.0 MIPS_host	      2051 instrs/op
+BenchmarkZ80_Call_JIT-16      	  338622	      3339 ns/op	       307.5 MIPS_host	      1027 instrs/op
+BenchmarkZ80_Call_JIT-16      	  359686	      3427 ns/op	       299.7 MIPS_host	      1027 instrs/op
+BenchmarkZ80_Call_JIT-16      	  338944	      3413 ns/op	       300.9 MIPS_host	      1027 instrs/op
+PASS
+ok  	github.com/intuitionamiga/IntuitionEngine	15.054s

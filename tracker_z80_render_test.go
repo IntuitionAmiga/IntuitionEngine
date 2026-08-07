@@ -4,6 +4,27 @@ import (
 	"testing"
 )
 
+func TestTrackerZ80FrameUsesDefaultJIT(t *testing.T) {
+	if !z80JitAvailable {
+		t.Skip("Z80 JIT unavailable")
+	}
+	var ram [0x10000]byte
+	ram[0] = 0x00 // NOP
+	ram[1] = 0x76 // HALT
+	cpu, bus, err := newPlaybackZ80CPU(&ram, ayZXSystemSpectrum, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpu.IFF1 = false
+	instructions, _ := trackerRunIRQFrame(cpu, bus, 8)
+	if cpu.jitStats.nativeEntries.Load() == 0 {
+		t.Fatal("tracker playback bypassed the default Z80 JIT")
+	}
+	if instructions == 0 {
+		t.Fatal("tracker playback frame reported zero retired instructions")
+	}
+}
+
 func TestBuildTrackerZ80RAM(t *testing.T) {
 	player := []byte{0xC9, 0x00, 0xC9} // RET, NOP, RET
 	module := []byte{0x01, 0x02, 0x03, 0x04}
@@ -125,9 +146,12 @@ func TestRenderTrackerZ80_TrivialPlayer(t *testing.T) {
 		frameRate:    50,
 	}
 
-	_, events, total, err := renderTrackerZ80(config, nil, 44100, 1)
+	_, events, total, instructions, _, err := renderTrackerZ80(config, nil, 44100, 1)
 	if err != nil {
 		t.Fatalf("renderTrackerZ80 error: %v", err)
+	}
+	if instructions == 0 {
+		t.Fatal("tracker render reported zero retired instructions")
 	}
 	if total == 0 {
 		t.Error("totalSamples should be > 0")
@@ -200,7 +224,7 @@ func TestRenderTrackerZ80_MultipleFrames(t *testing.T) {
 	}
 
 	// Run extra frames to account for init overhead on first frame
-	_, events, _, err := renderTrackerZ80(config, nil, 44100, 5)
+	_, events, _, _, _, err := renderTrackerZ80(config, nil, 44100, 5)
 	if err != nil {
 		t.Fatalf("renderTrackerZ80 error: %v", err)
 	}
@@ -249,7 +273,7 @@ func TestRenderTrackerZ80_MaxFramesBound(t *testing.T) {
 		frameRate:    50,
 	}
 
-	_, events, _, err := renderTrackerZ80(config, nil, 44100, 5)
+	_, events, _, _, _, err := renderTrackerZ80(config, nil, 44100, 5)
 	if err != nil {
 		t.Fatalf("renderTrackerZ80 error: %v", err)
 	}
@@ -284,7 +308,7 @@ func TestRenderTrackerZ80_EmptyModule(t *testing.T) {
 	}
 
 	// Empty module should not crash
-	_, _, _, err := renderTrackerZ80(config, nil, 44100, 1)
+	_, _, _, _, _, err := renderTrackerZ80(config, nil, 44100, 1)
 	if err != nil {
 		t.Fatalf("renderTrackerZ80 error: %v", err)
 	}
@@ -298,7 +322,7 @@ func TestRenderTrackerZ80_NilPlayerBinary(t *testing.T) {
 		frameRate:  50,
 	}
 
-	_, _, _, err := renderTrackerZ80(config, nil, 44100, 1)
+	_, _, _, _, _, err := renderTrackerZ80(config, nil, 44100, 1)
 	if err == nil {
 		t.Error("expected error for nil player binary")
 	}

@@ -91,6 +91,47 @@ assert_makefile_not_contains() {
   fi
 }
 
+assert_go_test_inventory_guard_runtime() {
+  local guard="./scripts/require-go-test-inventory.sh"
+  [[ -x "$guard" ]] || fail "missing executable Go test inventory guard"
+
+  if "$guard" "empty test inventory" sh -c 'printf "ok  example/package  0.001s\n"' >/dev/null 2>&1; then
+    fail "inventory guard accepted package status without a Test name"
+  fi
+  "$guard" "empty test inventory" sh -c 'printf "TestRequiredBackend\nok  example/package  0.001s\n"' || \
+    fail "inventory guard rejected an actual Test name"
+  local status
+  set +e
+  "$guard" "empty test inventory" sh -c 'exit 7' >/dev/null 2>&1
+  status=$?
+  set -e
+  [[ "$status" -eq 7 ]] || fail "inventory guard changed command failure status 7 to $status"
+
+  local uses
+  uses="$(rg -c 'scripts/require-go-test-inventory\.sh "empty (pre-JIT Z80 contract|Z80 native JIT|pre-JIT Z80 ARM64 contract|Z80 ARM64 JIT) inventory"' Makefile)"
+  [[ "$uses" -eq 4 ]] || fail "Z80 parity target must guard legacy and backend inventories on native and ARM64"
+  rg -q 'require-go-test-inventory\.sh "empty pre-JIT Z80 ARM64 contract inventory".*\|\| exit \$\$\?' Makefile || \
+    fail "ARM64 legacy inventory failure does not terminate its multi-command recipe"
+  rg -q 'require-go-test-inventory\.sh "empty Z80 ARM64 JIT inventory".*\|\| exit \$\$\?' Makefile || \
+    fail "ARM64 backend inventory failure does not terminate its multi-command recipe"
+  rg -q 'Z80_INTERPRETER_TEST_REGEX := \$\(shell \./scripts/z80-interpreter-test-regex\.sh\)' Makefile || \
+    fail "Z80 parity gate does not derive the pre-existing interpreter inventory"
+  rg -q 'z80-interpreter-test-regex\.sh 10 \| while IFS= read -r regex' Makefile || \
+    fail "Z80 parity gate does not batch the exact legacy inventory for the wasm argument limit"
+  rg -q 'TestAMD64Z80JIT_' Makefile || \
+    fail "Z80 parity gate omits the amd64 emitted-path manifest differential"
+  rg -q 'TestARM64Z80JIT_' Makefile || \
+    fail "Z80 parity gate omits the ARM64 emitted-path manifest differential"
+  rg -q "test-wasm-node WASM_NODE_TEST_REGEX='\^\(TestWasmJIT_Z80\|TestZ80Wasm\|TestZ80JIT_Full\|TestAYZ80PlaybackRealProgramsJITParity\)'" Makefile || \
+    fail "Z80 parity gate does not select its complete bounded Node inventory"
+  local parity_recipe
+  parity_recipe="$(make_dry test-z80-jit-parity)"
+  printf '%s\n' "$parity_recipe" | rg -q 'TestZ80JIT_Full.*TestARM64Z80JIT_' || \
+    fail "Z80 ARM64 gate omits full demo shadow fixtures"
+  printf '%s\n' "$parity_recipe" | rg -q 'IE_REQUIRE_Z80_WASM_BROWSER=1.*TestZ80WasmBrowser_InstantiatesAndAccessesMemory' || \
+    fail "Z80 parity gate does not require real browser execution"
+}
+
 assert_release_src_pipefail_runtime() {
   local tmp
   tmp="$(mktemp -d)"
@@ -206,6 +247,12 @@ assert_dist_layout_skips_non_runtime_archives() {
   rg -q 'skipping non-runtime archive: IntuitionEngine-SDK-1.0.0.zip' /tmp/test-dist-layout.out || \
     fail "dist layout check did not skip SDK archive"
 }
+
+if [[ "${1:-}" == "--go-test-inventory-guard" ]]; then
+  assert_go_test_inventory_guard_runtime
+  echo "Go test inventory guard checks passed"
+  exit 0
+fi
 
 assert_delete_on_error
 
@@ -391,5 +438,6 @@ assert_install_runtime_destdir
 assert_dist_layout_skips_non_runtime_archives
 assert_phony ie64-cproc
 assert_makefile_contains '^all:.*ie64ld.*ie64-cproc.*ie64-ar.*ie64-ranlib'
+assert_go_test_inventory_guard_runtime
 
 echo "Makefile checks passed"

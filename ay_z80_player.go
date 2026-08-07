@@ -51,8 +51,10 @@ func newAYZ80Player(file *AYZ80File, songIndex int, sampleRate int, clockHz uint
 	if err != nil {
 		return nil, err
 	}
-	bus := newAyPlaybackBusZ80(&ram, song.Data.PlayerSystem, writer)
-	cpu := NewCPU_Z80(bus)
+	cpu, bus, err := newPlaybackZ80CPU(&ram, song.Data.PlayerSystem, writer)
+	if err != nil {
+		return nil, err
+	}
 	applyAYZ80Registers(cpu, songIndex, song.Data)
 
 	// Pre-compute sample multiplier for fast cycle-to-sample conversion
@@ -112,35 +114,66 @@ func (p *ayZ80Player) RenderFrames(frameCount int) ([]PSGEvent, uint64) {
 func (p *ayZ80Player) runIRQFrame(budget uint64) {
 	start := time.Now()
 	defer func() { p.cpuExecNanos += uint64(time.Since(start).Nanoseconds()) }()
-	idlePC := p.cpu.PC
-	startCycles := p.bus.cycles
-	executed := false
+	p.instructionCount += runPlaybackZ80Frame(p.cpu, p.bus, budget)
+}
+
+func newPlaybackZ80CPU(ram *[0x10000]byte, system byte, writer ayPlaybackPSGWriterZ80) (*CPU_Z80, *ayPlaybackBusZ80, error) {
+	machineBus, err := NewMachineBusSized(0x10000)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create Z80 playback bus: %w", err)
+	}
+	copy(machineBus.GetMemory(), ram[:])
+	backing := (*[0x10000]byte)(machineBus.GetMemory())
+	playbackBus := newAyPlaybackBusZ80(backing, system, writer)
+	adapter := newZ80PlaybackAdapter(machineBus, playbackBus)
+	return NewCPU_Z80(adapter), playbackBus, nil
+}
+
+func runPlaybackZ80Frame(cpu *CPU_Z80, bus *ayPlaybackBusZ80, budget uint64) uint64 {
+	previousPerfEnabled := cpu.PerfEnabled
+	previousInstructionCount := cpu.InstructionCount
+	cpu.PerfEnabled = true
+	cpu.InstructionCount = 0
+	defer func() {
+		cpu.PerfEnabled = previousPerfEnabled
+		if previousPerfEnabled {
+			cpu.InstructionCount += previousInstructionCount
+		} else {
+			cpu.InstructionCount = previousInstructionCount
+		}
+	}()
+
+	idlePC := cpu.PC
+	startCycles := bus.cycles
+	startIRQServices := cpu.irqServices
 	irqAsserted := false
 	irqServiced := false
 
-	for p.bus.cycles-startCycles < budget {
-		if p.cpu.Halted && !irqAsserted {
-			p.cpu.SetIRQLine(true)
+	cpu.executionBoundary = func() {
+		if cpu.Halted && !irqAsserted {
+			cpu.SetIRQLine(true)
 			irqAsserted = true
 		}
-
-		prevIFF1 := p.cpu.IFF1
-		p.cpu.Step()
-		p.instructionCount++
-		executed = true
-
-		if irqAsserted && prevIFF1 && !p.cpu.IFF1 && !irqServiced {
+		if irqAsserted && cpu.irqServices != startIRQServices && !irqServiced {
 			irqServiced = true
-			p.cpu.SetIRQLine(false)
+			cpu.SetIRQLine(false)
 		}
-		if executed && p.cpu.PC == idlePC && irqServiced {
-			return
+		if bus.cycles-startCycles >= budget || (irqServiced && cpu.PC == idlePC) {
+			cpu.SetRunning(false)
 		}
 	}
+	defer func() { cpu.executionBoundary = nil }()
 
-	if irqAsserted {
-		p.cpu.SetIRQLine(false)
+	if cpu.Halted {
+		cpu.SetIRQLine(true)
+		irqAsserted = true
 	}
+	cpu.SetRunning(true)
+	cpu.z80JitExecute()
+	if irqAsserted {
+		cpu.SetIRQLine(false)
+	}
+	return cpu.InstructionCount
 }
 
 // collectEvents returns events for this frame (allocates new slice).

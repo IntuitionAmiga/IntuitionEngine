@@ -75,6 +75,10 @@ var (
 	X86RegionProfile  = RegionProfile{MaxBlocks: 8, MaxInstructions: 512, Terminator: RegionTermAny, AllowBackwardChain: true}
 	IE64RegionProfile = RegionProfile{MaxBlocks: 8, MaxInstructions: 512, Terminator: RegionTermAny, AllowBackwardChain: true}
 	M68KRegionProfile = RegionProfile{MaxBlocks: 8, MaxInstructions: 512, Terminator: RegionTermAny, AllowBackwardChain: true}
-	Z80RegionProfile  = RegionProfile{MaxBlocks: 6, MaxInstructions: 384, Terminator: RegionTermAny, AllowBackwardChain: true}
-	P65RegionProfile  = RegionProfile{MaxBlocks: 4, MaxInstructions: 256, Terminator: RegionTermPageRespecting, AllowBackwardChain: true}
+	// Z80 regions deliberately stay small: their chain must preserve the
+	// existing 64-block and 200-cycle dispatcher observation bounds, and the
+	// Z80 parity contract caps a promoted static chain at four blocks and 128
+	// guest instructions.
+	Z80RegionProfile = RegionProfile{MaxBlocks: 4, MaxInstructions: 128, Terminator: RegionTermAny, AllowBackwardChain: false}
+	P65RegionProfile = RegionProfile{MaxBlocks: 4, MaxInstructions: 256, Terminator: RegionTermPageRespecting, AllowBackwardChain: true}
 )

@@ -1,10 +1,38 @@
 # Z80 JIT Compiler
-
 ## Overview
 
-Block-based JIT compiler for the Z80 CPU emulation core, translating Z80 machine code to native x86-64 (with ARM64 stub). Follows the same architecture as the existing 6502, M68K, x86, and IE64 JIT compilers, reusing the shared infrastructure (`jit_common.go`, `jit_mmap.go`, `jit_call.go`).
+Block-based JIT compiler for the Z80 CPU emulation core. AMD64 has broad native lowering. Linux ARM64 emits tested native forms with frozen canonical-helper exits for the remainder. Browser js/wasm emits every non-observation opcode form, including indexed and guarded direct-memory operations, using a wasm32 context image and source-stamped cache. Port I/O uses a frozen canonical helper, so it does not re-decode mutable guest instruction bytes, and HALT returns to dispatcher polling for IRQ and NMI wake-up. It follows the same architecture as the existing 6502, M68K, x86, and IE64 JIT compilers, reusing the shared infrastructure (`jit_common.go`, `jit_mmap.go`, `jit_call.go`).
 
 **Target workloads:** AY/tracker music playback, Spectrum-style demos, CP/M programs, coprocessor workers.
+
+All continuous Z80 launch paths use the JIT by default when the host backend
+is available. This includes bounded AY and tracker playback frames. Explicit
+debugger single-step remains interpreter-driven so it retires exactly one
+instruction. Playback retains its original flat 64 KiB memory contract: bank,
+VRAM and translated machine-I/O address ranges remain ordinary playback RAM;
+only Z80 port I/O is delegated to the AY capture bus.
+
+## Feature inventory
+
+| Technique | Decision | Evidence |
+|-----------|----------|----------|
+| Pinned-register native blocks | Adopted | `jit_z80_emit_amd64.go` pins A, F, BC, DE, HL and context in callee-saved host registers. |
+| Partial flag liveness | Adopted | `jit_z80_flags_liveness.go` and emitted deferred-flag paths are covered by the Z80 flag tests. |
+| Direct-memory guards | Adopted | `directPageBitmap` rejects bank, VRAM and MMIO pages before native memory access. |
+| SMC generation and source stamps | Adopted | `MachineBus` physical-write publication, per-owner invalidation queues and entry source-byte checks. |
+| Bounded block chaining and return-target cache | Adopted | Patchable chain exits and the two-entry RET cache observe the 64-block and 200-cycle bounds. |
+| Fast MMIO polling | Adopted where its pattern matches | The native dispatcher only enters the dedicated poll path after live adapter validation. |
+| Linux ARM64 direct lowering | Adopted | Every non-observation manifest row executes emitted ARM64 and is compared with the interpreter under QEMU. |
+| js/wasm direct lowering | Adopted | Every non-observation manifest row executes emitted WebAssembly from the source-stamped wasm32 module cache. |
+| Hot-block recompilation | Rejected | `Z80TierAllocator.PromoteBlock` is disabled: there is no repeatable workload evidence that a second tier pays for its cache pressure. |
+| Static-chain regions | Adopted | `z80PromoteStaticRegion` eagerly compiles and patches up to four static JP/JR-connected blocks and 128 instructions. Each constituent keeps its source, generation, SMC and interrupt-boundary checks. |
+| IE64 MMU, FPU and SIMD machinery | Inapplicable | Z80 has no equivalent guest MMU/FPU or vector execution contract. |
+
+For amd64 performance changes, use `make z80-bench-baseline`, apply the
+change, then use `make z80-bench-after z80-bench-compare` with the same
+`BENCH_ITEM`. The wrappers run the four established JIT workloads three times
+and preserve the raw samples plus the `benchstat` comparison. ARM64 and wasm
+gates establish execution capability only and make no performance claim.
 
 ## Architecture
 
@@ -40,7 +68,7 @@ Z80 Program Memory
 
 **Spilled registers:** Shadow set (A'/F'/B'-L'), IX, IY, SP, I, R, WZ, IM, IFF1, IFF2 are accessed via `[CpuPtr + offset]` from the stack frame.
 
-## Register Mapping (ARM64 — stub)
+## Register Mapping (ARM64)
 
 | Host Register | Z80 Register |
 |---------------|-------------|
@@ -60,14 +88,20 @@ Z80 Program Memory
 ### Direct Page Bitmap
 
 A 256-byte bitmap (`directPageBitmap[256]`) classifies each Z80 page:
-- **0 = direct:** Native code reads/writes MachineBus memory directly via `[RSI + addr]`
-- **1 = non-direct:** Native code bails to interpreter via `NeedBail`
+- **0 = direct:** Native code and wasm modules read/write MachineBus RAM directly after a page guard.
+- **1 = non-direct:** The emitter returns through `NeedBail`; the dispatcher executes the frozen canonical helper at that instruction boundary.
 
 Non-direct pages: `$20-$7F` (bank windows), `$80-$BF` (VRAM), `$F0-$FF` (I/O translation). Additionally, any page with MachineBus I/O handlers is marked non-direct (checked after `SealMappings()`).
 
 ### Self-Modifying Code Detection
 
-A `codePageBitmap[256]` tracks which pages have JIT-compiled blocks. On native store, the emitter checks this bitmap. If the target page has compiled code, it sets `NeedInval` and the exec loop performs page-granular cache invalidation with chain unpatching.
+A `codePageBitmap[256]` tracks which pages have JIT-compiled blocks. On a guarded native or wasm store, the emitter checks this bitmap. If the target page has compiled code, it commits the write, sets `NeedInval`, and the dispatcher invalidates stale blocks before executing the next instruction.
+
+All MachineBus physical RAM writes also publish a Z80 code-page generation to
+each owning CPU. Only the owning dispatcher drains those generations and
+mutates its cache. Bank and VRAM remaps use a separate mapping generation,
+which invalidates logical-PC blocks even where no RAM byte changed. Every
+cached block additionally retains a source-byte stamp checked before entry.
 
 ### Banked-Write Aliasing Guard
 
@@ -78,7 +112,7 @@ After any interpreter fallback execution, if bank windows are enabled (`bank1Ena
 `z80JITScanBlock()` decodes instructions from raw memory, producing `[]JITZ80Instr`. Scanning stops at:
 
 - **Block terminators:** JP, JR, JP cc, JR cc, DJNZ, CALL, CALL cc, RET, RET cc, RST, RETI, RETN, EI, DI, JP (HL/IX/IY), HALT
-- **Fallback instructions:** IN/OUT, block I/O, HALT, RLD/RRD, EX (SP),rr, DAA
+- **Helper or halt boundary:** I/O, block I/O, HALT, RLD/RRD and EX (SP),rr
 - **Max block size:** 128 instructions
 - **Page boundary:** Instruction crossing into non-direct page
 
@@ -103,14 +137,16 @@ Each `JITZ80Instr` stores: opcode, prefix, displacement, operand, length, cycle 
 - **DD/FD prefix:** LD r,(IX+d) / LD (IX+d),r / LD (IX+d),n / ALU A,(IX+d) / INC/DEC (IX+d) / LD IX,nn / INC IX / DEC IX / ADD IX,rp / LD SP,IX / PUSH IX / POP IX (same for IY)
 - **DDCB/FDCB:** BIT/SET/RES/rotate b,(IX+d) — all indexed bit operations
 
-### Interpreter Fallback
-- I/O: IN/OUT (port operations)
-- Block I/O: INI/IND/INIR/INDR/OUTI/OUTD/OTIR/OTDR
-- BCD: RLD, RRD
-- Stack exchange: EX (SP),HL / EX (SP),IX / EX (SP),IY
-- HALT (exec loop handles directly)
-- LDIR/LDDR/CPIR/CPDR (repeat loops, bail as terminators)
-- Undocumented IXH/IXL operations
+### Canonical helper exits
+
+Forms requiring host observation leave native
+execution through a canonical helper. The helper receives an immutable decoded
+payload and uses frozen instruction fetches, so a concurrent code mutation
+cannot change its prefix, opcode, displacement or operand. Data and port
+accesses remain on the live Z80 bus. This covers immediate and `(C)` port I/O
+plus the block-I/O family. RLD/RRD, stack exchange, repeat memory operations
+and refresh-register forms are emitted directly. HALT remains an explicit
+architectural halt rather than a helper exit.
 
 ## Flag Strategy
 
@@ -245,9 +281,9 @@ On page cross, the block returns to Go at the next instruction's PC. Go re-enter
 3. **EI delay:** EI is a block terminator; exec loop uses `interpretZ80One()` for the one post-EI instruction
 4. **Bail semantics:** `RetPC = current instruction PC` (interpreter re-executes). All exits merge chained accounting first.
 5. **Self-mod:** Unpatch chains BEFORE invalidating blocks
-6. **Banked-write alias:** Full cache flush after any interpreter execution when bank windows enabled
+6. **Banked-write alias:** `Z80BusAdapter` resolves the physical target before `MachineBus` publishes the exact written pages; unrelated cached pages survive
 7. **R register:** Updated in Go exec loop from `ChainRIncrements` (accumulated across all chained blocks)
-8. **HALT:** Exec loop breaks on HALT (returns to Go), allowing clean benchmark/test termination
+8. **HALT:** The dispatcher polls pending NMI and IRQ state before treating HALT as a stopped boundary, so an asserted interrupt wakes the CPU
 9. **Chain accounting:** All exit paths (bail, selfmod, epilogue, chain exit) ADD to ChainCycles/ChainCount/ChainRIncrements before committing to RetCycles/RetCount
 
 ## Benchmark Results
@@ -308,11 +344,21 @@ The ALU workload at 433 MIPS peaks with register-only operations in a natively-c
 
 ## Testing
 
-110+ tests across 4 files:
+Z80 JIT coverage includes native, ARM64 QEMU, Node wasm, and Chromium module tests:
+- `jit_z80_full_fixture_test.go` - complete committed rotozoomer and Robocop binaries on fresh interpreter/JIT machines at four exact retired-instruction and deterministic frame checkpoints; compares CPU state, cycles, machine memory, versioned video state, changing framebuffer content, and IEMon snapshots on amd64, Linux ARM64 and Node wasm
 - `jit_z80_common_test.go` — 25 tests: field offsets (including ChainCycles/ChainRIncrements/CycleBudget), parity table, direct page bitmap, scanner, peephole flag analysis
 - `jit_z80_exec_test.go` — 76+ tests: end-to-end JIT execution, all prefix groups, self-mod, EI delay, interrupt, bail PC, cycle accuracy, banked alias, interpreter equivalence, ALU equivalence sweep (8 ops x 5 operands = 40 subtests), chain correctness (ChainBasic, ChainCallRet, ChainBudgetExhaustion, BailAfterChain, SelfModAfterChain, ChainCycleAccuracy, RETCache), memory loop optimization (unchecked, page-cross, non-direct, decrement, self-mod), lazy flags (branch consumer, CP+JR, dead producer, DAA, CB rotate)
-- `jit_z80_emit_amd64_test.go` — 8 tests: per-instruction emission, register preservation, lazy flag elimination, memory bail
+- `jit_z80_emit_amd64_test.go` - 8 tests: per-instruction emission, register preservation, lazy flag elimination, memory bail
+- `jit_z80_wasm_emit_test.go` and `jit_z80_wasm_runtime_js_test.go` - wazero ABI, exhaustive manifest admission, real WebAssembly differential execution, interrupt wake-up, helper, and invalidation coverage
+- `jit_z80_wasm_browser_test.go` - Chromium module-instantiation and shared-memory access gate
 - `z80_jit_benchmark_test.go` — 4 benchmark pairs (interpreter + JIT)
+
+The matching IEScript diagnostics are
+`sdk/scripts/z80_jit_rotozoomer_parity.ies` and
+`sdk/scripts/z80_jit_robocop_parity.ies`. The amd64 median evidence is in
+`benchmarks/z80_jit_parity_20260807`: every conformant workload improves and
+the geomean latency falls by 9.47 per cent. ARM64 and wasm are capability
+results only, with no performance claim.
 
 Run: `go test -tags headless -run TestZ80JIT ./...`
 
@@ -321,6 +367,4 @@ Run: `go test -tags headless -run TestZ80JIT ./...`
 - **Tier-2 register unpacking (D2 — primary remaining lever):** The 3-4x gap to the 6502 JIT is caused by Z80 packed register pairs (B:C in R12W, D:E in R13W, H:L in R14W). Each high-byte read (B, D, H) costs 2 host instructions (MOVZX+SHR). A tier-2 compiler could unpack hot blocks' registers into individual byte slots (stack or repurposed scratch registers), eliminating extraction overhead. `execCount` tracking is already wired; needs: promotion threshold check, tier-2 compile function with unpacked register allocation, tier-1/tier-2 equivalence tests.
 - **6502-style N/Z flag deferral:** The 6502 JIT defers N/Z to a "pending register" (zero materialization cost). The Z80 always materializes into BPL. Deferring Z80's Z flag to the result register and testing it directly at conditional branches would save ~14 bytes per flag-producing instruction before a branch.
 - **CP+branch fusion (D3):** Fuse `CP r; JR Z,target` into a single compare-and-branch using host flags.
-- **ARM64 emitter:** Full native emission (currently stub, disabled on arm64 — planned for ARM64 laptop)
-- **Targeted banked-write invalidation:** Physical code page bitmap instead of full flush
-- **Undocumented IXH/IXL:** DD-prefixed 8-bit register operations
+- **Lower-cost concurrent generation guards:** patched chain edges currently validate both physical and logical mapping generations before every jump. Any future reduction must retain the stale-target regressions.

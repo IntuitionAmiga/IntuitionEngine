@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -56,11 +57,13 @@ type CPU_Z80 struct {
 	running CacheLineIsolatedBool
 	Cycles  uint64
 
-	irqLine    atomic.Bool
-	nmiLine    atomic.Bool
-	nmiPending atomic.Bool
-	iffDelay   int
-	irqVector  atomic.Uint32
+	irqLine           atomic.Bool
+	nmiLine           atomic.Bool
+	nmiPending        atomic.Bool
+	iffDelay          int
+	irqVector         atomic.Uint32
+	irqServices       uint64
+	executionBoundary func()
 
 	bus Z80Bus
 
@@ -89,14 +92,45 @@ type CPU_Z80 struct {
 	deoptStats       DeoptStats
 
 	// JIT compiler state
-	jitEnabled       bool
-	jitPersist       bool       // benchmarks keep JIT across runs
-	jitCache         *CodeCache // compiled block cache
-	jitExecMem       any        // *ExecMem (typed as any to avoid build tag leakage)
-	jitCtx           any        // *Z80JITContext
-	codePageBitmap   [256]byte  // self-mod detection (one byte per 256-byte Z80 page)
-	directPageBitmap [256]byte  // JIT fast-path (0=direct mem, 1=bail to interp)
-	Debug            bool       // disable JIT when debugging
+	jitEnabled               bool
+	jitSingleStep            bool       // test/debug execution: compile at most one instruction and do not promote chains
+	jitPersist               bool       // benchmarks keep JIT across runs
+	jitCache                 *CodeCache // compiled block cache
+	jitExecMem               any        // *ExecMem (typed as any to avoid build tag leakage)
+	jitCtx                   any        // *Z80JITContext
+	jitStats                 z80JITStats
+	jitDispatchGeneration    atomic.Uint64 // native chain-edge observation fence
+	jitCodeGeneration        [256]atomic.Uint64
+	jitSeenCodeGeneration    [256]uint64 // owning dispatcher only
+	jitPendingMu             sync.Mutex
+	jitPendingPages          map[uint8]struct{} // producer-owned publication queue; drained only by this CPU
+	jitHasPending            atomic.Bool
+	jitBusUnregister         func()
+	jitSeenMappingGeneration uint64    // owning dispatcher only
+	codePageBitmap           [256]byte // self-mod detection (one byte per 256-byte Z80 page)
+	directPageBitmap         [256]byte // JIT fast-path (0=direct mem, 1=bail to interp)
+	Debug                    bool      // disable JIT when debugging
+}
+
+// z80JITStats are CPU-owned counters exposed by cpu.jit_stats(). They stay
+// valid while execution is active, so writers use atomics and Reset clears
+// every field as one architectural reset operation.
+type z80JITStats struct {
+	nativeEntries    atomic.Uint64
+	helperExits      atomic.Uint64
+	bailouts         atomic.Uint64
+	invalidations    atomic.Uint64
+	chainExits       atomic.Uint64
+	regionPromotions atomic.Uint64
+}
+
+func (s *z80JITStats) reset() {
+	s.nativeEntries.Store(0)
+	s.helperExits.Store(0)
+	s.bailouts.Store(0)
+	s.invalidations.Store(0)
+	s.chainExits.Store(0)
+	s.regionPromotions.Store(0)
 }
 
 // Running returns the execution state (thread-safe)
@@ -152,6 +186,7 @@ func NewCPU_Z80(bus Z80Bus) *CPU_Z80 {
 }
 
 func (c *CPU_Z80) Reset() {
+	c.jitStats.reset()
 	c.A = 0
 	c.F = 0
 	c.B = 0
@@ -330,6 +365,12 @@ func (c *CPU_Z80) Execute() {
 
 	yieldCheck := uint32(0)
 	for c.running.Load() {
+		if c.executionBoundary != nil {
+			c.executionBoundary()
+			if !c.running.Load() {
+				break
+			}
+		}
 		c.Step()
 
 		// Once per 4096 instructions: on js/wasm park briefly so the browser
@@ -894,46 +935,50 @@ func (c *CPU_Z80) opCPImm() {
 	c.tick(7)
 }
 
-func (c *CPU_Z80) opDAA() {
-	a := c.A
+func z80DAA(a, flags byte) (byte, byte) {
 	adj := byte(0)
-	carry := c.Flag(z80FlagC)
-	if c.Flag(z80FlagH) || (!c.Flag(z80FlagN) && (a&0x0F) > 0x09) {
+	carry := flags&z80FlagC != 0
+	negative := flags&z80FlagN != 0
+	if flags&z80FlagH != 0 || (!negative && (a&0x0F) > 0x09) {
 		adj |= 0x06
 	}
-	if carry || (!c.Flag(z80FlagN) && a > 0x99) {
+	if carry || (!negative && a > 0x99) {
 		adj |= 0x60
 	}
 
 	var res byte
-	if c.Flag(z80FlagN) {
+	if negative {
 		res = a - adj
 	} else {
 		res = a + adj
 	}
 
-	c.A = res
-	c.F &^= z80FlagS | z80FlagZ | z80FlagPV | z80FlagH | z80FlagC | z80FlagX | z80FlagY
+	resultFlags := flags & z80FlagN
 	if res == 0 {
-		c.F |= z80FlagZ
+		resultFlags |= z80FlagZ
 	}
 	if res&0x80 != 0 {
-		c.F |= z80FlagS
+		resultFlags |= z80FlagS
 	}
 	if parity8(res) {
-		c.F |= z80FlagPV
+		resultFlags |= z80FlagPV
 	}
-	if c.Flag(z80FlagN) {
+	if negative {
 		if (a^res)&0x10 != 0 {
-			c.F |= z80FlagH
+			resultFlags |= z80FlagH
 		}
 	} else if (a&0x0F)+byte(adj&0x0F) > 0x0F {
-		c.F |= z80FlagH
+		resultFlags |= z80FlagH
 	}
 	if adj >= 0x60 {
-		c.F |= z80FlagC
+		resultFlags |= z80FlagC
 	}
-	c.F |= res & (z80FlagX | z80FlagY)
+	resultFlags |= res & (z80FlagX | z80FlagY)
+	return res, resultFlags
+}
+
+func (c *CPU_Z80) opDAA() {
+	c.A, c.F = z80DAA(c.A, c.F)
 	c.tick(4)
 }
 
@@ -1350,6 +1395,7 @@ func (c *CPU_Z80) serviceNMI() {
 }
 
 func (c *CPU_Z80) serviceIRQ() {
+	c.irqServices++
 	c.Halted = false
 	c.incrementR()
 	c.IFF1 = false

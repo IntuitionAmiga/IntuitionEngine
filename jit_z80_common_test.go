@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"testing"
 	"unsafe"
 )
@@ -43,6 +44,10 @@ func TestZ80JITContext_FieldOffsets(t *testing.T) {
 		{"ChainCycles", uintptr(unsafe.Pointer(&ctx.ChainCycles)) - base, jzCtxOffChainCycles},
 		{"ChainRIncrements", uintptr(unsafe.Pointer(&ctx.ChainRIncrements)) - base, jzCtxOffChainRIncrements},
 		{"CycleBudget", uintptr(unsafe.Pointer(&ctx.CycleBudget)) - base, jzCtxOffCycleBudget},
+		{"DispatchGenerationPtr", uintptr(unsafe.Pointer(&ctx.DispatchGenerationPtr)) - base, jzCtxOffDispatchGenerationPtr},
+		{"ExpectedDispatchGeneration", uintptr(unsafe.Pointer(&ctx.ExpectedDispatchGeneration)) - base, jzCtxOffExpectedDispatchGeneration},
+		{"MappingGenerationPtr", uintptr(unsafe.Pointer(&ctx.MappingGenerationPtr)) - base, jzCtxOffMappingGenerationPtr},
+		{"ExpectedMappingGeneration", uintptr(unsafe.Pointer(&ctx.ExpectedMappingGeneration)) - base, jzCtxOffExpectedMappingGeneration},
 	}
 
 	for _, tt := range tests {
@@ -157,6 +162,88 @@ func TestZ80JIT_ParityTable(t *testing.T) {
 		if got != tt.expected {
 			t.Errorf("parityTable[0x%02X] = 0x%02X, want 0x%02X", tt.value, got, tt.expected)
 		}
+	}
+}
+
+func TestZ80JITOpcodeManifest_ClassifiesEveryDecodedForm(t *testing.T) {
+	manifest := z80JITOpcodeManifest()
+	// Base, CB, ED, DD, FD, DDCB and FDCB each have 256 decoded forms.
+	if got, want := len(manifest), 7*256-10; got != want {
+		t.Fatalf("manifest rows = %d, want %d", got, want)
+	}
+
+	for _, row := range manifest {
+		if row.Outcome == z80JITOutcomeUnclassified {
+			t.Fatalf("%s is unclassified", row.Name)
+		}
+		if row.Outcome == z80JITOutcomeHalt && !row.CPUHalts {
+			t.Fatalf("%s declares halt even though CPU_Z80 does not halt", row.Name)
+		}
+		if row.Outcome == z80JITOutcomeHalt && row.Proof == "" {
+			t.Fatalf("%s has no halt proof", row.Name)
+		}
+		if row.AMD64Proof == "" || row.ARM64Proof == "" || row.WasmProof == "" {
+			t.Fatalf("%s proof names: amd64=%q arm64=%q wasm=%q", row.Name, row.AMD64Proof, row.ARM64Proof, row.WasmProof)
+		}
+		for backend, outcome := range map[string]z80JITOpcodeOutcome{
+			"amd64": row.AMD64Outcome, "arm64": row.ARM64Outcome, "wasm": row.WasmOutcome,
+		} {
+			if got, want := outcome == z80JITOutcomeCanonicalHelper, z80ManifestHostObservation(row.Instr); got != want {
+				t.Fatalf("%s %s helper=%v, genuine observation=%v", row.Name, backend, got, want)
+			}
+		}
+		if got := len(z80BlockSourceBytes([]JITZ80Instr{row.Instr})); got != int(row.Instr.length) {
+			t.Fatalf("%s source length = %d, decoded length = %d", row.Name, got, row.Instr.length)
+		}
+	}
+}
+
+func TestZ80JIT_LDNNHLIsDirectlyAdmitted(t *testing.T) {
+	instr := JITZ80Instr{prefix: z80JITPrefixNone, opcode: 0x22, operand: 0x0500, length: 3}
+	if z80JITNeedsFallback(&instr) {
+		t.Fatal("LD (nn),HL unexpectedly requires fallback")
+	}
+	if !z80JITCanEmit(&instr) {
+		t.Fatal("LD (nn),HL has an emitter lowering but is rejected by admission")
+	}
+}
+
+func TestZ80JIT_EDStorePairsAreDirectlyAdmitted(t *testing.T) {
+	for _, opcode := range []byte{0x43, 0x53, 0x63, 0x73} {
+		instr := JITZ80Instr{prefix: z80JITPrefixED, opcode: opcode, operand: 0x0500, length: 4}
+		if z80JITNeedsFallback(&instr) || !z80JITCanEmit(&instr) {
+			t.Errorf("ED %02X is emitted but not directly admitted", opcode)
+		}
+	}
+}
+
+func TestZ80JIT_EDNegAndInterruptModeAliasesAreDirectlyAdmitted(t *testing.T) {
+	for _, opcode := range []byte{0x44, 0x4C, 0x54, 0x5C, 0x64, 0x6C, 0x74, 0x7C, 0x46, 0x4E, 0x66, 0x6E, 0x56, 0x76, 0x5E, 0x7E} {
+		instr := JITZ80Instr{prefix: z80JITPrefixED, opcode: opcode, length: 2}
+		if z80JITNeedsFallback(&instr) || !z80JITCanEmit(&instr) {
+			t.Errorf("ED %02X is implemented by CPU_Z80 but not directly admitted", opcode)
+		}
+	}
+}
+
+func TestZ80JIT_EDRRDAndRLDAreDirectlyAdmitted(t *testing.T) {
+	for _, opcode := range []byte{0x67, 0x6F} {
+		instr := JITZ80Instr{prefix: z80JITPrefixED, opcode: opcode, length: 2}
+		if z80JITNeedsFallback(&instr) || !z80JITCanEmit(&instr) {
+			t.Errorf("ED %02X has guarded direct-memory semantics but is not directly admitted", opcode)
+		}
+	}
+}
+
+func TestZ80JITBlockSourceBytes(t *testing.T) {
+	instrs := []JITZ80Instr{
+		{opcode: 0x3E, operand: 0x12, length: 2},
+		{prefix: z80JITPrefixED, opcode: 0x43, operand: 0x0500, length: 4},
+		{prefix: z80JITPrefixDD, opcode: 0xCB, displacement: -2, cbSubOp: 0x46, length: 4},
+	}
+	want := []byte{0x3E, 0x12, 0xED, 0x43, 0x00, 0x05, 0xDD, 0xCB, 0xFE, 0x46}
+	if got := z80BlockSourceBytes(instrs); !bytes.Equal(got, want) {
+		t.Fatalf("source bytes = % x, want % x", got, want)
 	}
 }
 
@@ -396,19 +483,20 @@ func TestZ80JIT_NeedsFallback(t *testing.T) {
 		{"IN A,(n)", JITZ80Instr{prefix: z80JITPrefixNone, opcode: 0xDB}, true},
 		{"OUT (n),A", JITZ80Instr{prefix: z80JITPrefixNone, opcode: 0xD3}, true},
 		{"HALT", JITZ80Instr{prefix: z80JITPrefixNone, opcode: 0x76}, true},
-		{"EX (SP),HL", JITZ80Instr{prefix: z80JITPrefixNone, opcode: 0xE3}, true},
+		{"EX (SP),HL", JITZ80Instr{prefix: z80JITPrefixNone, opcode: 0xE3}, false},
 		{"DAA", JITZ80Instr{prefix: z80JITPrefixNone, opcode: 0x27}, false}, // now handled via lookup table
 		{"NOP", JITZ80Instr{prefix: z80JITPrefixNone, opcode: 0x00}, false},
 		{"LD A,B", JITZ80Instr{prefix: z80JITPrefixNone, opcode: 0x78}, false},
 		{"ADD A,n", JITZ80Instr{prefix: z80JITPrefixNone, opcode: 0xC6}, false},
-		{"ED RLD", JITZ80Instr{prefix: z80JITPrefixED, opcode: 0x6F}, true},
+		{"ED RLD", JITZ80Instr{prefix: z80JITPrefixED, opcode: 0x6F}, false},
 		{"ED INI", JITZ80Instr{prefix: z80JITPrefixED, opcode: 0xA2}, true},
 		{"ED OUTI", JITZ80Instr{prefix: z80JITPrefixED, opcode: 0xA3}, true},
 		{"ED IN B,(C)", JITZ80Instr{prefix: z80JITPrefixED, opcode: 0x40}, true},
-		{"ED LD A,R", JITZ80Instr{prefix: z80JITPrefixED, opcode: 0x57}, true},
+		{"ED LD A,I", JITZ80Instr{prefix: z80JITPrefixED, opcode: 0x57}, false},
+		{"ED LD A,R", JITZ80Instr{prefix: z80JITPrefixED, opcode: 0x5F}, false},
 		{"ED NEG", JITZ80Instr{prefix: z80JITPrefixED, opcode: 0x44}, false},
-		{"DD EX (SP),IX", JITZ80Instr{prefix: z80JITPrefixDD, opcode: 0xE3}, true},
-		{"FD EX (SP),IY", JITZ80Instr{prefix: z80JITPrefixFD, opcode: 0xE3}, true},
+		{"DD EX (SP),IX", JITZ80Instr{prefix: z80JITPrefixDD, opcode: 0xE3}, false},
+		{"FD EX (SP),IY", JITZ80Instr{prefix: z80JITPrefixFD, opcode: 0xE3}, false},
 	}
 
 	for _, tt := range tests {

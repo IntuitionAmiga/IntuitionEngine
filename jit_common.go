@@ -1072,6 +1072,16 @@ type JITBlock struct {
 	// backends leave it nil. The 6502 dispatcher compares it before entry as a
 	// second validity fence in addition to physical page generations.
 	p65Source []byte
+	// z80Source is the exact decoded byte range for a Z80 block. The Z80
+	// dispatcher compares it before entry as a second validity fence in
+	// addition to physical page and mapping generations.
+	z80Source            []byte
+	z80PageGenerations   [256]uint64
+	z80PhysicalCodePages [256]bool
+	// z80CodePages is the compact immutable enumeration of the pages above.
+	// It avoids a 256-entry generation scan on every Z80 block dispatch.
+	z80CodePages         []uint8
+	z80MappingGeneration uint64
 }
 
 type chainPatchRef struct {

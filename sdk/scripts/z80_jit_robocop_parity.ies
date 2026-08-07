@@ -1,0 +1,9 @@
+-- Run once normally and once with --nojit. IEMon can load the stopped CPU at
+-- the same checkpoint to reduce any mismatch preserved by the Go shadow gate.
+cpu.load_stopped("sdk/examples/prebuilt/robocop_intro_z80.ie80")
+sys.print("z80-robocop before", cpu.execution_mode(), cpu.jit_stats())
+cpu.start()
+sys.wait_frames(4)
+rec.screenshot("/tmp/z80_jit_robocop_parity.png")
+cpu.stop()
+sys.print("z80-robocop after", cpu.execution_mode(), cpu.jit_stats())

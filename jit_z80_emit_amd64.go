@@ -259,6 +259,52 @@ func z80EmitWritePair16(buf *CodeBuffer, pairCode byte) {
 	}
 }
 
+func z80EmitWriteWZImm(buf *CodeBuffer, value uint16) {
+	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))
+	buf.EmitBytes(0x66)
+	emitMemOp(buf, false, 0xC7, 0, z80Scratch4, int32(cpuZ80OffWZ))
+	buf.EmitBytes(byte(value), byte(value>>8))
+}
+
+// z80EmitWriteWZFromAX publishes the dynamic address in AX without
+// disturbing EAX, which remains the target consumed by dynamic-PC exits.
+func z80EmitWriteWZFromAX(buf *CodeBuffer) {
+	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))
+	buf.EmitBytes(0x66)
+	emitMemOp(buf, false, 0x89, z80Scratch1, z80Scratch4, int32(cpuZ80OffWZ))
+}
+
+func z80EmitADDIndex16(buf *CodeBuffer, ixiyOff uintptr, pair byte) {
+	if pair != 2 {
+		z80EmitReadPair16(buf, pair)
+		buf.EmitBytes(0x89, 0xC1) // MOV ECX,EAX (source)
+	}
+	amd64MOV_reg_mem(buf, z80Scratch5, amd64RSP, int32(z80OffCpuPtr))
+	amd64MOVZX_W_mem(buf, z80Scratch3, z80Scratch5, int32(ixiyOff)) // EDX = old IX/IY
+	if pair == 2 {
+		buf.EmitBytes(0x89, 0xD1) // MOV ECX,EDX (ADD IX,IX / IY,IY)
+	}
+	buf.EmitBytes(0x41, 0x89, 0xD2) // MOV R10D,EDX (old value)
+	buf.EmitBytes(0x01, 0xCA)       // ADD EDX,ECX
+	buf.EmitBytes(0x66)
+	emitMemOp(buf, false, 0x89, z80Scratch3, z80Scratch5, int32(ixiyOff))
+
+	buf.EmitBytes(0x40, 0x80, 0xE5, 0xC4) // preserve S/Z/PV
+	buf.EmitBytes(0x44, 0x89, 0xD0)       // MOV EAX,R10D
+	buf.EmitBytes(0x31, 0xC8)             // XOR EAX,ECX
+	buf.EmitBytes(0x31, 0xD0)             // XOR EAX,EDX
+	buf.EmitBytes(0xA9, 0x00, 0x10, 0x00, 0x00)
+	buf.EmitBytes(0x74, 0x04)
+	buf.EmitBytes(0x40, 0x80, 0xCD, 0x10)
+	buf.EmitBytes(0xF7, 0xC2, 0x00, 0x00, 0x01, 0x00)
+	buf.EmitBytes(0x74, 0x04)
+	buf.EmitBytes(0x40, 0x80, 0xCD, 0x01)
+	buf.EmitBytes(0x89, 0xD0)
+	buf.EmitBytes(0xC1, 0xE8, 0x08)
+	buf.EmitBytes(0x24, 0x28)
+	buf.EmitBytes(0x40, 0x08, 0xC5)
+}
+
 // ===========================================================================
 // Memory Access Helpers
 // ===========================================================================
@@ -295,6 +341,17 @@ func z80EmitMemWrite(buf *CodeBuffer, bailLabel, selfModLabel string) {
 		panic("z80 code-page bitmap probe unavailable")
 	}
 	buf.FixupExistingRel32(selfModLabel, off)
+}
+
+// z80EmitPendingSelfModExitCheck transfers to a shared self-modifying-code
+// exit when an earlier sub-write of one architectural instruction marked the
+// context. Multi-byte stores use it after their final byte so invalidation
+// cannot make half an instruction visible to the guest.
+func z80EmitPendingSelfModExitCheck(buf *CodeBuffer, selfModLabel string) {
+	emitMemOp(buf, false, 0x83, 7, z80RegCtx, int32(jzCtxOffNeedInval))
+	buf.EmitBytes(0x00)
+	buf.EmitBytes(0x0F, 0x85)
+	buf.FixupRel32(selfModLabel, buf.Len()+4)
 }
 
 // z80EmitLoopPreCheck emits runtime page validation for a qualifying DJNZ loop.
@@ -465,10 +522,65 @@ func z80EmitBorrowCapture(buf *CodeBuffer) {
 	z80EmitCarryCapture(buf) // same instruction — CF=1 after SUB means borrow
 }
 
+// z80EmitFlagsAddSub16 publishes the complete Z80 flag result for ADC/SBC HL,ss.
+// R10D is the old HL, R11D the effective operand (including carry), and EDX
+// the untruncated result. The caller has already captured carry/borrow.
+func z80EmitFlagsAddSub16(buf *CodeBuffer, subtract bool) {
+	// S/Y/X come from the high result byte; N is supplied below.
+	buf.EmitBytes(0x89, 0xD0)                         // MOV EAX,EDX
+	buf.EmitBytes(0xC1, 0xE8, 0x08)                   // SHR EAX,8
+	buf.EmitBytes(0x24, 0xA8)                         // AND AL,A8h
+	buf.EmitBytes(0x40, 0x88, 0xC5)                   // MOV BPL,AL
+	buf.EmitBytes(0x89, 0xD1)                         // MOV ECX,EDX
+	buf.EmitBytes(0x81, 0xE1, 0xFF, 0xFF, 0x00, 0x00) // AND ECX,FFFFh
+	buf.EmitBytes(0x75, 0x04)                         // JNZ +4
+	buf.EmitBytes(0x40, 0x80, 0xCD, 0x40)             // OR BPL,Z
+	// H = bit 12 of old ^ operand ^ result.
+	buf.EmitBytes(0x44, 0x89, 0xD0) // MOV EAX,R10D
+	buf.EmitBytes(0x44, 0x31, 0xD8) // XOR EAX,R11D
+	buf.EmitBytes(0x31, 0xD0)       // XOR EAX,EDX
+	buf.EmitBytes(0xA9, 0x00, 0x10, 0x00, 0x00)
+	buf.EmitBytes(0x74, 0x04)
+	buf.EmitBytes(0x40, 0x80, 0xCD, 0x10)
+	// Signed overflow at bit 15.
+	buf.EmitBytes(0x44, 0x89, 0xD0) // MOV EAX,R10D
+	buf.EmitBytes(0x44, 0x31, 0xD8) // XOR EAX,R11D
+	if !subtract {
+		buf.EmitBytes(0xF7, 0xD0) // NOT EAX
+	}
+	buf.EmitBytes(0x44, 0x89, 0xD1) // MOV ECX,R10D
+	buf.EmitBytes(0x31, 0xD1)       // XOR ECX,EDX
+	buf.EmitBytes(0x21, 0xC8)       // AND EAX,ECX
+	buf.EmitBytes(0xA9, 0x00, 0x80, 0x00, 0x00)
+	buf.EmitBytes(0x74, 0x04)
+	buf.EmitBytes(0x40, 0x80, 0xCD, 0x04)
+	if subtract {
+		buf.EmitBytes(0x40, 0x80, 0xCD, 0x02)
+	}
+	z80EmitCapturedCarryIntoF(buf)
+}
+
 // z80EmitFlags_SUB emits Z80 flag computation for SUB/CP A,val.
 // Same register convention as ADD but N=1. Carry is borrow (already captured).
 func z80EmitFlags_SUB(buf *CodeBuffer, flagMask uint8) {
-	z80EmitFlags_ADD(buf, flagMask)
+	// ADD and SUB share S/Z/X/Y/H/C construction, but their signed overflow
+	// predicates differ. Preserve oldA in DL and operand in CL while the
+	// shared builder handles every flag except P/V.
+	if flagMask&uint8(z80FlagPV) != 0 {
+		buf.EmitBytes(0x88, 0x4C, 0x24, byte(z80OffLoopBudg)) // save operand
+	}
+	z80EmitFlags_ADD(buf, flagMask&^uint8(z80FlagPV))
+	if flagMask&uint8(z80FlagPV) != 0 {
+		buf.EmitBytes(0x8A, 0x4C, 0x24, byte(z80OffLoopBudg)) // restore operand
+		// SUB overflow: ((oldA ^ operand) & (oldA ^ result) & 0x80) != 0.
+		buf.EmitBytes(0x41, 0x88, 0xD3)       // MOV R11B,DL
+		buf.EmitBytes(0x41, 0x30, 0xCB)       // XOR R11B,CL
+		buf.EmitBytes(0x30, 0xC2)             // XOR DL,AL
+		buf.EmitBytes(0x41, 0x20, 0xD3)       // AND R11B,DL
+		buf.EmitBytes(0x41, 0xF6, 0xC3, 0x80) // TEST R11B,80h
+		buf.EmitBytes(0x74, 0x04)
+		buf.EmitBytes(0x40, 0x80, 0xCD, 0x04) // OR BPL,PV
+	}
 	if flagMask&uint8(z80FlagN) != 0 {
 		buf.EmitBytes(0x40, 0x80, 0xCD, 0x02) // OR BPL, 0x02
 	}
@@ -818,6 +930,20 @@ func z80EmitChainExit(buf *CodeBuffer, cs *z80CompileState, nextPC uint16, instr
 	buf.EmitBytes(0x0F, 0x85)
 	buf.FixupRel32(unchainedLabel, buf.Len()+4)
 
+	// A patched edge may otherwise bypass the owning Go dispatcher. Check both
+	// the physical-write publication generation and the logical mapping
+	// generation immediately before it jumps into another compiled block.
+	amd64MOV_reg_mem(buf, z80Scratch1, z80RegCtx, int32(jzCtxOffDispatchGenerationPtr))
+	amd64MOV_reg_mem(buf, z80Scratch1, z80Scratch1, 0)
+	emitMemOp(buf, true, 0x3B, z80Scratch1, z80RegCtx, int32(jzCtxOffExpectedDispatchGeneration))
+	buf.EmitBytes(0x0F, 0x85) // JNE unchained
+	buf.FixupRel32(unchainedLabel, buf.Len()+4)
+	amd64MOV_reg_mem(buf, z80Scratch1, z80RegCtx, int32(jzCtxOffMappingGenerationPtr))
+	amd64MOV_reg_mem(buf, z80Scratch1, z80Scratch1, 0)
+	emitMemOp(buf, true, 0x3B, z80Scratch1, z80RegCtx, int32(jzCtxOffExpectedMappingGeneration))
+	buf.EmitBytes(0x0F, 0x85) // JNE unchained
+	buf.FixupRel32(unchainedLabel, buf.Len()+4)
+
 	// --- Patchable JMP rel32 (initially → unchained) ---
 	buf.EmitBytes(0xE9) // JMP rel32
 	jmpDispOffset := buf.Len()
@@ -901,7 +1027,9 @@ func z80EmitTerminator(buf *CodeBuffer, cs *z80CompileState, instr *JITZ80Instr,
 		// CALL cc,nn (0xC4,0xCC,0xD4,0xDC,0xE4,0xEC,0xF4,0xFC)
 		case op&0xC7 == 0xC4:
 			cc := (op >> 3) & 0x07
-			z80EmitConditionalCALL(buf, cs, cc, instr.operand, nextInstrPC, instrPC, instrCount, totalCycles, blockRIncrements)
+			// The scanner records the 10-cycle not-taken cost. The taken
+			// path performs the push and retires in 17 cycles.
+			z80EmitConditionalCALL(buf, cs, cc, instr.operand, nextInstrPC, instrPC, instrCount, totalCycles+7, blockRIncrements)
 
 		// RST n (0xC7,0xCF,0xD7,0xDF,0xE7,0xEF,0xF7,0xFF)
 		case op&0xC7 == 0xC7:
@@ -910,10 +1038,12 @@ func z80EmitTerminator(buf *CodeBuffer, cs *z80CompileState, instr *JITZ80Instr,
 
 		// EI (0xFB) — just needs epilogue with sequential PC
 		case op == 0xFB:
-			// iffDelay=2 was already set by the instruction emitter
+			// CPU_Z80.opEI sets two and finishInstruction consumes the EI
+			// instruction's own boundary immediately, so native publication is
+			// the observable post-retirement value one.
 			amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
 			emitMemOp(buf, true, 0xC7, 0, z80Scratch1, int32(cpuZ80OffIffDelay))
-			buf.Emit32(2)
+			buf.Emit32(1)
 			z80EmitEpilogue(buf, nextInstrPC, instrCount, totalCycles, blockRIncrements)
 
 		// DI (0xF3)
@@ -927,6 +1057,7 @@ func z80EmitTerminator(buf *CodeBuffer, cs *z80CompileState, instr *JITZ80Instr,
 		case op == 0xE9:
 			// Target PC = HL (dynamic)
 			amd64MOVZX_W(buf, z80Scratch1, z80RegHL) // EAX = HL
+			z80EmitWriteWZFromAX(buf)
 			z80EmitEpilogueDynPC(buf, instrCount, totalCycles, blockRIncrements)
 
 		default:
@@ -943,22 +1074,46 @@ func z80EmitTerminator(buf *CodeBuffer, cs *z80CompileState, instr *JITZ80Instr,
 				amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
 				amd64MOVZX_W_mem(buf, z80Scratch1, z80Scratch1, int32(cpuZ80OffIY))
 			}
+			z80EmitWriteWZFromAX(buf)
 			z80EmitEpilogueDynPC(buf, instrCount, totalCycles, blockRIncrements)
+		} else if !z80DDFDExplicitOpcode(op) {
+			base := *instr
+			base.prefix = z80JITPrefixNone
+			z80EmitTerminator(buf, cs, &base, instrPC+1, nextInstrPC, instrCount, totalCycles, blockRIncrements)
 		} else {
 			z80EmitEpilogue(buf, nextInstrPC, instrCount, totalCycles, blockRIncrements)
 		}
 
 	case z80JITPrefixED:
 		switch op {
-		case 0xB0, 0xB8: // LDIR / LDDR — native loop
-			isIncrement := (op == 0xB0)
-			z80EmitLDIR(buf, isIncrement, instrPC, instrCount, totalCycles, blockRIncrements)
-		case 0xB1, 0xB9: // CPIR / CPDR — bail to interpreter (repeat loop)
-			cyclesBefore := totalCycles - uint32(instr.cycles)
-			amd64MOV_mem_imm32(buf, z80RegCtx, int32(jzCtxOffNeedBail), 1)
-			z80EmitEpilogue(buf, instrPC, instrCount-1, cyclesBefore, blockRIncrements)
+		case 0xB0, 0xB8: // LDIR / LDDR — one architectural iteration
+			z80EmitEDInstruction(buf, instr, instrPC, instrCount-1, totalCycles-uint32(instr.cycles), instrPC, z80FlagAll, blockRIncrements-int(instr.rIncrements))
+			done := fmt.Sprintf("ldxr_done_%04X", instrPC)
+			amd64MOVZX_W(buf, z80Scratch1, z80RegBC)
+			buf.EmitBytes(0x85, 0xC0)
+			buf.EmitBytes(0x0F, 0x84)
+			buf.FixupRel32(done, buf.Len()+4)
+			z80EmitEpilogue(buf, instrPC, instrCount, totalCycles, blockRIncrements)
+			buf.Label(done)
+			z80EmitEpilogue(buf, nextInstrPC, instrCount, totalCycles-5, blockRIncrements)
+		case 0xB1, 0xB9: // CPIR / CPDR — one architectural iteration
+			z80EmitEDInstruction(buf, instr, instrPC, instrCount-1, totalCycles-uint32(instr.cycles), instrPC, z80FlagAll, blockRIncrements-int(instr.rIncrements))
+			done := fmt.Sprintf("cpxr_done_%04X", instrPC)
+			amd64MOVZX_W(buf, z80Scratch1, z80RegBC)
+			buf.EmitBytes(0x85, 0xC0)
+			buf.EmitBytes(0x0F, 0x84)
+			buf.FixupRel32(done, buf.Len()+4)
+			buf.EmitBytes(0x40, 0xF6, 0xC5, 0x40) // TEST BPL,Z
+			buf.EmitBytes(0x0F, 0x85)
+			buf.FixupRel32(done, buf.Len()+4)
+			z80EmitEpilogue(buf, instrPC, instrCount, totalCycles, blockRIncrements)
+			buf.Label(done)
+			z80EmitEpilogue(buf, nextInstrPC, instrCount, totalCycles-5, blockRIncrements)
 		default:
-			// RETI/RETN — same as RET (pop PC from stack)
+			// RETI/RETN restore IFF1 from IFF2 before returning.
+			amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
+			amd64MOVZX_B_mem(buf, z80Scratch2, z80Scratch1, int32(cpuZ80OffIFF2))
+			emitMemOp(buf, false, 0x88, z80Scratch2, z80Scratch1, int32(cpuZ80OffIFF1))
 			z80EmitRET(buf, instrPC, instrCount, totalCycles, blockRIncrements)
 		}
 
@@ -1427,6 +1582,16 @@ func compileBlockZ80Stub(instrs []JITZ80Instr, startPC, endPC uint16, execMem *E
 	// epilogue with the correct target PC. Non-terminator blocks get a
 	// standard sequential epilogue after the loop.
 	flagsNeeded := z80PeepholeFlags(instrs)
+	// Guarded memory operations can return through bail or self-modification
+	// exits before a later flag consumer/producer is reached. Until liveness
+	// models every such observation edge, materialize each producer's complete
+	// architectural result. Linear-only liveness exposed partial F values to
+	// real code when an intervening write invalidated a compiled page.
+	for i := range instrs {
+		if z80InstrProducedFlagMask(&instrs[i]) != 0 {
+			flagsNeeded[i] = z80FlagAll
+		}
+	}
 
 	// DJNZ deferred-flag optimization: if the second-to-last instruction is
 	// a flag producer, the last is DJNZ, and no intra-block instruction
@@ -2075,6 +2240,9 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch1, z80RegHL&0x07)) // MOV R14W, AX
 		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch2, z80RegDE&0x07)) // MOV R13W, CX
 
+	case op == 0xE3: // EX (SP),HL
+		z80EmitEXSPHL(buf, instr, instrPC, instrIdx, cyclesAccum, rIncAccum)
+
 	// DAA (0x27) — BCD adjust via lookup table
 	case op == 0x27:
 		// Index = (A << 3) | (C << 2) | (H << 1) | N
@@ -2228,14 +2396,29 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 	// ADD HL,rp (0x09,0x19,0x29,0x39)
 	case op&0xCF == 0x09:
 		pair := (op >> 4) & 0x03
-		z80EmitReadPair16(buf, pair) // EAX = pair value
-		// ADD R14W, AX
-		buf.EmitBytes(0x66, 0x41, 0x01, modRM(3, z80Scratch1, z80RegHL&0x07))
-		z80EmitCarryCapture(buf)
-		// Flag update: only C, H, N affected (N=0, H=half-carry from bit 11, C=carry from bit 15)
-		// Simplified: clear N, set C if overflow
-		buf.EmitBytes(0x40, 0x80, 0xE5, 0xEC) // AND BPL, ~0x13 (clear N, H, C)
-		z80EmitCapturedCarryIntoF(buf)
+		z80EmitReadPair16(buf, pair)             // EAX = source
+		buf.EmitBytes(0x89, 0xC1)                // MOV ECX,EAX (source)
+		amd64MOVZX_W(buf, z80Scratch3, z80RegHL) // EDX = old HL
+		buf.EmitBytes(0x41, 0x89, 0xD2)          // MOV R10D,EDX (old HL)
+		buf.EmitBytes(0x01, 0xCA)                // ADD EDX,ECX (wide result)
+		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch3, z80RegHL&0x07))
+
+		// Preserve S/Z/PV, clear H/N/C/X/Y, then derive H/C/X/Y from the
+		// original operands and the untruncated 17-bit result.
+		buf.EmitBytes(0x40, 0x80, 0xE5, 0xC4) // AND BPL,S|Z|PV
+		buf.EmitBytes(0x44, 0x89, 0xD0)       // MOV EAX,R10D
+		buf.EmitBytes(0x31, 0xC8)             // XOR EAX,ECX
+		buf.EmitBytes(0x31, 0xD0)             // XOR EAX,EDX
+		buf.EmitBytes(0xA9, 0x00, 0x10, 0x00, 0x00)
+		buf.EmitBytes(0x74, 0x04)
+		buf.EmitBytes(0x40, 0x80, 0xCD, 0x10) // OR BPL,H
+		buf.EmitBytes(0xF7, 0xC2, 0x00, 0x00, 0x01, 0x00)
+		buf.EmitBytes(0x74, 0x04)
+		buf.EmitBytes(0x40, 0x80, 0xCD, 0x01) // OR BPL,C
+		buf.EmitBytes(0x89, 0xD0)             // MOV EAX,EDX
+		buf.EmitBytes(0xC1, 0xE8, 0x08)       // SHR EAX,8
+		buf.EmitBytes(0x24, 0x28)             // AND AL,X|Y
+		buf.EmitBytes(0x40, 0x08, 0xC5)       // OR BPL,AL
 
 	// LD A,(nn) (0x3A)
 	case op == 0x3A:
@@ -2244,6 +2427,7 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(instr.operand)) // EAX = address
 		z80EmitMemRead(buf, bailLabel)
 		buf.EmitBytes(0x88, modRM(3, z80Scratch1, z80RegA)) // MOV BL, AL
+		z80EmitWriteWZImm(buf, instr.operand)
 		buf.EmitBytes(0xE9)
 		buf.FixupRel32(doneLabel, buf.Len()+4)
 		z80EmitBailExit(buf, bailLabel, instrPC, instrIdx, cyclesAccum, rIncAccum)
@@ -2257,6 +2441,7 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(instr.operand))
 		amd64MOVZX_B(buf, z80Scratch3, z80RegA) // DL = A
 		z80EmitMemWrite(buf, bailLabel, selfModLabel)
+		z80EmitWriteWZImm(buf, instr.operand)
 		buf.EmitBytes(0xE9)
 		buf.FixupRel32(doneLabel, buf.Len()+4)
 		z80EmitBailExit(buf, bailLabel, instrPC, instrIdx, cyclesAccum, rIncAccum)
@@ -2278,6 +2463,7 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		buf.EmitBytes(0xC1, 0xE0, 0x08)                                       // SHL EAX, 8
 		buf.EmitBytes(0x44, 0x09, 0xD8)                                       // OR EAX, R11D
 		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch1, z80RegHL&0x07)) // MOV R14W, AX
+		z80EmitWriteWZImm(buf, instr.operand+1)
 		buf.EmitBytes(0xE9)
 		buf.FixupRel32(doneLabel, buf.Len()+4)
 		z80EmitBailExit(buf, bailLabel, instrPC, instrIdx, cyclesAccum, rIncAccum)
@@ -2286,19 +2472,21 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 	// LD (nn),HL (0x22)
 	case op == 0x22:
 		bailLabel := fmt.Sprintf("bail_%04X", instrPC)
-		selfModLabel := fmt.Sprintf("smod_%04X", instrPC)
 		doneLabel1 := fmt.Sprintf("d1_%04X", instrPC)
 		bailLabel2 := fmt.Sprintf("bail2_%04X", instrPC)
 		selfModLabel2 := fmt.Sprintf("smod2_%04X", instrPC)
 		doneLabel2 := fmt.Sprintf("d2_%04X", instrPC)
+		z80EmitWriteWZImm(buf, instr.operand+1)
 		// Write low byte (L)
 		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(instr.operand))
 		amd64MOVZX_B(buf, z80Scratch3, z80RegHL) // DL = L (low byte of R14)
-		z80EmitMemWrite(buf, bailLabel, selfModLabel)
+		// A self-modifying first byte must not split this architectural
+		// two-byte store. Continue with the high byte and exit only after both
+		// bytes have been committed.
+		z80EmitMemWrite(buf, bailLabel, doneLabel1)
 		buf.EmitBytes(0xE9)
 		buf.FixupRel32(doneLabel1, buf.Len()+4)
 		z80EmitBailExit(buf, bailLabel, instrPC, instrIdx, cyclesAccum, rIncAccum)
-		z80EmitSelfModExit(buf, selfModLabel, nextInstrPC, instrIdx+1, cyclesAccum+uint32(instr.cycles), rIncAccum+int(instr.rIncrements))
 		buf.Label(doneLabel1)
 		// Write high byte (H)
 		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(instr.operand+1))
@@ -2310,6 +2498,7 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		z80EmitBailExit(buf, bailLabel2, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		z80EmitSelfModExit(buf, selfModLabel2, nextInstrPC, instrIdx+1, cyclesAccum+uint32(instr.cycles), rIncAccum+int(instr.rIncrements))
 		buf.Label(doneLabel2)
+		z80EmitPendingSelfModExitCheck(buf, selfModLabel2)
 
 	// INC (HL) (0x34)
 	case op == 0x34:
@@ -2318,25 +2507,24 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
 		z80EmitMemRead(buf, bailLabel)
 		// Save old value to stack (survives memWrite)
-		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg)) // MOV [RSP+z80OffLoopBudg], AL
-		buf.EmitBytes(0xFE, 0xC0)                             // INC AL
-		buf.EmitBytes(0x41, 0x89, 0xC3)                       // MOV R11D, EAX (save result)
+		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg))   // MOV [RSP+z80OffLoopBudg], AL
+		buf.EmitBytes(0xFE, 0xC0)                               // INC AL
+		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg+1)) // save result
+		buf.EmitBytes(0x8A, 0x54, 0x24, byte(z80OffLoopBudg))   // DL = old
+		if emitFlags != 0 {
+			z80EmitFlags_INC_DEC_Runtime(buf, false, emitFlags)
+		}
 		bailLabelW := fmt.Sprintf("bail_w_%04X", instrPC)
 		selfModLabelW := fmt.Sprintf("smod_w_%04X", instrPC)
 		doneLabelW := fmt.Sprintf("done_w_%04X", instrPC)
 		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
-		buf.EmitBytes(0x44, 0x88, 0xDA) // MOV DL, R11B
+		buf.EmitBytes(0x8A, 0x54, 0x24, byte(z80OffLoopBudg+1)) // DL = result
 		z80EmitMemWrite(buf, bailLabelW, selfModLabelW)
 		buf.EmitBytes(0xE9)
 		buf.FixupRel32(doneLabelW, buf.Len()+4)
 		z80EmitBailExit(buf, bailLabelW, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		z80EmitSelfModExit(buf, selfModLabelW, nextInstrPC, instrIdx+1, cyclesAccum+uint32(instr.cycles), rIncAccum+int(instr.rIncrements))
 		buf.Label(doneLabelW)
-		buf.EmitBytes(0x44, 0x88, 0xD8)                       // MOV AL, R11B (result)
-		buf.EmitBytes(0x8A, 0x54, 0x24, byte(z80OffLoopBudg)) // MOV DL, [RSP+z80OffLoopBudg] (old)
-		if emitFlags != 0 {
-			z80EmitFlags_INC_DEC_Runtime(buf, false, emitFlags)
-		}
 		buf.EmitBytes(0xE9)
 		buf.FixupRel32(doneLabel, buf.Len()+4)
 		z80EmitBailExit(buf, bailLabel, instrPC, instrIdx, cyclesAccum, rIncAccum)
@@ -2349,26 +2537,24 @@ func z80EmitBaseInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC, nextIn
 		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
 		z80EmitMemRead(buf, bailLabel)
 		// Save old value to stack (survives memWrite which clobbers DL)
-		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg)) // MOV [RSP+z80OffLoopBudg], AL
-		buf.EmitBytes(0xFE, 0xC8)                             // DEC AL
-		buf.EmitBytes(0x41, 0x89, 0xC3)                       // MOV R11D, EAX (save result)
+		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg))   // MOV [RSP+z80OffLoopBudg], AL
+		buf.EmitBytes(0xFE, 0xC8)                               // DEC AL
+		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg+1)) // save result
+		buf.EmitBytes(0x8A, 0x54, 0x24, byte(z80OffLoopBudg))   // DL = old
+		if emitFlags != 0 {
+			z80EmitFlags_INC_DEC_Runtime(buf, true, emitFlags)
+		}
 		bailLabelW := fmt.Sprintf("bail_w_%04X", instrPC)
 		selfModLabelW := fmt.Sprintf("smod_w_%04X", instrPC)
 		doneLabelW := fmt.Sprintf("done_w_%04X", instrPC)
 		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
-		buf.EmitBytes(0x44, 0x88, 0xDA) // MOV DL, R11B
+		buf.EmitBytes(0x8A, 0x54, 0x24, byte(z80OffLoopBudg+1)) // DL = result
 		z80EmitMemWrite(buf, bailLabelW, selfModLabelW)
 		buf.EmitBytes(0xE9)
 		buf.FixupRel32(doneLabelW, buf.Len()+4)
 		z80EmitBailExit(buf, bailLabelW, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		z80EmitSelfModExit(buf, selfModLabelW, nextInstrPC, instrIdx+1, cyclesAccum+uint32(instr.cycles), rIncAccum+int(instr.rIncrements))
 		buf.Label(doneLabelW)
-		buf.EmitBytes(0x44, 0x88, 0xD8) // MOV AL, R11B (result)
-		// Reload old value from stack into DL for H flag computation
-		buf.EmitBytes(0x8A, 0x54, 0x24, byte(z80OffLoopBudg)) // MOV DL, [RSP+z80OffLoopBudg]
-		if emitFlags != 0 {
-			z80EmitFlags_INC_DEC_Runtime(buf, true, emitFlags)
-		}
 		buf.EmitBytes(0xE9)
 		buf.FixupRel32(doneLabel, buf.Len()+4)
 		z80EmitBailExit(buf, bailLabel, instrPC, instrIdx, cyclesAccum, rIncAccum)
@@ -2725,6 +2911,62 @@ func z80EmitPUSH(buf *CodeBuffer, pair byte, instrPC uint16, instrIdx int, cycle
 // (oldSP & 0xFF) != 0xFF), perform a single 16-bit read with one direct-
 // page check. Falls through to the original bytewise path on any guard
 // miss. POP does not write memory, so no SMC check.
+func z80EmitEXSPHL(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, instrIdx int, cyclesAccum uint32, rIncAccum int) {
+	bailRead := fmt.Sprintf("exsp_r_%04X", instrPC)
+	bailWrite1 := fmt.Sprintf("exsp_w1_%04X", instrPC)
+	bailWrite2 := fmt.Sprintf("exsp_w2_%04X", instrPC)
+	selfMod := fmt.Sprintf("exsp_sm_%04X", instrPC)
+	doneRead := fmt.Sprintf("exsp_rd_%04X", instrPC)
+	doneWrite1 := fmt.Sprintf("exsp_wd1_%04X", instrPC)
+	doneWrite2 := fmt.Sprintf("exsp_wd2_%04X", instrPC)
+
+	// Preserve the outgoing HL and read the incoming word before any write.
+	buf.EmitBytes(0x66, 0x44, 0x89, 0x74, 0x24, byte(z80OffDAAPtr))
+	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))
+	amd64MOVZX_W_mem(buf, z80Scratch1, z80Scratch4, int32(cpuZ80OffSP))
+	z80EmitMemRead(buf, bailRead)
+	buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg))
+	amd64MOVZX_W_mem(buf, z80Scratch1, z80Scratch4, int32(cpuZ80OffSP))
+	buf.EmitBytes(0xFF, 0xC0)
+	buf.EmitBytes(0x0F, 0xB7, 0xC0)
+	z80EmitMemRead(buf, bailRead)
+	buf.EmitBytes(0xC1, 0xE0, 0x08)
+	buf.EmitBytes(0x0F, 0xB6, 0x4C, 0x24, byte(z80OffLoopBudg))
+	buf.EmitBytes(0x09, 0xC8)
+	buf.EmitBytes(0x66, 0x89, 0x44, 0x24, byte(z80OffLoopBudg))
+	buf.EmitBytes(0xE9)
+	buf.FixupRel32(doneRead, buf.Len()+4)
+	z80EmitBailExit(buf, bailRead, instrPC, instrIdx, cyclesAccum, rIncAccum)
+	buf.Label(doneRead)
+
+	// Write old HL low then high, matching interpreter ordering.
+	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))
+	amd64MOVZX_W_mem(buf, z80Scratch1, z80Scratch4, int32(cpuZ80OffSP))
+	amd64MOVZX_W_mem(buf, z80Scratch3, amd64RSP, int32(z80OffDAAPtr))
+	z80EmitMemWrite(buf, bailWrite1, doneWrite1)
+	buf.EmitBytes(0xE9)
+	buf.FixupRel32(doneWrite1, buf.Len()+4)
+	z80EmitBailExit(buf, bailWrite1, instrPC, instrIdx, cyclesAccum, rIncAccum)
+	buf.Label(doneWrite1)
+	amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))
+	amd64MOVZX_W_mem(buf, z80Scratch1, z80Scratch4, int32(cpuZ80OffSP))
+	buf.EmitBytes(0xFF, 0xC0)
+	buf.EmitBytes(0x0F, 0xB7, 0xC0)
+	amd64MOVZX_W_mem(buf, z80Scratch3, amd64RSP, int32(z80OffDAAPtr))
+	buf.EmitBytes(0xC1, 0xEA, 0x08)
+	z80EmitMemWrite(buf, bailWrite2, selfMod)
+	buf.EmitBytes(0xE9)
+	buf.FixupRel32(doneWrite2, buf.Len()+4)
+	z80EmitBailExit(buf, bailWrite2, instrPC, instrIdx, cyclesAccum, rIncAccum)
+	z80EmitSelfModExit(buf, selfMod, instrPC+uint16(instr.length), instrIdx+1, cyclesAccum+uint32(instr.cycles), rIncAccum+int(instr.rIncrements))
+	buf.Label(doneWrite2)
+	z80EmitPendingSelfModExitCheck(buf, selfMod)
+
+	amd64MOVZX_W_mem(buf, z80RegHL, amd64RSP, int32(z80OffLoopBudg))
+	amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
+	z80EmitWriteWZFromAX(buf)
+}
+
 func z80EmitPOP(buf *CodeBuffer, pair byte, instrPC uint16, instrIdx int, cyclesAccum uint32, rIncAccum int) {
 	bailLabel := fmt.Sprintf("bail_%04X", instrPC)
 	doneLabel := fmt.Sprintf("done_%04X", instrPC)
@@ -2975,7 +3217,7 @@ func z80EmitEXX(buf *CodeBuffer) {
 }
 
 // ===========================================================================
-// CB Prefix Instruction Emitters (stub — to be expanded)
+// CB Prefix Instruction Emitters
 // ===========================================================================
 
 func z80EmitCBInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, instrIdx int, cyclesAccum uint32, emitFlags uint8, rIncAccum int) {
@@ -3089,6 +3331,7 @@ func z80EmitCB_HL(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, instrIdx 
 
 	switch group {
 	case 1: // BIT b,(HL) — read-only, just test the bit
+		buf.EmitBytes(0x88, 0xC2)             // MOV DL,AL (value for S/X/Y)
 		buf.EmitBytes(0xA8, 1<<bit)           // TEST AL, (1 << bit)
 		buf.EmitBytes(0x41, 0x0F, 0x95, 0xC3) // SETNZ R11B
 		buf.EmitBytes(0x40, 0x0F, 0xB6, 0xCD) // MOVZX ECX, BPL
@@ -3097,7 +3340,14 @@ func z80EmitCB_HL(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, instrIdx 
 		buf.EmitBytes(0x45, 0x84, 0xDB)       // TEST R11B, R11B
 		buf.EmitBytes(0x75, 0x03)             // JNZ +3
 		buf.EmitBytes(0x80, 0xC9, 0x44)       // OR CL, 0x44 (Z=1, P/V=Z)
-		buf.EmitBytes(0x40, 0x88, 0xCD)       // MOV BPL, CL
+		if bit == 7 {
+			buf.EmitBytes(0x45, 0x84, 0xDB) // TEST R11B,R11B
+			buf.EmitBytes(0x74, 0x03)
+			buf.EmitBytes(0x80, 0xC9, 0x80) // OR CL,S
+		}
+		buf.EmitBytes(0x80, 0xE2, 0x28) // AND DL,X|Y
+		buf.EmitBytes(0x08, 0xD1)       // OR CL,DL
+		buf.EmitBytes(0x40, 0x88, 0xCD) // MOV BPL, CL
 
 	case 2: // RES b,(HL) — read-modify-write
 		buf.EmitBytes(0x24, ^(1 << bit)) // AND AL, ~(1<<bit)
@@ -3162,6 +3412,11 @@ func z80EmitCB_HL(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, instrIdx 
 		}
 		// Save result to stack (R11B has old value, needed by flag function)
 		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg)) // MOV [RSP+z80OffLoopBudg], AL
+		// Materialize flags before the write. A write to a compiled code page
+		// takes the self-modification exit directly, so flag work placed after
+		// z80EmitMemWrite would be skipped on that architecturally valid path.
+		z80EmitCBRotateFlags(buf, subOp)
+		buf.EmitBytes(0x8A, 0x44, 0x24, byte(z80OffLoopBudg)) // MOV AL, [RSP+z80OffLoopBudg]
 		// Write back result to memory
 		bailW := fmt.Sprintf("cbhlrs_%04X", instrPC)
 		selfModW := fmt.Sprintf("cbhlrss_%04X", instrPC)
@@ -3174,9 +3429,6 @@ func z80EmitCB_HL(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, instrIdx 
 		z80EmitBailExit(buf, bailW, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		z80EmitSelfModExit(buf, selfModW, instrPC+2, instrIdx+1, cyclesAccum+uint32(instr.cycles), rIncAccum+int(instr.rIncrements))
 		buf.Label(doneW)
-		// Reload result for flag function (R11B still has old value)
-		buf.EmitBytes(0x8A, 0x44, 0x24, byte(z80OffLoopBudg)) // MOV AL, [RSP+z80OffLoopBudg]
-		z80EmitCBRotateFlags(buf, subOp)
 	}
 
 	buf.EmitBytes(0xE9)
@@ -3232,22 +3484,27 @@ func z80EmitCBRotateFlags(buf *CodeBuffer, subOp byte) {
 }
 
 // ===========================================================================
-// ED Prefix Instruction Emitters (stub — to be expanded)
+// ED Prefix Instruction Emitters
 // ===========================================================================
 
 func z80EmitEDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, instrIdx int, cyclesAccum uint32, blockStartPC uint16, emitFlags uint8, rIncAccum int) {
 	op := instr.opcode
 	switch op {
-	case 0x44: // NEG
+	case 0x44, 0x4C, 0x54, 0x5C, 0x64, 0x6C, 0x74, 0x7C: // NEG aliases
 		// A = 0 - A; flags like SUB 0, A
+		buf.EmitBytes(0x88, 0xD9) // MOV CL, BL (operand)
+		buf.EmitBytes(0x31, 0xD2) // XOR EDX, EDX (old minuend = 0)
 		buf.EmitBytes(0xF6, 0xDB) // NEG BL
-	case 0x46: // IM 0
+		z80EmitBorrowCapture(buf)
+		amd64MOVZX_B(buf, z80Scratch1, z80RegA)
+		z80EmitFlags_SUB(buf, emitFlags)
+	case 0x46, 0x4E, 0x66, 0x6E: // IM 0 aliases
 		amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
 		buf.EmitBytes(0xC6, modRM(1, 0, z80Scratch1), byte(cpuZ80OffIM), 0x00)
-	case 0x56: // IM 1
+	case 0x56, 0x76: // IM 1 aliases
 		amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
 		buf.EmitBytes(0xC6, modRM(1, 0, z80Scratch1), byte(cpuZ80OffIM), 0x01)
-	case 0x5E: // IM 2
+	case 0x5E, 0x7E: // IM 2 aliases
 		amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
 		buf.EmitBytes(0xC6, modRM(1, 0, z80Scratch1), byte(cpuZ80OffIM), 0x02)
 	case 0x47: // LD I,A
@@ -3256,12 +3513,30 @@ func z80EmitEDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, i
 		buf.EmitBytes(0x88, modRM(1, z80RegA, z80Scratch1), byte(cpuZ80OffI))
 	case 0x4F: // LD R,A
 		amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
-		emitREXForByte(buf, z80RegA, z80Scratch1)
-		buf.EmitBytes(0x88, modRM(1, z80RegA, z80Scratch1), byte(cpuZ80OffR))
+		// R increments are committed at block exit. Store a value biased by
+		// the increments through this instruction so only later fetches remain.
+		buf.EmitBytes(0x88, 0xD9)       // MOV CL,BL
+		buf.EmitBytes(0x80, 0xE1, 0x80) // keep bit 7
+		buf.EmitBytes(0x88, 0xDA)       // MOV DL,BL
+		buf.EmitBytes(0x80, 0xE2, 0x7F)
+		buf.EmitBytes(0x80, 0xEA, byte(rIncAccum+int(instr.rIncrements)))
+		buf.EmitBytes(0x80, 0xE2, 0x7F)
+		buf.EmitBytes(0x08, 0xCA) // OR DL,CL
+		buf.EmitBytes(0x88, modRM(1, z80Scratch3, z80Scratch1), byte(cpuZ80OffR))
 
-	case 0x5F: // LD A,I
+	case 0x57, 0x5F: // LD A,I / LD A,R
 		amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
-		amd64MOVZX_B_mem(buf, z80RegA, z80Scratch1, int32(cpuZ80OffI))
+		if op == 0x57 {
+			amd64MOVZX_B_mem(buf, z80RegA, z80Scratch1, int32(cpuZ80OffI))
+		} else {
+			amd64MOVZX_B_mem(buf, z80RegA, z80Scratch1, int32(cpuZ80OffR))
+			buf.EmitBytes(0x88, 0xD9)       // MOV CL,BL
+			buf.EmitBytes(0x80, 0xE1, 0x80) // preserve R bit 7
+			buf.EmitBytes(0x80, 0xE3, 0x7F)
+			buf.EmitBytes(0x80, 0xC3, byte(rIncAccum+int(instr.rIncrements)))
+			buf.EmitBytes(0x80, 0xE3, 0x7F)
+			buf.EmitBytes(0x08, 0xCB) // OR BL,CL
+		}
 		// Flags: S,Z from result, H=0, P/V=IFF2, N=0, C preserved
 		// Simplified: just set S and Z from A
 		buf.EmitBytes(0x40, 0x0F, 0xB6, 0xCD)   // MOVZX ECX, BPL
@@ -3277,7 +3552,60 @@ func z80EmitEDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, i
 		buf.EmitBytes(0x88, 0xC2)       // MOV DL, AL
 		buf.EmitBytes(0x80, 0xE2, 0x28) // AND DL, 0x28
 		buf.EmitBytes(0x08, 0xD1)       // OR CL, DL
+		amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
+		amd64MOVZX_B_mem(buf, z80Scratch3, z80Scratch1, int32(cpuZ80OffIFF2))
+		buf.EmitBytes(0x85, 0xD2) // TEST EDX,EDX
+		buf.EmitBytes(0x74, 0x03)
+		buf.EmitBytes(0x80, 0xC9, 0x04) // OR CL,PV
 		buf.EmitBytes(0x40, 0x88, 0xCD) // MOV BPL, CL
+
+	case 0x67, 0x6F: // RRD / RLD
+		bailLabel := fmt.Sprintf("ednib_bail_%04X", instrPC)
+		writeBailLabel := fmt.Sprintf("ednib_wb_%04X", instrPC)
+		selfModLabel := fmt.Sprintf("ednib_sm_%04X", instrPC)
+		doneLabel := fmt.Sprintf("ednib_done_%04X", instrPC)
+		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
+		z80EmitMemRead(buf, bailLabel)  // AL = (HL)
+		buf.EmitBytes(0x41, 0x88, 0xC3) // MOV R11B, AL (old memory)
+		buf.EmitBytes(0x88, 0xD9)       // MOV CL, BL (old A)
+		if op == 0x67 {                 // RRD: mem=(mem>>4)|(A<<4), A=(A&F0)|(mem&0F)
+			buf.EmitBytes(0x44, 0x88, 0xDA) // MOV DL, R11B
+			buf.EmitBytes(0xC0, 0xEA, 0x04) // SHR DL,4
+			buf.EmitBytes(0x88, 0xC8)       // MOV AL, CL
+			buf.EmitBytes(0xC0, 0xE0, 0x04) // SHL AL,4
+			buf.EmitBytes(0x08, 0xC2)       // OR DL,AL
+			buf.EmitBytes(0x80, 0xE1, 0xF0) // AND CL,F0
+			buf.EmitBytes(0x44, 0x88, 0xD8) // MOV AL,R11B
+			buf.EmitBytes(0x24, 0x0F)       // AND AL,0F
+			buf.EmitBytes(0x08, 0xC1)       // OR CL,AL
+		} else { // RLD: mem=(mem<<4)|(A&0F), A=(A&F0)|(mem>>4)
+			buf.EmitBytes(0x44, 0x88, 0xDA) // MOV DL,R11B
+			buf.EmitBytes(0xC0, 0xE2, 0x04) // SHL DL,4
+			buf.EmitBytes(0x88, 0xC8)       // MOV AL,CL
+			buf.EmitBytes(0x24, 0x0F)       // AND AL,0F
+			buf.EmitBytes(0x08, 0xC2)       // OR DL,AL
+			buf.EmitBytes(0x80, 0xE1, 0xF0) // AND CL,F0
+			buf.EmitBytes(0x44, 0x88, 0xD8) // MOV AL,R11B
+			buf.EmitBytes(0xC0, 0xE8, 0x04) // SHR AL,4
+			buf.EmitBytes(0x08, 0xC1)       // OR CL,AL
+		}
+		buf.EmitBytes(0x88, 0xCB) // MOV BL,CL
+		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
+		z80EmitMemWrite(buf, writeBailLabel, selfModLabel)
+		// RRD/RLD update S/Z/PV/X/Y from A and clear H/N while preserving C.
+		// z80OffCycles is the established per-instruction flag scratch slot.
+		buf.EmitBytes(0x40, 0x0F, 0xB6, 0xCD)               // MOVZX ECX,BPL
+		buf.EmitBytes(0x80, 0xE1, 0x01)                     // AND CL,1
+		buf.EmitBytes(0x88, 0x4C, 0x24, byte(z80OffCycles)) // MOV [RSP+16],CL
+		buf.EmitBytes(0x88, 0xD8)                           // MOV AL,BL
+		z80EmitFlags_Logic(buf, false, z80FlagS|z80FlagZ|z80FlagPV|z80FlagX|z80FlagY)
+		z80EmitCapturedCarryIntoF(buf)
+		buf.EmitBytes(0xE9)
+		buf.FixupRel32(doneLabel, buf.Len()+4)
+		z80EmitBailExit(buf, bailLabel, instrPC, instrIdx, cyclesAccum, rIncAccum)
+		z80EmitBailExit(buf, writeBailLabel, instrPC, instrIdx, cyclesAccum, rIncAccum)
+		z80EmitSelfModExit(buf, selfModLabel, instrPC+2, instrIdx+1, cyclesAccum+uint32(instr.cycles), rIncAccum+int(instr.rIncrements))
+		buf.Label(doneLabel)
 
 	// SBC HL,rp (0x42,0x52,0x62,0x72)
 	case 0x42, 0x52, 0x62, 0x72:
@@ -3288,54 +3616,31 @@ func z80EmitEDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, i
 		buf.EmitBytes(0x40, 0x0F, 0xB6, 0xCD) // MOVZX ECX, BPL
 		buf.EmitBytes(0x80, 0xE1, 0x01)       // AND CL, 0x01 (C flag)
 		// Add carry to operand: EAX += ECX
-		buf.EmitBytes(0x01, 0xC8)                               // ADD EAX, ECX
-		amd64MOVZX_W(buf, z80Scratch3, z80RegHL)                // EDX = HL
-		buf.EmitBytes(0x39, modRM(3, z80Scratch1, z80Scratch3)) // CMP EDX, EAX
+		buf.EmitBytes(0x01, 0xC8)                // ADD EAX, ECX
+		buf.EmitBytes(0x41, 0x89, 0xC3)          // MOV R11D,EAX (effective operand)
+		amd64MOVZX_W(buf, z80Scratch4, z80RegHL) // R10D = old HL
+		buf.EmitBytes(0x44, 0x89, 0xD2)          // MOV EDX,R10D
+		buf.EmitBytes(0x44, 0x39, 0xDA)          // CMP EDX,R11D
 		z80EmitBorrowCapture(buf)
-		buf.EmitBytes(0x29, modRM(3, z80Scratch1, z80Scratch3)) // SUB EDX, EAX
+		buf.EmitBytes(0x44, 0x29, 0xDA) // SUB EDX,R11D
+		z80EmitFlagsAddSub16(buf, true)
 		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch3, z80RegHL&0x07))
-		// Simplified flags: set N=1, clear others except C
-		buf.EmitBytes(0x40, 0x80, 0xE5, 0x00) // AND BPL, 0x00 (clear all)
-		z80EmitCapturedCarryIntoF(buf)
-		buf.EmitBytes(0x40, 0x80, 0xCD, 0x02) // OR BPL, 0x02 (N=1)
-		// Z flag
-		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
-		buf.EmitBytes(0x85, 0xC0)             // TEST EAX, EAX
-		buf.EmitBytes(0x75, 0x04)             // JNZ +4
-		buf.EmitBytes(0x40, 0x80, 0xCD, 0x40) // OR BPL, 0x40 (Z)
-		// S flag
-		buf.EmitBytes(0x66, 0x41, 0x85, modRM(3, z80RegHL&0x07, z80RegHL&0x07)) // TEST R14W, R14W — not valid
-		// Simplified: check bit 15 of HL
-		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
-		buf.EmitBytes(0x25, 0x00, 0x80, 0x00, 0x00) // AND EAX, 0x8000
-		buf.EmitBytes(0x74, 0x04)
-		buf.EmitBytes(0x40, 0x80, 0xCD, 0x80) // OR BPL, 0x80 (S)
 
 	// ADC HL,rp (0x4A,0x5A,0x6A,0x7A)
 	case 0x4A, 0x5A, 0x6A, 0x7A:
 		pair := (op >> 4) & 0x03
 		z80EmitReadPair16(buf, pair)
 		// ADC: HL = HL + rp + C
-		buf.EmitBytes(0x40, 0x0F, 0xB6, 0xCD)                   // MOVZX ECX, BPL
-		buf.EmitBytes(0x80, 0xE1, 0x01)                         // AND CL, 0x01
-		buf.EmitBytes(0x01, 0xC8)                               // ADD EAX, ECX
-		amd64MOVZX_W(buf, z80Scratch3, z80RegHL)                // EDX = HL
-		buf.EmitBytes(0x01, modRM(3, z80Scratch1, z80Scratch3)) // ADD EDX, EAX
+		buf.EmitBytes(0x40, 0x0F, 0xB6, 0xCD)    // MOVZX ECX, BPL
+		buf.EmitBytes(0x80, 0xE1, 0x01)          // AND CL, 0x01
+		buf.EmitBytes(0x01, 0xC8)                // ADD EAX,ECX
+		buf.EmitBytes(0x41, 0x89, 0xC3)          // MOV R11D,EAX
+		amd64MOVZX_W(buf, z80Scratch4, z80RegHL) // R10D=old HL
+		buf.EmitBytes(0x44, 0x89, 0xD2)          // MOV EDX,R10D
+		buf.EmitBytes(0x44, 0x01, 0xDA)          // ADD EDX,R11D
 		z80EmitBit16CarryCapture(buf, z80Scratch3)
+		z80EmitFlagsAddSub16(buf, false)
 		buf.EmitBytes(0x66, 0x41, 0x89, modRM(3, z80Scratch3, z80RegHL&0x07))
-		// Flags: N=0, set C from overflow
-		buf.EmitBytes(0x40, 0x80, 0xE5, 0x00) // AND BPL, 0
-		z80EmitCapturedCarryIntoF(buf)
-		// Z flag
-		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
-		buf.EmitBytes(0x85, 0xC0)
-		buf.EmitBytes(0x75, 0x04)
-		buf.EmitBytes(0x40, 0x80, 0xCD, 0x40) // Z
-		// S flag
-		amd64MOVZX_W(buf, z80Scratch1, z80RegHL)
-		buf.EmitBytes(0x25, 0x00, 0x80, 0x00, 0x00) // AND EAX, 0x8000
-		buf.EmitBytes(0x74, 0x04)
-		buf.EmitBytes(0x40, 0x80, 0xCD, 0x80) // S
 
 	// LDI (0xA0): (DE) = (HL); HL++; DE++; BC--; flags: H=0,N=0,P/V=(BC!=0)
 	case 0xA0:
@@ -3352,12 +3657,20 @@ func z80EmitEDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, i
 	// CPD (0xA9): compare A with (HL); HL--; BC--
 	case 0xA9:
 		z80EmitCPI_CPD(buf, instr, instrPC, instrIdx, cyclesAccum, false, rIncAccum)
+	case 0xB0:
+		z80EmitLDI_LDD(buf, instr, instrPC, instrIdx, cyclesAccum, true, rIncAccum)
+	case 0xB8:
+		z80EmitLDI_LDD(buf, instr, instrPC, instrIdx, cyclesAccum, false, rIncAccum)
+	case 0xB1:
+		z80EmitCPI_CPD(buf, instr, instrPC, instrIdx, cyclesAccum, true, rIncAccum)
+	case 0xB9:
+		z80EmitCPI_CPD(buf, instr, instrPC, instrIdx, cyclesAccum, false, rIncAccum)
 
 	// ED LD (nn),rp — 0x43(BC),0x53(DE),0x63(HL),0x73(SP)
 	case 0x43, 0x53, 0x63, 0x73:
+		z80EmitWriteWZImm(buf, instr.operand+1)
 		pair := (op >> 4) & 0x03
 		bailLabel := fmt.Sprintf("edst_%04X", instrPC)
-		selfModLabel := fmt.Sprintf("edsm_%04X", instrPC)
 		doneLabel1 := fmt.Sprintf("eds1_%04X", instrPC)
 		bailLabel2 := fmt.Sprintf("edst2_%04X", instrPC)
 		selfModLabel2 := fmt.Sprintf("edsm2_%04X", instrPC)
@@ -3368,11 +3681,10 @@ func z80EmitEDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, i
 		// Write low byte
 		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(instr.operand))
 		buf.EmitBytes(0x44, 0x88, 0xDA) // MOV DL, R11B
-		z80EmitMemWrite(buf, bailLabel, selfModLabel)
+		z80EmitMemWrite(buf, bailLabel, doneLabel1)
 		buf.EmitBytes(0xE9)
 		buf.FixupRel32(doneLabel1, buf.Len()+4)
 		z80EmitBailExit(buf, bailLabel, instrPC, instrIdx, cyclesAccum, rIncAccum)
-		z80EmitSelfModExit(buf, selfModLabel, instrPC+4, instrIdx+1, cyclesAccum+uint32(instr.cycles), rIncAccum+int(instr.rIncrements))
 		buf.Label(doneLabel1)
 		// Write high byte
 		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(instr.operand+1))
@@ -3384,9 +3696,11 @@ func z80EmitEDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, i
 		z80EmitBailExit(buf, bailLabel2, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		z80EmitSelfModExit(buf, selfModLabel2, instrPC+4, instrIdx+1, cyclesAccum+uint32(instr.cycles), rIncAccum+int(instr.rIncrements))
 		buf.Label(doneLabel2)
+		z80EmitPendingSelfModExitCheck(buf, selfModLabel2)
 
 	// ED LD rp,(nn) — 0x4B(BC),0x5B(DE),0x6B(HL),0x7B(SP)
 	case 0x4B, 0x5B, 0x6B, 0x7B:
+		z80EmitWriteWZImm(buf, instr.operand+1)
 		pair := (op >> 4) & 0x03
 		bailLabel := fmt.Sprintf("edld_%04X", instrPC)
 		doneLabel := fmt.Sprintf("edld_d_%04X", instrPC)
@@ -3412,7 +3726,7 @@ func z80EmitEDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, i
 }
 
 // ===========================================================================
-// DD/FD Prefix Instruction Emitters (stub — to be expanded)
+// DD/FD Prefix Instruction Emitters
 // ===========================================================================
 
 // z80EmitLDI_LDD emits LDI or LDD: (DE)=(HL); HL±±; DE±±; BC--; flags.
@@ -3467,6 +3781,11 @@ func z80EmitLDI_LDD(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, instrId
 	buf.EmitBytes(0x85, 0xC0)             // TEST EAX, EAX
 	buf.EmitBytes(0x74, 0x04)             // JZ +4 (BC == 0, skip P/V set)
 	buf.EmitBytes(0x40, 0x80, 0xCD, 0x04) // OR BPL, 0x04 (P/V)
+	// Undocumented X/Y are taken from A + transferred byte.
+	buf.EmitBytes(0x44, 0x89, 0xD8) // MOV EAX,R11D
+	buf.EmitBytes(0x00, 0xD8)       // ADD AL,BL
+	buf.EmitBytes(0x24, 0x28)       // AND AL,X|Y
+	buf.EmitBytes(0x40, 0x08, 0xC5) // OR BPL,AL
 }
 
 // z80EmitCPI_CPD emits CPI or CPD: compare A with (HL); HL±±; BC--; set flags.
@@ -3484,18 +3803,16 @@ func z80EmitCPI_CPD(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, instrId
 	buf.EmitBytes(0x88, 0xDA) // MOV DL, BL (A)
 	buf.EmitBytes(0x88, 0xD0) // MOV AL, DL (A for subtraction)
 	buf.EmitBytes(0x28, 0xC8) // SUB AL, CL (result in AL)
+	z80EmitBorrowCapture(buf)
 
 	// Build flags: S,Z from result; H from (A^val^result)&0x10; N=1; P/V=(BC!=0); C preserved
-	buf.EmitBytes(0x40, 0x0F, 0xB6, 0xC5) // MOVZX EAX, BPL — wait, we need result in AL
-	// Actually let me redo this more carefully:
 	// After SUB AL, CL: AL = result (A - (HL))
 	// Save result in R11B
 	buf.EmitBytes(0x41, 0x88, 0xC3) // MOV R11B, AL (result)
 
-	// Start building F: keep C from old F
-	buf.EmitBytes(0x40, 0x0F, 0xB6, 0xC5) // MOVZX EAX, BPL
-	buf.EmitBytes(0x24, 0x01)             // AND AL, 0x01 (keep C only)
-	buf.EmitBytes(0x0C, 0x02)             // OR AL, 0x02 (N=1)
+	// Start building F with the subtraction borrow.
+	buf.EmitBytes(0x0F, 0xB6, 0x44, 0x24, byte(z80OffCycles))
+	buf.EmitBytes(0x0C, 0x02) // OR AL, 0x02 (N=1)
 
 	// S flag from result
 	buf.EmitBytes(0x41, 0xF6, 0xC3, 0x80) // TEST R11B, 0x80
@@ -3512,6 +3829,9 @@ func z80EmitCPI_CPD(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16, instrId
 	buf.EmitBytes(0x44, 0x30, 0xDA) // XOR DL, R11B (^ result)
 	buf.EmitBytes(0x80, 0xE2, 0x10) // AND DL, 0x10
 	buf.EmitBytes(0x08, 0xD0)       // OR AL, DL
+	buf.EmitBytes(0x44, 0x89, 0xDA) // MOV EDX,R11D
+	buf.EmitBytes(0x80, 0xE2, 0x28) // AND DL,X|Y
+	buf.EmitBytes(0x08, 0xD0)       // OR AL,DL
 
 	// Store partial F
 	buf.EmitBytes(0x40, 0x88, 0xC5) // MOV BPL, AL
@@ -3551,6 +3871,7 @@ func z80EmitDDCB(buf *CodeBuffer, instr *JITZ80Instr, ixiyOff uintptr, instrPC u
 
 	switch group {
 	case 1: // BIT b,(IX+d) — read-only, no register write-back
+		buf.EmitBytes(0x88, 0xC2) // MOV DL,AL (value for S/X/Y)
 		buf.EmitBytes(0xA8, 1<<bit)
 		buf.EmitBytes(0x41, 0x0F, 0x95, 0xC3) // SETNZ R11B
 		buf.EmitBytes(0x40, 0x0F, 0xB6, 0xCD)
@@ -3559,6 +3880,13 @@ func z80EmitDDCB(buf *CodeBuffer, instr *JITZ80Instr, ixiyOff uintptr, instrPC u
 		buf.EmitBytes(0x45, 0x84, 0xDB)
 		buf.EmitBytes(0x75, 0x03)
 		buf.EmitBytes(0x80, 0xC9, 0x44)
+		if bit == 7 {
+			buf.EmitBytes(0x45, 0x84, 0xDB) // TEST R11B,R11B
+			buf.EmitBytes(0x74, 0x03)
+			buf.EmitBytes(0x80, 0xC9, 0x80) // OR CL,S
+		}
+		buf.EmitBytes(0x80, 0xE2, 0x28) // AND DL,X|Y
+		buf.EmitBytes(0x08, 0xD1)       // OR CL,DL
 		buf.EmitBytes(0x40, 0x88, 0xCD)
 
 	case 2: // RES b,(IX+d)
@@ -3586,6 +3914,7 @@ func z80EmitDDCB(buf *CodeBuffer, instr *JITZ80Instr, ixiyOff uintptr, instrPC u
 		rotOp := bit
 		// Save old value to R11B for carry computation in z80EmitCBRotateFlags
 		buf.EmitBytes(0x41, 0x88, 0xC3) // MOV R11B, AL (old value)
+		buf.EmitBytes(0x44, 0x88, 0x5C, 0x24, byte(z80OffCycles))
 		switch rotOp {
 		case 0:
 			buf.EmitBytes(0xC0, 0xC0, 0x01)
@@ -3618,11 +3947,12 @@ func z80EmitDDCB(buf *CodeBuffer, instr *JITZ80Instr, ixiyOff uintptr, instrPC u
 		buf.EmitBytes(0x88, 0xC2) // MOV DL, AL
 		z80EmitIndexedWrite(buf, instr, ixiyOff, instrPC, instrIdx, cyclesAccum, rIncAccum)
 		// Reload result for flags and register write-back
-		buf.EmitBytes(0x8A, 0x44, 0x24, byte(z80OffLoopBudg)) // MOV AL, [RSP+z80OffLoopBudg]
+		buf.EmitBytes(0x8A, 0x44, 0x24, byte(z80OffLoopBudg))     // MOV AL, [RSP+z80OffLoopBudg]
+		buf.EmitBytes(0x44, 0x8A, 0x5C, 0x24, byte(z80OffCycles)) // MOV R11B,[RSP+z80OffCycles]
 		z80EmitCBRotateFlags(buf, rotOp)
 		// Write result to target register if not (HL)
 		if targetReg != 6 {
-			buf.EmitBytes(0x44, 0x88, 0xD8)
+			buf.EmitBytes(0x8A, 0x44, 0x24, byte(z80OffLoopBudg))
 			z80EmitWriteReg8(buf, targetReg)
 		}
 	}
@@ -3752,29 +4082,56 @@ func z80EmitDDFDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16,
 		emitMemOp(buf, false, 0xC7, 0, z80Scratch1, int32(ixiyOff))
 		buf.EmitBytes(byte(instr.operand), byte(instr.operand>>8))
 
+	case op == 0x22: // LD (nn),IX/IY
+		z80EmitWriteWZImm(buf, instr.operand+1)
+		bail1 := fmt.Sprintf("ixst1_%04X", instrPC)
+		bail2 := fmt.Sprintf("ixst2_%04X", instrPC)
+		smod2 := fmt.Sprintf("ixstsm_%04X", instrPC)
+		done1 := fmt.Sprintf("ixstd1_%04X", instrPC)
+		done2 := fmt.Sprintf("ixstd2_%04X", instrPC)
+		amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
+		amd64MOVZX_W_mem(buf, z80Scratch5, z80Scratch1, int32(ixiyOff))
+		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(instr.operand))
+		buf.EmitBytes(0x44, 0x88, 0xDA)
+		z80EmitMemWrite(buf, bail1, done1)
+		buf.EmitBytes(0xE9)
+		buf.FixupRel32(done1, buf.Len()+4)
+		z80EmitBailExit(buf, bail1, instrPC, instrIdx, cyclesAccum, rIncAccum)
+		buf.Label(done1)
+		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(instr.operand+1))
+		buf.EmitBytes(0x44, 0x89, 0xDA)
+		buf.EmitBytes(0xC1, 0xEA, 0x08)
+		z80EmitMemWrite(buf, bail2, smod2)
+		buf.EmitBytes(0xE9)
+		buf.FixupRel32(done2, buf.Len()+4)
+		z80EmitBailExit(buf, bail2, instrPC, instrIdx, cyclesAccum, rIncAccum)
+		z80EmitSelfModExit(buf, smod2, instrPC+uint16(instr.length), instrIdx+1, cyclesAccum+uint32(instr.cycles), rIncAccum+int(instr.rIncrements))
+		buf.Label(done2)
+		z80EmitPendingSelfModExitCheck(buf, smod2)
+
+	case op == 0x2A: // LD IX/IY,(nn)
+		z80EmitWriteWZImm(buf, instr.operand+1)
+		bail := fmt.Sprintf("ixld_%04X", instrPC)
+		done := fmt.Sprintf("ixldd_%04X", instrPC)
+		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(instr.operand))
+		z80EmitMemRead(buf, bail)
+		buf.EmitBytes(0x41, 0x89, 0xC3)
+		amd64MOV_reg_imm32(buf, z80Scratch1, uint32(instr.operand+1))
+		z80EmitMemRead(buf, bail)
+		buf.EmitBytes(0xC1, 0xE0, 0x08)
+		buf.EmitBytes(0x44, 0x09, 0xD8)
+		amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))
+		buf.EmitBytes(0x66)
+		emitMemOp(buf, false, 0x89, z80Scratch1, z80Scratch4, int32(ixiyOff))
+		buf.EmitBytes(0xE9)
+		buf.FixupRel32(done, buf.Len()+4)
+		z80EmitBailExit(buf, bail, instrPC, instrIdx, cyclesAccum, rIncAccum)
+		buf.Label(done)
+
 	// ADD IX,rp / ADD IY,rp (0x09,0x19,0x29,0x39)
 	case op == 0x09 || op == 0x19 || op == 0x29 || op == 0x39:
 		pair := (op >> 4) & 0x03
-		// Load IX/IY
-		amd64MOV_reg_mem(buf, z80Scratch4, amd64RSP, int32(z80OffCpuPtr))
-		amd64MOVZX_W_mem(buf, z80Scratch1, z80Scratch4, int32(ixiyOff)) // EAX = IX/IY
-		// Load pair value
-		if pair == 2 {
-			// ADD IX,IX or ADD IY,IY — source is the same register
-			buf.EmitBytes(0x01, 0xC0) // ADD EAX, EAX (double it)
-		} else {
-			z80EmitReadPair16(buf, pair)                                    // EAX now has pair value
-			amd64MOVZX_W_mem(buf, z80Scratch2, z80Scratch4, int32(ixiyOff)) // reload IX/IY into ECX
-			buf.EmitBytes(0x01, 0xC1)                                       // ADD ECX, EAX
-			buf.EmitBytes(0x89, 0xC8)                                       // MOV EAX, ECX
-		}
-		// Store result back
-		z80EmitBit16CarryCapture(buf, z80Scratch1)
-		buf.EmitBytes(0x66)
-		emitMemOp(buf, false, 0x89, z80Scratch1, z80Scratch4, int32(ixiyOff))
-		// Simplified flags: clear N, set C if carry from bit 15
-		buf.EmitBytes(0x40, 0x80, 0xE5, 0xEC) // AND BPL, ~0x13
-		z80EmitCapturedCarryIntoF(buf)
+		z80EmitADDIndex16(buf, ixiyOff, pair)
 
 	// PUSH IX / PUSH IY (0xE5)
 	case op == 0xE5:
@@ -3810,6 +4167,22 @@ func z80EmitDDFDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16,
 		buf.EmitBytes(0xFF, 0xC9) // DEC ECX
 		buf.EmitBytes(0x66)
 		emitMemOp(buf, false, 0x89, z80Scratch2, z80Scratch1, int32(ixiyOff))
+
+	case op == 0xE3: // EX (SP),IX/IY
+		// Reuse the atomic guarded pair exchange by temporarily binding the
+		// selected index register to the pinned HL host register. The real HL
+		// value remains live in a stack slot and is restored before continuing.
+		buf.EmitBytes(0x66, 0x44, 0x89, 0x74, 0x24, byte(z80OffParityPtr))
+		amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
+		amd64MOVZX_W_mem(buf, z80RegHL, z80Scratch1, int32(ixiyOff))
+		z80EmitEXSPHL(buf, instr, instrPC, instrIdx, cyclesAccum, rIncAccum)
+		amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
+		buf.EmitBytes(0x66)
+		emitMemOp(buf, false, 0x89, z80RegHL, z80Scratch1, int32(ixiyOff))
+		amd64MOVZX_W_mem(buf, z80RegHL, amd64RSP, int32(z80OffParityPtr))
+		amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCtxPtr))
+		amd64MOV_reg_mem(buf, z80Scratch2, z80Scratch1, int32(jzCtxOffParityTablePtr))
+		amd64MOV_mem_reg(buf, amd64RSP, int32(z80OffParityPtr), z80Scratch2)
 
 	// LD r,(IX+d) / LD r,(IY+d) — 0x46,0x4E,0x56,0x5E,0x66,0x6E,0x7E
 	case op&0xC7 == 0x46 && op != 0x76:
@@ -3849,12 +4222,40 @@ func z80EmitDDFDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16,
 			if emitFlags != 0 {
 				z80EmitFlags_ADD(buf, emitFlags)
 			}
+		case 1: // ADC A,(IX+d)
+			buf.EmitBytes(0x88, 0xC1)             // MOV CL,AL (operand)
+			buf.EmitBytes(0x88, 0xDA)             // MOV DL,BL (old A)
+			buf.EmitBytes(0x40, 0x0F, 0xB6, 0xC5) // MOVZX EAX,BPL
+			buf.EmitBytes(0x24, 0x01)
+			buf.EmitBytes(0x00, 0xC1) // ADD CL,AL (carry)
+			buf.EmitBytes(0x00, 0xCB) // ADD BL,CL
+			if emitFlags != 0 {
+				z80EmitCarryCapture(buf)
+			}
+			amd64MOVZX_B(buf, z80Scratch1, z80RegA)
+			if emitFlags != 0 {
+				z80EmitFlags_ADD(buf, emitFlags)
+			}
 		case 2: // SUB (IX+d)
 			if emitFlags != 0 {
 				buf.EmitBytes(0x88, 0xDA)
 				buf.EmitBytes(0x88, 0xC1)
 			}
 			buf.EmitBytes(0x28, modRM(3, z80Scratch1, z80RegA))
+			if emitFlags != 0 {
+				z80EmitBorrowCapture(buf)
+			}
+			amd64MOVZX_B(buf, z80Scratch1, z80RegA)
+			if emitFlags != 0 {
+				z80EmitFlags_SUB(buf, emitFlags)
+			}
+		case 3: // SBC A,(IX+d)
+			buf.EmitBytes(0x88, 0xC1)             // MOV CL,AL (operand)
+			buf.EmitBytes(0x88, 0xDA)             // MOV DL,BL (old A)
+			buf.EmitBytes(0x40, 0x0F, 0xB6, 0xC5) // MOVZX EAX,BPL
+			buf.EmitBytes(0x24, 0x01)
+			buf.EmitBytes(0x00, 0xC1) // ADD CL,AL (carry)
+			buf.EmitBytes(0x28, 0xCB) // SUB BL,CL
 			if emitFlags != 0 {
 				z80EmitBorrowCapture(buf)
 			}
@@ -3894,47 +4295,52 @@ func z80EmitDDFDInstruction(buf *CodeBuffer, instr *JITZ80Instr, instrPC uint16,
 	// INC (IX+d) (0x34)
 	case op == 0x34:
 		z80EmitIndexedRead(buf, instr, ixiyOff, instrPC, instrIdx, cyclesAccum, rIncAccum)
+		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg))   // save old
+		buf.EmitBytes(0xFE, 0xC0)                               // INC AL
+		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg+1)) // save result
 		if emitFlags != 0 {
-			buf.EmitBytes(0x88, 0xC2) // MOV DL, AL (old value for flags)
-		}
-		buf.EmitBytes(0xFE, 0xC0) // INC AL
-		if emitFlags != 0 {
-			buf.EmitBytes(0x41, 0x88, 0xC3) // MOV R11B, AL (save result)
-			buf.EmitBytes(0x44, 0x88, 0xDA) // MOV DL, R11B
-		} else {
-			buf.EmitBytes(0x88, 0xC2) // MOV DL, AL (result for write-back)
-		}
-		z80EmitIndexedWrite(buf, instr, ixiyOff, instrPC, instrIdx, cyclesAccum, rIncAccum)
-		if emitFlags != 0 {
-			buf.EmitBytes(0x44, 0x88, 0xD8) // MOV AL, R11B (result)
+			buf.EmitBytes(0x8A, 0x54, 0x24, byte(z80OffLoopBudg)) // DL = old
 			z80EmitFlags_INC_DEC_Runtime(buf, false, emitFlags)
 		}
+		buf.EmitBytes(0x8A, 0x54, 0x24, byte(z80OffLoopBudg+1)) // DL = result
+		z80EmitIndexedWrite(buf, instr, ixiyOff, instrPC, instrIdx, cyclesAccum, rIncAccum)
 
 	// DEC (IX+d) (0x35)
 	case op == 0x35:
 		z80EmitIndexedRead(buf, instr, ixiyOff, instrPC, instrIdx, cyclesAccum, rIncAccum)
+		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg))   // save old
+		buf.EmitBytes(0xFE, 0xC8)                               // DEC AL
+		buf.EmitBytes(0x88, 0x44, 0x24, byte(z80OffLoopBudg+1)) // save result
 		if emitFlags != 0 {
-			buf.EmitBytes(0x88, 0xC2) // MOV DL, AL (old value)
-		}
-		buf.EmitBytes(0xFE, 0xC8) // DEC AL
-		if emitFlags != 0 {
-			buf.EmitBytes(0x41, 0x88, 0xC3) // MOV R11B, AL (save result)
-			buf.EmitBytes(0x44, 0x88, 0xDA) // MOV DL, R11B
-		} else {
-			buf.EmitBytes(0x88, 0xC2) // MOV DL, AL (result for write-back)
-		}
-		z80EmitIndexedWrite(buf, instr, ixiyOff, instrPC, instrIdx, cyclesAccum, rIncAccum)
-		if emitFlags != 0 {
-			buf.EmitBytes(0x44, 0x88, 0xD8) // MOV AL, R11B
+			buf.EmitBytes(0x8A, 0x54, 0x24, byte(z80OffLoopBudg)) // DL = old
 			z80EmitFlags_INC_DEC_Runtime(buf, true, emitFlags)
 		}
+		buf.EmitBytes(0x8A, 0x54, 0x24, byte(z80OffLoopBudg+1)) // DL = result
+		z80EmitIndexedWrite(buf, instr, ixiyOff, instrPC, instrIdx, cyclesAccum, rIncAccum)
 
 	// DDCB/FDCB — indexed bit operations: BIT/SET/RES/rotate (IX+d)
 	case op == 0xCB:
 		z80EmitDDCB(buf, instr, ixiyOff, instrPC, instrIdx, cyclesAccum, rIncAccum)
 
 	default:
-		// Unhandled DD/FD instruction — skip (no code emitted, cycles still counted)
+		// CPU_Z80 treats every other DD/FD form as an ignored prefix followed
+		// by the ordinary base instruction. Retain the full prefixed length,
+		// cycle cost and R count while using the proven base lowering.
+		base := *instr
+		base.prefix = z80JITPrefixNone
+		usesIndexBytes := z80DDFDUsesIndexBytes(op)
+		if usesIndexBytes {
+			buf.EmitBytes(0x66, 0x44, 0x89, 0x74, 0x24, byte(z80OffDAAPtr)) // save HL
+			amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
+			amd64MOVZX_W_mem(buf, z80RegHL, z80Scratch1, int32(ixiyOff))
+		}
+		z80EmitBaseInstruction(buf, &base, instrPC, instrPC+uint16(instr.length), instrIdx, cyclesAccum, instrPC, emitFlags, rIncAccum)
+		if usesIndexBytes {
+			amd64MOV_reg_mem(buf, z80Scratch1, amd64RSP, int32(z80OffCpuPtr))
+			buf.EmitBytes(0x66)
+			emitMemOp(buf, false, 0x89, z80RegHL, z80Scratch1, int32(ixiyOff))
+			amd64MOVZX_W_mem(buf, z80RegHL, amd64RSP, int32(z80OffDAAPtr))
+		}
 	}
 }
 

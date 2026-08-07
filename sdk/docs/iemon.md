@@ -771,6 +771,16 @@ slots; IE32, 6502, and Z80 expose one. A second instance is labelled with a
 separate monitor CPU ID; instance 0 keeps the bare label (`coproc:M68K`). The
 suffix is part of the label accepted by focus and offline commands.
 
+Slot count is independent of JIT availability. A Z80 worker starts with its
+available backend enabled, including the browser wasm backend, unless its
+launch selected `--nojit`. Monitor breakpoints and watchpoints remain
+instruction observation boundaries, so debugging a Z80 worker uses the
+interpreter path until normal execution resumes.
+
+Outside monitor observation boundaries, Linux amd64, Linux arm64 and browser
+Z80 execution uses the enabled backend for every non-observation opcode row.
+Port and block I/O return through the frozen canonical helper contract.
+
 Second M68K, x86, and IE64 instances are labelled `coproc:M68K#1`,
 `coproc:X86#1`, and `coproc:IE64#1` and receive separate monitor CPU IDs;
 `cpu online` starts instance 0 only. A second instance started through the

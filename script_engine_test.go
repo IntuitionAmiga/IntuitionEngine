@@ -1767,6 +1767,43 @@ func TestScriptEngine_CPUJITStats_6502(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_CPUJITStats_Z80(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+
+	runner := NewCPUZ80Runner(bus, CPUZ80Config{})
+	runner.cpu.SetRunning(false)
+	runner.cpu.InstructionCount = 19
+	runner.cpu.jitStats.nativeEntries.Store(7)
+	runner.cpu.jitStats.helperExits.Store(3)
+	runner.cpu.jitStats.bailouts.Store(2)
+	runner.cpu.jitStats.invalidations.Store(5)
+	runner.cpu.jitStats.chainExits.Store(11)
+	runner.cpu.jitStats.regionPromotions.Store(13)
+	runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, runner, nil, nil)
+	t.Cleanup(func() { runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil) })
+
+	if err := se.RunString(`
+		local stats = cpu.jit_stats()
+		if stats.backend ~= "native" then error("backend") end
+		if stats.instruction_count ~= 19 then error("instruction_count") end
+		if stats.native_entries ~= 7 then error("native_entries") end
+		if stats.helper_exits ~= 3 then error("helper_exits") end
+		if stats.bailouts ~= 2 then error("bailouts") end
+		if stats.invalidations ~= 5 then error("invalidations") end
+		if stats.chain_exits ~= 11 then error("chain_exits") end
+		if stats.region_promotions ~= 13 then error("region_promotions") end
+	`, "cpu_jit_stats_z80"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
 func TestScriptEngine_CPUJITControls_X86(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()
@@ -3108,6 +3145,38 @@ func TestScript_CPULoadStopped_IE64LoadsWithoutStarting(t *testing.T) {
 	}
 	if got := cpu.memory[PROG_START]; got != OP_HALT64 {
 		t.Fatalf("program byte at PROG_START=%#x, want HALT %#x", got, OP_HALT64)
+	}
+}
+
+func TestScript_CPULoadStopped_Z80LoadsWithoutStarting(t *testing.T) {
+	dir := t.TempDir()
+	prog := filepath.Join(dir, "prog.ie80")
+	if err := os.WriteFile(prog, []byte{0x3E, 0x5A, 0x76}, 0o644); err != nil {
+		t.Fatalf("write program: %v", err)
+	}
+	bus := NewMachineBus()
+	runner := NewCPUZ80Runner(bus, CPUZ80Config{})
+	runner.cpu.PC = 0x2222
+	runner.cpu.SetRunning(false)
+	runtimeStatus.setCPUs(runtimeCPUZ80, nil, nil, nil, runner, nil, nil)
+	t.Cleanup(func() { runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil) })
+
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`cpu.load_stopped("prog.ie80")`, filepath.Join(dir, "main.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if runner.cpu.Running() {
+		t.Fatal("cpu.load_stopped left Z80 running")
+	}
+	if runner.cpu.PC != defaultZ80LoadAddr {
+		t.Fatalf("PC=%#x, want load address %#x", runner.cpu.PC, defaultZ80LoadAddr)
+	}
+	if got := bus.Read8(uint32(defaultZ80LoadAddr)); got != 0x3E {
+		t.Fatalf("program byte at load address=%#x, want %#x", got, 0x3E)
 	}
 }
 

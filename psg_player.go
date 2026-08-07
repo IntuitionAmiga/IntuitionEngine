@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type PSGPlayer struct {
@@ -29,6 +30,8 @@ type PSGPlayer struct {
 	renderExecNanos    uint64
 }
 
+const ayZ80ConsumerIdleTimeout = 250 * time.Millisecond
+
 func NewPSGPlayer(engine *PSGEngine) *PSGPlayer {
 	return &PSGPlayer{
 		engine: engine,
@@ -43,13 +46,24 @@ func (p *PSGPlayer) SetSNChip(chip *SN76489Chip) {
 	p.snChip = chip
 }
 
-func (p *PSGPlayer) Load(path string) error {
-	if p.engine != nil {
-		p.engine.SetSNStream(nil, nil, 0)
-	}
+func (p *PSGPlayer) resetCommittedLoadLocked() {
 	p.renderInstructions = 0
 	p.renderCPU = ""
 	p.renderExecNanos = 0
+	if p.engine != nil {
+		p.engine.SetSNStream(nil, nil, 0)
+	}
+}
+
+func (p *PSGPlayer) commitLoad() uint64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.PlayGen++
+	p.resetCommittedLoadLocked()
+	return p.PlayGen
+}
+
+func (p *PSGPlayer) Load(path string) error {
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".ym":
@@ -70,21 +84,7 @@ func (p *PSGPlayer) Load(path string) error {
 			if p.engine == nil {
 				return fmt.Errorf("psg engine not configured")
 			}
-			meta, events, total, clockHz, frameRate, loop, loopSample, instrCount, execNanos, err := renderAYZ80(data, p.engine.sampleRate)
-			if err != nil {
-				return err
-			}
-			p.metadata = meta
-			p.frameRate = frameRate
-			p.clockHz = clockHz
-			p.loop = loop
-			p.loopSample = loopSample
-			p.renderInstructions = instrCount
-			p.renderCPU = "Z80"
-			p.renderExecNanos = execNanos
-			p.engine.SetClockHz(clockHz)
-			p.engine.SetEvents(events, total, loop, loopSample)
-			return nil
+			return p.startAYZ80Progressive(data, false, 0)
 		}
 		file, err := ParseAYFile(path)
 		if err != nil {
@@ -102,6 +102,7 @@ func (p *PSGPlayer) Load(path string) error {
 		if file.ClockHz == 0 {
 			file.ClockHz = PSG_CLOCK_MSX
 		}
+		p.commitLoad()
 		p.metadata = PSGMetadata{Title: "", Author: "", System: "VGM"}
 		p.frameRate = 0
 		p.clockHz = file.ClockHz
@@ -149,12 +150,6 @@ func (p *PSGPlayer) LoadDataWithHint(data []byte, ext string) error {
 }
 
 func (p *PSGPlayer) LoadData(data []byte) error {
-	if p.engine != nil {
-		p.engine.SetSNStream(nil, nil, 0)
-	}
-	p.renderInstructions = 0
-	p.renderCPU = ""
-	p.renderExecNanos = 0
 	if len(data) == 0 {
 		return fmt.Errorf("psg data empty")
 	}
@@ -166,6 +161,7 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 		if file.ClockHz == 0 {
 			file.ClockHz = PSG_CLOCK_MSX
 		}
+		p.commitLoad()
 		p.metadata = PSGMetadata{Title: "", Author: "", System: "VGM"}
 		p.frameRate = 0
 		p.clockHz = file.ClockHz
@@ -184,6 +180,7 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 		if file.ClockHz == 0 {
 			file.ClockHz = PSG_CLOCK_MSX
 		}
+		p.commitLoad()
 		p.metadata = PSGMetadata{Title: "", Author: "", System: "VGM"}
 		p.frameRate = 0
 		p.clockHz = file.ClockHz
@@ -218,21 +215,7 @@ func (p *PSGPlayer) LoadData(data []byte) error {
 		if p.engine == nil {
 			return fmt.Errorf("psg engine not configured")
 		}
-		meta, events, total, clockHz, frameRate, loop, loopSample, instrCount, execNanos, err := renderAYZ80(data, p.engine.sampleRate)
-		if err != nil {
-			return err
-		}
-		p.metadata = meta
-		p.frameRate = frameRate
-		p.clockHz = clockHz
-		p.loop = loop
-		p.loopSample = loopSample
-		p.renderInstructions = instrCount
-		p.renderCPU = "Z80"
-		p.renderExecNanos = execNanos
-		p.engine.SetClockHz(clockHz)
-		p.engine.SetEvents(events, total, loop, loopSample)
-		return nil
+		return p.startAYZ80Progressive(data, false, 0)
 	}
 	if isSNDHData(data) {
 		return p.loadSNDH(data)
@@ -269,6 +252,8 @@ func (p *PSGPlayer) Stop() {
 }
 
 func (p *PSGPlayer) Metadata() PSGMetadata {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.metadata
 }
 
@@ -280,6 +265,7 @@ func (p *PSGPlayer) loadSNDH(data []byte) error {
 	if err != nil {
 		return err
 	}
+	p.commitLoad()
 	p.metadata = meta
 	p.frameRate = frameRate
 	p.clockHz = clockHz
@@ -331,10 +317,11 @@ func (p *PSGPlayer) loadTracker(ext string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	meta, events, totalSamples, err := renderTrackerZ80(config, data, p.engine.sampleRate, info.frameCount)
+	meta, events, totalSamples, instructions, execNanos, err := renderTrackerZ80(config, data, p.engine.sampleRate, info.frameCount)
 	if err != nil {
 		return err
 	}
+	p.commitLoad()
 	meta.Title = info.title
 	meta.Author = info.author
 	if meta.System == "" {
@@ -345,7 +332,9 @@ func (p *PSGPlayer) loadTracker(ext string, data []byte) error {
 	p.clockHz = config.clockHz
 	p.loop = true
 	p.loopSample = 0
+	p.renderInstructions = instructions
 	p.renderCPU = "Z80"
+	p.renderExecNanos = execNanos
 	p.engine.SetClockHz(config.clockHz)
 	p.engine.SetEvents(events, totalSamples, true, 0)
 	return nil
@@ -441,6 +430,7 @@ func (p *PSGPlayer) loadFrames(frames [][]uint8, frameRate uint16, clockHz uint3
 		acc -= step * samplesPerFrameDen
 	}
 
+	p.commitLoad()
 	p.loop = loopFrame > 0 && loopFrame < uint32(len(frames))
 	p.loopSample = loopSample
 	p.engine.SetClockHz(clockHz)
@@ -449,11 +439,18 @@ func (p *PSGPlayer) loadFrames(frames [][]uint8, frameRate uint16, clockHz uint3
 }
 
 func (p *PSGPlayer) RenderPerf() (uint64, string, uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return p.renderInstructions, p.renderCPU, p.renderExecNanos
 }
 
 func (p *PSGPlayer) DurationSeconds() float64 {
-	if p.engine == nil || p.engine.totalSamples == 0 {
+	if p.engine == nil {
+		return 0
+	}
+	p.engine.mutex.Lock()
+	defer p.engine.mutex.Unlock()
+	if p.engine.totalSamples == 0 {
 		return 0
 	}
 	return float64(p.engine.totalSamples) / float64(p.engine.sampleRate)
@@ -665,6 +662,85 @@ func (p *PSGPlayer) applyRenderResult(res psgRenderResult) {
 	p.engine.SetSNStream(res.snEvents, p.snChip, res.snClockHz)
 }
 
+func (p *PSGPlayer) startAYZ80Progressive(data []byte, forceLoop bool, gen uint64) error {
+	stream, err := newAYZ80RenderStream(data, p.engine.sampleRate)
+	if err != nil {
+		return err
+	}
+	events, total, complete := stream.render(ayZ80StartupFrames)
+	startupEvents := append([]PSGEvent(nil), events...)
+
+	p.mu.Lock()
+	if gen == 0 {
+		p.PlayGen++
+		gen = p.PlayGen
+	} else if gen != p.PlayGen {
+		p.mu.Unlock()
+		return nil
+	}
+	p.resetCommittedLoadLocked()
+	p.metadata = stream.metadata
+	p.frameRate = stream.frameRate
+	p.clockHz = stream.clockHz
+	p.loop = stream.loop || forceLoop
+	p.loopSample = stream.loopSample
+	p.renderInstructions = stream.player.instructionCount
+	p.renderCPU = "Z80"
+	p.renderExecNanos = stream.player.cpuExecNanos
+	p.engine.StopPlayback()
+	p.engine.SetClockHz(stream.clockHz)
+	p.engine.SetEvents(startupEvents, 0, false, 0)
+	p.engine.AppendEvents(nil, total, complete, p.loop, stream.loopSample)
+	if p.engine.sound != nil {
+		p.engine.sound.SetSampleTicker(p.engine)
+	}
+	p.engine.SetPlaying(true)
+	p.mu.Unlock()
+
+	if !complete {
+		go p.continueAYZ80Progressive(stream, forceLoop, gen)
+	}
+	return nil
+}
+
+func (p *PSGPlayer) continueAYZ80Progressive(stream *ayZ80RenderStream, forceLoop bool, gen uint64) {
+	lastConsumedSample := p.engine.playbackSample()
+	consumerInactive := false
+	for stream.framesLeft > 0 {
+		events, total, complete := stream.render(ayZ80RenderChunk)
+		p.mu.Lock()
+		if gen != p.PlayGen {
+			p.mu.Unlock()
+			return
+		}
+		p.renderInstructions = stream.player.instructionCount
+		p.renderExecNanos = stream.player.cpuExecNanos
+		p.engine.AppendEvents(events, total, complete, stream.loop || forceLoop, stream.loopSample)
+		p.mu.Unlock()
+		if complete {
+			return
+		}
+		bufferTarget := uint64(p.engine.sampleRate * ayZ80BufferSeconds)
+		idleSince := time.Now()
+		for !consumerInactive && p.engine.bufferedSamplesAhead(total) > bufferTarget {
+			time.Sleep(10 * time.Millisecond)
+			p.mu.Lock()
+			active := gen == p.PlayGen
+			p.mu.Unlock()
+			if !active {
+				return
+			}
+			consumedSample := p.engine.playbackSample()
+			if consumedSample != lastConsumedSample {
+				lastConsumedSample = consumedSample
+				idleSince = time.Now()
+			} else if time.Since(idleSince) >= ayZ80ConsumerIdleTimeout {
+				consumerInactive = true
+			}
+		}
+	}
+}
+
 type psgAsyncStartRequest struct {
 	gen       uint64
 	data      []byte
@@ -672,6 +748,18 @@ type psgAsyncStartRequest struct {
 }
 
 func (p *PSGPlayer) startAsync(req psgAsyncStartRequest) {
+	if isZXAYEMUL(req.data) {
+		err := p.startAYZ80Progressive(req.data, req.forceLoop, req.gen)
+		if err != nil {
+			p.mu.Lock()
+			if req.gen == p.PlayGen {
+				p.PlayErr = true
+				p.PlayBusy = false
+			}
+			p.mu.Unlock()
+		}
+		return
+	}
 	res, err := renderPSGData(req.data, p.engine.sampleRate)
 
 	p.mu.Lock()

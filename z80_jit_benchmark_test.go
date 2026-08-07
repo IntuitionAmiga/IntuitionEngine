@@ -29,6 +29,7 @@
 package main
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -349,4 +350,47 @@ func BenchmarkZ80_Call_JIT(b *testing.B) {
 	}
 	b.ReportMetric(float64(1027), "instrs/op")
 	ReportMIPSHostNormalized(b, 1027)
+}
+
+func TestZ80JIT_BenchmarkWorkloadsAreConformanceValid(t *testing.T) {
+	workloads := []struct {
+		name  string
+		build func() ([]byte, uint16)
+	}{
+		{"ALU", buildZ80ALUProgram},
+		{"Memory", buildZ80MemoryProgram},
+		{"Mixed", buildZ80MixedProgram},
+		{"Call", buildZ80CallProgram},
+	}
+	for _, workload := range workloads {
+		t.Run(workload.name, func(t *testing.T) {
+			program, startPC := workload.build()
+			run := func(jit bool) (*CPU_Z80, []byte) {
+				bus := NewMachineBus()
+				cpu := NewCPU_Z80(NewZ80BusAdapter(bus))
+				cpu.SP = 0x1FFE
+				for i, value := range program {
+					bus.Write8(uint32(startPC)+uint32(i), value)
+				}
+				cpu.PC = startPC
+				cpu.SetRunning(true)
+				if jit {
+					cpu.ExecuteJITZ80()
+				} else {
+					for !cpu.Halted {
+						cpu.Step()
+					}
+				}
+				return cpu, append([]byte(nil), bus.GetMemory()[:0x10000]...)
+			}
+			interpreter, interpreterMemory := run(false)
+			native, nativeMemory := run(true)
+			if got, want := z80CanonicalStateHash(native), z80CanonicalStateHash(interpreter); got != want {
+				t.Fatalf("complete state mismatch: interpreter=%x JIT=%x", want, got)
+			}
+			if !bytes.Equal(nativeMemory, interpreterMemory) {
+				t.Fatal("64 KiB memory mismatch")
+			}
+		})
+	}
 }

@@ -1800,6 +1800,26 @@ func (se *ScriptEngine) luaCPULoadStopped() lua.LGFunction {
 			snap.ie32.Stop()
 			snap.ie32.Reset()
 			snap.ie32.LoadProgramBytes(program)
+		case runtimeCPUZ80:
+			if snap.z80 == nil {
+				L.RaiseError("Z80 CPU unavailable")
+				return 0
+			}
+			program, err := os.ReadFile(validated)
+			if err != nil {
+				L.RaiseError("%v", err)
+				return 0
+			}
+			limit := uint32(snap.z80.bus.BankedVisibleCeiling())
+			end := uint32(snap.z80.loadAddr) + uint32(len(program))
+			if end < uint32(snap.z80.loadAddr) || end > limit {
+				L.RaiseError("Z80 program too large: end=0x%X, banked-ceiling=0x%X", end, limit)
+				return 0
+			}
+			snap.z80.Stop()
+			snap.z80.Reset()
+			snap.z80.LoadProgramBytes(program)
+			snap.z80.cpu.SetRunning(false)
 		default:
 			L.RaiseError("cpu.load_stopped unsupported for current CPU")
 		}
@@ -2128,6 +2148,22 @@ func (se *ScriptEngine) luaCPUJITStats() lua.LGFunction {
 				L.SetField(tbl, "bailouts", lua.LNumber(stats.bails))
 				L.SetField(tbl, "invalidations", lua.LNumber(stats.invalidations))
 				L.SetField(tbl, "chain_exits", lua.LNumber(stats.chainExits))
+			}
+		case runtimeCPUZ80:
+			if snap.z80 != nil && snap.z80.cpu != nil {
+				cpu := snap.z80.cpu
+				backend := "none"
+				if z80JitAvailable {
+					backend = z80JITBackend()
+				}
+				L.SetField(tbl, "backend", lua.LString(backend))
+				L.SetField(tbl, "instruction_count", lua.LNumber(cpu.InstructionCount))
+				L.SetField(tbl, "native_entries", lua.LNumber(cpu.jitStats.nativeEntries.Load()))
+				L.SetField(tbl, "helper_exits", lua.LNumber(cpu.jitStats.helperExits.Load()))
+				L.SetField(tbl, "bailouts", lua.LNumber(cpu.jitStats.bailouts.Load()))
+				L.SetField(tbl, "invalidations", lua.LNumber(cpu.jitStats.invalidations.Load()))
+				L.SetField(tbl, "chain_exits", lua.LNumber(cpu.jitStats.chainExits.Load()))
+				L.SetField(tbl, "region_promotions", lua.LNumber(cpu.jitStats.regionPromotions.Load()))
 			}
 		}
 		L.Push(tbl)

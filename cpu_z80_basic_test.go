@@ -39,6 +39,11 @@ func TestZ80ResetDefaults(t *testing.T) {
 	cpu.irqVector.Store(0x00)
 	cpu.Halted = true
 	cpu.Cycles = 999
+	cpu.jitStats.nativeEntries.Store(1)
+	cpu.jitStats.helperExits.Store(2)
+	cpu.jitStats.bailouts.Store(3)
+	cpu.jitStats.invalidations.Store(4)
+	cpu.jitStats.chainExits.Store(5)
 
 	cpu.Reset()
 
@@ -88,6 +93,13 @@ func TestZ80ResetDefaults(t *testing.T) {
 	}
 	if !cpu.Running() {
 		t.Fatalf("Running should be true after reset")
+	}
+	if cpu.jitStats.nativeEntries.Load() != 0 ||
+		cpu.jitStats.helperExits.Load() != 0 ||
+		cpu.jitStats.bailouts.Load() != 0 ||
+		cpu.jitStats.invalidations.Load() != 0 ||
+		cpu.jitStats.chainExits.Load() != 0 {
+		t.Fatal("JIT statistics should be cleared on reset")
 	}
 }
 

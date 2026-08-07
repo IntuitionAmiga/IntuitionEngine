@@ -167,8 +167,11 @@ reference surface. The wasm build changes some observable host and device
 behaviour as described above, including RAM sizing, VBlank visibility, file
 storage and unavailable desktop integrations. Subject to those limits, a
 `.bas` or `.ie*` programme that runs on the native VM can run on the browser
-VM. Hot IE64, supported M68K code, and supported x86 code can use their wasm
-JITs; IE32, Z80 and 6502 remain interpreted.
+VM. Hot IE64, supported M68K and 6502 code, supported x86 code, and Z80 code
+can use their wasm JITs; IE32 remains interpreted. The Z80 wasm backend emits
+every non-observation opcode form, including indexed and guarded direct-memory
+forms. Port I/O remains a frozen canonical-helper boundary, and HALT remains a
+dispatcher boundary so pending IRQ and NMI state is polled correctly.
 
 ## Testing
 
@@ -207,8 +210,11 @@ JITs; IE32, Z80 and 6502 remain interpreted.
   production cache policy requires revalidation on every visit. The browser
   may reuse its cached response when the server reports that the binary has not
   changed.
-- Guest CPU speed: IE64, M68K and x86 can tier up through their wasm JIT
-  backends; IE32, Z80 and 6502 remain interpreter-only in the browser.
+- Guest CPU speed: IE64, M68K, 6502, x86 and Z80 have wasm JIT backends;
+  IE32 remains interpreter-only. The Z80 backend emits every non-observation
+  manifest row from a source-stamped module cache; port and block I/O execute
+  through frozen canonical helpers. The x86 backend additionally requires
+  WebAssembly SIMD.
 - The browser x86 path participates in the cooperative-yield hook through both
   its interpreter and wasm JIT dispatcher, so long x86 runs yield control back
   to rendering and input between guest slices.

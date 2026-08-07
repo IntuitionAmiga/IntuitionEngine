@@ -6,7 +6,7 @@ func TestZ80InterruptSinkCreatesFreshEdgeEachPulse(t *testing.T) {
 	rig := newCPUZ80TestRig()
 	rig.resetAndLoad(0x2000, []byte{0x00})
 	rig.cpu.SP = 0xFF00
-	sink := NewZ80InterruptSink(rig.cpu)
+	sink := NewZ80InterruptSink(rig.cpu.CPU_Z80)
 
 	for i := 0; i < 3; i++ {
 		rig.cpu.PC = 0x2000
@@ -34,7 +34,7 @@ func TestZ80InterruptSinkRapidDoublePulseCoalescesBeforeInstructionBoundary(t *t
 	rig.cpu.SP = 0xFF00
 	rig.cpu.IFF1 = true
 	rig.cpu.IFF2 = true
-	sink := NewZ80InterruptSink(rig.cpu)
+	sink := NewZ80InterruptSink(rig.cpu.CPU_Z80)
 
 	sink.Pulse(IntMaskVBI)
 	sink.Pulse(IntMaskVBI)
@@ -54,7 +54,7 @@ func TestZ80LevelTriggeredAckReedgesHeldNMI(t *testing.T) {
 	rig := newCPUZ80TestRig()
 	rig.resetAndLoad(0x2000, []byte{0x00})
 	rig.cpu.SP = 0xFF00
-	sink := NewZ80InterruptSink(rig.cpu)
+	sink := NewZ80InterruptSink(rig.cpu.CPU_Z80)
 	var level LevelTriggeredInterruptSink = sink
 
 	level.Assert(IntMaskVBI)
@@ -80,7 +80,7 @@ func TestZ80LevelTriggeredOtherSourceReedgesAfterDeassert(t *testing.T) {
 	rig := newCPUZ80TestRig()
 	rig.resetAndLoad(0x2000, []byte{0x00})
 	rig.cpu.SP = 0xFF00
-	sink := NewZ80InterruptSink(rig.cpu)
+	sink := NewZ80InterruptSink(rig.cpu.CPU_Z80)
 	var level LevelTriggeredInterruptSink = sink
 
 	level.Assert(IntMaskVBI)

@@ -131,7 +131,7 @@ func TestPT3RenderWithModule(t *testing.T) {
 	module[0x65] = 0 // loop pos
 
 	config := pt3FormatConfig()
-	_, events, totalSamples, err := renderTrackerZ80(config, module, 44100, 100)
+	_, events, totalSamples, _, _, err := renderTrackerZ80(config, module, 44100, 100)
 	if err != nil {
 		t.Fatalf("renderTrackerZ80 error: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestSTCRenderWithModule(t *testing.T) {
 	module[0x04] = 0x00
 
 	config := stcFormatConfig()
-	_, events, totalSamples, err := renderTrackerZ80(config, module, 44100, 100)
+	_, events, totalSamples, _, _, err := renderTrackerZ80(config, module, 44100, 100)
 	if err != nil {
 		t.Fatalf("renderTrackerZ80 error: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestRealPT3File(t *testing.T) {
 	}
 
 	config := pt3FormatConfig()
-	_, events, totalSamples, err := renderTrackerZ80(config, data, 44100, 500)
+	_, events, totalSamples, _, _, err := renderTrackerZ80(config, data, 44100, 500)
 	if err != nil {
 		t.Fatalf("renderTrackerZ80 error: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestRealSTCFile(t *testing.T) {
 	}
 
 	config := stcFormatConfig()
-	_, events, totalSamples, err := renderTrackerZ80(config, data, 44100, 500)
+	_, events, totalSamples, _, _, err := renderTrackerZ80(config, data, 44100, 500)
 	if err != nil {
 		t.Fatalf("renderTrackerZ80 error: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestRealSQTFile(t *testing.T) {
 	}
 
 	config := sqtFormatConfig()
-	_, events, totalSamples, err := renderTrackerZ80(config, data, 44100, 500)
+	_, events, totalSamples, _, _, err := renderTrackerZ80(config, data, 44100, 500)
 	if err != nil {
 		t.Fatalf("renderTrackerZ80 error: %v", err)
 	}

@@ -2,6 +2,58 @@ package main
 
 import "testing"
 
+func TestZ80PlaybackAdapterPreservesFlat64KiBMemory(t *testing.T) {
+	var ram [0x10000]byte
+	ram[0xF000] = 0xA5
+	cpu, playback, err := newPlaybackZ80CPU(&ram, ayZXSystemSpectrum, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := cpu.bus.(*Z80BusAdapter)
+
+	if got := adapter.Read(0xF000); got != 0xA5 {
+		t.Fatalf("Read(F000) = %02X, want flat playback byte A5", got)
+	}
+	if got := adapter.fetchRead(0xF000); got != 0xA5 {
+		t.Fatalf("fetchRead(F000) = %02X, want flat playback byte A5", got)
+	}
+	beforeGeneration := adapter.mappingGeneration.Load()
+	adapter.Write(Z80_BANK1_REG_LO, 0x5A)
+	if got := playback.ram[Z80_BANK1_REG_LO]; got != 0x5A {
+		t.Fatalf("Write(bank-control address) stored %02X, want flat byte 5A", got)
+	}
+	if got := adapter.mappingGeneration.Load(); got != beforeGeneration {
+		t.Fatalf("flat playback write changed mapping generation: %d -> %d", beforeGeneration, got)
+	}
+	adapter.Write(Z80_VRAM_BANK_REG, 0x33)
+	if playback.ram[Z80_VRAM_BANK_REG] != 0x33 || adapter.bank1Enable || adapter.vramEnabled {
+		t.Fatalf("flat playback write activated machine mappings: bank1=%v vram=%v", adapter.bank1Enable, adapter.vramEnabled)
+	}
+}
+
+func TestZ80PlaybackJITExecutesFlatHighMemory(t *testing.T) {
+	if !z80JitAvailable {
+		t.Skip("Z80 JIT unavailable")
+	}
+	var ram [0x10000]byte
+	copy(ram[0xF000:], []byte{0x3E, 0x42, 0x32, 0x00, 0xF7, 0x76}) // LD A,42; LD (F700),A; HALT
+	cpu, playback, err := newPlaybackZ80CPU(&ram, ayZXSystemSpectrum, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpu.PC = 0xF000
+	cpu.debugBreakIn = func(uint64) bool { return cpu.Halted }
+	cpu.SetRunning(true)
+	cpu.z80JitExecute()
+
+	if cpu.A != 0x42 || playback.ram[0xF700] != 0x42 {
+		t.Fatalf("flat high-memory execution: A=%02X [F700]=%02X", cpu.A, playback.ram[0xF700])
+	}
+	if cpu.jitStats.nativeEntries.Load() == 0 {
+		t.Fatal("flat high-memory program did not enter the Z80 JIT")
+	}
+}
+
 type ayZ80TestWriter struct {
 	regs [PSG_REG_COUNT]byte
 }

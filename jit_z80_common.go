@@ -15,55 +15,66 @@ import (
 // Z80JITContext is passed to every JIT-compiled Z80 block as its sole argument.
 // On ARM64 it arrives in X0; on x86-64 in RDI.
 type Z80JITContext struct {
-	MemPtr              uintptr // 0:   MachineBus.GetMemory() base
-	CpuPtr              uintptr // 8:   &cpu (CPU_Z80 pointer)
-	DirectPageBitmapPtr uintptr // 16:  &cpu.directPageBitmap[0]
-	CodePageBitmapPtr   uintptr // 24:  &cpu.codePageBitmap[0]
-	RetCycles           uint64  // 32:  accumulated T-states
-	NeedBail            uint32  // 40:  re-execute current instruction via interpreter
-	NeedInval           uint32  // 44:  self-modification detected
-	RetPC               uint32  // 48:  PC to resume at (bail=current instr, normal/inval=next)
-	RetCount            uint32  // 52:  instructions retired before bail/exit
-	ChainBudget         uint32  // 56:  blocks remaining before returning to Go
-	ChainCount          uint32  // 60:  accumulated instruction count during chaining
-	InvalPage           uint32  // 64:  page number that triggered NeedInval
-	RTSCache0PC         uint32  // 68:  MRU RET target cache 0 — Z80 PC
-	_pad0               uint32  // 72:  alignment padding
-	RTSCache0Addr       uintptr // 80:  MRU RET target cache 0 — chain entry address
-	RTSCache1PC         uint32  // 88:  MRU RET target cache 1 — Z80 PC
-	_pad1               uint32  // 92:  alignment padding
-	RTSCache1Addr       uintptr // 96:  MRU RET target cache 1 — chain entry address
-	ParityTablePtr      uintptr // 104: &z80ParityTable[0] (256 bytes)
-	DAATablePtr         uintptr // 112: &z80DAATable[0] ([2048]uint16 = 4096 bytes)
-	ChainCycles         uint64  // 120: accumulated T-states across chained blocks
-	ChainRIncrements    uint32  // 128: accumulated R register increments across chain
-	CycleBudget         uint32  // 132: max cycles before forced Go return (interrupt budget)
+	MemPtr                     uintptr // 0:   MachineBus.GetMemory() base
+	CpuPtr                     uintptr // 8:   &cpu (CPU_Z80 pointer)
+	DirectPageBitmapPtr        uintptr // 16:  &cpu.directPageBitmap[0]
+	CodePageBitmapPtr          uintptr // 24:  &cpu.codePageBitmap[0]
+	RetCycles                  uint64  // 32:  accumulated T-states
+	NeedBail                   uint32  // 40:  re-execute current instruction via interpreter
+	NeedInval                  uint32  // 44:  self-modification detected
+	RetPC                      uint32  // 48:  PC to resume at (bail=current instr, normal/inval=next)
+	RetCount                   uint32  // 52:  instructions retired before bail/exit
+	ChainBudget                uint32  // 56:  blocks remaining before returning to Go
+	ChainCount                 uint32  // 60:  accumulated instruction count during chaining
+	InvalPage                  uint32  // 64:  page number that triggered NeedInval
+	RTSCache0PC                uint32  // 68:  MRU RET target cache 0 — Z80 PC
+	_pad0                      uint32  // 72:  alignment padding
+	RTSCache0Addr              uintptr // 80:  MRU RET target cache 0 — chain entry address
+	RTSCache1PC                uint32  // 88:  MRU RET target cache 1 — Z80 PC
+	_pad1                      uint32  // 92:  alignment padding
+	RTSCache1Addr              uintptr // 96:  MRU RET target cache 1 — chain entry address
+	ParityTablePtr             uintptr // 104: &z80ParityTable[0] (256 bytes)
+	DAATablePtr                uintptr // 112: &z80DAATable[0] ([2048]uint16 = 4096 bytes)
+	ChainCycles                uint64  // 120: accumulated T-states across chained blocks
+	ChainRIncrements           uint32  // 128: accumulated R register increments across chain
+	CycleBudget                uint32  // 132: max cycles before forced Go return (interrupt budget)
+	DispatchGenerationPtr      uintptr // 136: &cpu.jitDispatchGeneration
+	ExpectedDispatchGeneration uint64  // 144: generation observed at native entry
+	MappingGenerationPtr       uintptr // 152: &adapter.mappingGeneration
+	ExpectedMappingGeneration  uint64  // 160: mapping generation observed at native entry
+	// HelperPayload is written by the dispatcher before a canonical helper
+	// executes. Native code never addresses this appended Go-owned ABI state.
+	HelperPayload z80CanonicalHelperPayload
 }
 
 // Z80JITContext field offsets (must match struct layout above).
 // These are used by native code emitters to access context fields.
 const (
-	jzCtxOffMemPtr              = 0
-	jzCtxOffCpuPtr              = 8
-	jzCtxOffDirectPageBitmapPtr = 16
-	jzCtxOffCodePageBitmapPtr   = 24
-	jzCtxOffRetCycles           = 32
-	jzCtxOffNeedBail            = 40
-	jzCtxOffNeedInval           = 44
-	jzCtxOffRetPC               = 48
-	jzCtxOffRetCount            = 52
-	jzCtxOffChainBudget         = 56
-	jzCtxOffChainCount          = 60
-	jzCtxOffInvalPage           = 64
-	jzCtxOffRTSCache0PC         = 68
-	jzCtxOffRTSCache0Addr       = 80
-	jzCtxOffRTSCache1PC         = 88
-	jzCtxOffRTSCache1Addr       = 96
-	jzCtxOffParityTablePtr      = 104
-	jzCtxOffDAATablePtr         = 112
-	jzCtxOffChainCycles         = 120
-	jzCtxOffChainRIncrements    = 128
-	jzCtxOffCycleBudget         = 132
+	jzCtxOffMemPtr                     = 0
+	jzCtxOffCpuPtr                     = 8
+	jzCtxOffDirectPageBitmapPtr        = 16
+	jzCtxOffCodePageBitmapPtr          = 24
+	jzCtxOffRetCycles                  = 32
+	jzCtxOffNeedBail                   = 40
+	jzCtxOffNeedInval                  = 44
+	jzCtxOffRetPC                      = 48
+	jzCtxOffRetCount                   = 52
+	jzCtxOffChainBudget                = 56
+	jzCtxOffChainCount                 = 60
+	jzCtxOffInvalPage                  = 64
+	jzCtxOffRTSCache0PC                = 68
+	jzCtxOffRTSCache0Addr              = 80
+	jzCtxOffRTSCache1PC                = 88
+	jzCtxOffRTSCache1Addr              = 96
+	jzCtxOffParityTablePtr             = 104
+	jzCtxOffDAATablePtr                = 112
+	jzCtxOffChainCycles                = 120
+	jzCtxOffChainRIncrements           = 128
+	jzCtxOffCycleBudget                = 132
+	jzCtxOffDispatchGenerationPtr      = 136
+	jzCtxOffExpectedDispatchGeneration = 144
+	jzCtxOffMappingGenerationPtr       = 152
+	jzCtxOffExpectedMappingGeneration  = 160
 )
 
 // CPU_Z80 struct field offsets (from CpuPtr). Must match cpu_z80.go layout.
@@ -133,116 +144,23 @@ var z80DAATable [2048]uint16
 func init() {
 	for a := 0; a < 256; a++ {
 		for flags := 0; flags < 8; flags++ {
-			c := (flags >> 2) & 1
-			h := (flags >> 1) & 1
-			n := flags & 1
-
-			result := byte(a)
-			newC := c
-
-			if n == 0 {
-				// After ADD/ADC
-				if c == 0 && h == 0 && (a&0x0F) <= 9 && a <= 0x99 {
-					// No adjustment needed
-				} else if c == 0 && h == 0 && (a&0x0F) >= 0x0A && a <= 0x99 {
-					result += 0x06
-				} else if c == 0 && h == 1 && (a&0x0F) <= 3 && a <= 0x99 {
-					result += 0x06
-				} else if c == 0 && h == 0 && (a&0x0F) <= 9 && a >= 0xA0 {
-					result += 0x60
-					newC = 1
-				} else if c == 0 && h == 0 && (a&0x0F) >= 0x0A && a >= 0x9A {
-					result += 0x66
-					newC = 1
-				} else if c == 0 && h == 1 && (a&0x0F) <= 3 && a >= 0xA0 {
-					result += 0x66
-					newC = 1
-				} else if c == 1 && h == 0 && (a&0x0F) <= 9 {
-					result += 0x60
-					newC = 1
-				} else if c == 1 && h == 0 && (a&0x0F) >= 0x0A {
-					result += 0x66
-					newC = 1
-				} else if c == 1 && h == 1 && (a&0x0F) <= 3 {
-					result += 0x66
-					newC = 1
-				}
-			} else {
-				// After SUB/SBC
-				if c == 0 && h == 0 {
-					// No adjustment
-				} else if c == 0 && h == 1 && (a&0x0F) >= 6 {
-					result -= 0x06
-				} else if c == 1 && h == 0 {
-					result -= 0x60
-					newC = 1
-				} else if c == 1 && h == 1 {
-					result -= 0x66
-					newC = 1
-				}
+			inputFlags := byte(0)
+			if flags&4 != 0 {
+				inputFlags |= z80FlagC
 			}
-
-			// Build flags
-			var f byte
-			if result&0x80 != 0 {
-				f |= 0x80 // S flag
+			if flags&2 != 0 {
+				inputFlags |= z80FlagH
 			}
-			if result == 0 {
-				f |= 0x40 // Z flag
+			if flags&1 != 0 {
+				inputFlags |= z80FlagN
 			}
-			f |= result & 0x28 // Y (bit 5) and X (bit 3) from result
-			if z80ParityTable[result] != 0 {
-				f |= 0x04 // P/V = parity
-			}
-			if n != 0 {
-				f |= 0x02 // N preserved
-			}
-			if newC != 0 {
-				f |= 0x01 // C flag
-			}
-			// H flag for DAA is complex - simplified: set if lower nibble adjustment occurred
-			if n == 0 {
-				if h == 1 || (a&0x0F) >= 0x0A {
-					f |= 0x10 // H
-				}
-			} else {
-				if h == 1 && (a&0x0F) < 6 {
-					f |= 0x10 // H
-				}
-			}
-
-			idx := (a << 3) | flags
-			z80DAATable[idx] = uint16(result)<<8 | uint16(f)
+			tableResult, tableFlags := z80DAA(byte(a), inputFlags)
+			z80DAATable[(a<<3)|flags] = uint16(tableResult)<<8 | uint16(tableFlags)
 		}
 	}
 }
 
-// ===========================================================================
-// JITZ80Instr — Pre-decoded Z80 instruction for JIT compilation
-// ===========================================================================
-
-type JITZ80Instr struct {
-	opcode       byte   // opcode byte (after prefix)
-	prefix       byte   // 0=none, 0xCB, 0xDD, 0xFD, 0xED
-	displacement int8   // signed offset for DD/FD indexed addressing
-	operand      uint16 // immediate value or address
-	hasOperand   bool   // true if operand field is valid
-	length       byte   // total instruction length (1-4)
-	pcOffset     uint16 // byte offset from block startPC
-	cycles       byte   // base T-state cost
-	cbSubOp      byte   // for DDCB/FDCB: the actual operation byte
-	rIncrements  byte   // R register increments (1=unprefixed, 2=CB/DD/FD/ED, 3=DDCB/FDCB)
-}
-
 // Z80 prefix byte values for JIT scanner (distinct from cpu_z80.go's iota-based mode flags)
-const (
-	z80JITPrefixNone byte = 0x00
-	z80JITPrefixCB   byte = 0xCB
-	z80JITPrefixDD   byte = 0xDD
-	z80JITPrefixFD   byte = 0xFD
-	z80JITPrefixED   byte = 0xED
-)
-
 // Maximum block size in instructions
 const z80JITMaxBlockSize = 128
 
@@ -255,6 +173,22 @@ const z80JITMaxBlockSize = 128
 // terminators, fallback instructions, or the maximum block size.
 // The caller must ensure startPC is on a direct page.
 func z80JITScanBlock(mem []byte, startPC uint16, memSize int, directPageBitmap *[256]byte) []JITZ80Instr {
+	// The untagged frontend is the shared admission authority for native and
+	// wasm. Native retains the richer decoded representation below for cycle
+	// accounting and emitter operands, but never admits a block the shared
+	// frontend rejected.
+	if directPageBitmap == nil || len(mem) == 0 || int(startPC) >= memSize {
+		return nil
+	}
+	shared := z80FrontendScanBlock(
+		func(pc uint16) byte { return mem[pc] },
+		func(pc uint16) bool { return directPageBitmap[pc>>8] == 0 },
+		z80NativeFrontendAdmits,
+		startPC,
+	)
+	if len(shared) == 0 {
+		return nil
+	}
 	instrs := make([]JITZ80Instr, 0, 32)
 	pc := startPC
 	startPage := startPC >> 8
@@ -354,9 +288,39 @@ func z80JITScanBlock(mem []byte, startPC uint16, memSize int, directPageBitmap *
 				} else if nextOp == 0xF9 {
 					// LD SP,IX
 					instr.cycles = 10
+				} else if nextOp == 0xE3 {
+					// EX (SP),IX / EX (SP),IY
+					instr.cycles = 23
 				} else if nextOp == 0x09 || nextOp == 0x19 || nextOp == 0x29 || nextOp == 0x39 {
 					// ADD IX,rp
 					instr.cycles = 15
+				} else if nextOp == 0x23 || nextOp == 0x2B {
+					// INC/DEC IX or IY
+					instr.cycles = 10
+				}
+				if nextOp == 0x34 || nextOp == 0x35 {
+					instr.cycles = 23
+				}
+				if !z80DDFDExplicitOpcode(nextOp) {
+					instr.cycles = z80BaseInstrCycles[nextOp] + 4
+					switch {
+					case z80BaseHasImm8(nextOp) || z80BaseHasRelJump(nextOp):
+						if int(pc)+2 >= memSize {
+							return instrs
+						}
+						instr.operand = uint16(mem[pc+2])
+						instr.hasOperand = true
+						instr.length = 3
+					case z80BaseHasImm16(nextOp):
+						if int(pc)+3 >= memSize {
+							return instrs
+						}
+						instr.operand = uint16(mem[pc+2]) | uint16(mem[pc+3])<<8
+						instr.hasOperand = true
+						instr.length = 4
+					}
+				} else if nextOp == 0x22 || nextOp == 0x2A {
+					instr.cycles = 20
 				}
 			}
 
@@ -391,6 +355,8 @@ func z80JITScanBlock(mem []byte, startPC uint16, memSize int, directPageBitmap *
 					instr.cycles = 9
 				case 0x57, 0x5F: // LD A,I / LD A,R
 					instr.cycles = 9
+				case 0x67, 0x6F: // RRD / RLD
+					instr.cycles = 18
 				case 0x42, 0x52, 0x62, 0x72: // SBC HL,rp
 					instr.cycles = 15
 				case 0x4A, 0x5A, 0x6A, 0x7A: // ADC HL,rp
@@ -470,6 +436,12 @@ func z80JITScanBlock(mem []byte, startPC uint16, memSize int, directPageBitmap *
 		}
 	}
 
+	// A divergence here would mean a native-only admission rule escaped the
+	// shared frontend. Keep the common prefix only; the dispatcher will return
+	// to the canonical helper at the first non-shared boundary.
+	if len(instrs) > len(shared) {
+		instrs = instrs[:len(shared)]
+	}
 	return instrs
 }
 
@@ -528,6 +500,11 @@ func z80JITIsTerminator(instr *JITZ80Instr) bool {
 		if instr.opcode == 0xE9 { // JP (IX) / JP (IY)
 			return true
 		}
+		if !z80DDFDExplicitOpcode(instr.opcode) {
+			base := *instr
+			base.prefix = z80JITPrefixNone
+			return z80JITIsTerminator(&base)
+		}
 
 	case z80JITPrefixED:
 		switch instr.opcode {
@@ -581,22 +558,18 @@ func z80JITNeedsFallback(instr *JITZ80Instr) bool {
 			return true
 		case 0xD3: // OUT (n),A
 			return true
-		case 0xE3: // EX (SP),HL
-			return true
 			// DAA now handled via lookup table
 		}
 
 	case z80JITPrefixDD, z80JITPrefixFD:
-		if instr.opcode == 0xE3 { // EX (SP),IX / EX (SP),IY
-			return true
+		if !z80DDFDExplicitOpcode(instr.opcode) {
+			base := *instr
+			base.prefix = z80JITPrefixNone
+			return z80JITNeedsFallback(&base)
 		}
 
 	case z80JITPrefixED:
 		switch instr.opcode {
-		case 0x67, 0x6F: // RLD / RRD
-			return true
-		case 0x57: // LD A,R — needs exact R value
-			return true
 		// Block I/O operations
 		case 0xA2, 0xAA, 0xB2, 0xBA: // INI/IND/INIR/INDR
 			return true
@@ -615,6 +588,26 @@ func z80JITNeedsFallback(instr *JITZ80Instr) bool {
 	}
 
 	return false
+}
+
+func z80DDFDExplicitOpcode(op byte) bool {
+	return op == 0x21 || op == 0x22 || op == 0x2A || op == 0xE5 || op == 0xE1 ||
+		op == 0xF9 || op == 0x36 || op == 0x34 || op == 0x35 || op == 0xE9 ||
+		op == 0xCB || op == 0xE3 || op == 0x09 || op == 0x19 || op == 0x29 ||
+		op == 0x39 || op == 0x23 || op == 0x2B ||
+		(op&0xC7 == 0x46 && op != 0x76) ||
+		(op >= 0x70 && op <= 0x77 && op != 0x76) || op&0xC7 == 0x86
+}
+
+func z80DDFDUsesIndexBytes(op byte) bool {
+	if (op&0xC7 == 0x04 || op&0xC7 == 0x05 || op&0xC7 == 0x06) && ((op>>3)&7 == 4 || (op>>3)&7 == 5) {
+		return true
+	}
+	if op >= 0x40 && op <= 0x7F && op != 0x76 {
+		dst, src := (op>>3)&7, op&7
+		return dst == 4 || dst == 5 || src == 4 || src == 5
+	}
+	return op >= 0x80 && op <= 0xBF && (op&7 == 4 || op&7 == 5)
 }
 
 // z80JITCanEmit returns true if the emitter has native code generation for this instruction.
@@ -651,7 +644,7 @@ func z80JITCanEmit(instr *JITZ80Instr) bool {
 		case op == 0x2A: // LD HL,(nn)
 			return true
 		case op == 0x22: // LD (nn),HL
-			return false
+			return true
 		case op == 0x37 || op == 0x3F || op == 0x2F: // SCF/CCF/CPL
 			return true
 		case op&0xC7 == 0xC6: // ALU A,n
@@ -661,6 +654,8 @@ func z80JITCanEmit(instr *JITZ80Instr) bool {
 		case op == 0x27: // DAA
 			return true
 		case op == 0xF9: // LD SP,HL
+			return true
+		case op == 0xE3: // EX (SP),HL
 			return true
 		// Terminators: JP/JR/CALL/RET/RST/DJNZ/DI/EI/JP(HL)
 		case op == 0xC3 || op == 0x18 || op == 0xE9: // JP nn / JR e / JP (HL)
@@ -684,11 +679,15 @@ func z80JITCanEmit(instr *JITZ80Instr) bool {
 		switch {
 		case op == 0x21: // LD IX,nn
 			return true
+		case op == 0x22 || op == 0x2A: // LD (nn),IX / LD IX,(nn)
+			return true
 		case op == 0x09 || op == 0x19 || op == 0x29 || op == 0x39: // ADD IX,rp
 			return true
 		case op == 0xF9: // LD SP,IX
 			return true
 		case op == 0xE5 || op == 0xE1: // PUSH/POP IX/IY
+			return true
+		case op == 0xE3: // EX (SP),IX/IY
 			return true
 		case op == 0x23 || op == 0x2B: // INC/DEC IX
 			return true
@@ -707,18 +706,29 @@ func z80JITCanEmit(instr *JITZ80Instr) bool {
 		case op == 0xCB: // DDCB/FDCB indexed bit operations
 			return true
 		}
+		if !z80DDFDExplicitOpcode(op) {
+			base := *instr
+			base.prefix = z80JITPrefixNone
+			return z80JITCanEmit(&base)
+		}
 
 	case z80JITPrefixED:
 		op := instr.opcode
 		switch op {
-		case 0x44, 0x46, 0x56, 0x5E, 0x47, 0x4F, 0x5F: // NEG/IM/LD I,A/LD R,A/LD A,I
+		case 0x44, 0x4C, 0x54, 0x5C, 0x64, 0x6C, 0x74, 0x7C, // NEG aliases
+			0x46, 0x4E, 0x66, 0x6E, // IM 0 aliases
+			0x56, 0x76, // IM 1 aliases
+			0x5E, 0x7E, // IM 2 aliases
+			0x47, 0x4F, 0x57, 0x5F: // LD I,A/LD R,A/LD A,I/LD A,R
 			return true
 		case 0x42, 0x52, 0x62, 0x72: // SBC HL,rp
 			return true
 		case 0x4A, 0x5A, 0x6A, 0x7A: // ADC HL,rp
 			return true
+		case 0x67, 0x6F: // RRD / RLD
+			return true
 		case 0x43, 0x53, 0x63, 0x73: // LD (nn),rp
-			return false
+			return true
 		case 0x4B, 0x5B, 0x6B, 0x7B: // LD rp,(nn)
 			return true
 		case 0xA0, 0xA8: // LDI / LDD
@@ -732,6 +742,8 @@ func z80JITCanEmit(instr *JITZ80Instr) bool {
 		case 0x4D, 0x45, 0x55, 0x5D, 0x65, 0x6D, 0x75, 0x7D: // RETI/RETN (terminators)
 			return true
 		}
+		// All remaining non-observation ED encodings execute as 8-cycle NOPs.
+		return !z80JITNeedsFallback(instr)
 	}
 
 	return false
@@ -847,7 +859,8 @@ func z80InstrProducedFlagMask(instr *JITZ80Instr) uint8 {
 	case z80JITPrefixED:
 		op := instr.opcode
 		switch {
-		case op == 0x44: // NEG (full)
+		case op == 0x44 || op == 0x4C || op == 0x54 || op == 0x5C ||
+			op == 0x64 || op == 0x6C || op == 0x74 || op == 0x7C: // NEG aliases (full)
 			return fullMask
 		case op == 0x42 || op == 0x52 || op == 0x62 || op == 0x72: // SBC HL,ss
 			return fullMask
@@ -872,6 +885,11 @@ func z80InstrProducedFlagMask(instr *JITZ80Instr) uint8 {
 		}
 		if op == 0x09 || op == 0x19 || op == 0x29 || op == 0x39 { // ADD IX,rp
 			return partialCarryOnly
+		}
+		if !z80DDFDExplicitOpcode(op) {
+			base := *instr
+			base.prefix = z80JITPrefixNone
+			return z80InstrProducedFlagMask(&base)
 		}
 	}
 	return 0
@@ -927,6 +945,11 @@ func z80InstrConsumedFlagMask(instr *JITZ80Instr) uint8 {
 				return z80FlagC
 			}
 		}
+		if !z80DDFDExplicitOpcode(instr.opcode) {
+			base := *instr
+			base.prefix = z80JITPrefixNone
+			return z80InstrConsumedFlagMask(&base)
+		}
 	}
 	return 0
 }
@@ -979,7 +1002,8 @@ func z80InstrProducesFlags(instr *JITZ80Instr) bool {
 	case z80JITPrefixED:
 		op := instr.opcode
 		switch {
-		case op == 0x44: // NEG
+		case op == 0x44 || op == 0x4C || op == 0x54 || op == 0x5C ||
+			op == 0x64 || op == 0x6C || op == 0x74 || op == 0x7C: // NEG aliases
 			return true
 		case op == 0x42 || op == 0x52 || op == 0x62 || op == 0x72: // SBC HL
 			return true
@@ -1000,6 +1024,11 @@ func z80InstrProducesFlags(instr *JITZ80Instr) bool {
 		}
 		if op == 0x09 || op == 0x19 || op == 0x29 || op == 0x39 { // ADD IX,rp
 			return true
+		}
+		if !z80DDFDExplicitOpcode(op) {
+			base := *instr
+			base.prefix = z80JITPrefixNone
+			return z80InstrProducesFlags(&base)
 		}
 	}
 	return false
@@ -1440,7 +1469,7 @@ func newZ80JITContext(cpu *CPU_Z80, adapter *Z80BusAdapter) *Z80JITContext {
 	if adapter == nil || adapter.bus == nil {
 		return nil
 	}
-	mem := adapter.bus.GetMemory()
+	mem := adapter.jitMemory()
 	if len(mem) == 0 {
 		return nil
 	}
@@ -1448,12 +1477,14 @@ func newZ80JITContext(cpu *CPU_Z80, adapter *Z80BusAdapter) *Z80JITContext {
 	cpu.initDirectPageBitmapZ80(adapter)
 
 	ctx := &Z80JITContext{
-		MemPtr:              uintptr(unsafe.Pointer(&mem[0])),
-		CpuPtr:              uintptr(unsafe.Pointer(cpu)),
-		DirectPageBitmapPtr: uintptr(unsafe.Pointer(&cpu.directPageBitmap[0])),
-		CodePageBitmapPtr:   uintptr(unsafe.Pointer(&cpu.codePageBitmap[0])),
-		ParityTablePtr:      uintptr(unsafe.Pointer(&z80ParityTable[0])),
-		DAATablePtr:         uintptr(unsafe.Pointer(&z80DAATable[0])),
+		MemPtr:                uintptr(unsafe.Pointer(&mem[0])),
+		CpuPtr:                uintptr(unsafe.Pointer(cpu)),
+		DirectPageBitmapPtr:   uintptr(unsafe.Pointer(&cpu.directPageBitmap[0])),
+		CodePageBitmapPtr:     uintptr(unsafe.Pointer(&cpu.codePageBitmap[0])),
+		ParityTablePtr:        uintptr(unsafe.Pointer(&z80ParityTable[0])),
+		DAATablePtr:           uintptr(unsafe.Pointer(&z80DAATable[0])),
+		DispatchGenerationPtr: uintptr(unsafe.Pointer(&cpu.jitDispatchGeneration)),
+		MappingGenerationPtr:  uintptr(unsafe.Pointer(&adapter.mappingGeneration)),
 	}
 	return ctx
 }
@@ -1463,6 +1494,22 @@ func newZ80JITContext(cpu *CPU_Z80, adapter *Z80BusAdapter) *Z80JITContext {
 // Must be called AFTER MachineBus.SealMappings().
 func (cpu *CPU_Z80) initDirectPageBitmapZ80(adapter *Z80BusAdapter) {
 	bus := adapter.bus
+	if adapter.flatMemory {
+		for page := range cpu.directPageBitmap {
+			cpu.directPageBitmap[page] = 0
+		}
+		return
+	}
+	if adapter.coprocFlat {
+		for page := range cpu.directPageBitmap {
+			addr := uint16(page) << 8
+			cpu.directPageBitmap[page] = 0
+			if addr >= adapter.coprocMailboxStart && addr < adapter.coprocMailboxEnd {
+				cpu.directPageBitmap[page] = 1
+			}
+		}
+		return
+	}
 	for page := 0; page < 256; page++ {
 		addr := uint16(page) << 8
 		direct := true
@@ -1495,11 +1542,12 @@ func (cpu *CPU_Z80) initDirectPageBitmapZ80(adapter *Z80BusAdapter) {
 }
 
 // ===========================================================================
-// Block Compilation Stub (replaced by jit_z80_emit_amd64.go / arm64.go)
+// Backend-selected block compilation
 // ===========================================================================
 
-// compileBlockZ80 compiles a scanned Z80 instruction block into native code.
-// This is a placeholder that will be replaced by the architecture-specific emitter.
+// compileBlockZ80 compiles a scanned Z80 instruction block through the active
+// architecture-specific emitter. Forms without a direct lowering return an
+// error and the dispatcher executes their frozen canonical helper instead.
 func compileBlockZ80(instrs []JITZ80Instr, startPC uint16, execMem *ExecMem, codePageBitmap *[256]byte) (*JITBlock, error) {
 	// Calculate total R increments for the block
 	totalR := 0
@@ -1516,5 +1564,51 @@ func compileBlockZ80(instrs []JITZ80Instr, startPC uint16, execMem *ExecMem, cod
 		codePageBitmap[page] = 1
 	}
 
-	return compileBlockZ80Stub(instrs, startPC, endPC, execMem, totalR)
+	block, err := compileBlockZ80Stub(instrs, startPC, endPC, execMem, totalR)
+	if err != nil {
+		return nil, err
+	}
+	block.z80Source = z80BlockSourceBytes(instrs)
+	return block, nil
+}
+
+// z80BlockSourceBytes reconstructs the exact decoded instruction bytes held
+// by the scanner. The returned slice belongs to the block and is immutable.
+func z80BlockSourceBytes(instrs []JITZ80Instr) []byte {
+	source := make([]byte, 0, len(instrs)*3)
+	for _, instr := range instrs {
+		switch instr.prefix {
+		case z80JITPrefixCB:
+			source = append(source, z80JITPrefixCB, instr.opcode)
+		case z80JITPrefixED:
+			source = append(source, z80JITPrefixED, instr.opcode)
+			if instr.length == 4 {
+				source = append(source, byte(instr.operand), byte(instr.operand>>8))
+			}
+		case z80JITPrefixDD, z80JITPrefixFD:
+			source = append(source, instr.prefix, instr.opcode)
+			if instr.opcode == 0xCB {
+				source = append(source, byte(instr.displacement), instr.cbSubOp)
+				continue
+			}
+			if z80DDFDHasDisplacement(instr.opcode) {
+				source = append(source, byte(instr.displacement))
+				if instr.length == 4 {
+					source = append(source, byte(instr.operand))
+				}
+			} else if instr.length == 3 {
+				source = append(source, byte(instr.operand))
+			} else if instr.length == 4 {
+				source = append(source, byte(instr.operand), byte(instr.operand>>8))
+			}
+		default:
+			source = append(source, instr.opcode)
+			if instr.length == 2 {
+				source = append(source, byte(instr.operand))
+			} else if instr.length == 3 {
+				source = append(source, byte(instr.operand), byte(instr.operand>>8))
+			}
+		}
+	}
+	return source
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"reflect"
 	"testing"
 )
 
@@ -60,7 +61,7 @@ func buildAYZ80EmulData(songName string, lengthFrames uint16) []byte {
 
 func TestRenderAYZ80MetadataAndClock(t *testing.T) {
 	data := buildAYZ80EmulData("RenderSong", 2)
-	meta, events, total, clockHz, frameRate, loop, loopSample, _, _, err := renderAYZ80(data, 44100)
+	meta, events, total, clockHz, frameRate, loop, loopSample, instructions, _, err := renderAYZ80(data, 44100)
 	if err != nil {
 		t.Fatalf("render ay z80: %v", err)
 	}
@@ -75,6 +76,9 @@ func TestRenderAYZ80MetadataAndClock(t *testing.T) {
 	}
 	if len(events) == 0 || total == 0 {
 		t.Fatalf("expected events and total samples")
+	}
+	if instructions == 0 {
+		t.Fatal("AY Z80 render reported zero retired instructions")
 	}
 }
 
@@ -173,5 +177,30 @@ func TestRenderAYZ80LoopDefault(t *testing.T) {
 	}
 	if total == 0 {
 		t.Fatalf("expected total samples for loop default")
+	}
+}
+
+func TestAYZ80ProgressiveChunksMatchMonolithicRender(t *testing.T) {
+	data := buildAYZ80EmulData("ChunkSong", 9)
+	_, wantEvents, wantTotal, _, _, _, _, _, _, err := renderAYZ80(data, 44100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := newAYZ80RenderStream(data, 44100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotEvents []PSGEvent
+	var gotTotal uint64
+	for _, frames := range []int{2, 3, 4} {
+		events, total, _ := stream.render(frames)
+		gotEvents = append(gotEvents, events...)
+		gotTotal = total
+	}
+	if !reflect.DeepEqual(gotEvents, wantEvents) {
+		t.Fatalf("progressive events differ from monolithic render:\nprogressive=%v\nmonolithic=%v", gotEvents, wantEvents)
+	}
+	if gotTotal != wantTotal || stream.framesLeft != 0 {
+		t.Fatalf("progressive completion: total=%d want=%d framesLeft=%d", gotTotal, wantTotal, stream.framesLeft)
 	}
 }

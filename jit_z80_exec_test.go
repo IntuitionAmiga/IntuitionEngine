@@ -5,11 +5,22 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+)
+
+const (
+	z80RotozoomerFixtureSHA256 = "498d35495a0b6e3aedf3bb9a8a4a19cff63522ee8f408b7801d68a41b0ea5c2c"
+	z80RotozoomerComputeFrame  = 0x00DE // vasmz80_std rotozoomer_z80.asm
+	z80RotozoomerAdvance       = 0x0438 // vasmz80_std rotozoomer_z80.asm
+	z80RobocopFixtureSHA256    = "c44ae3cab2ccd5daa6d823aacc8429694c27768a363edda4f9318b72aefb502a"
+	z80RobocopComputeXY        = 0x01BA // vasmz80_std robocop_intro_z80.asm
+	z80RobocopCodeBytes        = 0x06B3 // first output segment ending at $06B2
 )
 
 // ===========================================================================
@@ -22,6 +33,130 @@ type z80JITTestRig struct {
 	cpu     *CPU_Z80
 }
 
+// z80CanonicalStateHash covers all architectural Z80 state that can survive
+// an instruction boundary. It deliberately excludes JIT cache internals and
+// host timing, so deterministic fixture checkpoints compare the interpreter
+// and JIT machines rather than their implementation details.
+func z80CanonicalStateHash(cpu *CPU_Z80) [32]byte {
+	var image [48]byte
+	copy(image[0:12], []byte{cpu.A, cpu.F, cpu.B, cpu.C, cpu.D, cpu.E, cpu.H, cpu.L, cpu.A2, cpu.F2, cpu.B2, cpu.C2})
+	copy(image[12:16], []byte{cpu.D2, cpu.E2, cpu.H2, cpu.L2})
+	binary.LittleEndian.PutUint16(image[16:], cpu.IX)
+	binary.LittleEndian.PutUint16(image[18:], cpu.IY)
+	binary.LittleEndian.PutUint16(image[20:], cpu.SP)
+	binary.LittleEndian.PutUint16(image[22:], cpu.PC)
+	copy(image[24:27], []byte{cpu.I, cpu.R, cpu.IM})
+	binary.LittleEndian.PutUint16(image[28:], cpu.WZ)
+	if cpu.IFF1 {
+		image[30] = 1
+	}
+	if cpu.IFF2 {
+		image[31] = 1
+	}
+	if cpu.Halted {
+		image[32] = 1
+	}
+	if cpu.irqLine.Load() {
+		image[33] = 1
+	}
+	if cpu.nmiLine.Load() {
+		image[34] = 1
+	}
+	if cpu.nmiPending.Load() {
+		image[35] = 1
+	}
+	image[36] = byte(cpu.iffDelay)
+	binary.LittleEndian.PutUint32(image[37:], cpu.irqVector.Load())
+	binary.LittleEndian.PutUint64(image[40:], cpu.Cycles)
+	return sha256.Sum256(image[:])
+}
+
+// The JIT must return to Go frequently enough for interrupt and debug
+// observation. These are architectural limits, not tuning defaults: region
+// formation and every backend share them.
+func TestZ80JIT_ChainAndInterruptBounds(t *testing.T) {
+	if got, want := z80JITChainBlockBudget, uint32(64); got != want {
+		t.Fatalf("chain block budget = %d, want %d", got, want)
+	}
+	if got, want := z80JITInterruptCycleBudget, uint32(200); got != want {
+		t.Fatalf("interrupt cycle budget = %d, want %d", got, want)
+	}
+}
+
+func TestZ80JIT_StaticRegionPromotionCompilesAndPatchesStaticChain(t *testing.T) {
+	if !z80JitAvailable {
+		t.Skip("Z80 native JIT unavailable")
+	}
+	r := newZ80JITTestRig()
+	r.bus.SealMappings()
+	r.cpu.initDirectPageBitmapZ80(r.adapter)
+	if err := r.cpu.initZ80JIT(r.adapter); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(r.cpu.freeZ80JIT)
+
+	mem := r.bus.GetMemory()
+	// Three statically connected blocks. The final RET is deliberately kept
+	// in the promoted unit but has no static successor of its own.
+	mem[0x100] = 0x00
+	mem[0x101], mem[0x102], mem[0x103] = 0xC3, 0x80, 0x01 // JP $0180
+	mem[0x180] = 0x00
+	mem[0x181], mem[0x182] = 0x18, 0x7D // JR $0200
+	mem[0x200] = 0x00
+	mem[0x201] = 0xC9 // RET
+
+	got := r.cpu.z80PromoteStaticRegion(r.adapter, mem, 0x100)
+	if got != 3 {
+		t.Fatalf("promoted blocks = %d, want 3", got)
+	}
+	if r.cpu.jitCache.Len() != 3 {
+		t.Fatalf("cache blocks = %d, want 3", r.cpu.jitCache.Len())
+	}
+	for _, pc := range []uint64{0x100, 0x180, 0x200} {
+		block := r.cpu.jitCache.Get(pc)
+		if block == nil || block.chainEntry == 0 {
+			t.Fatalf("promoted block %#x missing chain entry: %+v", pc, block)
+		}
+	}
+	first := r.cpu.jitCache.Get(0x100)
+	if len(first.chainSlots) == 0 || first.chainSlots[0].targetPC != 0x180 {
+		t.Fatalf("first promoted block has no static chain slot to 0x180: %+v", first.chainSlots)
+	}
+	if got := r.cpu.jitStats.regionPromotions.Load(); got != 1 {
+		t.Fatalf("region promotion count = %d, want 1", got)
+	}
+}
+
+func TestZ80JIT_StaticRegionPromotionExecutesPatchedChain(t *testing.T) {
+	if !z80JitAvailable {
+		t.Skip("Z80 native JIT unavailable")
+	}
+	r := newZ80JITTestRig()
+	r.cpu.jitPersist = true
+	t.Cleanup(r.cpu.freeZ80JIT)
+	r.bus.Write8(0x0100, 0xC3) // JP $0200
+	r.bus.Write8(0x0101, 0x00)
+	r.bus.Write8(0x0102, 0x02)
+	r.bus.Write8(0x0200, 0xC3) // JP $0300
+	r.bus.Write8(0x0201, 0x00)
+	r.bus.Write8(0x0202, 0x03)
+	r.bus.Write8(0x0300, 0x3E) // LD A,$5A; HALT helper boundary
+	r.bus.Write8(0x0301, 0x5A)
+	r.bus.Write8(0x0302, 0x76)
+	r.cpu.PC = 0x0100
+	r.cpu.SetRunning(true)
+	r.cpu.ExecuteJITZ80()
+	if !r.cpu.Halted || r.cpu.A != 0x5A {
+		t.Fatalf("promoted static chain state: halted=%v A=%02X PC=%04X", r.cpu.Halted, r.cpu.A, r.cpu.PC)
+	}
+	if r.cpu.jitStats.regionPromotions.Load() == 0 {
+		t.Fatal("static chain executed without region promotion")
+	}
+	if r.cpu.jitStats.chainExits.Load() == 0 {
+		t.Fatal("promoted static chain did not make a chained native exit")
+	}
+}
+
 func newZ80JITTestRig() *z80JITTestRig {
 	bus := NewMachineBus()
 	adapter := NewZ80BusAdapter(bus)
@@ -31,17 +166,212 @@ func newZ80JITTestRig() *z80JITTestRig {
 	return &z80JITTestRig{bus: bus, adapter: adapter, cpu: cpu}
 }
 
+func TestZ80JIT_CoprocessorWorkerExecutesNativeBlock(t *testing.T) {
+	if !z80JitAvailable {
+		t.Skip("Z80 native JIT unavailable")
+	}
+	worker, err := createZ80Worker(NewMachineBus(), []byte{
+		0x3E, 0x5A, // LD A,$5A
+		0x18, 0xFC, // JR $0000
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cpu := worker.debugCPU.(*DebugZ80).cpu
+	t.Cleanup(func() {
+		worker.stopCPU()
+		select {
+		case <-worker.done:
+		case <-time.After(time.Second):
+			t.Error("Z80 worker did not stop")
+		}
+	})
+	deadline := time.Now().Add(time.Second)
+	for cpu.jitStats.nativeEntries.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := cpu.jitStats.nativeEntries.Load(); got == 0 {
+		t.Fatal("coprocessor worker did not execute a native Z80 block")
+	}
+}
+
 func TestZ80JIT_RotozoomerComputeFrameParity(t *testing.T) {
-	z80RotozoomerPatchedParity(t, []byte{0xCD, 0x9A, 0x00, 0x76}) // CALL compute_frame; HALT
+	z80RotozoomerPatchedParity(t, []byte{0xCD, byte(z80RotozoomerComputeFrame), byte(z80RotozoomerComputeFrame >> 8), 0x76}) // CALL compute_frame; HALT
 }
 
 func TestZ80JIT_RotozoomerSecondFrameParity(t *testing.T) {
 	z80RotozoomerPatchedParity(t, []byte{
-		0xCD, 0x9A, 0x00, // CALL compute_frame
-		0xCD, 0x37, 0x04, // CALL advance_animation
-		0xCD, 0x9A, 0x00, // CALL compute_frame
+		0xCD, byte(z80RotozoomerComputeFrame), byte(z80RotozoomerComputeFrame >> 8), // CALL compute_frame
+		0xCD, byte(z80RotozoomerAdvance & 0xFF), byte(z80RotozoomerAdvance >> 8), // CALL advance_animation
+		0xCD, byte(z80RotozoomerComputeFrame), byte(z80RotozoomerComputeFrame >> 8), // CALL compute_frame
 		0x76, // HALT
 	})
+}
+
+// TestZ80JIT_RotozoomerMachineParity drives the committed fixture through two
+// fresh, identically mapped machines. In addition to the architectural CPU and
+// complete guest-RAM checks used by the routine fixtures, it snapshots the
+// stopped VideoChip's rendered frame and versioned device state. This keeps
+// the parity gate deterministic and headless while still exercising the
+// machine I/O route rather than a detached CPU-only bus.
+func TestZ80JIT_RotozoomerMachineParity(t *testing.T) {
+	program, err := os.ReadFile(filepath.Join("sdk", "examples", "prebuilt", "rotozoomer_z80.ie80"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(program)); got != z80RotozoomerFixtureSHA256 {
+		t.Fatalf("rotozoomer fixture hash = %s, want %s", got, z80RotozoomerFixtureSHA256)
+	}
+	entry := []byte{0xCD, byte(z80RotozoomerComputeFrame), byte(z80RotozoomerComputeFrame >> 8), 0x76}
+
+	type snapshot struct {
+		cpu    [32]byte
+		memory [32]byte
+		frame  [32]byte
+		device [32]byte
+	}
+	run := func(jit bool) snapshot {
+		bus := NewMachineBus()
+		video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := video.Stop(); err != nil {
+			t.Fatal(err)
+		}
+		video.AttachBus(bus)
+		video.SetBigEndianMode(false)
+		bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+		bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+		adapter := NewZ80BusAdapter(bus)
+		cpu := NewCPU_Z80(adapter)
+		cpu.jitEnabled = jit
+		for address, value := range program {
+			bus.Write8(uint32(address), value)
+		}
+		copy(bus.GetMemory(), entry)
+		cpu.Reset()
+		cpu.PC, cpu.SP = 0, 0xEFFE
+		cpu.SetRunning(true)
+		if jit {
+			cpu.ExecuteJITZ80()
+		} else {
+			for steps := 0; steps < 200000 && !cpu.Halted; steps++ {
+				cpu.Step()
+			}
+		}
+		if !cpu.Halted {
+			t.Fatalf("rotozoomer did not halt (jit=%v pc=%04x)", jit, cpu.PC)
+		}
+		frame := sha256.Sum256(video.FinishFrame())
+		version, state, err := video.DebugSnapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var versionBytes [4]byte
+		binary.LittleEndian.PutUint32(versionBytes[:], version)
+		device := sha256.Sum256(append(versionBytes[:], state...))
+		return snapshot{cpu: z80CanonicalStateHash(cpu), memory: sha256.Sum256(bus.GetMemory()), frame: frame, device: device}
+	}
+	interp, native := run(false), run(true)
+	if interp != native {
+		t.Fatalf("rotozoomer machine parity mismatch\ninterp cpu=%x mem=%x frame=%x device=%x\nnative cpu=%x mem=%x frame=%x device=%x",
+			interp.cpu, interp.memory, interp.frame, interp.device, native.cpu, native.memory, native.frame, native.device)
+	}
+}
+
+func TestZ80JIT_FixtureCheckpointHasIEMonReductionSnapshot(t *testing.T) {
+	bus := NewMachineBus()
+	runner := NewCPUZ80Runner(bus, CPUZ80Config{})
+	runner.cpu.SetRunning(false)
+	runner.cpu.PC, runner.cpu.SP, runner.cpu.A = 0x1234, 0xEFFE, 0x5A
+	monitor := NewMachineMonitor(bus)
+	monitor.RegisterCPU("Z80", NewDebugZ80(runner.cpu, runner))
+	snap := TakeSnapshot(NewDebugZ80(runner.cpu, runner))
+	if snap == nil || snap.CPUType != "Z80" || len(snap.Memory) != 0x10000 {
+		t.Fatalf("IEMon reduction snapshot = %+v", snap)
+	}
+	if len(snap.Registers) == 0 || snap.Registers[0].Name != "A" || snap.Registers[0].Value != 0x5A {
+		t.Fatalf("IEMon reduction registers = %+v", snap.Registers)
+	}
+}
+
+func TestZ80JIT_RobocopComputeXYParity(t *testing.T) {
+	program, err := os.ReadFile(filepath.Join("sdk", "examples", "prebuilt", "robocop_intro_z80.ie80"))
+	if err != nil {
+		t.Fatalf("read Robocop fixture: %v", err)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(program)); got != z80RobocopFixtureSHA256 {
+		t.Fatalf("Robocop fixture hash = %s, want %s", got, z80RobocopFixtureSHA256)
+	}
+	if len(program) < z80RobocopCodeBytes {
+		t.Fatalf("Robocop code segment too small: %d", len(program))
+	}
+	entry := []byte{0xCD, byte(z80RobocopComputeXY & 0xFF), byte(z80RobocopComputeXY >> 8), 0x76}
+
+	run := func(jit bool) (*CPU_Z80, []byte, [32]byte, [32]byte, [32]byte) {
+		bus := NewMachineBus()
+		video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := video.Stop(); err != nil {
+			t.Fatal(err)
+		}
+		video.AttachBus(bus)
+		video.SetBigEndianMode(false)
+		bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+		bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+		adapter := NewZ80BusAdapter(bus)
+		cpu := NewCPU_Z80(adapter)
+		cpu.jitEnabled = jit
+		for addr, value := range program[:z80RobocopCodeBytes] {
+			bus.Write8(uint32(addr), value)
+		}
+		copy(bus.GetMemory(), entry)
+		// compute_xy reads split signed tables at C800-CBFF. Seed a fixed
+		// zero-phase table image so this checkpoint needs no live assets.
+		for page := uint32(0xC800); page < 0xCC00; page++ {
+			bus.Write8(page, 0)
+		}
+		cpu.Reset()
+		cpu.PC, cpu.SP = 0, 0xEFFE
+		cpu.SetRunning(true)
+		if jit {
+			cpu.ExecuteJITZ80()
+		} else {
+			for steps := 0; steps < 10000 && !cpu.Halted; steps++ {
+				cpu.Step()
+			}
+		}
+		if !cpu.Halted {
+			t.Fatalf("Robocop compute_xy did not halt (jit=%v pc=%04x)", jit, cpu.PC)
+		}
+		memory := bus.GetMemory()
+		frame := sha256.Sum256(video.FinishFrame())
+		version, state, err := video.DebugSnapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var versionBytes [4]byte
+		binary.LittleEndian.PutUint32(versionBytes[:], version)
+		device := sha256.Sum256(append(versionBytes[:], state...))
+		return cpu, append([]byte(nil), memory[0xC000:0xC00C]...), sha256.Sum256(memory), frame, device
+	}
+
+	interpCPU, interpState, interpMemory, interpFrame, interpDevice := run(false)
+	jitCPU, jitState, jitMemory, jitFrame, jitDevice := run(true)
+	if string(jitState) != string(interpState) || interpMemory != jitMemory || interpFrame != jitFrame || interpDevice != jitDevice ||
+		jitCPU.PC != interpCPU.PC || jitCPU.Cycles != interpCPU.Cycles ||
+		jitCPU.AF() != interpCPU.AF() || jitCPU.BC() != interpCPU.BC() ||
+		jitCPU.DE() != interpCPU.DE() || jitCPU.HL() != interpCPU.HL() {
+		t.Fatalf("Robocop compute_xy mismatch\ninterp pc=%04x cycles=%d af=%04x bc=%04x de=%04x hl=%04x state=% x\njit    pc=%04x cycles=%d af=%04x bc=%04x de=%04x hl=%04x state=% x",
+			interpCPU.PC, interpCPU.Cycles, interpCPU.AF(), interpCPU.BC(), interpCPU.DE(), interpCPU.HL(), interpState,
+			jitCPU.PC, jitCPU.Cycles, jitCPU.AF(), jitCPU.BC(), jitCPU.DE(), jitCPU.HL(), jitState)
+	}
+	if got, want := z80CanonicalStateHash(jitCPU), z80CanonicalStateHash(interpCPU); got != want {
+		t.Fatalf("Robocop complete Z80 state mismatch: interp=%x jit=%x", want, got)
+	}
 }
 
 func z80RotozoomerPatchedParity(t *testing.T, entry []byte) {
@@ -53,10 +383,13 @@ func z80RotozoomerPatchedParity(t *testing.T, entry []byte) {
 	if len(program) < 0x480 {
 		t.Fatalf("rotozoomer fixture too small: %d bytes", len(program))
 	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(program)); got != z80RotozoomerFixtureSHA256 {
+		t.Fatalf("rotozoomer fixture hash = %s, want %s", got, z80RotozoomerFixtureSHA256)
+	}
 	patched := append([]byte(nil), program...)
 	copy(patched, entry)
 
-	runInterp := func() ([]byte, *CPU_Z80) {
+	runInterp := func() ([]byte, *CPU_Z80, [32]byte) {
 		bus := NewMachineBus()
 		adapter := NewZ80BusAdapter(bus)
 		cpu := NewCPU_Z80(adapter)
@@ -73,10 +406,11 @@ func z80RotozoomerPatchedParity(t *testing.T, entry []byte) {
 		if !cpu.Halted {
 			t.Fatalf("interpreter did not halt: pc=%04x", cpu.PC)
 		}
-		return append([]byte(nil), bus.GetMemory()[0x044C:0x0478]...), cpu
+		memory := bus.GetMemory()
+		return append([]byte(nil), memory[0x044C:0x0478]...), cpu, sha256.Sum256(memory)
 	}
 
-	runJIT := func() ([]byte, *CPU_Z80) {
+	runJIT := func() ([]byte, *CPU_Z80, [32]byte) {
 		bus := NewMachineBus()
 		adapter := NewZ80BusAdapter(bus)
 		cpu := NewCPU_Z80(adapter)
@@ -92,15 +426,19 @@ func z80RotozoomerPatchedParity(t *testing.T, entry []byte) {
 		if !cpu.Halted {
 			t.Fatalf("JIT did not halt: pc=%04x", cpu.PC)
 		}
-		return append([]byte(nil), bus.GetMemory()[0x044C:0x0478]...), cpu
+		memory := bus.GetMemory()
+		return append([]byte(nil), memory[0x044C:0x0478]...), cpu, sha256.Sum256(memory)
 	}
 
-	want, interpCPU := runInterp()
-	got, jitCPU := runJIT()
-	if string(got) != string(want) {
+	want, interpCPU, interpMemory := runInterp()
+	got, jitCPU, jitMemory := runJIT()
+	if string(got) != string(want) || interpMemory != jitMemory {
 		t.Fatalf("compute_frame vars mismatch\ninterp pc=%04x af=%02x%02x bc=%04x de=%04x hl=%04x sp=%04x vars=% x\njit    pc=%04x af=%02x%02x bc=%04x de=%04x hl=%04x sp=%04x vars=% x",
 			interpCPU.PC, interpCPU.A, interpCPU.F, interpCPU.BC(), interpCPU.DE(), interpCPU.HL(), interpCPU.SP, want,
 			jitCPU.PC, jitCPU.A, jitCPU.F, jitCPU.BC(), jitCPU.DE(), jitCPU.HL(), jitCPU.SP, got)
+	}
+	if gotState, wantState := z80CanonicalStateHash(jitCPU), z80CanonicalStateHash(interpCPU); gotState != wantState {
+		t.Fatalf("complete Z80 state mismatch: interp=%x jit=%x", wantState, gotState)
 	}
 }
 
@@ -276,6 +614,9 @@ func TestZ80JIT_Exec_NOP_Halt(t *testing.T) {
 	}
 	if !r.cpu.Halted {
 		t.Error("CPU should be halted")
+	}
+	if got := r.cpu.Cycles; got != 16 {
+		t.Errorf("cycles = %d, want 16 for three NOPs and HALT", got)
 	}
 }
 
@@ -1221,6 +1562,37 @@ func TestZ80JIT_Exec_DD_LD_IXd_r(t *testing.T) {
 	}
 }
 
+func TestZ80JIT_Exec_DD_LD_IXd_nParity(t *testing.T) {
+	program := []byte{
+		0xDD, 0x21, 0x00, 0xC0, // LD IX,$C000
+		0xDD, 0x36, 0x66, 0x01, // LD (IX+$66),$01 on the compiled page
+		0x76,
+	}
+	run := func(jit bool) (*CPU_Z80, []byte) {
+		r := newZ80JITTestRig()
+		for i, value := range program {
+			r.bus.Write8(0xC000+uint32(i), value)
+		}
+		r.cpu.PC = 0xC000
+		r.cpu.jitEnabled = jit
+		r.cpu.SetRunning(true)
+		if jit {
+			r.cpu.ExecuteJITZ80()
+		} else {
+			for !r.cpu.Halted {
+				r.cpu.Step()
+			}
+		}
+		return r.cpu, append([]byte(nil), r.bus.GetMemory()[0xC000:0xC080]...)
+	}
+	interpCPU, interpMemory := run(false)
+	jitCPU, jitMemory := run(true)
+	if string(jitMemory) != string(interpMemory) || jitCPU.IX != interpCPU.IX || jitCPU.PC != interpCPU.PC {
+		t.Fatalf("LD (IX+d),n mismatch: interpreter IX=%04x PC=%04x mem=% x; JIT IX=%04x PC=%04x mem=% x",
+			interpCPU.IX, interpCPU.PC, interpMemory, jitCPU.IX, jitCPU.PC, jitMemory)
+	}
+}
+
 func TestZ80JIT_Exec_DD_ADD_A_IXd(t *testing.T) {
 	r := newZ80JITTestRig()
 
@@ -1392,6 +1764,16 @@ func TestZ80JIT_Exec_LD_nn_A(t *testing.T) {
 	}
 }
 
+func TestZ80JIT_Exec_IOUsesCanonicalHelper(t *testing.T) {
+	r := newZ80JITTestRig()
+	// LD A,$5A; OUT ($10),A; HALT. OUT is host-observable and must execute
+	// through the frozen canonical helper rather than an interpreter re-fetch.
+	r.loadAndRun(t, 0x0100, []byte{0x3E, 0x5A, 0xD3, 0x10, 0x76}, 500*time.Millisecond)
+	if got := r.cpu.jitStats.helperExits.Load(); got != 1 {
+		t.Fatalf("canonical helper exits = %d, want 1", got)
+	}
+}
+
 func TestZ80JIT_Exec_LD_HL_nn_indirect(t *testing.T) {
 	r := newZ80JITTestRig()
 
@@ -1408,6 +1790,128 @@ func TestZ80JIT_Exec_LD_HL_nn_indirect(t *testing.T) {
 	hl := uint16(r.cpu.H)<<8 | uint16(r.cpu.L)
 	if hl != 0x1234 {
 		t.Errorf("HL = 0x%04X, want 0x1234", hl)
+	}
+}
+
+func TestZ80JIT_Exec_LD_nn_HL(t *testing.T) {
+	r := newZ80JITTestRig()
+
+	// LD HL,$1234; LD ($0500),HL; HALT.
+	r.loadAndRun(t, 0x0100, []byte{
+		0x21, 0x34, 0x12,
+		0x22, 0x00, 0x05,
+		0x76,
+	}, 500*time.Millisecond)
+
+	if got := r.bus.Read8(0x0500); got != 0x34 {
+		t.Errorf("memory[$0500] = $%02X, want $34", got)
+	}
+	if got := r.bus.Read8(0x0501); got != 0x12 {
+		t.Errorf("memory[$0501] = $%02X, want $12", got)
+	}
+}
+
+func TestZ80JIT_Exec_SelfModifyingLD_nn_HLCommitsBothBytes(t *testing.T) {
+	r := newZ80JITTestRig()
+	// The store targets the compiled page. A self-modification exit must occur
+	// only after both bytes of LD (nn),HL have become architecturally visible.
+	r.loadAndRun(t, 0x0100, []byte{
+		0x21, 0x34, 0x12, // LD HL,$1234
+		0x22, 0x0A, 0x01, // LD ($010A),HL
+		0x76, // HALT
+		0x00, 0x00, 0x00, 0x00,
+	}, 500*time.Millisecond)
+	if got := r.bus.Read8(0x010A); got != 0x34 {
+		t.Errorf("self-modifying low byte = $%02X, want $34", got)
+	}
+	if got := r.bus.Read8(0x010B); got != 0x12 {
+		t.Errorf("self-modifying high byte = $%02X, want $12", got)
+	}
+}
+
+func TestZ80JIT_Exec_ED_LD_nn_BC(t *testing.T) {
+	r := newZ80JITTestRig()
+	r.cpu.jitPersist = true
+	t.Cleanup(r.cpu.freeZ80JIT)
+
+	// LD BC,$1234; ED LD ($0500),BC; HALT.
+	r.loadAndRun(t, 0x0100, []byte{
+		0x01, 0x34, 0x12,
+		0xED, 0x43, 0x00, 0x05,
+		0x76,
+	}, 500*time.Millisecond)
+
+	if got := r.bus.Read8(0x0500); got != 0x34 {
+		t.Errorf("memory[$0500] = $%02X, want $34", got)
+	}
+	if got := r.bus.Read8(0x0501); got != 0x12 {
+		t.Errorf("memory[$0501] = $%02X, want $12", got)
+	}
+	block := r.cpu.jitCache.Get(0x0100)
+	if block == nil || block.instrCount < 2 {
+		t.Fatalf("ED store was not emitted in the entry block: %+v", block)
+	}
+}
+
+func TestZ80JIT_Exec_ED_RRD(t *testing.T) {
+	r := newZ80JITTestRig()
+	r.cpu.jitPersist = true
+	t.Cleanup(r.cpu.freeZ80JIT)
+	// LD HL,$0500; LD A,$A3; ED RRD; HALT.
+	r.bus.Write8(0x0500, 0x5C)
+	r.loadAndRun(t, 0x0100, []byte{0x21, 0x00, 0x05, 0x37, 0x3E, 0xA3, 0xED, 0x67, 0x76}, 500*time.Millisecond)
+	if got := r.cpu.A; got != 0xAC {
+		t.Fatalf("RRD A = %02X, want AC", got)
+	}
+	if got := r.bus.Read8(0x0500); got != 0x35 {
+		t.Fatalf("RRD (HL) = %02X, want 35", got)
+	}
+	if r.cpu.F&z80FlagC == 0 {
+		t.Fatal("RRD did not preserve carry")
+	}
+	if block := r.cpu.jitCache.Get(0x0100); block == nil || block.instrCount < 4 {
+		t.Fatalf("RRD was not emitted in the entry block: %+v", block)
+	}
+}
+
+func TestZ80JIT_Exec_ED_RLD(t *testing.T) {
+	r := newZ80JITTestRig()
+	r.cpu.jitPersist = true
+	t.Cleanup(r.cpu.freeZ80JIT)
+	r.bus.Write8(0x0500, 0x5C)
+	// LD HL,$0500; SCF; LD A,$A3; ED RLD; HALT.
+	r.loadAndRun(t, 0x0100, []byte{0x21, 0x00, 0x05, 0x37, 0x3E, 0xA3, 0xED, 0x6F, 0x76}, 500*time.Millisecond)
+	if got := r.cpu.A; got != 0xA5 {
+		t.Fatalf("RLD A = %02X, want A5", got)
+	}
+	if got := r.bus.Read8(0x0500); got != 0xC3 {
+		t.Fatalf("RLD (HL) = %02X, want C3", got)
+	}
+	if r.cpu.F&z80FlagC == 0 {
+		t.Fatal("RLD did not preserve carry")
+	}
+	if block := r.cpu.jitCache.Get(0x0100); block == nil || block.instrCount < 4 {
+		t.Fatalf("RLD was not emitted in the entry block: %+v", block)
+	}
+}
+
+func TestZ80JIT_Exec_EXSPHL(t *testing.T) {
+	r := newZ80JITTestRig()
+	r.cpu.jitPersist = true
+	r.cpu.SP = 0x0600
+	t.Cleanup(r.cpu.freeZ80JIT)
+	r.bus.Write8(0x0600, 0x34)
+	r.bus.Write8(0x0601, 0x12)
+	// LD HL,$BEEF; EX (SP),HL; HALT.
+	r.loadAndRun(t, 0x0100, []byte{0x21, 0xEF, 0xBE, 0xE3, 0x76}, 500*time.Millisecond)
+	if r.cpu.HL() != 0x1234 {
+		t.Fatalf("EX (SP),HL = %04X, want 1234", r.cpu.HL())
+	}
+	if lo, hi := r.bus.Read8(0x0600), r.bus.Read8(0x0601); lo != 0xEF || hi != 0xBE {
+		t.Fatalf("stack = %02X%02X, want BEEF", hi, lo)
+	}
+	if block := r.cpu.jitCache.Get(0x0100); block == nil || block.instrCount < 2 {
+		t.Fatalf("EX (SP),HL was not emitted: %+v", block)
 	}
 }
 
@@ -1522,22 +2026,94 @@ func TestZ80JIT_Exec_CB_SRL_HL(t *testing.T) {
 	}
 }
 
-func TestZ80JIT_Exec_ED_LD_nn_BC(t *testing.T) {
-	r := newZ80JITTestRig()
-
-	// LD BC, 0x1234; ED LD (0x0500), BC; HALT
+func TestZ80JIT_Exec_CB_RL_HLFlagsParity(t *testing.T) {
 	program := []byte{
-		0x01, 0x34, 0x12, // LD BC, 0x1234
-		0xED, 0x43, 0x00, 0x05, // LD (0x0500), BC
-		0x76, // HALT
+		0x21, 0x50, 0x01, // LD HL,$0150 on the compiled code page
+		0x37,       // SCF
+		0xCB, 0x16, // RL (HL): $EB through carry becomes $D7
+		0x76,
 	}
-	r.loadAndRun(t, 0x0100, program, 500*time.Millisecond)
+	run := func(jit bool) (*CPU_Z80, byte) {
+		r := newZ80JITTestRig()
+		r.bus.Write8(0x0150, 0xEB)
+		for i, value := range program {
+			r.bus.Write8(0x0100+uint32(i), value)
+		}
+		r.cpu.PC, r.cpu.jitEnabled = 0x0100, jit
+		r.cpu.SetRunning(true)
+		if jit {
+			r.cpu.ExecuteJITZ80()
+		} else {
+			for !r.cpu.Halted {
+				r.cpu.Step()
+			}
+		}
+		return r.cpu, r.bus.Read8(0x0150)
+	}
+	interpCPU, interpValue := run(false)
+	jitCPU, jitValue := run(true)
+	if jitValue != interpValue || jitCPU.F != interpCPU.F {
+		t.Fatalf("RL (HL) mismatch: interpreter value=%02x F=%02x; JIT value=%02x F=%02x", interpValue, interpCPU.F, jitValue, jitCPU.F)
+	}
+}
 
-	lo := r.bus.Read8(0x0500)
-	hi := r.bus.Read8(0x0501)
-	val := uint16(hi)<<8 | uint16(lo)
-	if val != 0x1234 {
-		t.Errorf("(0x0500) = 0x%04X, want 0x1234", val)
+func TestZ80JIT_Exec_DEC_HLSelfModFlagsParity(t *testing.T) {
+	program := []byte{
+		0x21, 0x50, 0x01, // LD HL,$0150 on the compiled code page
+		0x35, // DEC (HL): $01 becomes $00 and sets Z,N
+		0x76,
+	}
+	run := func(jit bool) (*CPU_Z80, byte) {
+		r := newZ80JITTestRig()
+		r.bus.Write8(0x0150, 0x01)
+		for i, value := range program {
+			r.bus.Write8(0x0100+uint32(i), value)
+		}
+		r.cpu.PC, r.cpu.jitEnabled = 0x0100, jit
+		r.cpu.SetRunning(true)
+		if jit {
+			r.cpu.ExecuteJITZ80()
+		} else {
+			for !r.cpu.Halted {
+				r.cpu.Step()
+			}
+		}
+		return r.cpu, r.bus.Read8(0x0150)
+	}
+	interpCPU, interpValue := run(false)
+	jitCPU, jitValue := run(true)
+	if jitValue != interpValue || jitCPU.F != interpCPU.F {
+		t.Fatalf("DEC (HL) self-mod mismatch: interpreter value=%02x F=%02x; JIT value=%02x F=%02x", interpValue, interpCPU.F, jitValue, jitCPU.F)
+	}
+}
+
+func TestZ80JIT_Exec_DD_DEC_IXdFlagsParity(t *testing.T) {
+	program := []byte{
+		0xDD, 0x21, 0x40, 0x01, // LD IX,$0140 on the compiled page
+		0xDD, 0x35, 0x10, // DEC (IX+$10): $01 becomes $00
+		0x76,
+	}
+	run := func(jit bool) (*CPU_Z80, byte) {
+		r := newZ80JITTestRig()
+		r.bus.Write8(0x0150, 0x01)
+		for i, value := range program {
+			r.bus.Write8(0x0100+uint32(i), value)
+		}
+		r.cpu.PC, r.cpu.jitEnabled = 0x0100, jit
+		r.cpu.SetRunning(true)
+		if jit {
+			r.cpu.ExecuteJITZ80()
+		} else {
+			for !r.cpu.Halted {
+				r.cpu.Step()
+			}
+		}
+		return r.cpu, r.bus.Read8(0x0150)
+	}
+	interpCPU, interpValue := run(false)
+	jitCPU, jitValue := run(true)
+	if jitValue != interpValue || jitCPU.F != interpCPU.F {
+		t.Fatalf("DEC (IX+d) mismatch: interpreter value=%02x F=%02x; JIT value=%02x F=%02x", interpValue, interpCPU.F, jitValue, jitCPU.F)
 	}
 }
 

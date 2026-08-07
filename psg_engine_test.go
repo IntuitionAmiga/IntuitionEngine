@@ -46,6 +46,38 @@ func TestPSGEngineEventsApply(t *testing.T) {
 	}
 }
 
+func TestPSGEngineProgressiveLateEventIsNotLost(t *testing.T) {
+	engine := NewPSGEngine(nil, 44100)
+	engine.SetEvents(nil, 0, false, 0)
+	engine.TickBlock(8)
+	engine.AppendEvents([]PSGEvent{{Sample: 4, Reg: 7, Value: 0x3e}}, 16, true, false, 0)
+	engine.TickSample()
+	if got := engine.HandleRead(PSG_BASE + 7); got != 0x3e {
+		t.Fatalf("late progressive event = %#x, want %#x", got, 0x3e)
+	}
+}
+
+func TestPSGEngineProgressivePlaybackStopsAtRenderedFrontier(t *testing.T) {
+	engine := NewPSGEngine(nil, 100)
+	engine.SetEvents([]PSGEvent{{Sample: 0, Reg: 8, Value: 1}}, 0, false, 0)
+	engine.AppendEvents(nil, 2, false, false, 0)
+
+	engine.TickBlock(8)
+	if got := engine.playbackSample(); got != 2 {
+		t.Fatalf("playback sample after underrun = %d, want rendered frontier 2", got)
+	}
+
+	engine.AppendEvents([]PSGEvent{{Sample: 3, Reg: 8, Value: 9}}, 5, false, false, 0)
+	engine.TickSample()
+	if got := engine.HandleRead(PSG_BASE + 8); got != 1 {
+		t.Fatalf("future event applied before sample 3: got %d", got)
+	}
+	engine.TickSample()
+	if got := engine.HandleRead(PSG_BASE + 8); got != 9 {
+		t.Fatalf("resumed event at sample 3 = %d, want 9", got)
+	}
+}
+
 func TestPSGFrameTimingFractional(t *testing.T) {
 	engine, _ := newTestPSGEngine(100)
 	player := NewPSGPlayer(engine)

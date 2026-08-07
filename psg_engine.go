@@ -34,6 +34,8 @@ type PSGEngine struct {
 	eventIndex      int
 	currentSample   uint64
 	totalSamples    uint64
+	renderedThrough uint64
+	progressive     bool
 	loop            bool
 	loopSample      uint64
 	loopEventIndex  int
@@ -201,6 +203,8 @@ func (e *PSGEngine) SetEvents(events []PSGEvent, totalSamples uint64, loop bool,
 	e.eventIndex = 0
 	e.currentSample = 0
 	e.totalSamples = totalSamples
+	e.renderedThrough = 0
+	e.progressive = false
 	e.loop = loop
 	e.loopSample = loopSample
 	e.loopEventIndex = 0
@@ -213,6 +217,50 @@ func (e *PSGEngine) SetEvents(events []PSGEvent, totalSamples uint64, loop bool,
 			return events[i].Sample >= loopSample
 		})
 	}
+}
+
+// AppendEvents extends a progressively rendered event stream. Events carry
+// absolute sample positions and must be appended in order. Until complete is
+// true, totalSamples remains zero and renderedThrough is the exclusive
+// producer frontier. Playback waits at that frontier until more samples have
+// been rendered, preserving the absolute timing of events appended later.
+func (e *PSGEngine) AppendEvents(events []PSGEvent, totalSamples uint64, complete bool, loop bool, loopSample uint64) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	e.events = append(e.events, events...)
+	if !complete {
+		if totalSamples > e.renderedThrough {
+			e.renderedThrough = totalSamples
+		}
+		e.progressive = true
+		return
+	}
+	e.progressive = false
+	e.renderedThrough = totalSamples
+	e.totalSamples = totalSamples
+	e.loop = loop
+	e.loopSample = loopSample
+	e.loopEventIndex = 0
+	if loop {
+		e.loopEventIndex = sort.Search(len(e.events), func(i int) bool {
+			return e.events[i].Sample >= loopSample
+		})
+	}
+}
+
+func (e *PSGEngine) bufferedSamplesAhead(renderedThrough uint64) uint64 {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	if renderedThrough <= e.currentSample {
+		return 0
+	}
+	return renderedThrough - e.currentSample
+}
+
+func (e *PSGEngine) playbackSample() uint64 {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+	return e.currentSample
 }
 
 func (e *PSGEngine) SetSNStream(snEvents []SNEvent, chip *SN76489Chip, clockHz uint32) {
@@ -277,6 +325,8 @@ func (e *PSGEngine) StopPlayback() {
 	e.snLoopEventIndex = 0
 	e.currentSample = 0
 	e.totalSamples = 0
+	e.renderedThrough = 0
+	e.progressive = false
 	e.silenceSNLocked()
 	e.silenceChannels()
 	// Reset channelsInit so the next song triggers fresh channel initialization.
@@ -338,6 +388,9 @@ func (e *PSGEngine) QuietSamples() int {
 		// the one before it.
 		span = min(span, quietSpanFromDelta(e.currentSample+1, e.totalSamples))
 	}
+	if e.progressive {
+		span = min(span, quietSpanFromDelta(e.currentSample, e.renderedThrough))
+	}
 	return span
 }
 
@@ -359,13 +412,16 @@ func psgEnvelopeQuietSamples(counter, period float64) int {
 }
 
 func (e *PSGEngine) tickSampleLocked() {
+	if e.progressive && e.currentSample >= e.renderedThrough {
+		return
+	}
 	e.advanceEnvelope()
 
 	if !e.playing {
 		return
 	}
 
-	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample == e.currentSample {
+	for e.eventIndex < len(e.events) && e.events[e.eventIndex].Sample <= e.currentSample {
 		ev := e.events[e.eventIndex]
 		if ev.Reg < PSG_REG_COUNT {
 			e.regs[ev.Reg] = ev.Value

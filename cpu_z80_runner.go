@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -54,15 +55,28 @@ type CPUZ80Runner struct {
 }
 
 type Z80BusAdapter struct {
-	bus            *MachineBus
-	psgRegSelect   byte       // Currently selected PSG register for port I/O
-	sidRegSelect   byte       // Currently selected SID register for port I/O
-	pokeyRegSelect byte       // Currently selected POKEY register for port I/O
-	tedRegSelect   byte       // Currently selected TED register for port I/O
-	snLastWritten  byte       // Last SN76489 byte written through the data port
-	anticRegSelect byte       // Currently selected ANTIC register for port I/O
-	gtiaRegSelect  byte       // Currently selected GTIA register for port I/O
-	vgaEngine      *VGAEngine // VGA engine for port I/O access
+	bus *MachineBus
+	// ioDelegate lets bounded playback runners use the native JIT over their
+	// private 64 KiB RAM while retaining format-specific port I/O and timing.
+	ioDelegate Z80Bus
+	// flatMemory preserves the playback contract in which every logical Z80
+	// address is an ordinary byte in the delegate's 64 KiB RAM.
+	flatMemory bool
+	// coprocFlat maps the logical Z80 address space onto a dedicated physical
+	// worker window while preserving the mailbox aperture.
+	coprocFlat         bool
+	coprocBase         uint32
+	coprocMailboxBase  uint32
+	coprocMailboxStart uint16
+	coprocMailboxEnd   uint16
+	psgRegSelect       byte       // Currently selected PSG register for port I/O
+	sidRegSelect       byte       // Currently selected SID register for port I/O
+	pokeyRegSelect     byte       // Currently selected POKEY register for port I/O
+	tedRegSelect       byte       // Currently selected TED register for port I/O
+	snLastWritten      byte       // Last SN76489 byte written through the data port
+	anticRegSelect     byte       // Currently selected ANTIC register for port I/O
+	gtiaRegSelect      byte       // Currently selected GTIA register for port I/O
+	vgaEngine          *VGAEngine // VGA engine for port I/O access
 
 	// Voodoo 32-bit register access via 8-bit ports
 	voodooAddr   uint16        // Target register offset from VOODOO_BASE
@@ -80,12 +94,48 @@ type Z80BusAdapter struct {
 	bank1Enable bool   // Bank 1 enabled
 	bank2Enable bool   // Bank 2 enabled
 	bank3Enable bool   // Bank 3 enabled
-	debugAccess *DebugAccessService
-	debugCPUID  int
+	// mappingGeneration advances before a bank or VRAM mapping change becomes
+	// observable. Z80 JIT dispatch compares it independently of physical code
+	// generations, because a remap can replace logical-PC bytes without RAM
+	// mutation.
+	mappingGeneration atomic.Uint64
+	debugAccess       *DebugAccessService
+	debugCPUID        int
 }
 
 func NewZ80BusAdapter(bus *MachineBus) *Z80BusAdapter {
 	return &Z80BusAdapter{bus: bus, psgRegSelect: 0, debugCPUID: -1}
+}
+
+func newZ80PlaybackAdapter(bus *MachineBus, delegate Z80Bus) *Z80BusAdapter {
+	return &Z80BusAdapter{bus: bus, ioDelegate: delegate, flatMemory: true, debugCPUID: -1}
+}
+
+func newZ80CoprocessorAdapter(bus *MachineBus, base, mailboxBase uint32, mailboxStart, mailboxEnd uint16) *Z80BusAdapter {
+	return &Z80BusAdapter{
+		bus: bus, debugCPUID: -1,
+		coprocFlat: true, coprocBase: base,
+		coprocMailboxBase: mailboxBase, coprocMailboxStart: mailboxStart, coprocMailboxEnd: mailboxEnd,
+	}
+}
+
+func (b *Z80BusAdapter) jitMemory() []byte {
+	mem := b.bus.GetMemory()
+	if !b.coprocFlat {
+		return mem
+	}
+	if !z80CoprocessorWindowFits(uint64(len(mem)), b.coprocBase) {
+		return nil
+	}
+	end := uint64(b.coprocBase) + z80AddressSpace
+	return mem[int(b.coprocBase):int(end)]
+}
+
+// z80CoprocessorWindowFits reports whether the worker's 64 KiB logical
+// address space is wholly contained in the backing memory. Keep the check
+// wide: MachineBus backings may exceed the 32-bit Z80 physical address range.
+func z80CoprocessorWindowFits(memLen uint64, base uint32) bool {
+	return uint64(base)+z80AddressSpace <= memLen
 }
 
 // NewZ80BusAdapterWithVGA creates a Z80 system bus with VGA engine support
@@ -124,6 +174,15 @@ func (b *Z80BusAdapter) fetchRead(addr uint16) byte {
 }
 
 func (b *Z80BusAdapter) readNoDebug(addr uint16) byte {
+	if b.flatMemory {
+		return b.ioDelegate.Read(addr)
+	}
+	if b.coprocFlat {
+		if addr >= b.coprocMailboxStart && addr < b.coprocMailboxEnd {
+			return b.readBus8NoDebug(b.coprocMailboxBase + uint32(addr-b.coprocMailboxStart))
+		}
+		return b.readBus8NoDebug(b.coprocBase + uint32(addr))
+	}
 	if addr == Z80_VRAM_BANK_REG {
 		return byte(b.vramBank & 0xFF)
 	}
@@ -175,6 +234,10 @@ func (b *Z80BusAdapter) writeBus8(addr uint32, value byte) {
 }
 
 func (b *Z80BusAdapter) writeMemoryDirect(addr uint32, value byte) {
+	if b.flatMemory && addr <= 0xFFFF {
+		b.ioDelegate.Write(uint16(addr), value)
+		return
+	}
 	b.bus.WriteMemoryDirect(addr, value)
 	b.debugOnWrite(addr, 1, 0, uint64(value))
 }
@@ -199,6 +262,16 @@ func translateIO8Bit(addr uint16) uint32 {
 }
 
 func (b *Z80BusAdapter) Read(addr uint16) byte {
+	if b.flatMemory {
+		return b.ioDelegate.Read(addr)
+	}
+	if b.coprocFlat {
+		if addr >= b.coprocMailboxStart && addr < b.coprocMailboxEnd {
+			return b.readBus8(b.coprocMailboxBase + uint32(addr-b.coprocMailboxStart))
+		}
+		return b.readBus8(b.coprocBase + uint32(addr))
+	}
+
 	// Handle VRAM bank register reads
 	if addr == Z80_VRAM_BANK_REG {
 		return byte(b.vramBank & 0xFF)
@@ -245,8 +318,21 @@ func (b *Z80BusAdapter) Read(addr uint16) byte {
 }
 
 func (b *Z80BusAdapter) Write(addr uint16, value byte) {
+	if b.flatMemory {
+		b.ioDelegate.Write(addr, value)
+		return
+	}
+	if b.coprocFlat {
+		if addr >= b.coprocMailboxStart && addr < b.coprocMailboxEnd {
+			b.writeBus8(b.coprocMailboxBase+uint32(addr-b.coprocMailboxStart), value)
+		} else {
+			b.writeBus8(b.coprocBase+uint32(addr), value)
+		}
+		return
+	}
 	// Handle VRAM bank register writes
 	if addr == Z80_VRAM_BANK_REG {
+		b.mappingGeneration.Add(1)
 		b.vramBank = uint32(value)
 		b.vramEnabled = true
 		return
@@ -258,26 +344,32 @@ func (b *Z80BusAdapter) Write(addr uint16, value byte) {
 	// Handle extended bank register writes
 	switch addr {
 	case Z80_BANK1_REG_LO:
+		b.mappingGeneration.Add(1)
 		b.bank1 = (b.bank1 & 0xFF00) | uint32(value)
 		b.bank1Enable = true
 		return
 	case Z80_BANK1_REG_HI:
+		b.mappingGeneration.Add(1)
 		b.bank1 = (b.bank1 & 0x00FF) | (uint32(value) << 8)
 		b.bank1Enable = true
 		return
 	case Z80_BANK2_REG_LO:
+		b.mappingGeneration.Add(1)
 		b.bank2 = (b.bank2 & 0xFF00) | uint32(value)
 		b.bank2Enable = true
 		return
 	case Z80_BANK2_REG_HI:
+		b.mappingGeneration.Add(1)
 		b.bank2 = (b.bank2 & 0x00FF) | (uint32(value) << 8)
 		b.bank2Enable = true
 		return
 	case Z80_BANK3_REG_LO:
+		b.mappingGeneration.Add(1)
 		b.bank3 = (b.bank3 & 0xFF00) | uint32(value)
 		b.bank3Enable = true
 		return
 	case Z80_BANK3_REG_HI:
+		b.mappingGeneration.Add(1)
 		b.bank3 = (b.bank3 & 0x00FF) | (uint32(value) << 8)
 		b.bank3Enable = true
 		return
@@ -408,6 +500,7 @@ func (b *Z80BusAdapter) translateVRAM(addr uint16) (uint32, bool) {
 
 // ResetBank resets all bank registers to their default state
 func (b *Z80BusAdapter) ResetBank() {
+	b.mappingGeneration.Add(1)
 	b.vramBank = 0
 	b.vramEnabled = false
 	b.vgaVramBank = 0
@@ -433,6 +526,13 @@ func sidPortTarget(selectValue byte) (uint32, uint8, bool) {
 }
 
 func (b *Z80BusAdapter) In(port uint16) byte {
+	if b.ioDelegate != nil {
+		return b.ioDelegate.In(port)
+	}
+	if b.coprocFlat {
+		return 0
+	}
+
 	lowPort := byte(port)
 
 	// Handle PSG port I/O (0xF0-0xF1)
@@ -596,6 +696,14 @@ func (b *Z80BusAdapter) In(port uint16) byte {
 }
 
 func (b *Z80BusAdapter) Out(port uint16, value byte) {
+	if b.ioDelegate != nil {
+		b.ioDelegate.Out(port, value)
+		return
+	}
+	if b.coprocFlat {
+		return
+	}
+
 	lowPort := byte(port)
 
 	// Handle PSG port I/O (0xF0-0xF1)
@@ -813,7 +921,11 @@ func (b *Z80BusAdapter) Out(port uint16, value byte) {
 	b.writeBus8(translateIO8Bit(port), value)
 }
 
-func (b *Z80BusAdapter) Tick(cycles int) {}
+func (b *Z80BusAdapter) Tick(cycles int) {
+	if b.ioDelegate != nil {
+		b.ioDelegate.Tick(cycles)
+	}
+}
 
 func NewCPUZ80Runner(bus *MachineBus, config CPUZ80Config) *CPUZ80Runner {
 	loadAddr := config.LoadAddr

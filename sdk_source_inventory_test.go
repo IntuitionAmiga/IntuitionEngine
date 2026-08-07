@@ -29,6 +29,22 @@ func TestSDKArchitectureSourceInventoryGoldenMatchesSource(t *testing.T) {
 	assertSourceInventoryGolden(t, "sdk/docs/verify/SDK_ARCH_SOURCE_AUDIT.md", renderSDKArchitectureSourceAudit(t), "UPDATE_SDK_ARCH_SOURCE_AUDIT")
 }
 
+func TestZ80JITDocumentationRejectsStalePartialBackendClaims(t *testing.T) {
+	paths := []string{"z80_jit.md", "sdk/docs/architecture.md", "sdk/docs/iescript.md", "sdk/docs/iemon.md", "sdk/docs/wasm.md"}
+	stale := []string{"NOP and register-only loads", "remaining Z80 forms use frozen canonical helpers", "ARM64 direct coverage", "other forms use canonical helpers", "breaks on HALT"}
+	for _, path := range paths {
+		contents, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, claim := range stale {
+			if strings.Contains(string(contents), claim) {
+				t.Errorf("%s retains stale Z80 JIT claim %q", path, claim)
+			}
+		}
+	}
+}
+
 func TestSDKIEMonManualCoverageMatchesSourceInventory(t *testing.T) {
 	doc := readAuditFile(t, "sdk/docs/iemon.md")
 	for _, fact := range sdkIEMonFactsFromSource(t) {
@@ -565,12 +581,12 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		evidence string
 	}{
 		{"Linux amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` build tags"},
-		{"Linux arm64 | IE64, M68K, 6502, x86", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_6502_dispatch.go`, and `jit_x86_dispatch_arm64.go`; Z80 dispatch compiles but keeps `z80JitAvailable` false"},
+		{"Linux arm64 | IE64, M68K, 6502, Z80, x86", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_6502_dispatch.go`, `jit_z80_dispatch.go`, and `jit_x86_dispatch_arm64.go`"},
 		{"Windows amd64 | IE64, M68K, Z80, x86", "`jit_6502_dispatch_stub.go` interpreter fallback plus amd64 dispatch files for the listed cores"},
 		{"Windows arm64 | IE64, M68K", "`jit_dispatch.go` and `jit_m68k_dispatch_arm64.go` arm64 Windows tags plus other-core stubs"},
 		{"macOS amd64 | IE64, M68K, Z80, x86", "`jit_6502_dispatch_stub.go` interpreter fallback plus amd64 dispatch files for the listed cores"},
 		{"macOS arm64 | IE64, M68K", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and Darwin arm64 JIT write-protect helpers"},
-		{"Browser (js/wasm) | IE64, M68K, 6502 and x86 (wasm bytecode backends)", "`jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_6502_dispatch_wasm.go`, and `jit_x86_dispatch_wasm.go`"},
+		{"Browser (js/wasm) | IE64, M68K, 6502, Z80 and x86 (wasm bytecode backends)", "`jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_6502_dispatch_wasm.go`, `jit_z80_dispatch_wasm.go`, and `jit_x86_dispatch_wasm.go`"},
 	} {
 		facts = append(facts, sdkSourceFact{
 			Surface:  "Architecture",

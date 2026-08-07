@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -994,6 +995,35 @@ func TestCoprocZ80BusTranslation(t *testing.T) {
 	}
 	zb.Out(0x10, 0xFF) // should not panic
 	zb.Tick(100)       // should not panic
+}
+
+func TestZ80CoprocessorAdapterPreservesFlatMemoryAndIOIsolation(t *testing.T) {
+	bus := NewMachineBus()
+	base := uint32(WORKER_Z80_BASE)
+	adapter := newZ80CoprocessorAdapter(bus, base, MAILBOX_BASE, 0x2000, 0x2000+uint16(MAILBOX_SIZE))
+	mem := bus.GetMemory()
+
+	mem[base+Z80_PSG_PORT_SELECT] = 0xA5
+	if got := adapter.Read(Z80_PSG_PORT_SELECT); got != 0xA5 {
+		t.Fatalf("flat read at PSG address = %02X, want worker memory %02X", got, byte(0xA5))
+	}
+	adapter.Out(Z80_PSG_PORT_SELECT, 0x0E)
+	if adapter.psgRegSelect != 0 {
+		t.Fatalf("coprocessor OUT changed PSG selection to %02X", adapter.psgRegSelect)
+	}
+	if got := adapter.In(Z80_PSG_PORT_SELECT); got != 0 {
+		t.Fatalf("coprocessor IN = %02X, want 00", got)
+	}
+}
+
+func TestZ80CoprocessorWindowFitsLargeBacking(t *testing.T) {
+	memLen := uint64(math.MaxUint32) + z80AddressSpace
+	if !z80CoprocessorWindowFits(memLen, math.MaxUint32) {
+		t.Fatal("64-bit backing length rejected a valid worker window")
+	}
+	if z80CoprocessorWindowFits(uint64(math.MaxUint32), math.MaxUint32) {
+		t.Fatal("truncated backing length accepted an incomplete worker window")
+	}
 }
 
 func TestMailbox_Z80_BoundsClamp(t *testing.T) {

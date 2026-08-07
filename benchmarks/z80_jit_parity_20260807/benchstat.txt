@@ -1,0 +1,33 @@
+goos: linux
+goarch: amd64
+pkg: github.com/intuitionamiga/IntuitionEngine
+cpu: Intel(R) Xeon(R) W-11955M CPU @ 2.60GHz
+                  │ /home/zayn/GolandProjects/IntuitionEngine/benchmarks/z80_jit_parity_20260807/before.txt │ /home/zayn/GolandProjects/IntuitionEngine/benchmarks/z80_jit_parity_20260807/after.txt │
+                  │                                         sec/op                                          │                             sec/op                              vs base                │
+Z80_ALU_JIT-16                                                                                 8.420µ ± ∞ ¹                                                     7.471µ ± ∞ ¹       ~ (p=0.100 n=3) ²
+Z80_Memory_JIT-16                                                                              4.901µ ± ∞ ¹                                                     4.418µ ± ∞ ¹       ~ (p=0.100 n=3) ²
+Z80_Mixed_JIT-16                                                                               8.867µ ± ∞ ¹                                                     8.163µ ± ∞ ¹       ~ (p=0.100 n=3) ²
+Z80_Call_JIT-16                                                                                9.442µ ± ∞ ¹                                                     8.612µ ± ∞ ¹       ~ (p=0.100 n=3) ²
+geomean                                                                                        7.667µ                                                           6.940µ        -9.47%
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                  │ /home/zayn/GolandProjects/IntuitionEngine/benchmarks/z80_jit_parity_20260807/before.txt │ /home/zayn/GolandProjects/IntuitionEngine/benchmarks/z80_jit_parity_20260807/after.txt │
+                  │                                        MIPS_host                                        │                           MIPS_host                            vs base                 │
+Z80_ALU_JIT-16                                                                                  274.0 ± ∞ ¹                                                     308.8 ± ∞ ¹        ~ (p=0.100 n=3) ²
+Z80_Memory_JIT-16                                                                               314.0 ± ∞ ¹                                                     348.3 ± ∞ ¹        ~ (p=0.100 n=3) ²
+Z80_Mixed_JIT-16                                                                                231.3 ± ∞ ¹                                                     251.3 ± ∞ ¹        ~ (p=0.100 n=3) ²
+Z80_Call_JIT-16                                                                                 108.8 ± ∞ ¹                                                     119.3 ± ∞ ¹        ~ (p=0.100 n=3) ²
+geomean                                                                                         215.7                                                           238.3        +10.47%
+¹ need >= 6 samples for confidence interval at level 0.95
+² need >= 4 samples to detect a difference at alpha level 0.05
+
+                  │ /home/zayn/GolandProjects/IntuitionEngine/benchmarks/z80_jit_parity_20260807/before.txt │ /home/zayn/GolandProjects/IntuitionEngine/benchmarks/z80_jit_parity_20260807/after.txt │
+                  │                                        instrs/op                                        │                           instrs/op                             vs base                │
+Z80_ALU_JIT-16                                                                                 2.307k ± ∞ ¹                                                     2.307k ± ∞ ¹       ~ (p=1.000 n=3) ²
+Z80_Memory_JIT-16                                                                              1.539k ± ∞ ¹                                                     1.539k ± ∞ ¹       ~ (p=1.000 n=3) ²
+Z80_Mixed_JIT-16                                                                               2.051k ± ∞ ¹                                                     2.051k ± ∞ ¹       ~ (p=1.000 n=3) ²
+Z80_Call_JIT-16                                                                                1.027k ± ∞ ¹                                                     1.027k ± ∞ ¹       ~ (p=1.000 n=3) ²
+geomean                                                                                        1.654k                                                           1.654k        +0.00%
+¹ need >= 6 samples for confidence interval at level 0.95
+² all samples are equal
