@@ -2,11 +2,13 @@
 
 ![Intuition Engine splash](splash.png)
 
-Intuition Engine is a modern 64-bit RISC fantasy computer implemented in Go. It reimagines 1980s and 1990s home-computer ideas as one machine, not as a clone of any single system: the BASIC prompt, IE64 and IE32 processors, M68K, Z80, 6502, x86, display chips, sound engines, DMA hardware, input devices, file devices, and monitor all sit on one shared MachineBus.
+Intuition Engine is a multi-CPU fantasy computer implemented in Go. It reimagines 1980s and 1990s home-computer ideas as one machine, not as a clone of any single system. Six heterogeneous processors share one MachineBus: IE64, IE32, M68K, Z80, 6502, and x86. The BASIC prompt, display chips, sound engines, DMA hardware, input devices, file devices, and monitor use that same machine architecture.
 
 It can be run as a desktop emulator or booted as an x64 live USB appliance. For programmers, it is a bare-metal target with an SDK, examples, and maintained reference documentation for writing directly against the Intuition Engine hardware.
 
 Guest RAM is autodetected at boot from the host and then exposed as total guest RAM plus per-profile active visible RAM through SYSINFO and CPU-specific discovery paths.
+
+[Try Intuition Engine in a browser](https://intuitionengine.io) | [Download releases](https://github.com/IntuitionAmiga/IntuitionEngine/releases) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
 
 ## Quick Start
 
@@ -19,6 +21,13 @@ make
 
 Launching with no mode flag and no filename starts EhBASIC on IE64.
 
+The default build uses the Ebiten display, Oto audio, and Vulkan-backed Voodoo renderer. It requires the Go toolchain selected by `go.mod` and the native development libraries required by those backends. If the Vulkan SDK is unavailable, build the emulator with the software Voodoo renderer instead:
+
+```bash
+make novulkan
+./bin/IntuitionEngine
+```
+
 Build SDK examples and run a demo:
 
 ```bash
@@ -30,26 +39,30 @@ make sdk
 
 - Guest CPU modes: IE64, IE32, Motorola 68020-oriented M68K, Z80, 6502, and 32-bit flat x86.
 - JIT backends where supported by host OS and architecture.
-- Video devices: IEVideoChip, VGA, ULA, TED video, ANTIC/GTIA, compositor, and a Voodoo-style 3D path.
+- Video systems: VideoChip, VGA, TED video, ANTIC/GTIA, ULA, and Voodoo 3D, combined through a layered compositor.
 - Audio and music paths: custom SoundChip, PSG/AY/YM/SN76489, SID, POKEY/SAP, TED, AHX/THX, MOD, WAV, MIDI/MUS, and AROS Paula-style DMA.
 - Guest environments: EhBASIC, EmuTOS, AROS, and IntuitionOS.
 - Runtime tooling: Machine Monitor, Lua/IEScript automation, REPL overlay, screenshots, recording support, and scripted test harnesses.
-- SDK tools: IE32/IE64 assemblers, IE64 disassembler, IE32-to-IE64 converter, M68K-to-IE64 transpiler, include files, examples, and documentation.
+- SDK tools: IE32 and IE64 assemblers, IE64 disassembler, IE32-to-IE64 converter, M68K-to-IE64 transpiler, IE64 C compiler, static linker and archive tools, include files, examples, and documentation.
 
 ## Build
 
-Go 1.26 or later is required.
+Use the Go toolchain selected by `go.mod`, currently Go 1.26.4. The pinned version is required because the default build uses the experimental `simd/archsimd` API.
 
 The default build shown in the quick start produces the emulator at `bin/IntuitionEngine` and core SDK tools under `sdk/bin/`.
 
-On amd64, `make` builds enable SIMD acceleration by default (they export
-`GOEXPERIMENT=simd`, and the live image inherits it). The accelerated span kernels
-have bit-exact scalar fallbacks, so other architectures and hosts without the AVX2
-baseline build and run scalar only with identical output. Set `IE_SIMD=0` to force
-the scalar kernels at runtime. For `go run .` outside `make`, enable the experiment
-once with `go env -w GOEXPERIMENT=simd`.
+On amd64, `make` builds enable SIMD acceleration and target the x86-64-v3 baseline
+by default. The live image inherits both settings. `IE_SIMD=0` selects the
+bit-exact scalar span kernels at runtime, but it does not lower the binary's
+x86-64-v3 CPU requirement. For an older x86-64 host, build outside the Makefile
+with a suitable lower `GOAMD64` value. For `go run .` outside `make`, enable the
+SIMD experiment once with `go env -w GOEXPERIMENT=simd`, or leave it unset to use
+the scalar kernels.
 
 ## Run
+
+<details>
+<summary>Command-line formats, playback modes, and runtime flags</summary>
 
 Typed Intuition Engine binaries and IEScript files can be launched directly by extension:
 
@@ -135,11 +148,13 @@ Useful runtime flags:
 ./bin/IntuitionEngine -features
 ```
 
+</details>
+
 ## Runtime Controls
 
 | Key | Action |
 |-----|--------|
-| `F7` | Cycle the default-on CRT presentation filter through flat, curved, and off. The key also reaches the guest. |
+| `F7` | Cycle the default-on CRT presentation filter through flat, curved, and off. The key also reaches the guest when no host overlay is consuming keyboard input. |
 | `F8` | Toggle the Lua REPL overlay, unless the Machine Monitor is active. |
 | `F9` | Toggle the Machine Monitor. |
 | `F10` | Hard reset to the configured boot profile; normal BASIC-launched sessions return to BASIC. |
@@ -161,8 +176,14 @@ Core SDK tool outputs:
 | `sdk/bin/ie32to64` | IE32-to-IE64 converter |
 | `sdk/bin/m68kto64` | M68K-to-IE64 transpiler |
 | `sdk/bin/ie64dis` | IE64 disassembler |
+| `sdk/bin/ie64-cproc` | IE64 freestanding C compiler driver |
+| `sdk/bin/ie64ld` | IE64 static linker |
+| `sdk/bin/ie64-ar` | IE64 static archive tool |
+| `sdk/bin/ie64-ranlib` | IE64 static archive indexer |
 
 The main output formats are `.iex` for IE32, `.ie64` for IE64, `.ie68` for M68K, `.ie80` for Z80, `.ie65` for 6502, and `.ie86` for x86.
+
+The [Linux x86-64 Host SDK](sdk/docs/host-sdk-README.md) packages these tools with QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation. Build its distributable archive with `make dist-host-sdk-linux-amd64`.
 
 ## Live USB Image
 
@@ -193,6 +214,7 @@ Maintained profiles:
 | Windows | ARM64 | `novulkan` |
 | macOS | x86_64 | `novulkan` |
 | macOS | ARM64 | `novulkan` |
+| Browser | WebAssembly | `make wasm`; IE64, M68K, 6502, Z80, and x86 wasm JIT backends, with IE32 interpreted |
 
 SIMD span acceleration (`simd/archsimd`) is amd64 only and default-on for `make`
 builds; every other architecture falls back to the bit-exact scalar kernels
@@ -208,9 +230,8 @@ JIT availability depends on host OS, host architecture, and guest CPU.
 - [Machine Monitor](sdk/docs/iemon.md)
 - [IEScript](sdk/docs/iescript.md)
 - [Intuition Engine Programmer's Reference Guide](sdk/docs/refman.publish/)
+- [Developer guide](DEVELOPERS.md)
 
 ## License
 
 Intuition Engine is distributed under GPLv3 or later. See `LICENSE`.
-
-YouTube: <https://www.youtube.com/@IntuitionAmiga/>
