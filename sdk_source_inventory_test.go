@@ -390,6 +390,9 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"dbg.history_config([opts]) returns delta_interval, delta_mib, checkpoints, and snapshots", "`script_engine.go` `luaDbgHistoryConfig` return table fields"},
 		{"dbg.mmio_stats() returns rows with start, end, name, reads, and writes", "`script_engine.go` `luaDbgMMIOStats`, `mmio_stats.go` `MMIOStatsSnapshot`"},
 		{"media.type() returns sid, psg, ted, ahx, pokey, mod, wav, midi, or none", "`script_engine.go` `mediaTypeToString`, `media_loader.go` MIDI extension detection"},
+		{"Supported for IE32, m68k, z80, x86, 6502, and ie64", "`script_engine.go` `luaCPUJITEnabled` selected-CPU switch"},
+		{"IE32 is available on Linux x64, Linux arm64, and browser js/wasm when its runtime backend is available.", "`script_engine.go` `luaCPUSetJITEnabled`, `jit_ie32_available_linux.go`, `jit_ie32_available_wasm.go`"},
+		{"In IE32 mode, returns backend, instruction_count, native_entries, compiled_blocks, compiled_regions, hot_recompilations, retired_instructions, direct_instructions, helper_instructions, helper_exits, helper_resumes, chains, chain_budget_exits, deoptimizations, helper_deopts, source_stamp_deopts, code_cache_resets, invalidations, invalidated_blocks, cache_hits, return_cache_hits, mmio_poll_iterations, mmio_store_helpers, resident_spills_saved, counted_loops, and profitability_fallbacks.", "`script_engine.go` `luaCPUJITStats`, `jit_ie32_policy.go` `JITStats`"},
 		{"instruction_count, tier1_blocks, native_entries, bailouts, invalidations, and chain_exits; reset clears all 6502 counters", "`script_engine.go` `luaCPUJITStats`, `cpu_six5go2.go` `Reset`, and `jit_6502_policy.go` `resetJITStats`"},
 		{"Available backends start enabled during normal CPU and runner construction; the primary command-line CPU starts disabled when --nojit is used.", "CPU constructors and runner defaults; `main.go` `nojit` flag and per-primary-CPU disable paths"},
 		{"dbg.open() freezes every CPU and the audio clock; final dbg.close() restores the pre-entry audio state unless fa or ta changed it during the session", "`script_engine.go` `luaDbgOpen`/`luaDbgClose`, `debug_monitor.go` media-freeze entry/exit contract"},
@@ -440,6 +443,20 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 				t.Fatalf("%s 6502 JIT platform contract changed; review architecture.md: %s", path, needle)
 			}
 		}
+	}
+	goMod := readAuditFile(t, "go.mod")
+	if !strings.Contains(goMod, "go 1.26.0") || strings.Contains(goMod, "\ntoolchain ") {
+		t.Fatal("go.mod minimum/unpinned toolchain contract changed; review architecture.md")
+	}
+	workflow := readAuditFile(t, ".github/workflows/test.yml")
+	for _, needle := range []string{`go-version: ["1.26.0", stable]`, "make headless-novulkan"} {
+		if !strings.Contains(workflow, needle) {
+			t.Fatalf("Go compatibility workflow changed; review architecture.md: %s", needle)
+		}
+	}
+	makefile := readAuditFile(t, "Makefile")
+	if !strings.Contains(makefile, "GOEXPERIMENT=simd") {
+		t.Fatal("Makefile no longer enables the documented SIMD experiment")
 	}
 	for category, files := range categoryEvidence {
 		if len(files) == 0 {
@@ -580,13 +597,13 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		name     string
 		evidence string
 	}{
-		{"Linux amd64 | IE64, 6502, M68K, Z80, x86", "`jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch.go` build tags"},
-		{"Linux arm64 | IE64, M68K, 6502, Z80, x86", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_6502_dispatch.go`, `jit_z80_dispatch.go`, and `jit_x86_dispatch_arm64.go`"},
+		{"Linux amd64 | IE32, IE64, 6502, M68K, Z80, x86", "`jit_ie32_available_linux.go`, `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_m68k_dispatch.go`, `jit_z80_dispatch.go`, and `jit_x86_dispatch.go` build tags"},
+		{"Linux arm64 | IE32, IE64, M68K, 6502, Z80, x86", "`jit_ie32_available_linux.go`, `jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_6502_dispatch.go`, `jit_z80_dispatch.go`, and `jit_x86_dispatch_arm64.go`"},
 		{"Windows amd64 | IE64, M68K, Z80, x86", "`jit_6502_dispatch_stub.go` interpreter fallback plus amd64 dispatch files for the listed cores"},
 		{"Windows arm64 | IE64, M68K", "`jit_dispatch.go` and `jit_m68k_dispatch_arm64.go` arm64 Windows tags plus other-core stubs"},
 		{"macOS amd64 | IE64, M68K, Z80, x86", "`jit_6502_dispatch_stub.go` interpreter fallback plus amd64 dispatch files for the listed cores"},
 		{"macOS arm64 | IE64, M68K", "`jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and Darwin arm64 JIT write-protect helpers"},
-		{"Browser (js/wasm) | IE64, M68K, 6502, Z80 and x86 (wasm bytecode backends)", "`jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_6502_dispatch_wasm.go`, `jit_z80_dispatch_wasm.go`, and `jit_x86_dispatch_wasm.go`"},
+		{"Browser (js/wasm) | IE32, IE64, M68K, 6502, Z80 and x86 (wasm bytecode backends)", "`jit_ie32_available_wasm.go`, `jit_ie32_lower_wasm.go`, `jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_6502_dispatch_wasm.go`, `jit_z80_dispatch_wasm.go`, and `jit_x86_dispatch_wasm.go`"},
 	} {
 		facts = append(facts, sdkSourceFact{
 			Surface:  "Architecture",
@@ -614,7 +631,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"In flat M68K mode the DOS bridge is mapped directly, rooted at the runtime file directory, and connected to the monitor symbol table.", "`main.go` flat-M68K setup paths and `aros_dos_intercept.go` `setupDirectM68KDOS`"},
 		{"Resetting or reloading flat M68K mode closes the current DOS bridge handles and locks, removes its MMIO mapping, clears runtime ownership, and installs one fresh bridge for the reloaded program.", "`machine_lifecycle.go` `CaptureCPUResetState`, `aros_audio_dma.go` `arosTeardownAll`, `aros_dos_intercept.go` `Close`/`setupDirectM68KDOS`, and `aros_reboot_lifecycle_test.go`"},
 		{"Each ring has 16 descriptor slots but uses one slot to distinguish full from empty, so it can hold 15 queued requests at once.", "`coprocessor_constants.go` ring constants and coprocessor queue implementation"},
-		{"The JIT-capable worker types (M68K, x86, IE64) support instances 0 and 1; IE32, 6502, and Z80 support instance 0 only.", "`coprocessor_constants.go` `coprocInstanceLimit`, `coprocessor_manager.go` instance-scoped worker table"},
+		{"M68K, x86, and IE64 support worker instances 0 and 1; IE32, 6502, and Z80 support instance 0 only.", "`coprocessor_constants.go` `coprocInstanceLimit`, `coprocessor_manager.go` instance-scoped worker table"},
 		{"Instance-1 windows are M68K 0x420000-0x49FFFF, x86 0x4A0000-0x51FFFF, and IE64 0x520000-0x59FFFF, each 512 KiB; the ring index is cpuTypeIndex*2+instance, COPROC_SELECTED_STATE reports the selected worker, and COPROC_INSTANCE_STATE reports all live instances without changing the selectors.", "`coprocessor_constants.go` `workerWindow`/`coprocRingIndex`, `coprocessor_manager.go` `computeSelectedState`/`computeInstanceStateMask`"},
 		{"The coprocessor discovery block at 0xF25A0-0xF25BF reports the selected type's instance limit, selected-instance state, mailbox layout version, worker window, worker ring, and an atomic all-instance liveness mask.", "`coprocessor_constants.go` `COPROC_EXT2_*`, `coprocessor_manager.go` `readReg`, `main.go` `MapIO`"},
 		{"The mailbox contains twelve 0x400-byte ring slots from 0x790000 through 0x792FFF; each ring publishes layout version 1 and a worker must acknowledge that version before START succeeds.", "`coprocessor_constants.go` mailbox/ring/version constants, `coprocessor_manager.go` `initRings`/`awaitWorkerAckLocked`"},
@@ -634,6 +651,8 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"Sources that implement the compositor copy interface can copy a stable frame directly into the caller-provided lease buffer, avoiding an intermediate source snapshot before compositor handoff.", "`video_interface.go` `CompositorFrameCopySource`, `video_compositor.go` `appendCopiedCompositeLayer`, and `video_chip.go` `CopyFrameForCompositor`"},
 		{"FrameGenerationSource lets the compositor skip collect/copy/blend/upload work only after source TickFrame hooks run and only when every enabled source generation is unchanged.", "`video_interface.go` `FrameGenerationSource`, `video_compositor.go` `canSkipUnchangedCompositeLocked`"},
 		{"The unchanged-frame composite skip is enabled by default and can be disabled with IE_VIDEO_COMPOSITE_SKIP=0; logical frame timing still advances on skipped ticks.", "`video_compositor.go` `videoCompositeSkipEnabled`/timing callback path, `script_engine.go` `onFrameTiming`, and `video_compositor_skip_test.go`"},
+		{"VIDEO_CTRL bit 1 is a presentation hold. It retains the last completed VideoChip frame while guest updates continue; clearing it presents the completed framebuffer to compositor and direct frame readers.", "`video_chip.go` `setPresentationHoldLocked`/`presentationFrameLocked`, `video_chip_regressions_test.go`"},
+		{"IE32 JIT backends are available on Linux amd64, Linux arm64, and js/wasm. --nojit also selects interpreter execution for IE32 coprocessor workers created by that launch.", "`jit_ie32_available_linux.go`, `jit_ie32_available_wasm.go`, `main.go` `SetIE32JITDisabled`, `coprocessor_manager.go` `createWorker`"},
 		{"The BLT_CTRL start edge samples the register shadow from the shared bus image in little-endian register order; VideoChip big-endian mode affects guest-facing register and pixel access, not the internal bus-shadow hydration order.", "`video_chip.go` `handleBlitterWriteLocked`/`hydrateBlitterStagedFromShadowLocked`/`readBlitterShadowU32Locked`, and `video_blitter_test.go` big-endian shadow hydration coverage"},
 		{"VideoChip Mode7 honours the BLT_FLAGS BPP field: RGBA32 samples and writes 4-byte pixels, while CLUT8 samples and writes 1-byte palette indices with BPP-aware default strides.", "`video_chip.go` `blitMode7Locked`, `bppFromFlags`, `defaultStrideBPP`, and `video_blitter_test.go` Mode7 CLUT8 coverage"},
 		{"A write that commits VOODOO_TRIANGLE_CMD binds the current Voodoo raster state to that triangle", "`video_voodoo.go` `rasterStateRegister`/`captureRasterStateLocked`/`rasterStateDirty`/`VOODOO_TEX_UPLOAD`, `voodoo_software.go` state-group flush, `voodoo_vulkan.go` software reference fallback, and `video_voodoo_state_batch_test.go` state-stamped batching coverage"},
@@ -657,7 +676,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"Hot M68020 native blocks can form bounded regions using constant-address propagation, constant-only folding, loop-invariant hoisting, observed-path cold exits and safe JSR leaf fusion.", "`jit_m68k_const_addr.go`, `jit_m68k_const_fold.go`, `jit_m68k_loop_analysis.go`, `jit_m68k_observed_region.go`, `jit_m68k_region_form.go`, and `m68kAnalyzeJSRLeafFusion`"},
 		{"Browser FileIO and Bootstrap HostFS use in-memory volumes seeded from web assets, with file contents fetched lazily on first read.", "`file_io_select_wasm.go` asset manifest registration, `file_io_mem.go` lazy fetch path, and `hostfs_select_wasm.go`/`bootstrap_hostfs_mem.go` in-memory HostFS"},
 		{"The 6502 JIT is available only on Linux amd64, Linux arm64, and js/wasm; Windows and macOS use the interpreter. Native and wasm backends invalidate cached code after physical RAM writes and resume unsupported or observed accesses through the interpreter.", "`jit_6502_dispatch.go`/`jit_6502_dispatch_stub.go`/`jit_6502_dispatch_wasm.go` build and activation gates, `machine_bus.go` generation publication, and `jit_6502_exec.go` invalidation and fallback paths"},
-		{"Every available JIT backend starts enabled for directly constructed CPUs, normal runners, Program Executor launches, and JIT-capable coprocessor workers. --nojit selects interpreter execution for the primary CPU started from the command line.", "CPU constructors and runner defaults, `program_executor.go`, coprocessor worker constructors, and `main.go` `nojit` paths"},
+		{"Every available JIT backend starts enabled for directly constructed CPUs, normal runners, Program Executor launches, and JIT-capable coprocessor workers. --nojit selects interpreter execution for the primary CPU started from the command line and for IE32 coprocessor workers created by that launch.", "CPU constructors and runner defaults, `program_executor.go`, coprocessor worker constructors, and `main.go` `nojit` paths"},
 		{"The browser exposes an in-tab bridge over the same FileIO memory volume.", "`file_io_select_wasm.go` `registerWasmFileBridge`, `wasm_file_bridge.go` global bridge registration"},
 		{"ieImportFile adds a session-local file with a 64 MiB per-file limit, ieExportFile returns a saved file's bytes, and ieDeleteFile removes a file; none of these operations uploads data to a server.", "`wasm_file_bridge.go` `maxImportFileBytes`/`registerWasmFileBridge`, `file_io_mem.go` memory-volume operations"},
 		{"ieTypeText injects representable text bytes and ieKey injects the supported editing and navigation key sequences through the normal terminal input path.", "`wasm_input_bridge.go` `registerWasmInput`, `runeToInputByte`, `translateSpecialKey`"},
@@ -681,6 +700,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"When IE_PERF_ACCT is enabled, the subsystem report is written to standard error once during clean shutdown or terminal-signal shutdown; IE_PERF_ACCT_OUT also writes it to a file.", "`perf_report_exit.go` `dumpSubsysPerfReport`, `perf_report_exit_signal.go`, `profile_cpu.go` `exitProfiled`, and `profile_cpu_signal.go`"},
 		{"IE64 BASIC startup and a full reset that reloads BASIC force one Go collection after image loading and before CPU, compositor, render-loop, and audio startup.", "`boot_gc.go` `bootForcedGC`, `main.go` initial BASIC and full-reset call sites, and `boot_gc_test.go`"},
 		{"The Makefile passes PGO profiles explicitly: PGO_PROFILE selects native profiles and WASM_PGO selects wasm profiles; make pgo-regenerate writes default.pgo.new.", "`Makefile` PGO variables and build recipes, `scripts/pgo-regenerate.sh`, and `build_profiles_drift_test.go`"},
+		{"The source requires Go 1.26.0 or later. go.mod declares the minimum language version without pinning a patch release, and CI builds both Go 1.26.0 and the current stable release. The default Make build still enables the experimental simd/archsimd API explicitly.", "`go.mod` language directive without a `toolchain` directive, `.github/workflows/test.yml` compatibility matrix, `Makefile` `GOEXPERIMENT=simd` export"},
 		{"Deopt reasons are unsupported, helper, mmio, smc, interrupt, cache_pressure, and debug.", "`jit_deopt_reasons.go` `deoptReasonNames`"},
 		{"IE64 helper resume is enabled by default and can be disabled with IE64_JIT_RESUME=0, false, off, or no.", "`jit_helper_resume_common.go` `ie64JITResumeEnabled`, `jit_exec.go` resume loop, and `jit_helper_resume_test.go` environment coverage"},
 		{"IE64 helper resume is cancelled by timer delivery, debug breakpoints, pending invalidation, PC changes, MMU mode changes, or PTBR changes.", "`jit_helper_resume_common.go` `canResumeJITHelper`, `jit_exec.go` pending-interrupt cancellation, and `jit_helper_resume_test.go` cancellation coverage"},

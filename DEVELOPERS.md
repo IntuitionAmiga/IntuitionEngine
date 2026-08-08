@@ -8,7 +8,9 @@ canonical architecture, instruction-set and JIT references are under
 Intuition Engine is a multi-CPU fantasy computer implemented primarily in the
 root Go `main` package. It supports IE64, IE32, M68K, Z80, 6502 and x86 guest
 CPUs. Most hardware is shared through one guest bus and exposed through native
-MMIO or an architecture-specific I/O window.
+MMIO or an architecture-specific I/O window. The Program Executor selects the
+primary CPU mode, while the Coprocessor Manager can run additional CPU workers
+concurrently on the same MachineBus.
 
 ## 1. Prerequisites
 
@@ -152,6 +154,8 @@ go build -tags ie64dis -o ie64dis ./assembler
 | `main.go` | CLI parsing and runtime assembly |
 | `machine_bus.go` | Guest RAM, MMIO dispatch and fast bus paths |
 | `machine_lifecycle.go` | Loading, reset and profile transitions |
+| `program_executor.go` | Guest CPU mode selection and programme launches |
+| `coprocessor_manager.go` | Concurrent CPU worker lifecycle, instances and tickets |
 | `cpu_*.go`, `cpu_*_runner.go` | Guest CPU interpreters and execution routing |
 | `jit_*.go` | Shared and CPU-specific JIT implementations |
 | `video_chip.go`, `video_*.go` | Video hardware and host backends |
@@ -211,9 +215,10 @@ an implemented timer device.
 
 ### Guest RAM
 
-Production RAM sizing is derived from host memory through platform-specific
-discovery, after which a host reserve and the selected profile ceiling are
-applied. A legacy 32 MiB fallback exists for hosts where discovery is
+Native production builds derive RAM sizing from host memory through
+platform-specific discovery, after which a host reserve and the selected
+profile ceiling are applied. Browser builds instead use a fixed 256 MiB heap
+backing. A legacy 32 MiB fallback exists for native hosts where discovery is
 unavailable and for the default test bus. It is not the fixed machine size.
 
 Guest software must discover memory through `SYSINFO_TOTAL_RAM_LO/HI`,
@@ -284,6 +289,8 @@ Relevant repository gates include:
 make test-race
 make test-simd
 make test-6502-jit-parity
+make test-ie32-jit-parity
+make test-ie32-jit-race
 make test-z80-jit-parity
 make test-x86-jit-parity
 make test-wasm-build
@@ -297,6 +304,11 @@ make test-x86-harte-short
 The Harte data targets download external test corpora. Full Harte runs are
 long-running and should be selected when the affected CPU semantics warrant
 them.
+
+`make test-ie32-jit-parity` executes the IE32 contract on the native backend,
+under Node and Chromium for WebAssembly, and on Linux arm64 under QEMU. It also
+runs the focused IE32 JIT race gate. Use `make test-ie32-jit-race` directly when
+working only on cache invalidation or concurrent-write behaviour.
 
 Long-running demonstration tests use `audiolong` or `videolong`:
 
@@ -318,6 +330,14 @@ make bench-compare BENCH_ITEM=my_change
 
 Captures are written under `benchmarks/<item>/`. Record the host, toolchain,
 build tags, environment switches and revision needed to reproduce the result.
+IE32 JIT work has matching interpreter and JIT workloads, including the shipped
+Voodoo Mega Demo:
+
+```bash
+make ie32-bench-baseline BENCH_ITEM=my_change
+make ie32-bench-after BENCH_ITEM=my_change
+make ie32-bench-compare BENCH_ITEM=my_change
+```
 
 ## 7. JIT development
 
@@ -326,16 +346,22 @@ emitter file:
 
 | Host | JIT-enabled guest CPUs |
 |------|------------------------|
-| Linux amd64 | IE64, M68K, 6502, Z80 and x86 |
-| Linux arm64 | IE64, M68K, 6502, Z80 and x86 |
+| Linux amd64 | IE32, IE64, M68K, 6502, Z80 and x86 |
+| Linux arm64 | IE32, IE64, M68K, 6502, Z80 and x86 |
 | Windows amd64 | IE64, M68K, Z80 and x86 |
 | Windows arm64 | IE64 and M68K |
 | macOS amd64 | IE64, M68K, Z80 and x86 |
 | macOS arm64 | IE64 and M68K |
-| Browser, js/wasm | IE64, M68K, 6502, Z80 and x86 WebAssembly backends |
+| Browser, js/wasm | IE32, IE64, M68K, 6502, Z80 and x86 WebAssembly backends |
 
-IE32 currently interprets on every host. Unsupported JIT operations and hosts
-must retain interpreter fallback. `--nojit` is the primary CLI opt-out.
+IE32 has JIT backends on Linux amd64, Linux arm64 and js/wasm. They lower the
+eligible direct-RAM subset and resume through the interpreter at observation
+boundaries. JIT execution is enabled by default on those hosts. `--nojit`
+selects the interpreter for the primary IE32 CPU, Program Executor launches and
+IE32 coprocessor workers created by that process.
+
+Unsupported JIT operations and hosts must retain interpreter fallback.
+`--nojit` is the primary CLI opt-out for every guest CPU.
 
 The IE64 JIT supports native amd64 and arm64 hosts and a separate WebAssembly
 backend. Hot regions can retain selected guest GPR and FPU state across internal
@@ -422,7 +448,7 @@ Selected shared status registers:
 | Linux amd64 and arm64 | Default, `novulkan`, headless and portable headless | See the JIT matrix above |
 | Windows amd64 and arm64 | Pure-Go `novulkan` release | See the JIT matrix above |
 | macOS amd64 and arm64 | Pure-Go `novulkan` release | See the JIT matrix above |
-| Browser | `make wasm` | IE64, M68K, 6502, Z80 and x86 WebAssembly JITs |
+| Browser | `make wasm` | IE32, IE64, M68K, 6502, Z80 and x86 WebAssembly JITs |
 
 Release archives are built with `make release-all`, or with the platform and SDK
 targets listed by `make help`. Current native release families are Linux amd64

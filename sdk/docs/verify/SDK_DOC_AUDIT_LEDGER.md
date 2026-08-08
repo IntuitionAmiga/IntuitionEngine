@@ -3643,6 +3643,74 @@ from the five-book source-of-truth surface. The protected reference-manual
 trees remain outside the edit scope.
 Disposition: KEEP.
 
+ID: SDK-DOC-0101
+Status: FIXED
+Document: `sdk/docs/IE32_ISA.md`, `sdk/docs/architecture.md`,
+`sdk/docs/iemon.md`, `sdk/docs/iescript.md`, the architecture and IEScript
+empirical inventories, and companion gates.
+Section: IE32 addressing, three-backend JIT execution, worker policy, script
+diagnostics, and VideoChip presentation hold.
+Claim: Commits `6adcb0d1`, `54e63f54`, and `7d3cbc53` added IE32 JIT backends
+for Linux amd64, Linux arm64, and js/wasm, propagated `--nojit` into IE32
+coprocessor-worker construction, exposed IE32 JIT policy and counters through
+IEScript, and added `VIDEO_CTRL` bit 1 retained-frame presentation. Final IE32
+processor source retains single-dereference memory-indirect reads and uses a
+second memory access only to obtain store and memory `INC`/`DEC` destinations.
+Purpose judgement: Processor operand resolution belongs in the IE32 processor
+manual. Host backend availability and presentation behaviour belong in
+Architecture. Worker observation and policy belong in IEMon. Script controls,
+errors, and returned counter fields belong in IEScript. No IE64 instruction
+contract changed.
+Canonical sources checked: complete diffs for `bf8644c2..7d3cbc53` and the
+tracked tree; `cpu_ie32.go`, `jit_ie32_available_linux.go`,
+`jit_ie32_available_wasm.go`, `jit_ie32_available_stub.go`,
+`jit_ie32_dispatch.go`, `jit_ie32_policy.go`, `program_executor.go`,
+`coprocessor_manager.go`, `coproc_worker_ie32.go`, `script_engine.go`,
+`video_chip.go`, and focused tests for those paths.
+Runnable verification: focused source-inventory, companion-document, IE32 JIT
+policy/parity, presentation-hold, and js/wasm build tests, followed by
+`make check-docs` and the five-book PDF manifest gate.
+Observed result: Corrected the stale platform matrix, added IE32 to the
+`cpu.jit_enabled()` contract, removed a redundant incomplete statistics
+summary, and repaired the audit gate that incorrectly expected two reads for
+normal memory-indirect operands. Added empirical facts for the IE32 platform,
+worker, script, and presentation contracts.
+Action: Updated the four affected manuals, inventory generator and goldens,
+companion gates, and this ledger. Regenerate all five PDFs and the render
+manifest after all pre-render gates pass.
+Notes: `sdk/docs/IE64_ISA.md` had no source-backed change and retains its
+existing modification date. The protected `sdk/docs/refman/` and
+`sdk/docs/refman.publish/` trees were not edited by this audit.
+Disposition: KEEP.
+
+ID: SDK-DOC-0102
+Status: FIXED
+Document: `sdk/docs/architecture.md`, the architecture empirical inventory,
+and companion gates.
+Section: Build Flags Outside Make.
+Claim: Commit `cf65a651` changes the supported host-Go contract from a pinned
+Go 1.26.4 toolchain to Go 1.26.0 or later. `go.mod` declares only the minimum
+language version, CI builds both 1.26.0 and the current stable release, and the
+default Make path continues to enable `GOEXPERIMENT=simd`.
+Purpose judgement: This is a host build and deployment contract, not processor
+ISA, monitor-command, or scripting-API behaviour. It belongs in Architecture's
+existing build-flags section and does not require changes to the other four
+manuals.
+Canonical sources checked: full diff and final tree for `cf65a651`;
+`go.mod`, `Makefile`, `.github/workflows/test.yml`, `README.md`, and
+`DEVELOPERS.md`.
+Runnable verification: architecture source-inventory generation and manual
+coverage, companion-document and ledger gates, `make check-docs`, Makefile
+shell checks, PDF manifest verification, and final five-book PDF inspection.
+Observed result: Added the minimum-versus-pin distinction and an empirical
+source gate that fails if the language directive, absent `toolchain` directive,
+CI compatibility matrix, or Make SIMD experiment changes.
+Action: Updated Architecture, its generated source inventory, gates, and this
+ledger. Regenerate all five PDFs and the render manifest after the gates pass.
+Notes: The existing uncommitted SDK-DOC-0101 audit corrections were preserved.
+No protected reference-manual file was edited.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.

@@ -191,7 +191,7 @@ start:
     ; Initialise scrolltext horizontal position
     moveq   #0,d0
     move.l  d0,VAR_SCROLL_X
-    move.l  #BACK_FB,d0
+    move.l  #FRONT_FB,d0
     move.l  d0,VAR_DRAW_FB
 
 ; ============================================================================
@@ -213,6 +213,16 @@ main_loop:
     move.l  VAR_FRAME_ADDR,d0
     jsr     compute_xy
 
+    ; Calculate framebuffer address of the previous sprite position -> d6
+    move.l  VAR_PREV_Y_ADDR,d4
+    move.l  #LINE_BYTES,d5
+    mulu.w  d5,d4
+    move.l  VAR_PREV_X_ADDR,d5
+    lsl.l   #2,d5
+    add.l   d5,d4
+    add.l   VAR_DRAW_FB,d4
+    move.l  d4,d6
+
     ; Calculate framebuffer address of new sprite position -> d7
     move.l  d3,d4
     move.l  #LINE_BYTES,d5
@@ -223,15 +233,23 @@ main_loop:
     add.l   VAR_DRAW_FB,d4
     move.l  d4,d7                   ; d7 = new address
 
-    ; --- Rebuild the complete back frame ---
+    ; Save current position for the next retained-frame erase.
+    move.l  d2,VAR_PREV_X_ADDR
+    move.l  d3,VAR_PREV_Y_ADDR
+
+    ; Retain the completed frame while the visible retained frame is updated.
+    jsr     wait_frame
+    moveq   #3,d0
+    move.l  d0,VIDEO_CTRL
+
+    ; --- Erase previous sprite position ---
     jsr     wait_blit
     move.l  #BLT_OP_FILL,d0
     move.l  d0,BLT_OP
-    move.l  VAR_DRAW_FB,d0
-    move.l  d0,BLT_DST
-    move.l  #SCREEN_W,d0
+    move.l  d6,BLT_DST
+    move.l  #SPRITE_W,d0
     move.l  d0,BLT_WIDTH
-    move.l  #SCREEN_H,d0
+    move.l  #SPRITE_H,d0
     move.l  d0,BLT_HEIGHT
     move.l  #BACKGROUND,d0
     move.l  d0,BLT_COLOR
@@ -269,19 +287,10 @@ main_loop:
     addq.l  #SCROLL_SPEED,d0
     move.l  d0,VAR_SCROLL_X
 
-    ; Publish the completed frame at the next VBlank.
     jsr     wait_blit
-    jsr     wait_frame
-    move.l  VAR_DRAW_FB,d0
-    move.l  d0,VIDEO_FB_BASE
-    cmpi.l  #FRONT_FB,d0
-    beq     .use_back_next
-    move.l  #FRONT_FB,d0
-    move.l  d0,VAR_DRAW_FB
-    bra     main_loop
-.use_back_next:
-    move.l  #BACK_FB,d0
-    move.l  d0,VAR_DRAW_FB
+    ; Publish the completed retained frame as one presentation step.
+    moveq   #1,d0
+    move.l  d0,VIDEO_CTRL
     bra     main_loop
 
 ; ============================================================================
@@ -489,7 +498,7 @@ draw_scrolltext:
     ; Calculate destination VRAM address
     move.l  d7,d0
     mulu.w  #LINE_BYTES,d0
-    addi.l  #VRAM_START,d0
+    add.l   VAR_DRAW_FB,d0
     move.l  d3,d5
     lsl.l   #2,d5
     add.l   d5,d0

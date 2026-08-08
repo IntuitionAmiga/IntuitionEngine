@@ -114,7 +114,7 @@ y_addr_bank:    .res 480        ; VRAM bank for each line
     sta frame_hi
     sta scroll_x_lo
     sta scroll_x_hi
-    lda #BACK_FB_BANK
+    lda #FRONT_FB_BANK
     sta draw_fb_bank
 
     ; Compute initial sprite position and save as "previous"
@@ -146,11 +146,26 @@ main_loop:
     ; Compute new sprite position from sine/cosine tables
     jsr compute_xy
 
-    ; Rebuild the complete back frame.
-    jsr clear_framebuffer
+    ; Retain the completed frame while the visible retained frame is updated.
+    jsr wait_frame
+    lda #3
+    sta VIDEO_CTRL
+
+    ; Erase the previous sprite before drawing the new position.
+    jsr clear_prev_sprite
 
     ; Draw sprite at new position with mask
     jsr draw_sprite
+
+    ; Save current position for the next retained-frame erase.
+    lda curr_x
+    sta prev_x
+    lda curr_x+1
+    sta prev_x+1
+    lda curr_y
+    sta prev_y
+    lda curr_y+1
+    sta prev_y+1
 
     ; Clear scroll area and render scrolltext
     jsr clear_scroll_area
@@ -158,6 +173,10 @@ main_loop:
 
     ; Wait for all blitter operations to complete before next frame
     jsr wait_blit
+
+    ; Publish the completed retained frame.
+    lda #1
+    sta VIDEO_CTRL
 
     ; Advance horizontal scroll position
     clc
@@ -167,26 +186,6 @@ main_loop:
     lda scroll_x_hi
     adc #0
     sta scroll_x_hi
-
-    ; Present the completed frame on a fresh VBlank, then swap buffers.
-    jsr wait_blit
-    jsr wait_frame
-    lda #0
-    sta VIDEO_FB_BASE
-    sta VIDEO_FB_BASE+1
-    lda draw_fb_bank
-    sta VIDEO_FB_BASE+2
-    lda #0
-    sta VIDEO_FB_BASE+3
-    lda draw_fb_bank
-    cmp #FRONT_FB_BANK
-    beq @use_back_next
-    lda #FRONT_FB_BANK
-    sta draw_fb_bank
-    jmp main_loop
-@use_back_next:
-    lda #BACK_FB_BANK
-    sta draw_fb_bank
 
     jmp main_loop
 .endproc
@@ -212,7 +211,9 @@ main_loop:
     lda #0
     sta VIDEO_FB_BASE
     sta VIDEO_FB_BASE+1
-    lda #FRONT_FB_BANK
+    ; Legacy video presents the chip front buffer when FB_BASE is zero.
+    ; Blitter destinations remain absolute VRAM addresses below.
+    lda #0
     sta VIDEO_FB_BASE+2
     lda #0
     sta VIDEO_FB_BASE+3

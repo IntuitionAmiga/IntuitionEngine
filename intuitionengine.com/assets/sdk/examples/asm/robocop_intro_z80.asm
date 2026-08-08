@@ -160,7 +160,7 @@ start:
     ld (frame_hi),a
     ld (scroll_x_lo),a
     ld (scroll_x_hi),a
-    ld a,BACK_FB_BANK
+    ld a,FRONT_FB_BANK
     ld (draw_fb_bank),a
 
     ; Seed the previous position with the initial computed position so
@@ -189,11 +189,22 @@ main_loop:
     ; Compute new sprite position from sine/cosine tables
     call compute_xy
 
-    ; Rebuild the complete back frame.
-    call clear_framebuffer
+    ; Retain the completed frame while the visible retained frame is updated.
+    call wait_frame
+    ld a,3
+    ld (VIDEO_CTRL),a
+
+    ; Erase the sprite at its previous position.
+    call clear_prev_sprite
 
     ; Draw the masked sprite at its new position
     call draw_sprite
+
+    ; Save current position for the next retained-frame erase.
+    ld hl,(curr_x)
+    ld (prev_x),hl
+    ld hl,(curr_y)
+    ld (prev_y),hl
 
     ; Clear the scrolltext strip and render current characters
     call clear_scroll_area
@@ -202,31 +213,15 @@ main_loop:
     ; Ensure all blitter operations complete before modifying state
     call wait_blit
 
+    ; Publish the completed retained frame.
+    ld a,1
+    ld (VIDEO_CTRL),a
+
     ; Advance horizontal scroll position
     ld hl,(scroll_x_lo)
     ld bc,SCROLL_SPEED
     add hl,bc
     ld (scroll_x_lo),hl
-
-    ; Present the completed frame on a fresh VBlank, then swap buffers.
-    call wait_blit
-    call wait_frame
-    xor a
-    ld (VIDEO_FB_BASE+0),a
-    ld (VIDEO_FB_BASE+1),a
-    ld a,(draw_fb_bank)
-    ld (VIDEO_FB_BASE+2),a
-    xor a
-    ld (VIDEO_FB_BASE+3),a
-    ld a,(draw_fb_bank)
-    cp FRONT_FB_BANK
-    jr z,.use_back_next
-    ld a,FRONT_FB_BANK
-    ld (draw_fb_bank),a
-    jp main_loop
-.use_back_next:
-    ld a,BACK_FB_BANK
-    ld (draw_fb_bank),a
 
     jp main_loop
 
@@ -251,7 +246,9 @@ init_video:
     xor a
     ld (VIDEO_FB_BASE+0),a
     ld (VIDEO_FB_BASE+1),a
-    ld a,FRONT_FB_BANK
+    ; Legacy video presents the chip front buffer when FB_BASE is zero.
+    ; Blitter destinations remain absolute VRAM addresses below.
+    xor a
     ld (VIDEO_FB_BASE+2),a
     xor a
     ld (VIDEO_FB_BASE+3),a

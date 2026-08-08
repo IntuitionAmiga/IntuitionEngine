@@ -120,7 +120,9 @@ start:
     STA @VIDEO_MODE
     LDA #1
     STA @VIDEO_CTRL
-    LDA #FRONT_FB
+    ; Legacy video presents the chip front buffer when FB_BASE is zero.
+    ; Blitter destinations remain absolute VRAM addresses below.
+    LDA #0
     STA @VIDEO_FB_BASE
 
     ; --- Clear both framebuffers to black using blitter fills ---
@@ -178,7 +180,7 @@ start:
     ; Initialise scrolltext horizontal position
     LDA #0
     STA @VAR_SCROLL_X
-    LDA #BACK_FB
+    LDA #FRONT_FB
     STA @VAR_DRAW_FB
 
 ; ============================================================================
@@ -200,6 +202,16 @@ main_loop:
     LDA @VAR_FRAME_ADDR
     JSR compute_xy
 
+    ; Calculate framebuffer address of the previous sprite position -> T
+    LDE @VAR_PREV_Y_ADDR
+    LDF #LINE_BYTES
+    MUL E, F
+    LDF @VAR_PREV_X_ADDR
+    SHL F, #2
+    ADD E, F
+    ADD E, @VAR_DRAW_FB
+    LDT E
+
     ; Calculate framebuffer address of new sprite position -> U
     LDE D
     LDF #LINE_BYTES
@@ -210,15 +222,24 @@ main_loop:
     ADD E, @VAR_DRAW_FB
     LDU E
 
-    ; --- Rebuild the complete back frame ---
+    ; Save current position for the next retained-frame erase.
+    STC @VAR_PREV_X_ADDR
+    STD @VAR_PREV_Y_ADDR
+
+    ; Retain the completed frame while the visible retained frame is updated.
+    JSR wait_frame
+    LDA #3
+    STA @VIDEO_CTRL
+
+    ; --- Erase previous sprite position ---
     JSR wait_blit
     LDA #BLT_OP_FILL
     STA @BLT_OP
-    LDA @VAR_DRAW_FB
+    LDA T
     STA @BLT_DST
-    LDA #SCREEN_W
+    LDA #SPRITE_W
     STA @BLT_WIDTH
-    LDA #SCREEN_H
+    LDA #SPRITE_H
     STA @BLT_HEIGHT
     LDA #BACKGROUND
     STA @BLT_COLOR
@@ -257,20 +278,10 @@ main_loop:
     ADD A, #SCROLL_SPEED
     STA @VAR_SCROLL_X
 
-    ; Publish the completed frame at the next VBlank.
     JSR wait_blit
-    JSR wait_frame
-    LDA @VAR_DRAW_FB
-    STA @VIDEO_FB_BASE
-    LDA @VAR_DRAW_FB
-    SUB A, #FRONT_FB
-    JZ A, .use_back_next
-    LDA #FRONT_FB
-    STA @VAR_DRAW_FB
-    JMP main_loop
-.use_back_next:
-    LDA #BACK_FB
-    STA @VAR_DRAW_FB
+    ; Publish the completed retained frame as one presentation step.
+    LDA #1
+    STA @VIDEO_CTRL
     JMP main_loop
 
 ; ============================================================================
@@ -479,7 +490,7 @@ draw_scrolltext:
     ; Calculate destination VRAM address
     LDT U
     MUL T, #LINE_BYTES
-    ADD T, #VRAM_START
+    ADD T, @VAR_DRAW_FB
     LDA D
     SHL A, #2
     ADD T, A

@@ -897,6 +897,8 @@ Successfully assembled to ./sdk/intuitionos/iexec/iexec.ie64 (74792 bytes)
          = 0000000000000004  HOST_STATUS_DISABLED  equ 4
          = 0000000000000005  HOST_STATUS_IDLE      equ 5
          = 00000000000F0000  VIDEO_CTRL        equ 0xF0000
+         = 0000000000000001  VIDEO_CTRL_ENABLE equ 0x01
+         = 0000000000000002  VIDEO_CTRL_PRESENT_HOLD equ 0x02
          = 00000000000F0004  VIDEO_MODE        equ 0xF0004
          = 00000000000F0008  VIDEO_STATUS      equ 0xF0008
          = 0000000000000002  STATUS_VBLANK     equ 2

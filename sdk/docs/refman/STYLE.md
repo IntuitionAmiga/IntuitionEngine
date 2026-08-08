@@ -2285,6 +2285,48 @@ Execute this pass in ascending reader order:
    forbidden-term and dash scans, strict publication, and PDF generation in
    that order.
 
+## Current IE32 Addressing and Video Control Consistency Pass
+
+This is a focused reader-facing correction pass. It does not add execution
+acceleration, host toolchain, build-system, compiler-suite, or implementation
+diagnostic material to the PRG.
+
+Document only these source-backed programming contracts:
+
+- IE32 addressing mode `$03` has operation-dependent write semantics. A
+  read-style operand obtains the 32-bit word stored at `operand`. A store or
+  memory-update destination reads that word and uses it as the final write
+  address.
+- IE32 addressing mode `$04` reads the 32-bit word at `operand` for a
+  read-style operand and writes directly to `operand` for a store or memory
+  update.
+- The IE32 source assembler does not expose mode `$03` as source syntax. Teach
+  it through instruction encoding and IE Mon byte entry, not through invented
+  assembly notation.
+- `VIDEO_CTRL` bit `0` enables VideoChip and bit `1` holds presentation of the
+  completed VideoChip frame while guest updates continue. Display mode is
+  selected through `VIDEO_MODE`.
+
+Do not document IE32 execution acceleration availability, controls,
+statistics, platform matrices, code generation, cache behaviour, host build
+requirements, or repository source paths. These are author-verification
+facts, not IE-native programming interfaces.
+
+Execute this pass in ascending reader order:
+
+1. Chapter 26: correct the `$03` and `$04` addressing-mode descriptions and
+   add a short encoded-byte example which distinguishes read resolution from
+   an indirect write destination.
+2. Appendix D: correct the `VIDEO_CTRL` summary to name enable and completed-
+   frame presentation hold; keep mode selection under `VIDEO_MODE`.
+3. Appendix L: add an IE32 memory-indirect lookup entry only if the existing
+   index does not already lead the reader to the corrected section.
+4. Claim ledger: record canonical implementation paths, the IE-native reader
+   workflow, exact example result, and exclusions.
+5. Verify the byte sequence against the interpreter and disassembler, run the
+   affected PRG harness and documentation checks, scan for forbidden terms and
+   em dashes, publish strictly, and print PDFs last.
+
 ## Uniform Chapter Taxonomy
 
 Name hardware chapters after the hardware block, not after every file

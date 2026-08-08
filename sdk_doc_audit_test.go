@@ -108,10 +108,10 @@ var britishEnglishAmericanisms = map[string]string{
 
 var sdkAuditLastModifiedDates = map[string]string{
 	"sdk/docs/IE64_ISA.md":     "2026-07-09",
-	"sdk/docs/IE32_ISA.md":     "2026-07-09",
-	"sdk/docs/iemon.md":        "2026-08-07",
-	"sdk/docs/iescript.md":     "2026-08-07",
-	"sdk/docs/architecture.md": "2026-08-07",
+	"sdk/docs/IE32_ISA.md":     "2026-08-08",
+	"sdk/docs/iemon.md":        "2026-08-08",
+	"sdk/docs/iescript.md":     "2026-08-08",
+	"sdk/docs/architecture.md": "2026-08-08",
 }
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
@@ -1105,7 +1105,7 @@ func TestSDKCompanionDocs_ArchitectureTimerCadenceMatchesSource(t *testing.T) {
 		!strings.Contains(ie64JITSource, "executed := cpu.interpretOne()") {
 		t.Fatal("jit_exec.go no longer routes armed IE64 timer execution through single-instruction stepping")
 	}
-	if !strings.Contains(ie32Source, "cpu.cycleCounter >= SAMPLE_RATE") {
+	if !strings.Contains(ie32Source, "cpu.cycleCounter < SAMPLE_RATE") {
 		t.Fatal("cpu_ie32.go no longer shows IE32 SAMPLE_RATE-gated timer cadence")
 	}
 	if strings.Contains(arch, "The timer decrements once per `SAMPLE_RATE` instructions.") {
@@ -1831,6 +1831,9 @@ func TestSDKCompanionDocs_IEScriptJITPlatformMatrixMatchesSource(t *testing.T) {
 	doc := readAuditFile(t, "sdk/docs/iescript.md")
 	architecture := readAuditFile(t, "sdk/docs/architecture.md")
 	for _, needle := range []string{
+		"case runtimeCPUIE32:",
+		"snap.ie32.SetJITEnabled(enabled)",
+		`L.RaiseError("IE32 CPU unavailable")`,
 		"case runtimeCPUX86:",
 		"snap.x86.cpu.x86JitEnabled = enabled && x86JitAvailable",
 		`L.RaiseError("x86 JIT unavailable on this platform")`,
@@ -1840,13 +1843,14 @@ func TestSDKCompanionDocs_IEScriptJITPlatformMatrixMatchesSource(t *testing.T) {
 		}
 	}
 	for _, needle := range []string{
-		"Supported for m68k, z80, x86, 6502, and ie64",
-		"currently m68k, z80, x86, 6502, and ie64",
-		"6502 native backend is available on Linux AMD64, Linux arm64 and browser js/wasm",
+		"Supported for IE32, m68k, z80, x86, 6502, and ie64",
+		"currently IE32, m68k, z80, x86, 6502, and ie64",
+		"IE32 is available on Linux x64, Linux arm64, and browser js/wasm",
+		"6502 native backend is available on Linux x64, Linux arm64 and browser js/wasm",
 		"Windows and macOS retain interpreter support",
-		"Linux arm64 provides IE64, M68K, 6502, Z80, and x86 JITs",
+		"Linux arm64 provides IE32, IE64, M68K, 6502, Z80, and x86 JITs",
 		"Windows and macOS arm64 provide IE64 and M68K JITs",
-		"Browser builds provide IE64, M68K, 6502, x86, and Z80 WebAssembly JITs",
+		"Browser builds provide IE32, IE64, M68K, 6502, x86, and Z80 WebAssembly JITs",
 		"x86 availability additionally requires WebAssembly SIMD",
 		"Available backends start enabled during normal CPU and runner construction",
 		"primary command-line CPU starts disabled when `--nojit` is used",
@@ -1872,8 +1876,7 @@ func TestSDKCompanionDocs_IEScriptJITPlatformMatrixMatchesSource(t *testing.T) {
 	for _, needle := range []string{
 		"Every available JIT backend starts enabled for directly constructed CPUs",
 		"`--nojit` selects interpreter execution for the primary CPU",
-		"IE64, M68K, 6502, Z80 and x86 use separate wasm bytecode",
-		"IE32 interprets in the browser",
+		"IE32, IE64, M68K, 6502, Z80 and x86 use separate wasm bytecode",
 	} {
 		if !normalizedContains(architecture, needle) {
 			t.Fatalf("architecture.md missing JIT default/browser contract: %s", needle)
@@ -3337,8 +3340,7 @@ func TestSDKCompanionDocs_IE32MemoryIndirectStoreSemantics(t *testing.T) {
 	source := readAuditFile(t, "cpu_ie32.go")
 	for _, needle := range []string{
 		"case ADDR_MEM_IND:",
-		"addr := cpu.Read32(operand)",
-		"return cpu.Read32(addr)",
+		"return cpu.Read32(operand)",
 		"} else if addrMode == ADDR_MEM_IND {",
 		"addr := cpu.Read32(operand)",
 		"cpu.Write32(addr, value)",
@@ -3349,11 +3351,15 @@ func TestSDKCompanionDocs_IE32MemoryIndirectStoreSemantics(t *testing.T) {
 	}
 	intro := markdownSection(t, doc, "| Condition Codes |", "### 4.1 Data Movement")
 	normalizedIntro := strings.Join(strings.Fields(intro), " ")
+	if !strings.Contains(normalizedIntro, "For memory-indirect store encodings, the CPU first reads a 32-bit pointer from `operand32`, then writes to the address contained in that pointer") {
+		t.Fatal("IE32_ISA.md missing source-backed memory-indirect store semantics in instruction notation")
+	}
+	normalizedDoc := strings.Join(strings.Fields(doc), " ")
 	for _, needle := range []string{
-		"For memory-indirect store encodings, the CPU first reads a 32-bit pointer from `operand32`, then writes to the address contained in that pointer",
 		"memory-indirect mode uses `operand32` as the address of a 32-bit pointer to the final target address",
+		"For normal operand reads, `operand32` is read as memory",
 	} {
-		if !strings.Contains(normalizedIntro, needle) {
+		if !strings.Contains(normalizedDoc, needle) {
 			t.Fatalf("IE32_ISA.md missing source-backed memory-indirect store semantics: %s", needle)
 		}
 	}

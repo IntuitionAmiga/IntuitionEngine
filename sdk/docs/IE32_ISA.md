@@ -4,7 +4,7 @@ IE32 32-bit RISC-like Processor Reference Manual
 
 (c) 2024-2026 Zayn Otley - GPLv3 or later
 
-*Last modified: 2026-07-09*
+*Last modified: 2026-08-08*
 
 ---
 

@@ -14,7 +14,7 @@ carry information.
 
 | Address    | Name              | R/W | Notes |
 |------------|-------------------|-----|-------|
-| `$F0000`  | `VIDEO_CTRL`      | R/W | Enable, mode select, sync source. |
+| `$F0000`  | `VIDEO_CTRL`      | R/W | Bit `0` enable; bit `1` completed-frame presentation hold. |
 | `$F0004`  | `VIDEO_MODE`      | R/W | Mode value selector. |
 | `$F0008`  | `VIDEO_STATUS`    | R   | Bit `0` `HAS_CONTENT`, bit `1` `VBLANK`, bit `2` `FB_ERR`. |
 | `$F000C`  | `COPPER_CTRL`     | R/W | Copper enable. |

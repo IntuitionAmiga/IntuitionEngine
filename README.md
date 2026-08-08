@@ -6,7 +6,10 @@ Intuition Engine is a multi-CPU fantasy computer implemented in Go. It reimagine
 
 It can be run as a desktop emulator or booted as an x64 live USB appliance. For programmers, it is a bare-metal target with an SDK, examples, and maintained reference documentation for writing directly against the Intuition Engine hardware.
 
-Guest RAM is autodetected at boot from the host and then exposed as total guest RAM plus per-profile active visible RAM through SYSINFO and CPU-specific discovery paths.
+Native builds derive guest RAM from host memory, then apply a platform reserve
+and the selected profile's active-visible ceiling. Browser builds use a fixed
+256 MiB heap backing. Guest software discovers total and active-visible RAM
+through SYSINFO and CPU-specific paths.
 
 [Try Intuition Engine in a browser](https://intuitionengine.io) | [Download releases](https://github.com/IntuitionAmiga/IntuitionEngine/releases) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
 
@@ -38,7 +41,8 @@ make sdk
 ## Features
 
 - Guest CPU modes: IE64, IE32, Motorola 68020-oriented M68K, Z80, 6502, and 32-bit flat x86.
-- JIT backends where supported by host OS and architecture.
+- JIT backends for all six guest CPUs, with availability determined by the host OS and architecture.
+- A Coprocessor Manager that launches additional CPU workers to run concurrently with the primary CPU on the shared MachineBus.
 - Video systems: VideoChip, VGA, TED video, ANTIC/GTIA, ULA, and Voodoo 3D, combined through a layered compositor.
 - Audio and music paths: custom SoundChip, PSG/AY/YM/SN76489, SID, POKEY/SAP, TED, AHX/THX, MOD, WAV, MIDI/MUS, and AROS Paula-style DMA.
 - Guest environments: EhBASIC, EmuTOS, AROS, and IntuitionOS.
@@ -105,15 +109,15 @@ Raw binaries, ROM images, and EmuTOS `.tos`/`.img` files require an explicit fla
 
 ./bin/IntuitionEngine -emutos
 ./bin/IntuitionEngine -emutos-image path/to/emutos.img
-./bin/IntuitionEngine -emutos-drive path/to/gemdos-root
+./bin/IntuitionEngine -emutos -emutos-drive path/to/gemdos-root
 
 ./bin/IntuitionEngine -aros
 ./bin/IntuitionEngine -aros-image path/to/aros-ie-m68k.rom
-./bin/IntuitionEngine -aros-drive path/to/aros-root
+./bin/IntuitionEngine -aros -aros-drive path/to/aros-root
 
 ./bin/IntuitionEngine -intuitionos
-./bin/IntuitionEngine -intuitionos-root sdk/intuitionos/system/SYS
-./bin/IntuitionEngine -intuitionos-image sdk/intuitionos/iexec/iexec.ie64
+./bin/IntuitionEngine -intuitionos -intuitionos-root sdk/intuitionos/system/SYS
+./bin/IntuitionEngine -intuitionos -intuitionos-image sdk/intuitionos/iexec/iexec.ie64
 ```
 
 Audio playback examples:
@@ -206,21 +210,23 @@ The image boots into Intuition Engine, starts the BASIC environment, and stages 
 
 Maintained profiles:
 
-| Platform | Architecture | Maintained profiles |
-|----------|--------------|---------------------|
-| Linux | x86_64 | `full`, `novulkan`, `headless`, `headless-novulkan` |
-| Linux | aarch64 | `full`, `novulkan`, `headless`, `headless-novulkan` |
-| Windows | x86_64 | `novulkan` |
-| Windows | ARM64 | `novulkan` |
-| macOS | x86_64 | `novulkan` |
-| macOS | ARM64 | `novulkan` |
-| Browser | WebAssembly | `make wasm`; IE64, M68K, 6502, Z80, and x86 wasm JIT backends, with IE32 interpreted |
+| Platform | Architecture | Maintained profiles | JIT-enabled guest CPUs |
+|----------|--------------|---------------------|------------------------|
+| Linux | x86_64 | `full`, `novulkan`, `headless`, `headless-novulkan` | IE32, IE64, M68K, 6502, Z80 and x86 |
+| Linux | aarch64 | `full`, `novulkan`, `headless`, `headless-novulkan` | IE32, IE64, M68K, 6502, Z80 and x86 |
+| Windows | x86_64 | `novulkan` | IE64, M68K, Z80 and x86 |
+| Windows | ARM64 | `novulkan` | IE64 and M68K |
+| macOS | x86_64 | `novulkan` | IE64, M68K, Z80 and x86 |
+| macOS | ARM64 | `novulkan` | IE64 and M68K |
+| Browser | WebAssembly | `make wasm` | IE32, IE64, M68K, 6502, Z80 and x86 |
 
 SIMD span acceleration (`simd/archsimd`) is amd64 only and default-on for `make`
 builds; every other architecture falls back to the bit-exact scalar kernels
 automatically.
 
-JIT availability depends on host OS, host architecture, and guest CPU.
+Unsupported JIT operations and host platforms retain interpreter fallback. See
+the [architecture guide](sdk/docs/architecture.md#platform-jit-matrix) for the
+backend and dispatch details.
 
 ## Documentation
 
@@ -232,6 +238,6 @@ JIT availability depends on host OS, host architecture, and guest CPU.
 - [Intuition Engine Programmer's Reference Guide](sdk/docs/refman.publish/)
 - [Developer guide](DEVELOPERS.md)
 
-## License
+## Licence
 
 Intuition Engine is distributed under GPLv3 or later. See `LICENSE`.

@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-08-07*
+*Last modified: 2026-08-08*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -559,18 +559,23 @@ never emitted unless the host supports them.
 
 | Host platform | JIT-enabled guest cores | Dispatch files |
 |---------------|-------------------------|----------------|
-| Linux amd64 | IE64, 6502, M68K, Z80, x86 | `jit_dispatch.go`, amd64 per-core dispatch files |
-| Linux arm64 | IE64, M68K, 6502, Z80, x86 | `jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_6502_dispatch.go`, `jit_z80_dispatch.go`, `jit_x86_dispatch_arm64.go`; Z80 emits every non-observation opcode-manifest row and uses frozen canonical helpers for port and block I/O |
+| Linux amd64 | IE32, IE64, 6502, M68K, Z80, x86 | `jit_ie32_available_linux.go`, `jit_dispatch.go`, and amd64 per-core dispatch files |
+| Linux arm64 | IE32, IE64, M68K, 6502, Z80, x86 | `jit_ie32_available_linux.go`, `jit_dispatch.go`, `jit_m68k_dispatch_arm64.go`, `jit_6502_dispatch.go`, `jit_z80_dispatch.go`, and `jit_x86_dispatch_arm64.go`; Z80 emits every non-observation opcode-manifest row and uses frozen canonical helpers for port and block I/O |
 | Windows amd64 | IE64, M68K, Z80, x86 | amd64 per-core dispatch files |
 | Windows arm64 | IE64, M68K | IE64 and M68K dispatch; other non-IE64 cores use stubs |
 | macOS amd64 | IE64, M68K, Z80, x86 | amd64 per-core dispatch files |
 | macOS arm64 | IE64, M68K | IE64 and M68K dispatch plus Darwin arm64 JIT write-protect helpers |
-| Browser (js/wasm) | IE64, M68K, 6502, Z80 and x86 (wasm bytecode backends) | `jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_6502_dispatch_wasm.go`, `jit_z80_dispatch_wasm.go`, `jit_x86_dispatch_wasm.go` |
+| Browser (js/wasm) | IE32, IE64, M68K, 6502, Z80 and x86 (wasm bytecode backends) | `jit_ie32_available_wasm.go`, `jit_ie32_lower_wasm.go`, `jit_exec_wasm.go`, `jit_wasm_runtime.go`, `jit_m68k_dispatch_wasm.go`, `jit_6502_dispatch_wasm.go`, `jit_z80_dispatch_wasm.go`, and `jit_x86_dispatch_wasm.go` |
+
+IE32 JIT backends are available on Linux amd64, Linux arm64, and js/wasm.
+`--nojit` also selects interpreter execution for IE32 coprocessor workers
+created by that launch.
 
 Every available JIT backend starts enabled for directly constructed CPUs,
 normal runners, Program Executor launches, and JIT-capable coprocessor
 workers. `--nojit` selects interpreter execution for the primary CPU started
-from the command line. An unavailable backend always falls back to the
+from the command line and for IE32 coprocessor workers created by that launch.
+An unavailable backend always falls back to the
 interpreter; stopped primary CPUs can also be switched through IEScript. Z80 AY
 and tracker playback use the default JIT dispatcher with bounded frame
 execution; debugger single-step remains an explicit one-opcode interpreter
@@ -949,6 +954,11 @@ navigation key sequences through the normal terminal input path. Imported
 files disappear when the page reloads.
 
 ### Build Flags Outside Make
+
+The source requires Go 1.26.0 or later. `go.mod` declares the minimum language
+version without pinning a patch release, and CI builds both Go 1.26.0 and the
+current stable release. The default Make build still enables the experimental
+`simd/archsimd` API explicitly.
 
 The Makefile targets export `GOEXPERIMENT=simd` and select `GOAMD64=v3` for the
 release profile, and they pass `-trimpath` and `-pgo=default.pgo`. A bare
@@ -1442,9 +1452,10 @@ Masked copies (`BLT_OP=3`) copy source pixels only where a 1-bit mask is set. Th
 
 `BLT_CTRL` bit 0 starts the synchronous blit, bit 1 is read-only busy, and bit 2 enables a completion pulse on `IntMaskBlitter`. The BLT_CTRL start edge samples the register shadow from the shared bus image in little-endian register order; VideoChip big-endian mode affects guest-facing register and pixel access, not the internal bus-shadow hydration order. `BLT_STATUS` bit 0 is ERR, bit 1 is DONE, and bit 2 is sticky IRQ_PENDING (write 1 to clear). Invalid opcodes, out-of-range Mode7 samples, overflowed blitter bounds, and destination rectangles outside CPU-visible writable memory set ERR and do not silently fall back to COPY or wrap into another address range.
 
-`VIDEO_CTRL` bit 1 is a presentation hold. When a guest sets it while video is
-enabled, VideoChip retains the last completed frame for compositor and direct
-frame reads. The guest can then issue an erase, sprite redraw and scroll
+`VIDEO_CTRL` bit 1 is a presentation hold. It retains the last completed
+VideoChip frame while guest updates continue; clearing it presents the
+completed framebuffer to compositor and direct frame readers. The guest can
+then issue an erase, sprite redraw and scroll
 updates without exposing an intermediate framebuffer. Clearing bit 1 after the
 final blit completes presents the completed framebuffer atomically to those
 readers. Bit 0 remains the conventional enable value, so `3` starts a hold and
@@ -2020,7 +2031,7 @@ does not need to know about the extension.
 The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x790000`. Each worker type has a dedicated shared-memory reservation in the unified physical map (see memory map above), not a private per-core address space. The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. Each ring has 16 descriptor slots but uses one slot to distinguish full from empty, so it can hold 15 queued requests at once. When `COPROC_IRQ_CTRL` bit 0 is set and an M68K IRQ target plus completion watcher have been configured, the coprocessor asserts M68K interrupt level 6 on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`. Non-M68K modes should observe completion through `POLL` or `WAIT`.
 
 `COPROC_INSTANCE` selects a worker instance together with `COPROC_CPU_TYPE`.
-The JIT-capable worker types M68K, x86, and IE64 support instances 0 and 1;
+M68K, x86, and IE64 support worker instances 0 and 1;
 IE32, 6502, and Z80 support instance 0 only. Instance-1 windows are M68K
 `0x420000-0x49FFFF`, x86 `0x4A0000-0x51FFFF`, and IE64 `0x520000-0x59FFFF`, each
 512 KiB. The mailbox holds twelve ring slots at a uniform `0x400` stride, and
