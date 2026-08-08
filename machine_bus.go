@@ -132,6 +132,9 @@ type MachineBus struct {
 
 	// Lock-free fast path for VIDEO_STATUS (allows VBlank polling without blocking)
 	videoStatusReader func(addr uint32) uint32
+	// videoVBlankWaiter parks a recognised VIDEO_STATUS polling loop until the
+	// next rising edge, avoiding host-side busy spinning in CPU JIT dispatch.
+	videoVBlankWaiter func(maxWait time.Duration) bool
 
 	// 64-bit I/O region map - separate from legacy 32-bit mapping.
 	// Registered via MapIO64, used by Read64/Write64 for native 64-bit dispatch.
@@ -1735,6 +1738,23 @@ func (bus *MachineBus) IsIOAddress64(addr uint32) bool {
 // This allows VBlank polling without entering the general I/O dispatch path.
 func (bus *MachineBus) SetVideoStatusReader(reader func(addr uint32) uint32) {
 	bus.videoStatusReader = reader
+}
+
+// SetVideoVBlankWaiter registers the video edge waiter paired with the
+// lock-free VIDEO_STATUS reader. Registration occurs during device setup,
+// before CPU execution starts.
+func (bus *MachineBus) SetVideoVBlankWaiter(waiter func(maxWait time.Duration) bool) {
+	bus.videoVBlankWaiter = waiter
+}
+
+// WaitForVideoVBlankEdge waits for the next video rising edge when a video
+// device has registered one. It returns false when no device is attached or
+// the bounded wait expires.
+func (bus *MachineBus) WaitForVideoVBlankEdge(maxWait time.Duration) bool {
+	if bus == nil || bus.videoVBlankWaiter == nil {
+		return false
+	}
+	return bus.videoVBlankWaiter(maxWait)
 }
 
 // SealMappings prevents further MapIO calls. This is called when execution starts

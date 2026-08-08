@@ -135,6 +135,7 @@ func TestZ80RotozoomerRuntimeProducesVideo(t *testing.T) {
 
 func TestZ80RobocopRuntimeProducesVideo(t *testing.T) {
 	rig := newEightBitRotoRig(t)
+	restoreLegacyVideoConfig(rig.bus, rig.video)
 	if err := rig.video.Start(); err != nil {
 		t.Fatalf("failed to start video chip: %v", err)
 	}
@@ -154,8 +155,51 @@ func TestZ80RobocopRuntimeProducesVideo(t *testing.T) {
 	runner.StartExecution()
 	time.Sleep(2 * time.Second)
 	runner.Stop()
+	// Copper bars alone expose only their small palette. The retained-frame
+	// Robocop scene must also present the masked logo and scroll glyphs.
+	requireVideoContent(t, rig.video, 64)
+}
 
-	requireVideoContent(t, rig.video, 5)
+func Test6502RobocopRuntimeProducesVideo(t *testing.T) {
+	rig := newEightBitRotoRig(t)
+	restoreLegacyVideoConfig(rig.bus, rig.video)
+	if err := rig.video.Start(); err != nil {
+		t.Fatalf("failed to start video chip: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = rig.video.Stop()
+		rig.sound.Stop()
+	})
+
+	runner := NewCPU6502Runner(rig.bus, CPU6502Config{LoadAddr: 0x0800, Entry: 0x0800})
+	if err := runner.LoadProgram(filepath.Join("sdk", "examples", "prebuilt", "robocop_intro_65.ie65")); err != nil {
+		t.Fatalf("load 6502 robocop: %v", err)
+	}
+	runner.StartExecution()
+	time.Sleep(2 * time.Second)
+	runner.Stop()
+	requireVideoContent(t, rig.video, 64)
+}
+
+func TestIE32RobocopRuntimeProducesVideo(t *testing.T) {
+	rig := newEightBitRotoRig(t)
+	restoreLegacyVideoConfig(rig.bus, rig.video)
+	if err := rig.video.Start(); err != nil {
+		t.Fatalf("failed to start video chip: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = rig.video.Stop()
+		rig.sound.Stop()
+	})
+
+	cpu := NewCPU(rig.bus)
+	if err := cpu.LoadProgram(filepath.Join("sdk", "examples", "prebuilt", "robocop_intro.iex")); err != nil {
+		t.Fatalf("load IE32 robocop: %v", err)
+	}
+	cpu.StartExecution()
+	time.Sleep(2 * time.Second)
+	cpu.Stop()
+	requireVideoContent(t, rig.video, 64)
 }
 
 func TestX86RotozoomerRuntimeProducesVideo(t *testing.T) {

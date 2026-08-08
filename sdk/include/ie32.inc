@@ -125,6 +125,8 @@
 ; ============================================================================
 
 .equ VIDEO_CTRL        0xF0000          ; Video control (enable/disable)
+.equ VIDEO_CTRL_ENABLE 0x01             ; Enable video output
+.equ VIDEO_CTRL_PRESENT_HOLD 0x02       ; Retain the completed frame until cleared
 .equ VIDEO_MODE        0xF0004          ; Video mode (resolution)
 .equ VIDEO_STATUS      0xF0008          ; Video status
 .equ STATUS_VBLANK     2                ; VBlank status bit

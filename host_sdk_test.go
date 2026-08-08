@@ -39,17 +39,37 @@ func TestHostSDKPublicHeaderContract(t *testing.T) {
 		defines[match[1]] = value
 	}
 	for name, want := range map[string]uint64{
-		"IE_VIDEO_CTRL":      VIDEO_CTRL,
-		"IE_INPUT_TERM_OUT":  TERM_OUT,
-		"IE_AUDIO_BASE":      AUDIO_CTRL,
-		"IE_FILE_BASE":       FILE_IO_BASE,
-		"IE_EXEC_BASE":       EXEC_BASE,
-		"IE_COPROC_BASE":     COPROC_BASE,
-		"IE_NET_SOCKET_BASE": HOST_SOCKET_BASE,
-		"IE_VOODOO_BASE":     VOODOO_BASE,
+		"IE_VIDEO_CTRL":              VIDEO_CTRL,
+		"IE_VIDEO_CTRL_ENABLE":       videoCtrlEnable,
+		"IE_VIDEO_CTRL_PRESENT_HOLD": videoCtrlPresentationHold,
+		"IE_INPUT_TERM_OUT":          TERM_OUT,
+		"IE_AUDIO_BASE":              AUDIO_CTRL,
+		"IE_FILE_BASE":               FILE_IO_BASE,
+		"IE_EXEC_BASE":               EXEC_BASE,
+		"IE_COPROC_BASE":             COPROC_BASE,
+		"IE_NET_SOCKET_BASE":         HOST_SOCKET_BASE,
+		"IE_VOODOO_BASE":             VOODOO_BASE,
 	} {
 		if got, ok := defines[name]; !ok || got != want {
 			t.Errorf("public header %s = 0x%X, want executable-source value 0x%X", name, got, want)
+		}
+	}
+}
+
+func TestHostSDKVideoPresentationHoldDocumentation(t *testing.T) {
+	documentation, err := os.ReadFile("sdk/docs/include-files-host-sdk.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"IE_VIDEO_CTRL_ENABLE",
+		"IE_VIDEO_CTRL_PRESENT_HOLD",
+		"retained",
+		"framebuffer",
+		"final blit completion",
+	} {
+		if !strings.Contains(string(documentation), want) {
+			t.Errorf("host SDK include documentation is missing %q", want)
 		}
 	}
 }

@@ -122,6 +122,8 @@ RTC_MONO_USEC_HI = $2760       ; High 32 bits of monotonic microseconds since en
 ; ============================================================================
 
 VIDEO_CTRL      = $F000         ; Video control (enable/disable)
+VIDEO_CTRL_ENABLE = $01         ; Enable video output
+VIDEO_CTRL_PRESENT_HOLD = $02   ; Retain the completed frame until cleared
 VIDEO_MODE      = $F004         ; Video mode (resolution)
 VIDEO_STATUS    = $F008         ; Video status
 STATUS_VBLANK   = 2             ; VBlank status bit

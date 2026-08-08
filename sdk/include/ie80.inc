@@ -124,6 +124,8 @@
 ; ============================================================================
 
 .set VIDEO_CTRL,0xF000
+.set VIDEO_CTRL_ENABLE,0x01
+.set VIDEO_CTRL_PRESENT_HOLD,0x02
 .set VIDEO_MODE,0xF004
 .set VIDEO_STATUS,0xF008
 .set STATUS_VBLANK,2

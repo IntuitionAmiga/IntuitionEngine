@@ -154,6 +154,68 @@ func TestSDKInclude_32BitConstantParity(t *testing.T) {
 	}
 }
 
+func TestSDKInclude_IE64VideoPresentationHold(t *testing.T) {
+	constants := parseIncConstants(t, filepath.Join("sdk", "include", "ie64.inc"))
+	for name, want := range map[string]uint32{
+		"VIDEO_CTRL_ENABLE":       1,
+		"VIDEO_CTRL_PRESENT_HOLD": 2,
+	} {
+		if got, ok := constants[name]; !ok || got != want {
+			t.Fatalf("ie64.inc %s = %d, want %d", name, got, want)
+		}
+	}
+
+	doc, err := os.ReadFile(filepath.Join("sdk", "docs", "ehbasic_ie64.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"Bit 1 retains the completed frame until cleared.",
+		"POKE32 &HF0000,3",
+		"POKE32 &HF0000,1",
+	} {
+		if !strings.Contains(string(doc), want) {
+			t.Fatalf("ehbasic_ie64.md missing presentation-hold guidance %q", want)
+		}
+	}
+}
+
+func TestSDKInclude_VideoPresentationHoldPublicSurface(t *testing.T) {
+	for _, path := range []string{
+		filepath.Join("sdk", "include", "ie32.inc"),
+		filepath.Join("sdk", "include", "ie64.inc"),
+		filepath.Join("sdk", "include", "ie65.inc"),
+		filepath.Join("sdk", "include", "ie68.inc"),
+		filepath.Join("sdk", "include", "ie80.inc"),
+		filepath.Join("sdk", "include", "ie86.inc"),
+	} {
+		constants := parseIncConstants(t, path)
+		for name, want := range map[string]uint32{
+			"VIDEO_CTRL_ENABLE":       1,
+			"VIDEO_CTRL_PRESENT_HOLD": 2,
+		} {
+			if got, ok := constants[name]; !ok || got != want {
+				t.Errorf("%s: %s = %d, want %d", path, name, got, want)
+			}
+		}
+	}
+
+	documentation, err := os.ReadFile(filepath.Join("sdk", "docs", "include-files.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"VIDEO_CTRL_ENABLE",
+		"VIDEO_CTRL_PRESENT_HOLD",
+		"retained framebuffer",
+		"final blit completion",
+	} {
+		if !strings.Contains(string(documentation), want) {
+			t.Errorf("include-files.md is missing presentation-hold guidance %q", want)
+		}
+	}
+}
+
 func TestSDKInclude_SFXAndLowRes8BitAliases(t *testing.T) {
 	ie65 := parseIncConstants(t, filepath.Join("sdk", "include", "ie65.inc"))
 	for key, want := range map[string]uint32{

@@ -18,6 +18,10 @@ import (
 // 4MB is sufficient since 6502 blocks are small (1-3 byte instructions, ~10-60 bytes native each).
 const jit6502ExecMemSize = 4 * 1024 * 1024
 
+// p65MMIOPollYield gives exhausted device-poll batches a scheduler boundary.
+// Tests replace it to prove a guest cannot starve the video refresh goroutine.
+var p65MMIOPollYield = runtime.Gosched
+
 // getJIT6502ExecMem returns the typed *ExecMem from the cpu's any field.
 func (cpu *CPU_6502) getJIT6502ExecMem() *ExecMem {
 	if cpu.jitExecMem == nil {
@@ -257,6 +261,17 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 					if perfAcctOn {
 						cpu.perfAcct.AddInstrs(uint64(retired))
 					}
+					if retired >= uint32(DefaultPollIterationCap*3) && cpu.waitFor6502VBlankEdge(adapter) {
+						// A complete VIDEO_STATUS wait batch saw no edge. Park on the
+						// video device and resume native execution at the guest loop.
+						continue
+					}
+					if retired >= uint32(DefaultPollIterationCap*3) {
+						// A complete batch observed no device-state change. Yield before
+						// re-entering the guest loop so the video refresh goroutine can
+						// publish the VBlank edge this code is waiting for.
+						p65MMIOPollYield()
+					}
 					continue
 				}
 			}
@@ -460,4 +475,24 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			break
 		}
 	}
+}
+
+func (cpu *CPU_6502) waitFor6502VBlankEdge(adapter *Bus6502Adapter) bool {
+	if cpu == nil || adapter == nil || cpu.fastAdapter == nil {
+		return false
+	}
+	bus, ok := adapter.bus.(*MachineBus)
+	if !ok {
+		return false
+	}
+	pc := cpu.PC
+	mem := cpu.fastAdapter.memDirect
+	if int(pc)+7 > len(mem) || mem[pc] != 0xAD || mem[pc+3] != 0x29 || mem[pc+5] != 0xF0 {
+		return false
+	}
+	addr := uint16(mem[pc+1]) | uint16(mem[pc+2])<<8
+	if addr != 0xF008 || mem[pc+4] != byte(videoStatusVBlank) || int32(uint32(pc)+7)+int32(int8(mem[pc+6])) != int32(pc) {
+		return false
+	}
+	return bus.WaitForVideoVBlankEdge(cpuWaitSafetyTimeout)
 }

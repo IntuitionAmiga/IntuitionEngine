@@ -3442,7 +3442,7 @@ dither, bits 20-31=depth offset.
 
 | Address | Name | Description |
 |---------|------|-------------|
-| `&HF0000` | VIDEO_CTRL | Video control |
+| `&HF0000` | VIDEO_CTRL | Video control. Bit 1 retains the completed frame until cleared. |
 | `&HF0004` | VIDEO_MODE | Video mode select |
 | `&HF0008` | VIDEO_STATUS | Video status |
 | `&HF000C` | COPPER_CTRL | Copper control (1=enable) |
@@ -3475,6 +3475,19 @@ dither, bits 20-31=depth offset.
 | `&HF0490` | BLT_BG | Blitter background colour |
 | `&HF0494` | BLT_MASK_MOD | Blitter mask modulo |
 | `&HF0498` | BLT_MASK_SRCX | Blitter mask source X |
+
+#### Retained-frame presentation
+
+Use bit 1 of `VIDEO_CTRL` when several blits update a retained framebuffer.
+Writing `3` keeps the last completed frame visible while BASIC issues the
+blits. After the final blit has completed, writing `1` publishes the completed
+frame without exposing the intermediate erase or redraw.
+
+```basic
+POKE32 &HF0000,3 : REM retain the completed frame
+REM issue the related BLIT commands and wait for completion
+POKE32 &HF0000,1 : REM publish the completed frame
+```
 
 ### 9.16 File I/O Registers (`&HF2200`-`&HF221F`)
 

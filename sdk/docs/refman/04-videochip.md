@@ -49,7 +49,7 @@ are aligned to 4 bytes.
 
 | Address     | Name              | Purpose                              |
 |-------------|-------------------|--------------------------------------|
-| `$F0000`   | `VIDEO_CTRL`      | Master enable. `0` = off, non-zero = on. |
+| `$F0000`   | `VIDEO_CTRL`      | Master enable. `0` = off, non-zero = on. Bit 1 retains the completed frame until cleared. |
 | `$F0004`   | `VIDEO_MODE`      | Output mode (table below). |
 | `$F0008`   | `VIDEO_STATUS`    | Status bits (read-only). |
 | `$F000C`   | `COPPER_CTRL`     | Copper enable and reset. |
@@ -99,6 +99,15 @@ interrupt.
 
 VideoChip starts disabled. To turn it on, write a non-zero value to
 `VIDEO_CTRL`. To turn it off, write `0`.
+
+Set `VIDEO_CTRL` bit 1 while keeping the chip enabled to retain a copy of the
+last completed frame. The compositor continues to present that copy while the
+guest updates a retained framebuffer with several blits. After the final blit
+has completed, clear bit 1 while keeping bit 0 set to publish the completed
+frame. For example, write `3` to begin the hold and `1` to release it. This is
+useful for sprite erases, redraws and scroll updates that must not be visible
+as intermediate frames. The first held update after video initialisation
+establishes the retained source; later holds retain the completed guest frame.
 
 The chip supports eight output modes. Each mode selects a frame
 width and height. The default mode at power-on is `$07`

@@ -1,0 +1,109 @@
+-- ULA rotating-cube diagnostic. Capture is opt-in for headless runs.
+
+local VIDEO_CTRL = 0x000F0000
+local ULA_CTRL = 0x000F2004
+-- The linker places ZEROPAGE at $0002. curr_frame follows the 10-byte line
+-- state and edge_idx, so the demo updates it at $000D after every frame.
+local CURRENT_FRAME = 0x000D
+local max_poll = tonumber(os.getenv("IE_ULA_CUBE_MAX_POLL_FRAMES") or "2500")
+local capture = os.getenv("IE_ULA_CUBE_CAPTURE") ~= "false"
+local out_root = "ula_rotating_cube_65_out"
+local captured = {}
+local last_hash = nil
+local hash_changed = false
+local observed_frames = 0
+local final_frame = 0
+local last_frame = nil
+local probe_captured = false
+local ula_before = nil
+
+if capture then
+    sys.mkdir(out_root)
+end
+
+-- Discover names before requesting snapshots: device names are intentionally
+-- implementation-owned, while the public MMIO addresses below are stable.
+local devices = dbg.device_list()
+for _, name in ipairs(devices) do
+    sys.print("[ula cube] device=" .. name)
+end
+for _, name in ipairs(dbg.io_devices()) do
+    sys.print("[ula cube] io=" .. name)
+end
+
+assert(cpu.mode() == "6502", "select the 6502 CPU before running this diagnostic")
+
+local loaded, load_error = pcall(cpu.load, "sdk/examples/prebuilt/ula_rotating_cube_65.ie65")
+if not loaded then
+    sys.print("[ula cube] load failed: " .. tostring(load_error))
+end
+assert(loaded, load_error)
+cpu.start()
+sys.print("[ula cube] 6502 demo loaded")
+
+local loop_ok, loop_error = pcall(function()
+    for poll = 1, max_poll do
+        sys.wait_frames(1)
+        cpu.freeze()
+        local current_frame = mem.read8(CURRENT_FRAME)
+        local hash = video.frame_hash()
+        local video_ctrl = video.read_reg(VIDEO_CTRL)
+        local ula_ctrl = video.read_reg(ULA_CTRL)
+        cpu.resume()
+
+        final_frame = current_frame
+
+        if last_frame ~= nil and current_frame ~= last_frame then
+            observed_frames = observed_frames + 1
+            sys.print(string.format("[ula cube] frames=%d phase=%d hash=%s",
+                observed_frames, current_frame, tostring(hash)))
+        end
+        last_frame = current_frame
+
+        if observed_frames >= 1 then
+            assert(video_ctrl ~= 0, "VideoChip is disabled")
+            assert(ula_ctrl ~= 0, "ULA is disabled")
+            assert(hash ~= 0, "compositor frame hash is zero")
+            if ula_before == nil then
+                ula_before = dbg.device_snapshot("ula-engine")
+            end
+            if capture and not probe_captured then
+                rec.screenshot(string.format("%s/probe.png", out_root))
+                probe_captured = true
+            end
+            if last_hash ~= nil and hash ~= last_hash then
+                hash_changed = true
+            end
+            last_hash = hash
+        end
+
+        if observed_frames >= 2 then
+            -- curr_frame has already advanced after drawing, so the visible
+            -- image corresponds to the preceding phase.
+            local visible_phase = (current_frame + 31) % 32
+            if (visible_phase == 0 or visible_phase == 4 or visible_phase == 8) and not captured[visible_phase] then
+                if capture then
+                    rec.screenshot(string.format("%s/frame_%02d.png", out_root, visible_phase))
+                end
+                captured[visible_phase] = true
+                sys.print(string.format("[ula cube] frame=%d visible=%d hash=%s", current_frame, visible_phase, tostring(hash)))
+            end
+            if captured[0] and captured[4] and captured[8] then
+                break
+            end
+        end
+    end
+
+    assert(ula_before ~= nil, "ULA never reached its initialised state")
+    local ula_after = dbg.device_snapshot("ula-engine")
+    local ula_diff = dbg.device_diff(ula_before, ula_after)
+    sys.print("[ula cube] IEMon ULA diff=" .. ula_diff)
+    assert(hash_changed, "compositor frame hash has not changed")
+    assert(captured[0] and captured[4] and captured[8], string.format(
+        "did not observe all requested cube phases (frames=%d phase=%d)",
+        observed_frames, final_frame))
+end)
+if not loop_ok then
+    sys.print("[ula cube] diagnostic failed: " .. tostring(loop_error))
+end
+assert(loop_ok, loop_error)

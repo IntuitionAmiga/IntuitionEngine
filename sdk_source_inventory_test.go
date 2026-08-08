@@ -30,7 +30,7 @@ func TestSDKArchitectureSourceInventoryGoldenMatchesSource(t *testing.T) {
 }
 
 func TestZ80JITDocumentationRejectsStalePartialBackendClaims(t *testing.T) {
-	paths := []string{"z80_jit.md", "sdk/docs/architecture.md", "sdk/docs/iescript.md", "sdk/docs/iemon.md", "sdk/docs/wasm.md"}
+	paths := []string{"sdk/docs/Z80_JIT.md", "sdk/docs/architecture.md", "sdk/docs/iescript.md", "sdk/docs/iemon.md", "sdk/docs/wasm.md"}
 	stale := []string{"NOP and register-only loads", "Z80 emits NOP, register-only loads", "frozen canonical helpers execute remaining forms", "remaining Z80 forms use frozen canonical helpers", "ARM64 direct coverage", "other forms use canonical helpers", "breaks on HALT"}
 	for _, path := range paths {
 		contents, err := os.ReadFile(path)

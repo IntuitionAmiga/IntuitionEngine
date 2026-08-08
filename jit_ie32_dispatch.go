@@ -1,6 +1,13 @@
 package main
 
-import "time"
+import (
+	"runtime"
+	"time"
+)
+
+// ie32MMIOPollYield gives bounded MMIO polling loops a scheduler boundary.
+// Tests replace it to prove that the boundary is retained.
+var ie32MMIOPollYield = runtime.Gosched
 
 // ExecuteJITIE32 is the IE32 JIT router. The frontend is introduced before
 // individual lowering families so production construction and launch paths
@@ -35,6 +42,16 @@ func (cpu *CPU) ExecuteJITIE32() {
 				cpu.jit.helperInstructions.Add(retired)
 				cpu.jit.deoptimizations.Add(1)
 				cpu.jit.helperDeopts.Add(1)
+				if retired >= uint64(ie32MMIOPollIterationCap*2) && cpu.waitForIE32VBlankEdge() {
+					// A complete VIDEO_STATUS wait batch saw no edge. Park on the
+					// video device instead of abandoning JIT execution for the full
+					// interpreter, then resume at the unchanged guest poll loop.
+					cpu.jit.mmioPollParks.Add(1)
+					continue
+				}
+				// The fast path can otherwise re-enter an unchanged VBlank poll
+				// forever without giving the video refresh goroutine a turn.
+				ie32MMIOPollYield()
 				continue
 			}
 		}
@@ -133,6 +150,25 @@ func (cpu *CPU) ExecuteJITIE32() {
 			hostCooperativeYield()
 		}
 	}
+}
+
+func (cpu *CPU) waitForIE32VBlankEdge() bool {
+	if cpu == nil || cpu.bus == nil {
+		return false
+	}
+	bus, ok := cpu.bus.(*MachineBus)
+	if !ok {
+		return false
+	}
+	load, ok := decodeIE32Instruction(cpu.memory, cpu.PC)
+	if !ok || load.Opcode != LOAD || load.AddrMode != ADDR_DIRECT || load.Operand != VIDEO_STATUS {
+		return false
+	}
+	branch, ok := decodeIE32Instruction(cpu.memory, cpu.PC+INSTRUCTION_SIZE)
+	if !ok || branch.Opcode != JZ || branch.registerIndex() != load.registerIndex() || branch.Operand != cpu.PC {
+		return false
+	}
+	return bus.WaitForVideoVBlankEdge(cpuWaitSafetyTimeout)
 }
 
 const ie32MMIOPollIterationCap = 4096

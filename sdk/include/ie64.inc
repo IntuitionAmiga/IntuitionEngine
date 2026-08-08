@@ -340,6 +340,8 @@ HOST_STATUS_IDLE      equ 5
 ; ============================================================================
 
 VIDEO_CTRL        equ 0xF0000               ; Video control (enable/disable)
+VIDEO_CTRL_ENABLE equ 0x01                  ; Enable video output
+VIDEO_CTRL_PRESENT_HOLD equ 0x02            ; Retain the completed frame until cleared
 VIDEO_MODE        equ 0xF0004               ; Video mode (resolution)
 VIDEO_STATUS      equ 0xF0008               ; Video status
 STATUS_VBLANK     equ 2                     ; VBlank status bit

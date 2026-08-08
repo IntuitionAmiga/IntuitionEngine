@@ -53,6 +53,57 @@ func TestCLUT8_MappedVRAM_GetFrame(t *testing.T) {
 	clut8CheckPixel(t, frame, 0, 0xAA, 0xBB, 0xCC, 0xFF, "mapped CLUT8 pixel")
 }
 
+func TestVideoCtrlPresentationHoldKeepsCompletedFrameVisible(t *testing.T) {
+	video, bus := newBlitterTestRig(t)
+	bus.Write32(VIDEO_CTRL, videoCtrlEnable)
+
+	fill := func(color uint32) {
+		bus.Write32(BLT_OP, bltOpFill)
+		bus.Write32(BLT_DST, VRAM_START)
+		bus.Write32(BLT_WIDTH, 1)
+		bus.Write32(BLT_HEIGHT, 1)
+		bus.Write32(BLT_DST_STRIDE, uint32(VideoModes[MODE_640x480].bytesPerRow))
+		bus.Write32(BLT_COLOR, color)
+		bus.Write32(BLT_CTRL, bltCtrlStart)
+	}
+
+	fill(0xFF112233)
+	// The first frame establishes the retained presentation source. Later
+	// updates can then hold that completed image while drawing the next one.
+	bus.Write32(VIDEO_CTRL, videoCtrlEnable|videoCtrlPresentationHold)
+	bus.Write32(VIDEO_CTRL, videoCtrlEnable)
+	bus.Write32(VIDEO_CTRL, videoCtrlEnable|videoCtrlPresentationHold)
+	fill(0xFF445566)
+
+	frame := video.GetFrame()
+	if frame == nil {
+		t.Fatal("held frame is nil")
+	}
+	if got, want := binary.LittleEndian.Uint32(frame[:4]), uint32(0xFF112233); got != want {
+		t.Fatalf("held frame pixel = 0x%08X, want previously presented 0x%08X", got, want)
+	}
+	copyFrame := make([]byte, len(frame))
+	if copied, ok := video.CopyFrameForCompositor(copyFrame); !ok {
+		t.Fatal("held compositor frame was not copied")
+	} else if got, want := binary.LittleEndian.Uint32(copied[:4]), uint32(0xFF112233); got != want {
+		t.Fatalf("held compositor frame pixel = 0x%08X, want previously presented 0x%08X", got, want)
+	}
+	if finished := video.FinishFrame(); finished == nil {
+		t.Fatal("held finished frame is nil")
+	} else if got, want := binary.LittleEndian.Uint32(finished[:4]), uint32(0xFF112233); got != want {
+		t.Fatalf("held finished frame pixel = 0x%08X, want previously presented 0x%08X", got, want)
+	}
+
+	bus.Write32(VIDEO_CTRL, videoCtrlEnable)
+	frame = video.GetFrame()
+	if frame == nil {
+		t.Fatal("released frame is nil")
+	}
+	if got, want := binary.LittleEndian.Uint32(frame[:4]), uint32(0xFF445566); got != want {
+		t.Fatalf("released frame pixel = 0x%08X, want completed 0x%08X", got, want)
+	}
+}
+
 func TestRasterBand_DirectVRAM_Visible(t *testing.T) {
 	video, bus := newCLUT8TestRig(t)
 	bus.Write32(VIDEO_CTRL, 1)

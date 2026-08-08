@@ -195,6 +195,16 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 			cpu.handleInterrupt(IRQ_VECTOR, false)
 			cpu.irqPending.Store(false)
 		}
+		if cpu.jitTestStopAfter == 0 {
+			if adapter, ok := cpu.memory.(*Bus6502Adapter); ok {
+				if matched, retired := cpu.wasmRun6502MMIOPollLoop(adapter); matched {
+					if cpu.PerfEnabled {
+						cpu.InstructionCount += uint64(retired)
+					}
+					continue
+				}
+			}
+		}
 		pc := cpu.PC
 		if cpu.fastAdapter != nil && cpu.fastAdapter.memDirect[pc] == 0x00 && cpu.debugFaults != nil {
 			cpu.interpret6502One()

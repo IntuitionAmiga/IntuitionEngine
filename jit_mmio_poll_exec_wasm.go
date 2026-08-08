@@ -1,6 +1,6 @@
 //go:build js && wasm
 
-// jit_mmio_poll_exec_wasm.go - MMIO poll-loop parking for the js/wasm build.
+// jit_mmio_poll_exec_wasm.go - IE64 MMIO poll-loop parking for the js/wasm build.
 //
 // The native backends recognise a guest spinning on an MMIO status register
 // (jit_mmio_poll_exec_amd64.go) and service the spin host-side; the OS
@@ -11,7 +11,7 @@
 // WAIT-VSYNC by polling VIDEO_STATUS therefore burnt its whole 16 ms slice
 // per observable edge and demos crawled at single-digit frame rates.
 //
-// wasmRunMMIOPollLoop matches the canonical three-instruction bit-test poll
+// wasmRunMMIOPollLoop matches the IE64 three-instruction bit-test poll.
 //
 //	pc+0:  LOAD  rd, (rs)+imm     ; rd != 0, MMIO address
 //	pc+8:  AND   rd, rd, #imm

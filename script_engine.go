@@ -361,6 +361,13 @@ func (se *ScriptEngine) scriptAllowedRoots(scriptName string) []string {
 	if scriptName != "" {
 		if dir := filepath.Dir(scriptName); dir != "" && dir != "." {
 			roots = append(roots, dir)
+			// SDK diagnostics intentionally load checked-in assets such as
+			// sdk/examples/prebuilt images. Only the resolved repository
+			// sdk/scripts directory receives the broader repository read root. A user
+			// directory merely named sdk/scripts remains confined to itself.
+			if repositoryRoot, ok := trustedRepositoryRootForSDKScriptDir(dir); ok {
+				roots = append(roots, repositoryRoot)
+			}
 		}
 	}
 	if se.scriptDir != "" && se.scriptDir != "." {
@@ -368,6 +375,24 @@ func (se *ScriptEngine) scriptAllowedRoots(scriptName string) []string {
 	}
 	roots = append(roots, filepath.Join("sdk", "scripts"))
 	return roots
+}
+
+// trustedRepositoryRootForSDKScriptDir returns the repository root only when
+// dir resolves to the repository's checked-in sdk/scripts directory.
+func trustedRepositoryRootForSDKScriptDir(dir string) (string, bool) {
+	canonicalScriptDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", false
+	}
+	trustedScripts, err := filepath.Abs(filepath.Join("sdk", "scripts"))
+	if err != nil {
+		return "", false
+	}
+	trustedScripts, err = filepath.EvalSymlinks(trustedScripts)
+	if err != nil || canonicalScriptDir != trustedScripts {
+		return "", false
+	}
+	return filepath.Dir(filepath.Dir(trustedScripts)), true
 }
 
 func (se *ScriptEngine) luaRestrictedRequire(scriptName string) lua.LGFunction {

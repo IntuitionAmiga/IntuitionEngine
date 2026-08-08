@@ -129,6 +129,8 @@ RTC_MONO_USEC_HI equ $F0760             ; High 32 bits of monotonic microseconds
 ; ============================================================================
 
 VIDEO_CTRL      equ $F0000              ; Video control (enable/disable)
+VIDEO_CTRL_ENABLE equ $01               ; Enable video output
+VIDEO_CTRL_PRESENT_HOLD equ $02         ; Retain the completed frame until cleared
 VIDEO_MODE      equ $F0004              ; Video mode (resolution)
 VIDEO_STATUS    equ $F0008              ; Video status
 STATUS_VBLANK   equ 2                   ; VBlank status bit

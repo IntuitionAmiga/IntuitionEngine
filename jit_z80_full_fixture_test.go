@@ -18,7 +18,7 @@ const (
 	z80FixtureFrameInstructions = uint64(50_000)
 	z80FixtureWatchdogFrames    = 4
 	z80FullRotozoomerSHA256     = "498d35495a0b6e3aedf3bb9a8a4a19cff63522ee8f408b7801d68a41b0ea5c2c"
-	z80FullRobocopSHA256        = "c44ae3cab2ccd5daa6d823aacc8429694c27768a363edda4f9318b72aefb502a"
+	z80FullRobocopSHA256        = "7b88d30b4316225acbee1642f830ea09378dfc9edb1cfceae833a26a722fd6fc"
 )
 
 type z80FullFixtureCheckpoint struct {

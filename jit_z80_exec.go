@@ -12,6 +12,7 @@ package main
 
 import (
 	"fmt"
+	"runtime"
 	"time"
 	"unsafe"
 )
@@ -27,6 +28,10 @@ const (
 	z80JITChainBlockBudget     uint32 = 64
 	z80JITInterruptCycleBudget uint32 = 200
 )
+
+// z80MMIOPollYield gives exhausted device-poll batches a scheduler boundary.
+// Tests replace it to prove a guest cannot starve the video refresh goroutine.
+var z80MMIOPollYield = runtime.Gosched
 
 // getZ80JITExecMem returns the typed *ExecMem from the cpu's any field.
 func (cpu *CPU_Z80) getZ80JITExecMem() *ExecMem {
@@ -441,6 +446,12 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 					}
 					if perfAcctOn {
 						cpu.perfAcct.AddInstrs(uint64(retired))
+					}
+					if retired >= uint32(DefaultPollIterationCap*3) {
+						// A complete batch observed no device-state change. Yield before
+						// re-entering the guest loop so the video refresh goroutine can
+						// publish the VBlank edge this code is waiting for.
+						z80MMIOPollYield()
 					}
 					continue
 				}

@@ -20,7 +20,7 @@ compiled blocks and static-jump-chased regions, direct and helper instructions,
 generated-block chain links,
 chain-budget exits, deoptimisations by helper boundary and source-stamp reason,
 retired instructions, invalidations,
-and cache hits. The counters reset
+cache hits, MMIO poll iterations, and MMIO poll parks. The counters reset
 on reset and program reload. An entry represents actual generated-code entry,
 not compilation attempts or interpreter fallback. A compiled block represents
 an opcode block lowered by the selected backend; it does not include the
@@ -84,7 +84,12 @@ next instruction boundary.
 With no timer, debugger, or bounded test checkpoint, a direct-MMIO `LOAD`
 followed by a same-register backward `JZ` or `JNZ` is recognised as a bounded
 poll loop. Each pair still executes through the canonical helper path, so MMIO
-side effects remain observable; `mmio_poll_iterations` records the work.
+side effects remain observable; `mmio_poll_iterations` records the work. If a
+complete `VIDEO_STATUS` VBlank batch observes no state change, the dispatcher
+parks on the video device's next rising edge and resumes JIT execution at the
+unchanged guest loop. This prevents a guest waiting for VBlank from repeatedly
+paying polling overhead or abandoning the generated execution path.
+`mmio_poll_parks` records these bounded device waits.
 
 The shared frontend performs one conservative peephole: an immediate load
 overwritten by a later same-register load in a contiguous run of immediate
@@ -170,7 +175,7 @@ from compilation.
 | Static regions and hot recompilation | Bounded forward-jump region promotion with discontiguous source ranges | `TestIE32JIT_StaticForwardJumpRegion`, `TestIE32JIT_StaticRegionTracksDiscontiguousSources` |
 | Register/value optimisation | Liveness, dead-load removal, resident immediate ALU, constant folding, branch fusion and constant-address specialisation | `TestIE32JIT_ResidentImmediateALURunPreservesArchitecturalState`, `TestIE32JIT_ImmediateConstantFoldPreservesRetirement`, `TestIE32JIT_ConstantPointerSpecialisesLaterIndirectLoad` |
 | Calls and loops | Safe leaf-call fusion, bounded counted loops, exact retirement and guarded direct-memory loop writes | `TestIE32JIT_FusedLeafCountedLoopReturnsExactRetirement`, `TestIE32JIT_GuardedRAMCountedLoopPublishesExactWriteRange` |
-| Observation and yield boundaries | Timer, interrupt, WAIT, debugger trap-loop, MMIO polling and cooperative yield remain observable | `TestIE32JIT_TimerExpiryMatchesInterpreterAtEachBlockPosition`, `TestIE32JIT_WatchpointUsesStepThenResumesGeneratedRouting`, `TestIE32JIT_AcceleratesMMIOPollLoop` |
+| Observation and yield boundaries | Timer, interrupt, WAIT, debugger trap-loop, MMIO polling and cooperative yield remain observable. An unchanged bounded VBlank poll parks on the video edge and resumes JIT execution. | `TestIE32JIT_TimerExpiryMatchesInterpreterAtEachBlockPosition`, `TestIE32JIT_WatchpointUsesStepThenResumesGeneratedRouting`, `TestIE32JIT_AcceleratesMMIOPollLoop`, `TestIE32JIT_ParksOnExhaustedVBlankPollAndResumesJIT` |
 | Wasm timing evidence | Five paired interpreter/JIT browser samples per workload, median regression budget, and generated-entry provenance | `TestIE32WasmBrowser_PairedPerformanceHarness`, `TestIE32WasmBrowserPairedPerformance` |
 | FPU/FPSR and MMU techniques | Structurally inapplicable: IE32 has neither an FPU/FPSR nor address translation | [IE32 ISA](IE32_ISA.md) |
 

@@ -346,10 +346,12 @@ const (
 // Control States/Flag Constants
 // ------------------------------------------------------------------------------
 const (
-	CTRL_DISABLE_FLAG = 0 // Writing 0 to CTRL enables video
-	ENABLED_STATE     = true
-	DISABLED_STATE    = false
-	VSYNC_ON          = true // Enable vertical synchronization in display config
+	CTRL_DISABLE_FLAG         = 0 // Writing 0 to CTRL disables video.
+	videoCtrlEnable           = 1
+	videoCtrlPresentationHold = 1 << 1
+	ENABLED_STATE             = true
+	DISABLED_STATE            = false
+	VSYNC_ON                  = true // Enable vertical synchronization in display config
 )
 
 // ------------------------------------------------------------------------------
@@ -537,11 +539,15 @@ type VideoChip struct {
 
 	// Fixed-size buffers (Cache Lines 4+)
 	// Note: These will be converted to fixed arrays in next iteration
-	frontBuffer   []byte // 24 bytes
-	backBuffer    []byte // 24 bytes
-	splashBuffer  []byte // 24 bytes
-	frameSnapshot []byte // Reused stable frame returned to the compositor.
-	prevVRAM      []byte // 24 bytes
+	frontBuffer         []byte // 24 bytes
+	backBuffer          []byte // 24 bytes
+	splashBuffer        []byte // 24 bytes
+	frameSnapshot       []byte // Reused stable frame returned to the compositor.
+	presentedFrame      []byte // Completed frame retained while presentation is held.
+	presentationHeld    bool
+	presentationPriming bool
+	presentationReady   bool
+	prevVRAM            []byte // 24 bytes
 
 	// Copper state
 	bus                          Bus32
@@ -778,6 +784,9 @@ func (chip *VideoChip) AttachBus(bus Bus32) {
 	chip.bus = bus
 	chip.busMemory = bus.GetMemory() // Cache for lock-free reads
 	chip.updateFramebufferErrLocked()
+	if machineBus, ok := bus.(*MachineBus); ok {
+		machineBus.SetVideoVBlankWaiter(chip.WaitForVBlankEdge)
+	}
 }
 
 // SetBusMemory sets a direct reference to bus memory, used when VRAM I/O mapping
@@ -3248,7 +3257,14 @@ func (chip *VideoChip) HandleRead(addr uint32) uint32 {
 
 	switch addr {
 	case VIDEO_CTRL:
-		return btou32(chip.enabled.Load())
+		if !chip.enabled.Load() {
+			return CTRL_DISABLE_FLAG
+		}
+		value := uint32(videoCtrlEnable)
+		if chip.presentationHeld {
+			value |= videoCtrlPresentationHold
+		}
+		return value
 	case VIDEO_MODE:
 		return chip.currentMode
 	case COPPER_PC:
@@ -3678,6 +3694,7 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 			return
 		}
 		wasEnabled := chip.enabled.Load()
+		chip.setPresentationHoldLocked(value&videoCtrlPresentationHold != 0)
 		chip.enabled.Store(value != CTRL_DISABLE_FLAG)
 		if !wasEnabled && chip.enabled.Load() {
 			mode := VideoModes[chip.currentMode]
@@ -3701,6 +3718,7 @@ func (chip *VideoChip) handleWriteLocked(addr uint32, value uint32) {
 		}
 	case VIDEO_MODE:
 		if mode, ok := VideoModes[value]; ok {
+			chip.setPresentationHoldLocked(false)
 			chip.currentMode = value
 			if len(chip.frontBuffer) != mode.totalSize {
 				chip.frontBuffer = make([]byte, mode.totalSize)
@@ -4440,7 +4458,7 @@ func (chip *VideoChip) CopyFrameForCompositor(dst []byte) ([]byte, bool) {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
-	frame := chip.currentFrameLocked()
+	frame := chip.presentationFrameLocked()
 	if frame == nil {
 		return nil, false
 	}
@@ -4475,7 +4493,7 @@ func (chip *VideoChip) GetFrame() []byte {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 
-	frame := chip.currentFrameLocked()
+	frame := chip.presentationFrameLocked()
 	if frame == nil {
 		return nil
 	}
@@ -4502,6 +4520,52 @@ func (chip *VideoChip) currentFrameLocked() []byte {
 		return nil
 	}
 	return frame
+}
+
+// presentationFrameLocked returns the completed frame while a guest holds
+// presentation. This prevents a compositor snapshot from observing a sequence
+// of otherwise independent blitter operations.
+func (chip *VideoChip) presentationFrameLocked() []byte {
+	if chip.presentationHeld {
+		return chip.presentedFrame
+	}
+	return chip.currentFrameLocked()
+}
+
+// setPresentationHoldLocked captures the last completed frame before the guest
+// starts a retained-frame update. Releasing the hold makes the fully updated
+// framebuffer visible as one presentation step.
+func (chip *VideoChip) setPresentationHoldLocked(hold bool) {
+	if !hold {
+		if chip.presentationHeld || chip.presentationPriming {
+			chip.presentationReady = true
+		}
+		chip.presentationHeld = false
+		chip.presentationPriming = false
+		return
+	}
+	if chip.presentationHeld || chip.presentationPriming {
+		return
+	}
+	if !chip.presentationReady {
+		// The first retained frame has no completed guest image to keep visible.
+		// Let initialisation populate it, then retain subsequent complete frames.
+		chip.presentationPriming = true
+		return
+	}
+
+	frame := chip.currentFrameLocked()
+	if frame == nil {
+		chip.presentedFrame = chip.presentedFrame[:0]
+	} else {
+		if cap(chip.presentedFrame) < len(frame) {
+			chip.presentedFrame = make([]byte, len(frame))
+		} else {
+			chip.presentedFrame = chip.presentedFrame[:len(frame)]
+		}
+		copy(chip.presentedFrame, frame)
+	}
+	chip.presentationHeld = true
 }
 
 // IsEnabled implements VideoSource - returns whether VideoChip is enabled
@@ -4611,18 +4675,7 @@ func (chip *VideoChip) FinishFrame() []byte {
 
 	chip.copperManagedByCompositor = false // Release copper management back to refreshLoop
 
-	var frame []byte
-	mode := VideoModes[chip.currentMode]
-	if !chip.clutMode.Load() && chip.rgbaFrameSourceUnsupportedLocked(mode) {
-		chip.framebufferErr.Store(true)
-		return nil
-	}
-	if chip.clutMode.Load() || chip.directVRAM != nil || chip.fbBase != 0 {
-		frame = chip.clutGetFrame()
-	} else {
-		chip.framebufferErr.Store(false)
-		frame = chip.frontBuffer
-	}
+	frame := chip.presentationFrameLocked()
 	if frame == nil {
 		return nil
 	}

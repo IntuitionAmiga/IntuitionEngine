@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestIE32JIT_DefaultPolicyMatchesBackendAvailability(t *testing.T) {
@@ -1099,6 +1100,10 @@ func TestIE32JIT_AcceleratesMMIOPollLoop(t *testing.T) {
 		values = values[1:]
 		return value
 	})
+	previousYield := ie32MMIOPollYield
+	yieldCalls := 0
+	ie32MMIOPollYield = func() { yieldCalls++ }
+	t.Cleanup(func() { ie32MMIOPollYield = previousYield })
 	cpu := NewCPU(bus)
 	putIE32Instruction(cpu.memory, PROG_START, LOAD, REG_A, ADDR_DIRECT, VIDEO_STATUS)
 	putIE32Instruction(cpu.memory, PROG_START+INSTRUCTION_SIZE, JZ, REG_A, ADDR_IMMEDIATE, PROG_START)
@@ -1109,6 +1114,44 @@ func TestIE32JIT_AcceleratesMMIOPollLoop(t *testing.T) {
 	}
 	if got := cpu.JITStats().MMIOPollIterations; got != 3 {
 		t.Fatalf("poll iterations=%d, want 3", got)
+	}
+	if yieldCalls != 1 {
+		t.Fatalf("poll scheduler yields=%d, want 1", yieldCalls)
+	}
+}
+
+func TestIE32JIT_ParksOnExhaustedVBlankPollAndResumesJIT(t *testing.T) {
+	if !ie32JITRuntimeAvailable() {
+		t.Skip("IE32 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	vblank := false
+	bus.SetVideoStatusReader(func(uint32) uint32 {
+		if vblank {
+			return videoStatusVBlank
+		}
+		return 0
+	})
+	waits := 0
+	bus.SetVideoVBlankWaiter(func(time.Duration) bool {
+		waits++
+		vblank = true
+		return true
+	})
+	cpu := NewCPU(bus)
+	putIE32Instruction(cpu.memory, PROG_START, LOAD, REG_A, ADDR_DIRECT, VIDEO_STATUS)
+	putIE32Instruction(cpu.memory, PROG_START+INSTRUCTION_SIZE, JZ, REG_A, ADDR_IMMEDIATE, PROG_START)
+	putIE32Instruction(cpu.memory, PROG_START+2*INSTRUCTION_SIZE, LDA, 0, ADDR_IMMEDIATE, 7)
+	cpu.memory[PROG_START+3*INSTRUCTION_SIZE] = HALT
+	cpu.Execute()
+	if cpu.A != 7 {
+		t.Fatalf("post-VBlank native result A=%d, want 7", cpu.A)
+	}
+	if waits != 1 {
+		t.Fatalf("VBlank waits=%d, want 1", waits)
+	}
+	if got := cpu.JITStats().MMIOPollParks; got != 1 {
+		t.Fatalf("MMIO poll parks=%d, want 1", got)
 	}
 }
 

@@ -387,6 +387,41 @@ func TestJIT6502_Exec_TestStopDoesNotCollapseMMIOPollLoop(t *testing.T) {
 	}
 }
 
+func TestJIT6502_ParksOnExhaustedVBlankPoll(t *testing.T) {
+	if !jit6502Available {
+		t.Skip("native 6502 JIT unavailable")
+	}
+
+	bus := NewMachineBus()
+	cpu := NewCPU_6502(bus)
+	vblank := false
+	bus.MapIO(VIDEO_STATUS, VIDEO_STATUS, func(uint32) uint32 {
+		if vblank {
+			return videoStatusVBlank
+		}
+		return 0
+	}, nil)
+	waits := 0
+	bus.SetVideoVBlankWaiter(func(time.Duration) bool {
+		waits++
+		vblank = true
+		return true
+	})
+	copy(cpu.fastAdapter.memDirect[0x0600:], []byte{
+		0xAD, 0x08, 0xF0, // LDA $F008
+		0x29, 0x02, // AND #$02
+		0xF0, 0xF9, // BEQ $0600
+		0x02, // JAM
+	})
+	cpu.PC = 0x0600
+	cpu.SetRunning(true)
+
+	cpu.ExecuteJIT6502()
+	if waits != 1 {
+		t.Fatalf("VBlank waits=%d, want 1", waits)
+	}
+}
+
 func TestJIT6502_Exec_CycleAccuracy(t *testing.T) {
 	// Run the same program through interpreter and JIT, compare Cycles
 	program := []byte{

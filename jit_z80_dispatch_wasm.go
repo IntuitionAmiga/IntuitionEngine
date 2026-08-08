@@ -339,6 +339,18 @@ func (cpu *CPU_Z80) ExecuteJITZ80() {
 			}
 			continue
 		}
+		if !cpu.jitSingleStep {
+			if matched, retired, rIncrements := cpu.wasmRunZ80MMIOPollLoop(adapter); matched {
+				if rIncrements != 0 {
+					r := cpu.R
+					cpu.R = (r & 0x80) | ((r + byte(rIncrements)) & 0x7F)
+				}
+				if cpu.PerfEnabled {
+					cpu.InstructionCount += uint64(retired)
+				}
+				continue
+			}
+		}
 		pc := cpu.PC
 		block := rt.cache[pc]
 		if block != nil && !rt.sourceMatches(pc, block) {

@@ -18,7 +18,7 @@ const (
 	z80RotozoomerFixtureSHA256 = "498d35495a0b6e3aedf3bb9a8a4a19cff63522ee8f408b7801d68a41b0ea5c2c"
 	z80RotozoomerComputeFrame  = 0x00DE // vasmz80_std rotozoomer_z80.asm
 	z80RotozoomerAdvance       = 0x0438 // vasmz80_std rotozoomer_z80.asm
-	z80RobocopFixtureSHA256    = "c44ae3cab2ccd5daa6d823aacc8429694c27768a363edda4f9318b72aefb502a"
+	z80RobocopFixtureSHA256    = "7b88d30b4316225acbee1642f830ea09378dfc9edb1cfceae833a26a722fd6fc"
 	z80RobocopComputeXY        = 0x01BA // vasmz80_std robocop_intro_z80.asm
 	z80RobocopCodeBytes        = 0x06B3 // first output segment ending at $06B2
 )
@@ -80,6 +80,48 @@ func TestZ80JIT_ChainAndInterruptBounds(t *testing.T) {
 	}
 	if got, want := z80JITInterruptCycleBudget, uint32(200); got != want {
 		t.Fatalf("interrupt cycle budget = %d, want %d", got, want)
+	}
+}
+
+func TestZ80JIT_YieldsAfterExhaustedVBlankPoll(t *testing.T) {
+	if !z80JitAvailable {
+		t.Skip("Z80 JIT unavailable")
+	}
+
+	const statusVBlank = 2
+
+	bus := NewMachineBus()
+	polls := 0
+	bus.MapIO(VIDEO_STATUS, VIDEO_STATUS, func(uint32) uint32 {
+		polls++
+		if polls > DefaultPollIterationCap {
+			return videoStatusVBlank
+		}
+		return 0
+	}, nil)
+	runner := NewCPUZ80Runner(bus, CPUZ80Config{LoadAddr: defaultZ80LoadAddr, Entry: defaultZ80LoadAddr})
+	cpu := runner.CPU()
+	pc := defaultZ80LoadAddr
+	copy(bus.memory[pc:], []byte{
+		0x3A, 0x08, 0xF0, // LD A,(VIDEO_STATUS)
+		0xE6, statusVBlank,
+		0x28, 0xF9, // JR Z,pc
+		0x76, // HALT
+	})
+	cpu.PC = uint16(pc)
+	cpu.SetRunning(true)
+
+	previousYield := z80MMIOPollYield
+	yieldCalls := 0
+	z80MMIOPollYield = func() { yieldCalls++ }
+	t.Cleanup(func() { z80MMIOPollYield = previousYield })
+
+	cpu.ExecuteJITZ80()
+	if cpu.A != statusVBlank {
+		t.Fatalf("poll result A=%#x, want VBlank", cpu.A)
+	}
+	if yieldCalls == 0 {
+		t.Fatal("exhausted VBlank poll did not yield to the host scheduler")
 	}
 }
 

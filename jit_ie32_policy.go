@@ -29,6 +29,7 @@ type IE32JITStats struct {
 	CacheHits           uint64
 	ReturnCacheHits     uint64
 	MMIOPollIterations  uint64
+	MMIOPollParks       uint64
 	ResidentSpillsSaved uint64
 	CountedLoops        uint64
 }
@@ -57,6 +58,7 @@ type ie32JITState struct {
 	cacheHits                  atomic.Uint64
 	returnCacheHits            atomic.Uint64
 	mmioPollIterations         atomic.Uint64
+	mmioPollParks              atomic.Uint64
 	residentSpillsSaved        atomic.Uint64
 	countedLoops               atomic.Uint64
 	execMem                    *ExecMem
@@ -375,6 +377,7 @@ func (cpu *CPU) JITStats() IE32JITStats {
 		CacheHits:           cpu.jit.cacheHits.Load(),
 		ReturnCacheHits:     cpu.jit.returnCacheHits.Load(),
 		MMIOPollIterations:  cpu.jit.mmioPollIterations.Load(),
+		MMIOPollParks:       cpu.jit.mmioPollParks.Load(),
 		ResidentSpillsSaved: cpu.jit.residentSpillsSaved.Load(),
 		CountedLoops:        cpu.jit.countedLoops.Load(),
 	}
@@ -401,6 +404,7 @@ func (cpu *CPU) resetJITStats() {
 	cpu.jit.cacheHits.Store(0)
 	cpu.jit.returnCacheHits.Store(0)
 	cpu.jit.mmioPollIterations.Store(0)
+	cpu.jit.mmioPollParks.Store(0)
 	cpu.jit.residentSpillsSaved.Store(0)
 	cpu.jit.countedLoops.Store(0)
 	clear(cpu.jit.nativeCache)

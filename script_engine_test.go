@@ -3221,6 +3221,35 @@ func TestScript_PathValidationForCpuLoad(t *testing.T) {
 	}
 }
 
+func TestScript_PathValidationDoesNotTrustSDKLookalikeDirectory(t *testing.T) {
+	root := t.TempDir()
+	scriptDir := filepath.Join(root, "sdk", "scripts")
+	if err := os.MkdirAll(scriptDir, 0755); err != nil {
+		t.Fatalf("create lookalike script directory: %v", err)
+	}
+	sibling := filepath.Join(root, "sibling.bin")
+	if err := os.WriteFile(sibling, []byte{1, 2, 3}, 0644); err != nil {
+		t.Fatalf("write sibling program: %v", err)
+	}
+
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	var loaded string
+	se.SetProgramLoader(func(path string) error {
+		loaded = path
+		return nil
+	})
+	if err := se.RunString(`cpu.load("sibling.bin")`, filepath.Join(scriptDir, "untrusted.ies")); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err == nil {
+		t.Fatal("expected lookalike SDK directory to remain confined to its script directory")
+	}
+	if loaded != "" {
+		t.Fatalf("loader called for rejected sibling: %q", loaded)
+	}
+}
+
 func TestScript_CPULoadStopped_IE64LoadsWithoutStarting(t *testing.T) {
 	dir := t.TempDir()
 	prog := filepath.Join(dir, "prog.ie64")

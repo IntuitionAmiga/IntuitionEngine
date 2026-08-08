@@ -83,6 +83,9 @@
 /* Common, target-normalised hardware map.  See architecture.md for access semantics. */
 #define IE_PROGRAM_START 0x001000u
 #define IE_VIDEO_CTRL 0x0f0000u
+/* VIDEO_CTRL bits. Bit 1 retains the completed framebuffer until it is cleared. */
+#define IE_VIDEO_CTRL_ENABLE 0x01u
+#define IE_VIDEO_CTRL_PRESENT_HOLD 0x02u
 #define IE_VIDEO_MODE 0x0f0004u
 #define IE_VIDEO_STATUS 0x0f0008u
 #define IE_VIDEO_STATUS_VBLANK 0x02u

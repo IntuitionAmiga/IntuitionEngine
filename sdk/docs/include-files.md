@@ -125,7 +125,10 @@ This M16 surface is intentionally narrow. `iexec.inc` documents the shipped ABI 
 As of M15.1, `sdk/intuitionos/iexec/iexec.s` remains the top-level kernel image/layout source, while `sdk/intuitionos/iexec/runtime_builder.s` assembles the standalone hostfs runtime artifacts. Command bodies live under `sdk/intuitionos/iexec/cmd/`, the non-DOS boot services now live under `sdk/intuitionos/iexec/handler/`, `sdk/intuitionos/iexec/dev/`, `sdk/intuitionos/iexec/resource/`, and `sdk/intuitionos/iexec/lib/`, the interactive shell itself lives in `sdk/intuitionos/iexec/handler/shell.s`, and the DOS-owned block lives under `sdk/intuitionos/iexec/lib/dos_library.s`. The remaining subordinate runtime files now include `sdk/intuitionos/iexec/assets/elfseg_fixture.s`, `sdk/intuitionos/iexec/cmd/gfxdemo.s`, and `sdk/intuitionos/iexec/cmd/about.s`. The last root boot/image wiring blocks now live in `sdk/intuitionos/iexec/boot/bootstrap.s` and `sdk/intuitionos/iexec/boot/strings.s`. This does not change the role of `iexec.inc`: it remains the shared contract include for both the kernel image source and the split IntuitionOS component files.
 
 ### Video Registers
-- `VIDEO_CTRL` / `VIDEO_MODE` / `VIDEO_STATUS` - Display control
+- `VIDEO_CTRL` / `VIDEO_MODE` / `VIDEO_STATUS` - Display control.
+  `VIDEO_CTRL_ENABLE` enables video output. Set
+  `VIDEO_CTRL_ENABLE | VIDEO_CTRL_PRESENT_HOLD` while updating a retained framebuffer,
+  then write `VIDEO_CTRL_ENABLE` after final blit completion to present the completed frame.
 - `STATUS_VBLANK` / `STATUS_FB_ERROR` - Video status bits. `STATUS_FB_ERROR`
   is set when the selected full-frame source is invalid or unsupported, such as
   `MODE_1920x1080` RGBA32 through the legacy 5 MiB VRAM aperture.
