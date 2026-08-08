@@ -1,0 +1,7 @@
+-- This captures deterministic live-workload provenance. Go benchmarks remain
+-- the timing oracle; run this alongside them to retain device diagnostics.
+cpu.load_stopped("sdk/examples/prebuilt/rotozoomer.iex")
+cpu.start()
+sys.wait_frames(8)
+cpu.stop()
+sys.print("ie32-performance", cpu.execution_mode(), cpu.jit_stats())

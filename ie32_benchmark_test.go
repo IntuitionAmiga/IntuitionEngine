@@ -2,9 +2,8 @@
 //
 // Mirrors the uniform shape used by the other CPU backends so the
 // build_all_cpu_benchmarks.sh + run_all_cpu_benches.sh pivot table can
-// include an IE32 row. IE32 has no JIT (per CLAUDE.md), so only the
-// _Interpreter variant is provided; the table's JIT column shows "-"
-// for IE32.
+// include an IE32 row. Matched interpreter and JIT variants use the same
+// guest programs and reset state, so their measurements are comparable.
 //
 // Each bench:
 //   - Constructs a small IE32 program ending in HALT.
@@ -28,8 +27,6 @@ package main
 
 import (
 	"encoding/binary"
-	"io"
-	"os"
 	"testing"
 )
 
@@ -52,32 +49,15 @@ func ie32WriteInstr(prog []byte, off int, opcode, reg, addrMode byte, operand ui
 
 // ie32SetupBench builds a CPU + bus, loads program, returns cpu. Caller
 // resets PC + running between b.Loop iterations.
-func ie32SetupBench(b *testing.B, program []byte) *CPU {
+func ie32SetupBench(b *testing.B, program []byte, disableJIT bool) *CPU {
 	b.Helper()
 	bus := NewMachineBus()
-	cpu := NewCPU(bus)
+	// Use the configured constructor rather than the stopped-CPU diagnostic
+	// toggle: NewCPU starts runnable, so SetJITEnabled correctly rejects an
+	// interpreter benchmark that tries to change policy after construction.
+	cpu := newIE32CPUConfigured(bus, disableJIT)
 	cpu.LoadProgramBytes(program)
 	return cpu
-}
-
-// ie32SilenceStdout redirects os.Stdout to /dev/null for the duration
-// of the bench. Necessary because cpu_ie32.go's HALT case prints
-// "HALT executed at PC=..." unconditionally — without redirection a
-// 3-second bench dumps millions of lines to the terminal.
-func ie32SilenceStdout(b *testing.B) {
-	b.Helper()
-	devnull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err != nil {
-		b.Fatalf("open /dev/null: %v", err)
-	}
-	old := os.Stdout
-	os.Stdout = devnull
-	b.Cleanup(func() {
-		os.Stdout = old
-		_ = devnull.Close()
-	})
-	// Drain anything already buffered by tests upstream.
-	_, _ = io.Discard.Write(nil)
 }
 
 // ie32BenchALU: tight ADD/SUB/AND/XOR loop. Counter in B decrements
@@ -123,9 +103,8 @@ func ie32BuildALUProgram() []byte {
 }
 
 func BenchmarkIE32_ALU_Interpreter(b *testing.B) {
-	ie32SilenceStdout(b)
 	program := ie32BuildALUProgram()
-	cpu := ie32SetupBench(b, program)
+	cpu := ie32SetupBench(b, program, true)
 
 	for b.Loop() {
 		cpu.PC = PROG_START
@@ -137,6 +116,21 @@ func BenchmarkIE32_ALU_Interpreter(b *testing.B) {
 	totalInstrs := ie32ALUInstrCount
 	b.ReportMetric(float64(totalInstrs), "instructions/op")
 	ReportMIPSHostNormalized(b, totalInstrs)
+}
+
+func BenchmarkIE32_ALU_JIT(b *testing.B) {
+	program := ie32BuildALUProgram()
+	cpu := ie32SetupBench(b, program, false)
+
+	for b.Loop() {
+		cpu.PC = PROG_START
+		cpu.A = 0
+		cpu.B = 0
+		cpu.running.Store(true)
+		cpu.Execute()
+	}
+	b.ReportMetric(float64(ie32ALUInstrCount), "instructions/op")
+	ReportMIPSHostNormalized(b, ie32ALUInstrCount)
 }
 
 // ie32BenchMemory: load + store loop over a 1KB scratch region.
@@ -179,9 +173,24 @@ func ie32BuildMemProgram() []byte {
 }
 
 func BenchmarkIE32_Memory_Interpreter(b *testing.B) {
-	ie32SilenceStdout(b)
 	program := ie32BuildMemProgram()
-	cpu := ie32SetupBench(b, program)
+	cpu := ie32SetupBench(b, program, true)
+
+	for b.Loop() {
+		cpu.PC = PROG_START
+		cpu.A = 0
+		cpu.B = 0
+		cpu.running.Store(true)
+		cpu.Execute()
+	}
+	totalInstrs := 1 + ie32MemBodyOps*ie32MemLoopIters + 1
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
+}
+
+func BenchmarkIE32_Memory_JIT(b *testing.B) {
+	program := ie32BuildMemProgram()
+	cpu := ie32SetupBench(b, program, false)
 
 	for b.Loop() {
 		cpu.PC = PROG_START
@@ -227,9 +236,24 @@ func ie32BuildMixedProgram() []byte {
 }
 
 func BenchmarkIE32_Mixed_Interpreter(b *testing.B) {
-	ie32SilenceStdout(b)
 	program := ie32BuildMixedProgram()
-	cpu := ie32SetupBench(b, program)
+	cpu := ie32SetupBench(b, program, true)
+
+	for b.Loop() {
+		cpu.PC = PROG_START
+		cpu.A = 0
+		cpu.B = 0
+		cpu.running.Store(true)
+		cpu.Execute()
+	}
+	totalInstrs := 1 + ie32MixedBodyOps*ie32MixedLoopIters + 1
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
+}
+
+func BenchmarkIE32_Mixed_JIT(b *testing.B) {
+	program := ie32BuildMixedProgram()
+	cpu := ie32SetupBench(b, program, false)
 
 	for b.Loop() {
 		cpu.PC = PROG_START
@@ -288,9 +312,25 @@ func ie32BuildCallProgram() []byte {
 }
 
 func BenchmarkIE32_Call_Interpreter(b *testing.B) {
-	ie32SilenceStdout(b)
 	program := ie32BuildCallProgram()
-	cpu := ie32SetupBench(b, program)
+	cpu := ie32SetupBench(b, program, true)
+
+	for b.Loop() {
+		cpu.PC = PROG_START
+		cpu.A = 0
+		cpu.B = 0
+		cpu.SP = STACK_START
+		cpu.running.Store(true)
+		cpu.Execute()
+	}
+	totalInstrs := 1 + ie32CallBodyOps*ie32CallLoopIters + 1
+	b.ReportMetric(float64(totalInstrs), "instructions/op")
+	ReportMIPSHostNormalized(b, totalInstrs)
+}
+
+func BenchmarkIE32_Call_JIT(b *testing.B) {
+	program := ie32BuildCallProgram()
+	cpu := ie32SetupBench(b, program, false)
 
 	for b.Loop() {
 		cpu.PC = PROG_START

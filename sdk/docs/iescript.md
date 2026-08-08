@@ -294,6 +294,19 @@ fixtures while stopped, record JIT diagnostics and capture a framebuffer
 artefact. Run each normally and with `--nojit`; the deterministic Go shadow
 tests provide the exact retired-instruction checkpoints used for the gate.
 
+The committed `sdk/scripts/ie32_jit_rotozoomer_parity.ies` and
+`sdk/scripts/ie32_jit_robocop_parity.ies` provide the corresponding IE32
+live-machine checkpoints. Run each normally and with `--nojit`; the IE32
+manifest and fixture gates provide the exact state comparisons.
+`sdk/scripts/ie32_jit_opcode_differential.ies` is a bounded direct-opcode
+diagnostic that injects `LOAD A,#7; ADD A,#5; STORE A,[0x400]; HALT` into a stopped IE32 image
+and records its result and JIT provenance under both execution modes.
+`sdk/scripts/ie32_jit_smc.ies`, `ie32_jit_mmio.ies`,
+`ie32_jit_timer_interrupt.ies`, `ie32_jit_debugger.ies`, and
+`ie32_jit_performance.ies` provide bounded diagnostics for invalidation,
+MMIO, observation boundaries, debugger routing, and realistic-workload
+provenance.
+
 `cpu.reset()` - Perform a hard reset of the emulator (all CPUs and devices). Returns: nothing. Raises on error.
 
 `cpu.freeze()` - Increment the global freeze counter, pausing CPU execution for safe memory access. Returns: nothing.
@@ -310,11 +323,17 @@ tests provide the exact retired-instruction checkpoints used for the gate.
 
 `cpu.jit_enabled()` - Check whether JIT compilation is currently enabled for the active CPU. Available backends start enabled during normal CPU and runner construction; the primary command-line CPU starts disabled when `--nojit` is used. Supported for m68k, z80, x86, 6502, and ie64 when the current host build includes that CPU's JIT backend; returns `false` for any other CPU or unavailable backend. Returns: boolean.
 
-`cpu.set_jit_enabled(enabled)` - Enable or disable JIT for the active CPU. Raises if the CPU is currently running, if the platform build does not provide a JIT for that CPU, or if the selected CPU does not support script-controlled JIT (currently m68k, z80, x86, 6502, and ie64). The 6502 native backend is available on Linux AMD64, Linux arm64 and browser js/wasm; Windows and macOS retain interpreter support. Linux arm64 provides IE64, M68K, 6502, Z80, and x86 JITs; Z80 directly emits every non-observation manifest row and uses frozen canonical helpers for port and block I/O. Windows and macOS arm64 provide IE64 and M68K JITs. Browser builds provide IE64, M68K, 6502, x86, and Z80 WebAssembly JITs; browser Z80 uses the same outcome contract, while x86 availability additionally requires WebAssembly SIMD. On a successful disable the JIT is turned off immediately. Returns: nothing.
+`cpu.set_jit_enabled(enabled)` - Enable or disable JIT for the active CPU. Raises if the CPU is currently running, if the platform build does not provide a JIT for that CPU, or if the selected CPU does not support script-controlled JIT (currently IE32, m68k, z80, x86, 6502, and ie64). IE32 is available on Linux x64, Linux arm64, and browser js/wasm when its runtime backend is available. The 6502 native backend is available on Linux x64, Linux arm64 and browser js/wasm; Windows and macOS retain interpreter support. Linux arm64 provides IE64, M68K, 6502, Z80, and x86 JITs; Z80 directly emits every non-observation manifest row and uses frozen canonical helpers for port and block I/O. Windows and macOS arm64 provide IE64 and M68K JITs. Browser builds provide IE64, M68K, 6502, x86, and Z80 WebAssembly JITs; browser Z80 uses the same outcome contract, while x86 availability additionally requires WebAssembly SIMD. On a successful disable the JIT is turned off immediately. Returns: nothing.
 
 `cpu.execution_mode()` - Report the effective execution mode for the active CPU. Returns: `"jit"` if a JIT is enabled and available for that CPU, otherwise `"interpreter"`.
 
-`cpu.jit_stats()` - Return JIT diagnostic counters for the active CPU. In m68k mode, returns a table with `instruction_count`, `native_blocks`, `last_native_pc`, `fallback_instructions`, `bailouts`, `last_fallback_pc`, `last_fallback_opcode`, `fallback_opcodes`, `native_pcs`, `native_pc_ring`, and `compile_failures`. In 6502 mode, returns CPU-owned `instruction_count`, `tier1_blocks`, `native_entries`, `bailouts`, `invalidations`, and `chain_exits`; reset clears all 6502 counters. `native_entries` counts emitted backend calls, including a no-side-effect native bailout entry. In z80 mode, returns CPU-owned `backend`, `instruction_count`, `native_entries`, `helper_exits`, `bailouts`, `invalidations`, `chain_exits`, and `region_promotions`; reset clears all Z80 counters. `region_promotions` counts bounded four-block static JP/JR chains compiled and patched before first native entry. `backend` is `native` for an executable-memory backend, `wasm` for the browser module backend, and `none` when unavailable. Other CPU modes return an empty table. Returns: table.
+For IE32, Linux x64, Linux arm64, and browser js/wasm builds provide JIT
+backends when their runtime requirements are available. `cpu.jit_stats()` for
+IE32 reports `backend`, `instruction_count`, `native_entries`,
+`compiled_blocks`, `direct_instructions`, `retired_instructions`, and
+`invalidations`, and `cache_hits`.
+
+`cpu.jit_stats()` - Return JIT diagnostic counters for the active CPU. In IE32 mode, returns `backend`, `instruction_count`, `native_entries`, `compiled_blocks`, `compiled_regions`, `hot_recompilations`, `retired_instructions`, `direct_instructions`, `helper_instructions`, `chains`, `chain_budget_exits`, `deoptimizations`, `helper_deopts`, `source_stamp_deopts`, `code_cache_resets`, `invalidations`, `cache_hits`, `return_cache_hits`, `mmio_poll_iterations`, `resident_spills_saved`, and `counted_loops`. In m68k mode, returns a table with `instruction_count`, `native_blocks`, `last_native_pc`, `fallback_instructions`, `bailouts`, `last_fallback_pc`, `last_fallback_opcode`, `fallback_opcodes`, `native_pcs`, `native_pc_ring`, and `compile_failures`. In 6502 mode, returns CPU-owned `instruction_count`, `tier1_blocks`, `native_entries`, `bailouts`, `invalidations`, and `chain_exits`; reset clears all 6502 counters. `native_entries` counts emitted backend calls, including a no-side-effect native bailout entry. In z80 mode, returns CPU-owned `backend`, `instruction_count`, `native_entries`, `helper_exits`, `bailouts`, `invalidations`, `chain_exits`, and `region_promotions`; reset clears all Z80 counters. `region_promotions` counts bounded four-block static JP/JR chains compiled and patched before first native entry. `backend` is `native` for an executable-memory backend, `wasm` for the browser module backend, and `none` when unavailable. Other CPU modes return an empty table. Returns: table.
 
 Example:
 

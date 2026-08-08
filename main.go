@@ -1528,6 +1528,7 @@ func main() {
 
 	// Initialize coprocessor subsystem MMIO (available to all CPU modes)
 	coprocMgr := NewCoprocessorManager(sysBus, runtimeBaseDir)
+	coprocMgr.SetIE32JITDisabled(noJIT)
 	sysBus.MapIO(COPROC_BASE, COPROC_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	sysBus.MapIO(COPROC_EXT_BASE, COPROC_EXT_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
 	sysBus.MapIO(COPROC_EXT2_BASE, COPROC_EXT2_END, coprocMgr.HandleRead, coprocMgr.HandleWrite)
@@ -1584,6 +1585,7 @@ func main() {
 	// ProgramExecutor is created unconditionally so EXEC MMIO is always mapped.
 	// Its CPU pointer is set/updated when entering IE64 mode (initial or mode-switch).
 	progExec := NewProgramExecutor(sysBus, nil, videoChip, vgaEngine, voodooEngine, runtimeBaseDir)
+	progExec.SetIE32JITDisabled(noJIT)
 	monitor.RegisterSnapshotDevice(progExec)
 	if gemdosHostRoot != "" {
 		progExec.SetGemdosConfig(gemdosHostRoot, gemdosDriveNum)
@@ -1602,7 +1604,7 @@ func main() {
 		switch mode {
 		case "ie32":
 			videoChip.SetBigEndianMode(false)
-			cpu := NewCPU(sysBus)
+			cpu := newIE32CPUConfigured(sysBus, noJIT)
 			wireVideoInterruptSinks(videoChip, anticEngine, NewIE32InterruptSink(cpu))
 			if ulaEngine != nil {
 				ulaEngine.SetIRQSink(noopULAIRQAdapter{})
@@ -1825,7 +1827,7 @@ func main() {
 	}
 
 	if modeIE32 {
-		ie32CPU := NewCPU(sysBus)
+		ie32CPU := newIE32CPUConfigured(sysBus, noJIT)
 		wireVideoInterruptSinks(videoChip, anticEngine, NewIE32InterruptSink(ie32CPU))
 		ie32CPU.PerfEnabled = perfMode
 		runtimeStatus.setCPUs(runtimeCPUIE32, ie32CPU, nil, nil, nil, nil, nil)
@@ -2413,6 +2415,12 @@ func main() {
 
 		// Preserve explicit JIT choices when reloading the same active CPU family.
 		cpuResetState := machine.CaptureCPUResetState(currentMode, runtimeStatus, sysBus, soundChip)
+		// QuiesceBeforeReset has stopped the old runner. Release an IE32
+		// execution context before replacing it so its bus invalidator cannot
+		// retain a dead CPU across repeated F10/IPC reloads.
+		if oldIE32, ok := cpuRunner.(*CPU); ok {
+			oldIE32.Dispose()
+		}
 
 		// 4. Recreate CPU runner for a true cold boot, then update runtime status/progExec.
 		newRunner, err := createRunnerForMode(mode)

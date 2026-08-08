@@ -362,7 +362,7 @@ AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
 AB3D2_EMBED_ZIP := $(AB3D2_EMBED_DIR)/_build.zip
 
 # Main targets
-.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-wasm-crt-browser test-x86-jit-parity test-6502-jit-parity test-z80-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries test-ie64-toolchain ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-bench-baseline x86-bench-after x86-bench-compare z80-bench-baseline z80-bench-after z80-bench-compare x86-iedoom-timedemo
+.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-wasm-crt-browser test-x86-jit-parity test-6502-jit-parity test-ie32-jit-parity test-ie32-jit-race test-z80-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries test-ie64-toolchain ab3d2 ab3d2-overdrive ab3d2-all ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-bench-baseline x86-bench-after x86-bench-compare z80-bench-baseline z80-bench-after z80-bench-compare ie32-bench-baseline ie32-bench-after ie32-bench-compare x86-iedoom-timedemo
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -390,6 +390,27 @@ test-6502-jit-parity:
 	test -n "$$tests" || { echo "empty 6502 ARM64 QEMU test inventory" >&2; exit 1; }; \
 	GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -count=1 -run '^TestJIT6502_ARM64_' .
 	@$(MAKE) test-wasm-node
+
+# test-ie32-jit-parity is deliberately non-vacuous: each backend executes the
+# same IE32 JIT contract suite, including Chromium generated-module execution,
+# direct-lowering provenance, and the interpreter boundaries for timer and
+# observation-sensitive instructions.
+IE32_JIT_TEST_REGEX := ^(TestIE32(JIT|StepOne|Retired|Wasm).*|TestScriptEngine_ShowreelDiagnosisScriptsParse)$$
+test-ie32-jit-parity:
+	@./scripts/require-go-test-inventory.sh "empty IE32 native JIT inventory" env GOEXPERIMENT=none $(GO) test -tags headless -list '$(IE32_JIT_TEST_REGEX)' .
+	GOEXPERIMENT=none $(GO) test -tags headless -count=1 -run '$(IE32_JIT_TEST_REGEX)' .
+	@$(MAKE) test-ie32-jit-race
+	@$(MAKE) test-wasm-build
+	@$(MAKE) test-wasm-node WASM_NODE_TEST_REGEX='$(IE32_JIT_TEST_REGEX)'
+	@QEMU_AARCH64="$$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)"; \
+	test -n "$$QEMU_AARCH64" || { echo "missing qemu-aarch64 or qemu-aarch64-static" >&2; exit 1; }; \
+	./scripts/require-go-test-inventory.sh "empty IE32 ARM64 JIT inventory" env GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOEXPERIMENT=none $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -list '$(IE32_JIT_TEST_REGEX)' . || exit $$?; \
+	GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOEXPERIMENT=none $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -count=1 -run '$(IE32_JIT_TEST_REGEX)' .
+
+IE32_JIT_RACE_TEST_REGEX := ^TestIE32JIT_(BusWritePublishesInvalidationGeneration|BusWriteIsDrainedAtNextExecutionBoundary|ExternalWriteDropsPureBlockCache|CPUWriteDropsPureBlockCache|NonOverlappingWriteRetainsPureBlockCache|StaticRegionTracksDiscontiguousSources|DynamicWriteInvalidatesEveryRetainedBlock|GeneratedStoreDrainsBeforeChainedTarget|SelfOverwritingGeneratedStorePublishesInvalidation|SourceStampRejectsUnpublishedCodeWrite|ProgramLoadInvalidatesOtherCPUCache)$$
+test-ie32-jit-race:
+	@./scripts/require-go-test-inventory.sh "empty IE32 JIT race inventory" env GOTOOLCHAIN=go1.26.4 $(GO) test -tags headless -list '$(IE32_JIT_RACE_TEST_REGEX)' .
+	GOTOOLCHAIN=go1.26.4 $(GO) test -race -tags headless -count=1 -run '$(IE32_JIT_RACE_TEST_REGEX)' .
 
 # test-z80-jit-parity is the bounded cross-backend Z80 correctness gate. It
 # requires native manifest/fixture coverage, the real Chromium wasm module
@@ -537,6 +558,28 @@ z80-bench-after:
 z80-bench-compare:
 	@$(MAKE) bench-compare \
 		BENCH_REGEX='BenchmarkZ80_(ALU|Memory|Mixed|Call)_JIT' \
+		BENCH_TAGS='headless' \
+		BENCH_PKG='.'
+
+# IE32 uses matched interpreter/JIT workload names. Three samples are retained
+# for each side so benchstat reports a median-quality comparison on Linux x64.
+ie32-bench-baseline:
+	@$(MAKE) bench-baseline \
+		BENCH_REGEX='BenchmarkIE32_(ALU|Memory|Mixed|Call)_(Interpreter|JIT)' \
+		BENCH_TAGS='headless' \
+		BENCH_PKG='.' \
+		BENCH_COUNT=3
+
+ie32-bench-after:
+	@$(MAKE) bench-after \
+		BENCH_REGEX='BenchmarkIE32_(ALU|Memory|Mixed|Call)_(Interpreter|JIT)' \
+		BENCH_TAGS='headless' \
+		BENCH_PKG='.' \
+		BENCH_COUNT=3
+
+ie32-bench-compare:
+	@$(MAKE) bench-compare \
+		BENCH_REGEX='BenchmarkIE32_(ALU|Memory|Mixed|Call)_(Interpreter|JIT)' \
 		BENCH_TAGS='headless' \
 		BENCH_PKG='.'
 

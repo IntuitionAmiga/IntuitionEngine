@@ -43,7 +43,7 @@ flowchart LR
     subgraph EXECUTION["Guest execution"]
         EXEC["ProgramExecutor<br/>EXEC MMIO and CPU switching"]
         COPROC["CoprocessorManager<br/>worker lifecycle and tickets"]
-        IE32["IE32 interpreter"]
+        IE32["IE32 interpreter / Linux amd64, Linux arm64 and wasm JIT paths"]
         IE64["IE64 interpreter"]
         M68K["M68K 68020 interpreter"]
         Z80["Z80 interpreter / amd64, Linux arm64 and wasm JIT paths"]
@@ -289,7 +289,7 @@ flowchart LR
 flowchart TB
     HOST["Host runtime<br/>main.go flags, memory sizing,<br/>debug monitor, Lua/IEScript"]
     EXEC["Guest execution<br/>ProgramExecutor + CoprocessorManager<br/>IE32, IE64, M68K, Z80, 6502, x86"]
-    JIT["JIT dispatch<br/>IE64: amd64/arm64/wasm<br/>M68K: amd64/arm64/wasm<br/>6502: linux-amd64/linux-arm64/wasm<br/>Z80: amd64/linux-arm64/wasm<br/>x86: amd64/linux-arm64/wasm"]
+    JIT["JIT dispatch<br/>IE32, IE64, M68K: amd64/arm64/wasm<br/>6502: linux-amd64/linux-arm64/wasm<br/>Z80: amd64/linux-arm64/wasm<br/>x86: amd64/linux-arm64/wasm"]
     BUS["MachineBus<br/>host-sized RAM, profile clamps,<br/>MapIO / MapIOByte / MapIO64,<br/>ioPageBitmap fast path"]
     MEM["Memory discovery<br/>SYSINFO_TOTAL_RAM_LO/HI<br/>SYSINFO_ACTIVE_RAM_LO/HI<br/>IE64 CR_RAM_SIZE_BYTES"]
     OS["OS and loader shims<br/>EmuTOS + GEMDOS/XBIOS<br/>AROS + DOS/audio DMA<br/>Boot HostFS"]
@@ -455,7 +455,7 @@ flowchart LR
 | Subsystem | Runtime surface | Primary files | Wired registration / dispatch |
 |-----------|-----------------|---------------|-------------------------------|
 | CPU cores | IE32, IE64, M68K, Z80, 6502, x86 | `cpu_*.go`, `cpu_*_runner.go` | `main.go` selects runners by file extension, OS mode, or EXEC MMIO |
-| JIT | IE64 and M68K on amd64, arm64 and wasm; 6502 on Linux amd64 and arm64 plus js/wasm; Z80 on amd64, Linux arm64 and js/wasm; x86 on amd64, Linux arm64 and wasm | `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_6502_dispatch_wasm.go`, `jit_m68k_dispatch*.go`, `jit_z80_dispatch*.go`, `jit_x86_dispatch*.go` | Build tags plus `runtime.GOARCH`; unsupported hosts use dispatch stubs. Linux arm64 and browser Z80 directly emit every non-observation opcode-manifest row; port and block I/O use frozen canonical helpers. The shared Z80 frontend promotes at most four static JP/JR-connected blocks and 128 instructions, while every member retains source, physical-generation, mapping-generation and interrupt-boundary checks. Linux arm64 and js/wasm 6502 lower the documented NMOS set in eligible direct RAM and resume through the interpreter at observation boundaries; js/wasm x86 uses the WebAssembly driver cache and declines activation entirely when SIMD support is absent |
+| JIT | IE32 on Linux amd64, Linux arm64 and js/wasm; IE64 and M68K on amd64, arm64 and wasm; 6502 on Linux amd64 and arm64 plus js/wasm; Z80 on amd64, Linux arm64 and js/wasm; x86 on amd64, Linux arm64 and wasm | `jit_ie32_*.go`, `jit_dispatch.go`, `jit_6502_dispatch.go`, `jit_6502_dispatch_wasm.go`, `jit_m68k_dispatch*.go`, `jit_z80_dispatch*.go`, `jit_x86_dispatch*.go` | Build tags plus `runtime.GOARCH`; unsupported hosts use dispatch stubs. IE32 lowers its documented eligible direct-RAM subset and resumes through the interpreter at observation boundaries. Linux arm64 and browser Z80 directly emit every non-observation opcode-manifest row; port and block I/O use frozen canonical helpers. The shared Z80 frontend promotes at most four static JP/JR-connected blocks and 128 instructions, while every member retains source, physical-generation, mapping-generation and interrupt-boundary checks. Linux arm64 and js/wasm 6502 lower the documented NMOS set in eligible direct RAM and resume through the interpreter at observation boundaries; js/wasm x86 uses the WebAssembly driver cache and declines activation entirely when SIMD support is absent |
 | Bus and RAM | Host-sized guest RAM, profile clamps, MMIO, byte/64-bit handlers | `machine_bus.go`, `memory_sizing.go`, `profile_bounds.go`, `sysinfo_mmio.go` | `main.go` registers devices before execution; `MachineBus.SealMappings` prevents late maps |
 | Machine lifecycle | Load resolution, reset quiesce, CPU/profile recreation, monitor/runtime rewiring | `machine_lifecycle.go`, `main.go` | `main.go` owns concrete devices; `Machine` applies reset/load orchestration through injected dependencies and profile targets |
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
@@ -584,9 +584,8 @@ accesses through the interpreter.
 On macOS amd64, the JIT reuses the shared x86-64 host backends. On macOS arm64, executable memory uses the native `MAP_JIT` model with thread-pinned write protection toggles. IE64 and M68K have arm64 backends; the other guest cores remain interpreter-only.
 
 On js/wasm the native backends are absent because the browser gives Go no
-executable memory. IE64, M68K, 6502, Z80 and x86 use separate wasm bytecode
-backends instead; see the backend sections below. IE32 interprets in the
-browser. Browser Z80 emits every non-observation opcode-manifest row; port and
+executable memory. IE32, IE64, M68K, 6502, Z80 and x86 use separate wasm
+bytecode backends instead; see the backend sections below. Browser Z80 emits every non-observation opcode-manifest row; port and
 block I/O use frozen canonical helpers with immutable decoded operands.
 
 ### M68020 JIT Backends
@@ -914,7 +913,7 @@ build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
 | `novulkan` | `-tags novulkan` | Voodoo uses the software backend and does not require the Vulkan SDK. Guest Voodoo registers remain mapped. |
 | `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
 | `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
-| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE64, M68K, 6502, x86, and Z80 use WebAssembly JIT backends. Z80 emits every non-observation opcode-manifest row from a source-stamped cache; port and block I/O use frozen canonical helpers, and its shared frontend eagerly forms bounded four-block static chains. The 6502 backend lowers documented NMOS instructions in eligible direct RAM and uses interpreter resume at mapping and observation boundaries. `IE64_WASM_JIT=0`, `M68K_WASM_JIT=0`, `P65_WASM_JIT=0`, `X86_WASM_JIT=0`, and `Z80_WASM_JIT=0` disable the corresponding browser backend; x86 also requires WebAssembly SIMD. IE32 interprets. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
+| Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE32, IE64, M68K, 6502, x86, and Z80 use WebAssembly JIT backends. IE32 lowers its eligible direct-RAM subset and resumes through the interpreter at observation boundaries. Z80 emits every non-observation opcode-manifest row from a source-stamped cache; port and block I/O use frozen canonical helpers, and its shared frontend eagerly forms bounded four-block static chains. The 6502 backend lowers documented NMOS instructions in eligible direct RAM and uses interpreter resume at mapping and observation boundaries. `IE64_WASM_JIT=0`, `M68K_WASM_JIT=0`, `P65_WASM_JIT=0`, `X86_WASM_JIT=0`, and `Z80_WASM_JIT=0` disable the corresponding browser backend; x86 also requires WebAssembly SIMD. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
 
 Headless stubs should be treated as backend substitutes, not as a different
 machine model. A test can still write video or audio MMIO and inspect guest
@@ -2011,8 +2010,8 @@ does not need to know about the extension.
 The coprocessor manager supports 6 worker CPU types (IE32, IE64, 6502, M68K, Z80, x86) with ticket-based job dispatch and mailbox ring buffers at `0x790000`. Each worker type has a dedicated shared-memory reservation in the unified physical map (see memory map above), not a private per-core address space. The main CPU enqueues work via MMIO writes; workers execute independently and post results back through their mailbox slots. Each ring has 16 descriptor slots but uses one slot to distinguish full from empty, so it can hold 15 queued requests at once. When `COPROC_IRQ_CTRL` bit 0 is set and an M68K IRQ target plus completion watcher have been configured, the coprocessor asserts M68K interrupt level 6 on job completion, with the finished ticket ID readable from `COPROC_COMPLETED_TICKET`. Non-M68K modes should observe completion through `POLL` or `WAIT`.
 
 `COPROC_INSTANCE` selects a worker instance together with `COPROC_CPU_TYPE`.
-The JIT-capable worker types (M68K, x86, IE64) support instances 0 and 1; IE32,
-6502, and Z80 support instance 0 only. Instance-1 windows are M68K
+The JIT-capable worker types M68K, x86, and IE64 support instances 0 and 1;
+IE32, 6502, and Z80 support instance 0 only. Instance-1 windows are M68K
 `0x420000-0x49FFFF`, x86 `0x4A0000-0x51FFFF`, and IE64 `0x520000-0x59FFFF`, each
 512 KiB. The mailbox holds twelve ring slots at a uniform `0x400` stride, and
 the ring index is `cpuTypeIndex*2 + instance` with no special case (the `0x400`

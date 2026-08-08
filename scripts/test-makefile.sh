@@ -269,8 +269,8 @@ for target in \
   rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets emutos-probe \
   iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets \
   arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-release-rom basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
-  test-makefile test-cross test-cross-binaries test-x86-jit-parity ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
-  test-x86-harte test-x86-harte-short release-verify dist-host-sdk-linux-amd64 test-host-sdk test-host-sdk-external iedoom iedoom-ie86 iedoom-ie68 x86-bench-baseline x86-bench-after x86-bench-compare x86-iedoom-timedemo; do
+  test-makefile test-cross test-cross-binaries test-x86-jit-parity test-ie32-jit-parity test-ie32-jit-race ab3d2 ab3d2-overdrive ab3d2-all prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
+  test-x86-harte test-x86-harte-short release-verify dist-host-sdk-linux-amd64 test-host-sdk test-host-sdk-external iedoom iedoom-ie86 iedoom-ie68 x86-bench-baseline x86-bench-after x86-bench-compare ie32-bench-baseline ie32-bench-after ie32-bench-compare x86-iedoom-timedemo; do
   assert_phony "$target"
   assert_target_exists "$target"
 done
@@ -329,6 +329,23 @@ assert_recipe_contains x86-bench-after "BENCH_PKG='\\.'"
 assert_recipe_contains x86-bench-compare "BENCH_REGEX='BenchmarkX86JIT_'"
 assert_recipe_contains x86-bench-compare "BENCH_TAGS='headless'"
 assert_recipe_contains x86-bench-compare "BENCH_PKG='\\.'"
+assert_recipe_contains ie32-bench-baseline "BENCH_REGEX='BenchmarkIE32_\\(ALU\\|Memory\\|Mixed\\|Call\\)_\\(Interpreter\\|JIT\\)'"
+assert_recipe_contains ie32-bench-baseline "BENCH_TAGS='headless'"
+assert_recipe_contains ie32-bench-baseline "BENCH_PKG='\\.'"
+assert_recipe_contains ie32-bench-after "BENCH_REGEX='BenchmarkIE32_\\(ALU\\|Memory\\|Mixed\\|Call\\)_\\(Interpreter\\|JIT\\)'"
+assert_recipe_contains ie32-bench-after "BENCH_TAGS='headless'"
+assert_recipe_contains ie32-bench-after "BENCH_PKG='\\.'"
+assert_recipe_contains ie32-bench-compare "BENCH_REGEX='BenchmarkIE32_\\(ALU\\|Memory\\|Mixed\\|Call\\)_\\(Interpreter\\|JIT\\)'"
+assert_recipe_contains ie32-bench-compare "BENCH_TAGS='headless'"
+assert_recipe_contains ie32-bench-compare "BENCH_PKG='\\.'"
+assert_recipe_contains test-ie32-jit-parity 'require-go-test-inventory\.sh'
+assert_recipe_contains test-ie32-jit-parity 'test-ie32-jit-race'
+assert_recipe_contains test-ie32-jit-parity 'make test-wasm-build'
+assert_recipe_contains test-ie32-jit-parity 'make test-wasm-node'
+assert_recipe_contains test-ie32-jit-parity 'GOOS=linux GOARCH=arm64'
+assert_recipe_contains test-ie32-jit-parity 'IE32_JIT_TEST_REGEX'
+assert_makefile_contains 'TestIE32\(JIT\|StepOne\|Retired\|Wasm\)\.\*'
+assert_recipe_contains test-ie32-jit-race 'go test -race'
 assert_recipe_contains x86-iedoom-timedemo 'IE_NO_IPC=1'
 assert_recipe_contains x86-iedoom-timedemo '-script-owned-term'
 assert_recipe_contains x86-iedoom-timedemo '-script "bench/measure_timedemo\.ies"'

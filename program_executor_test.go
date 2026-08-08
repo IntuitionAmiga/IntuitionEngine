@@ -146,6 +146,86 @@ func TestProgramExecutor_SessionIncrement(t *testing.T) {
 	}
 }
 
+func TestProgramExecutor_IE32ReloadPropagatesJITPolicy(t *testing.T) {
+	t.Cleanup(func() {
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+	for _, disableJIT := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "nojit"}[disableJIT], func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "program.iex"), []byte{HALT}, 0o644); err != nil {
+				t.Fatalf("write IE32 image: %v", err)
+			}
+			bus := NewMachineBus()
+			exec := NewProgramExecutor(bus, NewCPU64(bus), nil, nil, nil, dir)
+			exec.SetIE32JITDisabled(disableJIT)
+			writeFilenameToBus(bus, 0x1000, "program.iex")
+			exec.HandleWrite(EXEC_NAME_PTR, 0x1000)
+			exec.HandleWrite(EXEC_CTRL, EXEC_OP_EXECUTE)
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				snap := runtimeStatus.snapshot()
+				if snap.selectedCPU == runtimeCPUIE32 && snap.ie32 != nil {
+					want := ie32JITRuntimeAvailable() && !disableJIT
+					if snap.ie32.jitEnabled != want {
+						t.Fatalf("IE32 reload jitEnabled=%v, want %v", snap.ie32.jitEnabled, want)
+					}
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+			t.Fatal("IE32 reload did not install runtime CPU")
+		})
+	}
+}
+
+func TestProgramExecutor_IE32ReloadDisposesReplacedCPU(t *testing.T) {
+	bus := NewMachineBus()
+	exec := NewProgramExecutor(bus, nil, nil, nil, nil, ".")
+	t.Cleanup(func() {
+		snap := runtimeStatus.snapshot()
+		if snap.ie32 != nil {
+			snap.ie32.Dispose()
+		}
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+	if err := exec.prepareAndLaunch([]byte{HALT}, EXEC_TYPE_IE32); err != nil {
+		t.Fatalf("first IE32 launch: %v", err)
+	}
+	first := runtimeStatus.snapshot().ie32
+	if first == nil {
+		t.Fatal("first IE32 CPU missing")
+	}
+	if got := bus.ie32JITInvalidatorCnt.Load(); got != 1 {
+		t.Fatalf("invalidator count after first launch=%d, want 1", got)
+	}
+	if err := exec.prepareAndLaunch([]byte{HALT}, EXEC_TYPE_IE32); err != nil {
+		t.Fatalf("second IE32 launch: %v", err)
+	}
+	if got := bus.ie32JITInvalidatorCnt.Load(); got != 1 {
+		t.Fatalf("invalidator count after reload=%d, want 1", got)
+	}
+	if first.jit.busUnregister != nil {
+		t.Fatal("replaced IE32 CPU retained its bus invalidator")
+	}
+}
+
+func TestProgramExecutor_IE32OversizedLaunchDoesNotRegisterCPU(t *testing.T) {
+	bus := NewMachineBus()
+	exec := NewProgramExecutor(bus, nil, nil, nil, nil, ".")
+	runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	t.Cleanup(func() {
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+	oversized := make([]byte, len(bus.GetMemory())-PROG_START+1)
+	if err := exec.prepareAndLaunch(oversized, EXEC_TYPE_IE32); err == nil {
+		t.Fatal("oversized IE32 launch unexpectedly succeeded")
+	}
+	if got := bus.ie32JITInvalidatorCnt.Load(); got != 0 {
+		t.Fatalf("oversized IE32 launch retained %d invalidator callbacks, want 0", got)
+	}
+}
+
 func TestProgramExecutor_FailureKeepsIE64Running(t *testing.T) {
 	dir := t.TempDir()
 	bus := NewMachineBus()

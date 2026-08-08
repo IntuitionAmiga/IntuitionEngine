@@ -23,6 +23,21 @@ func ie32Instr(opcode, reg, addrMode byte, operand uint32) [8]byte {
 	return b
 }
 
+func TestIE32WorkerDiscardUnregistersCPUInvalidator(t *testing.T) {
+	bus, mgr := newTestBusAndManager(t)
+	worker, err := createIE32Worker(bus, []byte{HALT}, 0)
+	if err != nil {
+		t.Fatalf("create IE32 worker: %v", err)
+	}
+	if got := bus.ie32JITInvalidatorCnt.Load(); got != 1 {
+		t.Fatalf("invalidator count after worker start=%d, want 1", got)
+	}
+	mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, worker)
+	if got := bus.ie32JITInvalidatorCnt.Load(); got != 0 {
+		t.Fatalf("invalidator count after worker discard=%d, want 0", got)
+	}
+}
+
 const (
 	ie32_LOAD  = 0x01
 	ie32_STORE = 0x02

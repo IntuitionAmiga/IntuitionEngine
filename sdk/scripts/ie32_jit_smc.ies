@@ -1,0 +1,25 @@
+-- Bounded self-modifying-code diagnostic. Run with JIT and --nojit, then
+-- compare the printed result and invalidation counters.
+cpu.load_stopped("sdk/examples/prebuilt/rotozoomer.iex")
+cpu.freeze()
+-- LOAD A,#NOP; STORE A,[target]; JMP target; target initially LOAD A,#1; HALT.
+-- The generated store changes the future target and must publish invalidation
+-- before the dispatcher reaches it.
+local function u32(v)
+    return string.char(v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
+end
+local function ins(op, reg, mode, value)
+    return string.char(op, reg, mode, 0) .. u32(value)
+end
+local target = 0x1018
+mem.write_block(0x1000,
+    ins(0x01, 0x00, 0x00, 0xFE) ..
+    ins(0x02, 0x00, 0x04, target) ..
+    ins(0x0E, 0x00, 0x00, target) ..
+    ins(0x01, 0x00, 0x00, 1) ..
+    ins(0xFF, 0x00, 0x00, 0))
+cpu.resume()
+cpu.start()
+sys.wait_ms(20)
+cpu.stop()
+sys.print("ie32-smc", cpu.execution_mode(), cpu.jit_stats())

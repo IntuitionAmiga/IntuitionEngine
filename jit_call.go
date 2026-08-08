@@ -55,6 +55,17 @@ func callNative(fn uintptr, arg uintptr) {
 	runtime_asmcgocall(jitCallABI0, runtime_noescape(unsafe.Pointer(&args)))
 }
 
+// callNativeArgRet is the argument-bearing counterpart to callNativeRet. It
+// returns the native ABI result register while still passing arg as the first
+// C ABI argument. IE32 bounded loops use it for their dynamic retired count.
+func callNativeArgRet(fn uintptr, arg uintptr) uintptr {
+	args := jitCallArgs{fn: fn, arg: arg}
+	jitPrepareForExec()
+	defer jitFinishExec()
+	runtime_asmcgocall(jitCallABI0, runtime_noescape(unsafe.Pointer(&args)))
+	return args.ret
+}
+
 // callNativeRet calls a native function at fn that takes no arguments and
 // returns a uintptr in the platform ABI return register (RAX on x86-64,
 // X0 on ARM64). Runs on the g0 stack with GC preemption disabled.

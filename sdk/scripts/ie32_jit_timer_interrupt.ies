@@ -1,0 +1,8 @@
+-- Timers and interrupts are observation boundaries. This bounded fixture run
+-- records the helper/native split while the normal demo timer path is active.
+cpu.load_stopped("sdk/examples/prebuilt/rotozoomer.iex")
+sys.print("ie32-timer-interrupt before", cpu.execution_mode(), cpu.jit_stats())
+cpu.start()
+sys.wait_frames(4)
+cpu.stop()
+sys.print("ie32-timer-interrupt after", cpu.execution_mode(), cpu.jit_stats())

@@ -765,11 +765,17 @@ List all registered CPUs with their ID, label, status, and program counter. When
 
 Offline rows are worker slots only. They are not general CPU hot-plug targets and do not include the primary boot CPU.
 
-The JIT-capable worker types (M68K, x86, IE64) each expose two coprocessor
-slots; IE32, 6502, and Z80 expose one. A second instance is labelled with a
-`#1` suffix (`coproc:M68K#1`, `coproc:x86#1`, `coproc:IE64#1`) and receives a
-separate monitor CPU ID; instance 0 keeps the bare label (`coproc:M68K`). The
-suffix is part of the label accepted by focus and offline commands.
+The M68K, x86, and IE64 worker types each expose two coprocessor slots; IE32,
+6502, and Z80 expose one. IE32 workers use the same startup execution policy
+as the primary CPU: a supported backend is enabled by default, while `--nojit`
+selects the interpreter for every worker created by that launch. A stopped
+IE32 CPU may be changed for diagnostics through `cpu.set_jit_enabled()` in
+IEScript; the monitor does not create a separate per-worker JIT policy.
+
+A second instance is labelled with a `#1` suffix (`coproc:M68K#1`,
+`coproc:x86#1`, `coproc:IE64#1`) and receives a separate monitor CPU ID;
+instance 0 keeps the bare label (`coproc:M68K`). The suffix is part of the
+label accepted by focus and offline commands.
 
 Slot count is independent of JIT availability. A Z80 worker starts with its
 available backend enabled, including the browser wasm backend; worker launch

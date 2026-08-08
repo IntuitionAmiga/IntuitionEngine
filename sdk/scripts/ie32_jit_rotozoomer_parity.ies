@@ -1,0 +1,10 @@
+-- Run once normally and once with --nojit. The IE32 shadow gate uses the same
+-- image and frame checkpoint; this driver captures a matching live-machine
+-- checkpoint for monitor investigation.
+cpu.load_stopped("sdk/examples/prebuilt/rotozoomer.iex")
+sys.print("ie32-rotozoomer before", cpu.execution_mode(), cpu.jit_stats())
+cpu.start()
+sys.wait_frames(4)
+rec.screenshot("/tmp/ie32_jit_rotozoomer_parity.png")
+cpu.stop()
+sys.print("ie32-rotozoomer after", cpu.execution_mode(), cpu.jit_stats())

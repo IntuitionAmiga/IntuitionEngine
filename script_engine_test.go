@@ -97,6 +97,14 @@ func TestScriptEngine_ShowreelDiagnosisScriptsParse(t *testing.T) {
 		filepath.Join("sdk", "scripts", "diag_emutos_rotozoomer_gem.ies"),
 		filepath.Join("sdk", "scripts", "diag_iedoom_x86_jit.ies"),
 		filepath.Join("sdk", "scripts", "diag_iedoom_oracle.ies"),
+		filepath.Join("sdk", "scripts", "ie32_jit_rotozoomer_parity.ies"),
+		filepath.Join("sdk", "scripts", "ie32_jit_robocop_parity.ies"),
+		filepath.Join("sdk", "scripts", "ie32_jit_opcode_differential.ies"),
+		filepath.Join("sdk", "scripts", "ie32_jit_smc.ies"),
+		filepath.Join("sdk", "scripts", "ie32_jit_mmio.ies"),
+		filepath.Join("sdk", "scripts", "ie32_jit_timer_interrupt.ies"),
+		filepath.Join("sdk", "scripts", "ie32_jit_debugger.ies"),
+		filepath.Join("sdk", "scripts", "ie32_jit_performance.ies"),
 		filepath.Join("scripts", "diag_tracering.ies"),
 		filepath.Join("scripts", "diag_source_step.ies"),
 		filepath.Join("scripts", "diag_history_horizon.ies"),
@@ -1694,6 +1702,42 @@ func TestScriptEngine_CPUJITControls_M68K(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_CPUJITControls_IE32(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+	cpu := NewCPU(bus)
+	cpu.running.Store(false)
+	runtimeStatus.setCPUs(runtimeCPUIE32, cpu, nil, nil, nil, nil, nil)
+	t.Cleanup(func() {
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+
+	script := `
+		cpu.set_jit_enabled(false)
+		if cpu.jit_enabled() then error("expected IE32 JIT disabled") end
+		if cpu.execution_mode() ~= "interpreter" then error("expected IE32 interpreter mode") end
+	`
+	if ie32JITRuntimeAvailable() {
+		script += `
+			cpu.set_jit_enabled(true)
+			if not cpu.jit_enabled() then error("expected IE32 JIT enabled") end
+			if cpu.execution_mode() ~= "jit" then error("expected IE32 JIT mode") end
+		`
+	}
+	if err := se.RunString(script, "cpu_jit_controls_ie32"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+	if got, want := cpu.jitEnabled, ie32JITRuntimeAvailable(); got != want {
+		t.Fatalf("final IE32 JIT enabled=%v, want %v", got, want)
+	}
+}
+
 func TestScriptEngine_CPUJITStats_M68K(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()
@@ -1728,6 +1772,70 @@ func TestScriptEngine_CPUJITStats_M68K(t *testing.T) {
 		if stats.fallback_opcodes[1].pc ~= 0xE01000 then error("fallback opcode pc") end
 	`
 	if err := se.RunString(script, "cpu_jit_stats_m68k"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_CPUJITStats_IE32(t *testing.T) {
+	bus := NewMachineBus()
+	term := NewTerminalMMIO()
+	comp := NewVideoCompositor(nil)
+	se := NewScriptEngine(bus, comp, term)
+	cpu := NewCPU(bus)
+	cpu.running.Store(false)
+	cpu.InstructionCount = 23
+	cpu.jit.nativeEntries.Store(7)
+	cpu.jit.blocks.Store(5)
+	cpu.jit.regions.Store(2)
+	cpu.jit.hotRecompilations.Store(1)
+	cpu.jit.instructions.Store(19)
+	cpu.jit.directInstructions.Store(17)
+	cpu.jit.helperInstructions.Store(2)
+	cpu.jit.chains.Store(3)
+	cpu.jit.chainBudgetExits.Store(1)
+	cpu.jit.deoptimizations.Store(2)
+	cpu.jit.helperDeopts.Store(1)
+	cpu.jit.sourceStampDeopts.Store(1)
+	cpu.jit.codeCacheResets.Store(4)
+	cpu.jit.invalidations.Store(4)
+	cpu.jit.cacheHits.Store(6)
+	cpu.jit.returnCacheHits.Store(2)
+	cpu.jit.mmioPollIterations.Store(3)
+	cpu.jit.residentSpillsSaved.Store(9)
+	cpu.jit.countedLoops.Store(6)
+	runtimeStatus.setCPUs(runtimeCPUIE32, cpu, nil, nil, nil, nil, nil)
+	t.Cleanup(func() {
+		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
+	})
+
+	script := `
+		local stats = cpu.jit_stats()
+		if stats.instruction_count ~= 23 then error("instruction_count") end
+		if stats.native_entries ~= 7 then error("native_entries") end
+		if stats.compiled_blocks ~= 5 then error("compiled_blocks") end
+		if stats.compiled_regions ~= 2 then error("compiled_regions") end
+		if stats.hot_recompilations ~= 1 then error("hot_recompilations") end
+		if stats.retired_instructions ~= 19 then error("retired_instructions") end
+		if stats.direct_instructions ~= 17 then error("direct_instructions") end
+		if stats.helper_instructions ~= 2 then error("helper_instructions") end
+		if stats.chains ~= 3 then error("chains") end
+		if stats.chain_budget_exits ~= 1 then error("chain_budget_exits") end
+		if stats.deoptimizations ~= 2 then error("deoptimizations") end
+		if stats.helper_deopts ~= 1 then error("helper_deopts") end
+		if stats.source_stamp_deopts ~= 1 then error("source_stamp_deopts") end
+		if stats.code_cache_resets ~= 4 then error("code_cache_resets") end
+		if stats.invalidations ~= 4 then error("invalidations") end
+		if stats.cache_hits ~= 6 then error("cache_hits") end
+		if stats.return_cache_hits ~= 2 then error("return_cache_hits") end
+		if stats.mmio_poll_iterations ~= 3 then error("mmio_poll_iterations") end
+		if stats.resident_spills_saved ~= 9 then error("resident_spills_saved") end
+		if stats.counted_loops ~= 6 then error("counted_loops") end
+	`
+	if err := se.RunString(script, "cpu_jit_stats_ie32"); err != nil {
 		t.Fatalf("RunString failed: %v", err)
 	}
 	waitScriptStopped(t, se)

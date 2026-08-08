@@ -18,11 +18,12 @@ type CoprocWorker struct {
 	loadBase  uint32
 	loadEnd   uint32
 
-	mu      sync.Mutex
-	stopCPU func()        // sets running=false on the worker CPU
-	execCPU func()        // architecture-specific run loop (blocks until done)
-	done    chan struct{} // closed when current Execute() returns
-	frozen  bool
+	mu         sync.Mutex
+	stopCPU    func()        // sets running=false on the worker CPU
+	execCPU    func()        // architecture-specific run loop (blocks until done)
+	disposeCPU func()        // releases an architecture-specific discarded CPU
+	done       chan struct{} // closed when current Execute() returns
+	frozen     bool
 
 	// gatePending is set while a worker is installed in its slot but has not yet
 	// cleared the START-time version handshake. enqueue rejects a pending worker
@@ -105,8 +106,8 @@ type CoprocessorManager struct {
 	mu sync.Mutex
 	// workers is indexed [cpuType 1..6][instance 0..1]. The instance-1 slots
 	// of single-instance types stay nil.
-	workers    [7][2]*CoprocWorker
-	nextTicket uint32
+	workers              [7][2]*CoprocWorker
+	nextTicket           uint32
 	completions          map[uint32]*CoprocCompletion
 	pendingMonitorUnregs []reapedMonitor
 
@@ -148,8 +149,12 @@ type CoprocessorManager struct {
 	// timeout is stopped and START fails with COPROC_ERR_STALE_WORKER. Enabled
 	// in production (NewCoprocessorManager); unit tests that start raw,
 	// non-conforming spin-loop images disable it via SetVersionGateEnabled.
-	versionGateEnabled  bool
-	versionGateTimeout  time.Duration
+	versionGateEnabled bool
+	versionGateTimeout time.Duration
+
+	// ie32DisableJIT is inherited from the process startup policy and applied
+	// to every IE32 worker construction.
+	ie32DisableJIT bool
 
 	// Worker start time and image path for uptime tracking, per (cpuType, instance)
 	workerStartTime [7][2]time.Time
@@ -180,6 +185,12 @@ func NewCoprocessorManager(bus *MachineBus, baseDir string) *CoprocessorManager 
 	}
 	mgr.initRings()
 	return mgr
+}
+
+func (m *CoprocessorManager) SetIE32JITDisabled(disabled bool) {
+	m.mu.Lock()
+	m.ie32DisableJIT = disabled
+	m.mu.Unlock()
 }
 
 // initRings clears mailbox descriptors and initializes all ring headers.
@@ -1309,9 +1320,14 @@ func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType, instance uint32,
 	if *slot != nil {
 		m.mu.Unlock()
 		worker.stopCPU()
+		stopped := false
 		select {
 		case <-worker.done:
+			stopped = true
 		case <-time.After(2 * time.Second):
+		}
+		if stopped && worker.disposeCPU != nil {
+			worker.disposeCPU()
 		}
 		m.mu.Lock()
 		return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%s coprocessor worker was started concurrently", coprocInstanceLabel(cpuType, instance))
@@ -1490,7 +1506,7 @@ func (m *CoprocessorManager) createWorker(cpuType, instance uint32, data []byte)
 	}
 	switch cpuType {
 	case EXEC_TYPE_IE32:
-		return createIE32Worker(m.bus, data, instance)
+		return createIE32WorkerConfigured(m.bus, data, instance, m.ie32DisableJIT)
 	case EXEC_TYPE_6502:
 		return create6502Worker(m.bus, data, instance)
 	case EXEC_TYPE_M68K:
@@ -1527,9 +1543,14 @@ func (m *CoprocessorManager) stopWorkerAndUnregister(cpuType uint32, worker *Cop
 		worker.debugCPU.Freeze()
 	}
 	worker.stopCPU()
+	stopped := false
 	select {
 	case <-worker.done:
+		stopped = true
 	case <-time.After(2 * time.Second):
+	}
+	if stopped && worker.disposeCPU != nil {
+		worker.disposeCPU()
 	}
 	if m.monitor != nil && worker.monitorID >= 0 {
 		m.monitor.UnregisterCPU(worker.monitorID)

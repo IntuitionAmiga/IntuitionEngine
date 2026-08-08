@@ -197,7 +197,13 @@ type MachineBus struct {
 	z80JITInvalidators   map[uint64]func(addr, size uint64)
 	z80JITInvalidatorID  atomic.Uint64
 	z80JITInvalidatorCnt atomic.Uint64
-	coprocCompletionWake func(addr, value uint32)
+	// ie32JITInvalidators follow the same publication-only contract as the
+	// 6502 and Z80 JITs. IE32 dispatchers drain the generation themselves.
+	ie32JITInvalidatorMu  sync.RWMutex
+	ie32JITInvalidators   map[uint64]func(addr, size uint64)
+	ie32JITInvalidatorID  atomic.Uint64
+	ie32JITInvalidatorCnt atomic.Uint64
+	coprocCompletionWake  func(addr, value uint32)
 }
 
 // AddrRange defines an inclusive address range.
@@ -437,6 +443,7 @@ func (bus *MachineBus) invalidateM68KJITRAMWrite(addr uint64, size uint64) {
 	bus.markPagesDirty(addr, size)
 	bus.notifyP65JITRAMWrite(addr, size)
 	bus.notifyZ80JITRAMWrite(addr, size)
+	bus.notifyIE32JITRAMWrite(addr, size)
 	if addr > uint64(^uint32(0)) {
 		return
 	}
@@ -520,6 +527,45 @@ func (bus *MachineBus) notifyZ80JITRAMWrite(addr, size uint64) {
 	bus.z80JITInvalidatorMu.RLock()
 	defer bus.z80JITInvalidatorMu.RUnlock()
 	for _, fn := range bus.z80JITInvalidators {
+		fn(addr, size)
+	}
+}
+
+// RegisterIE32JITInvalidator subscribes an IE32 execution context to physical
+// RAM writes. The callback must only publish a generation; JIT cache mutation
+// is performed by the owning CPU at a dispatcher boundary.
+func (bus *MachineBus) RegisterIE32JITInvalidator(fn func(addr, size uint64)) func() {
+	if bus == nil || fn == nil {
+		return func() {}
+	}
+	id := bus.ie32JITInvalidatorID.Add(1)
+	bus.ie32JITInvalidatorMu.Lock()
+	if bus.ie32JITInvalidators == nil {
+		bus.ie32JITInvalidators = make(map[uint64]func(addr, size uint64))
+	}
+	bus.ie32JITInvalidators[id] = fn
+	bus.ie32JITInvalidatorCnt.Add(1)
+	bus.ie32JITInvalidatorMu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			bus.ie32JITInvalidatorMu.Lock()
+			if _, ok := bus.ie32JITInvalidators[id]; ok {
+				delete(bus.ie32JITInvalidators, id)
+				bus.ie32JITInvalidatorCnt.Add(^uint64(0))
+			}
+			bus.ie32JITInvalidatorMu.Unlock()
+		})
+	}
+}
+
+func (bus *MachineBus) notifyIE32JITRAMWrite(addr, size uint64) {
+	if bus == nil || bus.ie32JITInvalidatorCnt.Load() == 0 {
+		return
+	}
+	bus.ie32JITInvalidatorMu.RLock()
+	defer bus.ie32JITInvalidatorMu.RUnlock()
+	for _, fn := range bus.ie32JITInvalidators {
 		fn(addr, size)
 	}
 }

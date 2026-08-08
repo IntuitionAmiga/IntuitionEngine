@@ -1983,6 +1983,8 @@ func (se *ScriptEngine) luaCPUJITEnabled() lua.LGFunction {
 		snap := runtimeStatus.snapshot()
 		enabled := false
 		switch snap.selectedCPU {
+		case runtimeCPUIE32:
+			enabled = snap.ie32 != nil && snap.ie32.jitEnabled
 		case runtimeCPUM68K:
 			enabled = snap.m68k != nil && snap.m68k.cpu != nil && snap.m68k.cpu.m68kJitEnabled
 		case runtimeCPUZ80:
@@ -2004,6 +2006,15 @@ func (se *ScriptEngine) luaCPUSetJITEnabled() lua.LGFunction {
 		enabled := L.CheckBool(1)
 		snap := runtimeStatus.snapshot()
 		switch snap.selectedCPU {
+		case runtimeCPUIE32:
+			if snap.ie32 == nil {
+				L.RaiseError("IE32 CPU unavailable")
+				return 0
+			}
+			if err := snap.ie32.SetJITEnabled(enabled); err != nil {
+				L.RaiseError("%s", err)
+			}
+			return 0
 		case runtimeCPUM68K:
 			if snap.m68k == nil || snap.m68k.cpu == nil {
 				L.RaiseError("m68k cpu unavailable")
@@ -2092,6 +2103,10 @@ func (se *ScriptEngine) luaCPUExecutionMode() lua.LGFunction {
 		snap := runtimeStatus.snapshot()
 		mode := "interpreter"
 		switch snap.selectedCPU {
+		case runtimeCPUIE32:
+			if snap.ie32 != nil && snap.ie32.jitEnabled {
+				mode = "jit"
+			}
 		case runtimeCPUM68K:
 			if snap.m68k != nil && snap.m68k.cpu != nil && snap.m68k.cpu.m68kJitEnabled {
 				mode = "jit"
@@ -2123,6 +2138,31 @@ func (se *ScriptEngine) luaCPUJITStats() lua.LGFunction {
 		snap := runtimeStatus.snapshot()
 		tbl := L.NewTable()
 		switch snap.selectedCPU {
+		case runtimeCPUIE32:
+			if snap.ie32 != nil {
+				stats := snap.ie32.JITStats()
+				L.SetField(tbl, "backend", lua.LString(stats.Backend))
+				L.SetField(tbl, "instruction_count", lua.LNumber(snap.ie32.InstructionCount))
+				L.SetField(tbl, "native_entries", lua.LNumber(stats.NativeEntries))
+				L.SetField(tbl, "compiled_blocks", lua.LNumber(stats.Blocks))
+				L.SetField(tbl, "compiled_regions", lua.LNumber(stats.Regions))
+				L.SetField(tbl, "hot_recompilations", lua.LNumber(stats.HotRecompilations))
+				L.SetField(tbl, "retired_instructions", lua.LNumber(stats.Instructions))
+				L.SetField(tbl, "direct_instructions", lua.LNumber(stats.DirectInstructions))
+				L.SetField(tbl, "helper_instructions", lua.LNumber(stats.HelperInstructions))
+				L.SetField(tbl, "chains", lua.LNumber(stats.Chains))
+				L.SetField(tbl, "chain_budget_exits", lua.LNumber(stats.ChainBudgetExits))
+				L.SetField(tbl, "deoptimizations", lua.LNumber(stats.Deoptimizations))
+				L.SetField(tbl, "helper_deopts", lua.LNumber(stats.HelperDeopts))
+				L.SetField(tbl, "source_stamp_deopts", lua.LNumber(stats.SourceStampDeopts))
+				L.SetField(tbl, "code_cache_resets", lua.LNumber(stats.CodeCacheResets))
+				L.SetField(tbl, "invalidations", lua.LNumber(stats.Invalidations))
+				L.SetField(tbl, "cache_hits", lua.LNumber(stats.CacheHits))
+				L.SetField(tbl, "return_cache_hits", lua.LNumber(stats.ReturnCacheHits))
+				L.SetField(tbl, "mmio_poll_iterations", lua.LNumber(stats.MMIOPollIterations))
+				L.SetField(tbl, "resident_spills_saved", lua.LNumber(stats.ResidentSpillsSaved))
+				L.SetField(tbl, "counted_loops", lua.LNumber(stats.CountedLoops))
+			}
 		case runtimeCPUM68K:
 			if snap.m68k != nil && snap.m68k.cpu != nil {
 				cpu := snap.m68k.cpu

@@ -388,13 +388,28 @@ type CPU struct {
 	// CoprocMode skips the PC range check in Execute() for coprocessor workers
 	CoprocMode bool
 
+	// jitEnabled selects the normal execution router when an IE32 backend is
+	// available. It is intentionally private: stopped-CPU changes must use
+	// SetJITEnabled so script and monitor callers observe the same contract.
+	jitEnabled bool
+	jit        *ie32JITState
+	jitMarker  uintptr
+
 	// Execution lifecycle
-	execMu     sync.Mutex
-	execDone   chan struct{}
-	execActive bool
+	execMu      sync.Mutex
+	execDone    chan struct{}
+	execActive  bool
+	disposeOnce sync.Once
 }
 
 func NewCPU(bus Bus32) *CPU {
+	return newIE32CPUConfigured(bus, false)
+}
+
+// newIE32CPUConfigured is the sole constructor that accepts the startup
+// execution policy. Production factories pass the policy created from
+// --nojit; direct construction deliberately remains JIT-default-on.
+func newIE32CPUConfigured(bus Bus32, disableJIT bool) *CPU {
 	/*
 	   NewCPU initialises a new CPU instance with default state.
 
@@ -421,6 +436,8 @@ func NewCPU(bus Bus32) *CPU {
 		bus:        bus,
 		memory:     bus.GetMemory(), // Use shared bus memory
 		debugCPUID: -1,
+		jitEnabled: ie32JITRuntimeAvailable() && !disableJIT,
+		jit:        &ie32JITState{},
 	}
 	// Initialize register pointer array for fast lookup
 	cpu.regs = [16]*uint32{
@@ -433,7 +450,25 @@ func NewCPU(bus Bus32) *CPU {
 	cpu.memBase = unsafe.Pointer(&cpu.memory[0])
 	// Atomic fields default to zero/false - set running to true
 	cpu.running.Store(true)
+	if machineBus, ok := bus.(*MachineBus); ok {
+		cpu.jit.busUnregister = machineBus.RegisterIE32JITInvalidator(cpu.noteIE32JITWrite)
+	}
 	return cpu
+}
+
+func (cpu *CPU) noteIE32JITWrite(addr, size uint64) {
+	if cpu == nil || cpu.jit == nil {
+		return
+	}
+	cpu.jit.invalidationMu.Lock()
+	if size == 0 {
+		cpu.jit.pendingInvalidateAll = true
+		cpu.jit.pendingInvalidations = nil
+	} else if !cpu.jit.pendingInvalidateAll {
+		cpu.jit.pendingInvalidations = append(cpu.jit.pendingInvalidations, ie32JITInvalidation{addr: addr, size: size})
+	}
+	cpu.jit.invalidationMu.Unlock()
+	cpu.jit.invalidationGeneration.Add(1)
 }
 
 func (cpu *CPU) LoadProgram(filename string) error {
@@ -478,7 +513,11 @@ func (cpu *CPU) LoadProgramBytes(program []byte) {
 		src = src[:maxCopy]
 	}
 	copy(cpu.memory[PROG_START:progEnd], src)
+	// Loading uses the raw shared-memory staging window, so explicitly publish
+	// the complete overwritten range for every other IE32 dispatcher.
+	cpu.publishIE32JITWrite(uint64(PROG_START), uint64(progEnd-PROG_START))
 	cpu.PC = PROG_START
+	cpu.resetJITStats()
 }
 
 func (cpu *CPU) Write32(addr uint32, value uint32) {
@@ -513,6 +552,7 @@ func (cpu *CPU) Write32(addr uint32, value uint32) {
 			oldValue = *(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
 		}
 		*(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = value
+		cpu.publishIE32JITWrite(uint64(addr), WORD_SIZE)
 		cpu.debugOnWrite(uint64(addr), 4, uint64(oldValue), uint64(value))
 		return
 	}
@@ -520,6 +560,20 @@ func (cpu *CPU) Write32(addr uint32, value uint32) {
 	// I/O path - callbacks protect their own state
 	cpu.bus.Write32(addr, value)
 	cpu.debugOnWrite(uint64(addr), 4, 0, uint64(value))
+}
+
+// publishIE32JITWrite announces a physical RAM mutation without touching a
+// JIT cache on the writer's goroutine. All registered IE32 dispatchers drain
+// the generation at their next safe execution boundary.
+func (cpu *CPU) publishIE32JITWrite(addr uint64, size uint64) {
+	if cpu == nil {
+		return
+	}
+	if bus, ok := cpu.bus.(*MachineBus); ok {
+		bus.notifyIE32JITRAMWrite(addr, size)
+		return
+	}
+	cpu.noteIE32JITWrite(addr, size)
 }
 
 func (cpu *CPU) debugOnRead(addr uint64, width int) {
@@ -871,6 +925,7 @@ func (cpu *CPU) Reset() {
 	*/
 
 	cpu.running.Store(false)
+	cpu.resetJITStats()
 
 	if activeVideoChip != nil {
 		video := activeVideoChip
@@ -901,6 +956,17 @@ func (cpu *CPU) Reset() {
 }
 
 func (cpu *CPU) Execute() {
+	if cpu.jitEnabled && ie32JITRuntimeAvailable() {
+		cpu.ExecuteJITIE32()
+		return
+	}
+	cpu.executeInterpreter()
+}
+
+// executeInterpreter is the IE32 architectural interpreter. Execute is the
+// only normal entry point: it selects this loop only when JIT is disabled or
+// no supported IE32 backend exists.
+func (cpu *CPU) executeInterpreter() {
 	/*
 	   ExecuteInstruction runs the main CPU instruction cycle.
 
@@ -966,9 +1032,11 @@ func (cpu *CPU) Execute() {
 			hostCooperativeYield()
 		}
 
-		// Performance measurement: count instructions and report periodically
+		// Retired instruction accounting is architectural state. Performance
+		// reporting is optional, but it must never decide whether an instruction
+		// is counted because JIT/interpreter differential checks rely on it.
+		cpu.InstructionCount++
 		if cpu.PerfEnabled {
-			cpu.InstructionCount++
 			if cpu.InstructionCount&0xFFFFFF == 0 { // Every ~16M instructions
 				now := time.Now()
 				if now.Sub(cpu.lastPerfReport) >= time.Second {
@@ -980,15 +1048,23 @@ func (cpu *CPU) Execute() {
 			}
 		}
 
+		// Timer expiry is an instruction boundary. Resolve it before selecting
+		// the next instruction so an accepted interrupt selects its ISR on both
+		// interpreter and JIT execution paths.
+		cpu.advanceTimer()
+
 		// Cache frequently accessed values
 		currentPC := cpu.PC
 
-		// Fetch instruction components using unsafe pointer (no bounds checking)
-		instrPtr := unsafe.Pointer(uintptr(memBase) + uintptr(currentPC))
-		opcode := *(*byte)(instrPtr)
-		reg := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 1))
-		addrMode := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 2))
-		operand := *(*uint32)(unsafe.Pointer(uintptr(instrPtr) + 4))
+		in, ok := decodeIE32Instruction(cpu.memory, currentPC)
+		if !ok {
+			cpu.running.Store(false)
+			break
+		}
+		opcode := in.Opcode
+		reg := in.Reg
+		addrMode := in.AddrMode
+		operand := in.Operand
 		cpu.debugOnFetch(uint64(currentPC), INSTRUCTION_SIZE)
 
 		// Fully inlined operand resolution - avoids function call overhead
@@ -1002,40 +1078,6 @@ func (cpu *CPU) Execute() {
 			resolvedOperand = cpu.Read32(*cpu.regs[operand&REG_INDEX_MASK] + (operand & ^uint32(REG_INDEX_MASK)))
 		case ADDR_MEM_IND, ADDR_DIRECT:
 			resolvedOperand = cpu.Read32(operand)
-		}
-
-		// Timer handling with lock-free atomics
-		if cpu.timerEnabled.Load() {
-			cpu.cycleCounter++
-			if cpu.cycleCounter >= SAMPLE_RATE {
-				cpu.cycleCounter = 0
-
-				var finalCount uint32
-				count := cpu.timerCount.Load()
-				if count > 0 {
-					newCount := count - 1
-					cpu.timerCount.Store(newCount)
-					finalCount = newCount
-					if newCount == 0 {
-						cpu.timerState.Store(TIMER_EXPIRED)
-						if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
-							cpu.handleInterrupt()
-						}
-						// Real atomic load: interrupt handler may have disabled the timer
-						if cpu.timerEnabled.Load() {
-							period := cpu.timerPeriod.Load()
-							cpu.timerCount.Store(period)
-							finalCount = period
-						}
-					}
-				} else {
-					finalCount = count
-				}
-
-				binary.LittleEndian.PutUint32(
-					cpu.memory[TIMER_COUNT:TIMER_COUNT+WORD_SIZE],
-					finalCount)
-			}
 		}
 
 		switch opcode {
@@ -1467,7 +1509,6 @@ func (cpu *CPU) Execute() {
 			cpu.PC += INSTRUCTION_SIZE
 
 		case HALT:
-			fmt.Printf("HALT executed at PC=%08x\n", cpu.PC)
 			cpu.running.Store(false)
 			running = false
 
@@ -1485,6 +1526,41 @@ func (cpu *CPU) Execute() {
 	if cpu.HasScreenContent() {
 		cpu.DisplayScreen()
 	}
+}
+
+// advanceTimer performs the timer transition immediately before one decoded
+// guest instruction. Keeping it shared makes interpreter and one-instruction
+// JIT timer boundaries observable at exactly the same architectural point.
+func (cpu *CPU) advanceTimer() {
+	if !cpu.timerEnabled.Load() {
+		return
+	}
+	cpu.cycleCounter++
+	if cpu.cycleCounter < SAMPLE_RATE {
+		return
+	}
+	cpu.cycleCounter = 0
+	var finalCount uint32
+	count := cpu.timerCount.Load()
+	if count > 0 {
+		newCount := count - 1
+		cpu.timerCount.Store(newCount)
+		finalCount = newCount
+		if newCount == 0 {
+			cpu.timerState.Store(TIMER_EXPIRED)
+			if cpu.interruptEnabled.Load() && !cpu.inInterrupt.Load() {
+				cpu.handleInterrupt()
+			}
+			if cpu.timerEnabled.Load() {
+				period := cpu.timerPeriod.Load()
+				cpu.timerCount.Store(period)
+				finalCount = period
+			}
+		}
+	} else {
+		finalCount = count
+	}
+	binary.LittleEndian.PutUint32(cpu.memory[TIMER_COUNT:TIMER_COUNT+WORD_SIZE], finalCount)
 }
 
 func (cpu *CPU) IsRunning() bool {
@@ -1535,23 +1611,39 @@ func (cpu *CPU) Stop() {
 	<-done
 }
 
+// Dispose permanently releases resources owned by this IE32 CPU. It is for
+// replaced execution contexts, not normal stopped-CPU diagnostics.
+func (cpu *CPU) Dispose() {
+	if cpu == nil {
+		return
+	}
+	cpu.disposeOnce.Do(func() {
+		cpu.Stop()
+		if cpu.jit == nil {
+			return
+		}
+		if unregister := cpu.jit.busUnregister; unregister != nil {
+			unregister()
+			cpu.jit.busUnregister = nil
+		}
+		cpu.dropIE32NativeCodeCache()
+		ie32DropWasmCPUEntries(cpu)
+	})
+}
+
 // StepOne executes a single IE32 instruction at the current PC and returns 1.
 // Must only be called when the CPU is frozen. Debugger single-step semantics
 // intentionally step WAIT without sleeping; the normal Execute loop applies
 // WAIT's real-time delay.
 func (cpu *CPU) StepOne() int {
-	memBase := cpu.memBase
-	memSize := uint32(len(cpu.memory))
-
-	if cpu.PC+INSTRUCTION_SIZE > memSize {
+	in, ok := decodeIE32Instruction(cpu.memory, cpu.PC)
+	if !ok {
 		return 0
 	}
-
-	instrPtr := unsafe.Pointer(uintptr(memBase) + uintptr(cpu.PC))
-	opcode := *(*byte)(instrPtr)
-	reg := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 1))
-	addrMode := *(*byte)(unsafe.Pointer(uintptr(instrPtr) + 2))
-	operand := *(*uint32)(unsafe.Pointer(uintptr(instrPtr) + 4))
+	opcode := in.Opcode
+	reg := in.Reg
+	addrMode := in.AddrMode
+	operand := in.Operand
 	cpu.debugOnFetch(uint64(cpu.PC), INSTRUCTION_SIZE)
 
 	var resolvedOperand uint32
@@ -1824,11 +1916,13 @@ func (cpu *CPU) StepOne() int {
 	case NOP:
 		cpu.PC += INSTRUCTION_SIZE
 	case HALT:
+		cpu.running.Store(false)
 		return 1
 	default:
 		if cpu.debugFault("ie32.invalid-opcode", uint64(opcode), faultInfof("opcode=$%02X", opcode)) {
 			return 1
 		}
+		cpu.running.Store(false)
 		return 0
 	}
 	return 1

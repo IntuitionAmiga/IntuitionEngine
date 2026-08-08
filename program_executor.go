@@ -26,6 +26,9 @@ type ProgramExecutor struct {
 	loadIExec func() error
 	// hardReset performs the same full reset path as the UI hard-reset hotkey.
 	hardReset func() error
+	// ie32DisableJIT is the startup policy copied from --nojit. It is retained
+	// by the executor so reloads never choose a new execution mode themselves.
+	ie32DisableJIT bool
 
 	// GEMDOS drive mapping for EmuTOS mode
 	gemdosHostRoot string
@@ -64,6 +67,14 @@ func (e *ProgramExecutor) SetCPU(cpu *CPU64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.ie64CPU = cpu
+}
+
+// SetIE32JITDisabled applies the single startup execution policy used by IE32
+// reloads. Direct NewCPU construction remains default-on when supported.
+func (e *ProgramExecutor) SetIE32JITDisabled(disabled bool) {
+	e.mu.Lock()
+	e.ie32DisableJIT = disabled
+	e.mu.Unlock()
 }
 
 // SetEmuTOSBootLoader configures a callback that boots EmuTOS from the
@@ -381,6 +392,12 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 			return fmt.Errorf("program too large")
 		}
 	}
+	if typ == EXEC_TYPE_IE32 && e.bus != nil {
+		memoryLen := len(e.bus.GetMemory())
+		if memoryLen <= PROG_START || len(data) > memoryLen-PROG_START {
+			return fmt.Errorf("program too large")
+		}
+	}
 	e.stopRunningCPUs()
 	if e.bus != nil {
 		e.bus.UnsealMappings()
@@ -396,16 +413,17 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 		if e.videoChip != nil {
 			restoreLegacyVideoConfig(e.bus, e.videoChip)
 		}
-		cpu := NewCPU(e.bus)
+		cpu := newIE32CPUConfigured(e.bus, e.ie32DisableJIT)
 		mem := e.bus.GetMemory()
 		for i := PROG_START; i < len(mem) && i < STACK_START; i++ {
 			mem[i] = 0
 		}
 		invalidateM68KJITForGuestWrite(e.bus, uint64(PROG_START), uint64(min(len(mem), STACK_START)-PROG_START))
-		if PROG_START+len(data) > len(mem) {
-			return fmt.Errorf("program too large")
-		}
 		copy(mem[PROG_START:], data)
+		stagedEnd := min(len(mem), STACK_START)
+		if stagedEnd > PROG_START {
+			e.bus.notifyIE32JITRAMWrite(uint64(PROG_START), uint64(stagedEnd-PROG_START))
+		}
 		invalidateM68KJITForGuestWrite(e.bus, uint64(PROG_START), uint64(len(data)))
 		cpu.PC = PROG_START
 		runtimeStatus.setCPUs(runtimeCPUIE32, cpu, nil, nil, nil, nil, nil)
@@ -562,7 +580,7 @@ func (e *ProgramExecutor) prepareAndLaunch(data []byte, typ uint32) error {
 func (e *ProgramExecutor) stopRunningCPUs() {
 	snap := runtimeStatus.snapshot()
 	if snap.ie32 != nil {
-		snap.ie32.Stop()
+		snap.ie32.Dispose()
 	}
 	if snap.ie64 != nil {
 		snap.ie64.Stop()

@@ -1,0 +1,14 @@
+-- Demonstrate the debug-adapter trap loop and automatic return to normal JIT
+-- routing after the breakpoint is cleared.
+cpu.load_stopped("sdk/examples/prebuilt/rotozoomer.iex")
+dbg.open()
+dbg.set_bp(0x1000)
+dbg.continue(true)
+sys.wait_ms(20)
+dbg.freeze()
+sys.print("ie32-debugger stopped", cpu.execution_mode(), cpu.jit_stats())
+dbg.clear_all_bp()
+dbg.resume()
+sys.wait_frames(1)
+cpu.stop()
+sys.print("ie32-debugger resumed", cpu.execution_mode(), cpu.jit_stats())

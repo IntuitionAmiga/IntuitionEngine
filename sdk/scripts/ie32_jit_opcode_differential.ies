@@ -1,0 +1,36 @@
+-- Run once normally and once with --nojit. This bounded diagnostic injects a
+-- small direct IE32 sequence at the normal programme entry, then prints its
+-- architectural result and generated-execution provenance.
+cpu.load_stopped("sdk/examples/prebuilt/rotozoomer.iex")
+
+local function le32(value)
+    return string.char(
+        value % 256,
+        math.floor(value / 256) % 256,
+        math.floor(value / 65536) % 256,
+        math.floor(value / 16777216) % 256)
+end
+
+-- IE32 instruction layout is opcode, register, addressing mode, padding,
+-- followed by a little-endian operand32. LOAD A,#7; ADD A,#5; STORE A,[0x400];
+-- HALT. The stored word makes the result readable through the raw bus API.
+local function ins(opcode, reg, mode, operand)
+    return string.char(opcode, reg, mode, 0) .. le32(operand)
+end
+
+cpu.freeze()
+mem.write_block(0x1000,
+    ins(0x01, 0x00, 0x00, 7) ..
+    ins(0x03, 0x00, 0x00, 5) ..
+	ins(0x02, 0x00, 0x04, 0x400) ..
+    ins(0xFF, 0x00, 0x00, 0))
+cpu.resume()
+
+sys.print("ie32-opcode before", cpu.execution_mode(), cpu.jit_stats())
+cpu.start()
+sys.wait_ms(20)
+cpu.stop()
+cpu.freeze()
+sys.print("ie32-opcode A", mem.read32(0x400))
+cpu.resume()
+sys.print("ie32-opcode after", cpu.execution_mode(), cpu.jit_stats())
