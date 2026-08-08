@@ -28,6 +28,17 @@ func TestIE32WasmBrowser_InstantiatesDirectBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile IE32 wasm block: %v", err)
 	}
+	dynamicModule, err := compileIE32WasmBlock([]ie32DecodedInstruction{{
+		PC:                          PROG_START,
+		Opcode:                      LDA,
+		AddrMode:                    ADDR_REG_IND,
+		Operand:                     REG_X,
+		rangeProvenRegisterIndirect: true,
+		rangeBaseRegister:           REG_X,
+	}})
+	if err != nil {
+		t.Fatalf("compile range-proven IE32 wasm block: %v", err)
+	}
 	loopStart := uint32(PROG_START + INSTRUCTION_SIZE)
 	loop := []ie32DecodedInstruction{
 		{PC: PROG_START, Opcode: LOAD, Reg: REG_B, AddrMode: ADDR_IMMEDIATE, Operand: 3},
@@ -52,6 +63,7 @@ func TestIE32WasmBrowser_InstantiatesDirectBlock(t *testing.T) {
 <body>pending</body>
 <script>
 const directBytes = Uint8Array.from(atob("` + base64.StdEncoding.EncodeToString(module) + `"), c => c.charCodeAt(0));
+const dynamicBytes = Uint8Array.from(atob("` + base64.StdEncoding.EncodeToString(dynamicModule) + `"), c => c.charCodeAt(0));
 const loopBytes = Uint8Array.from(atob("` + base64.StdEncoding.EncodeToString(loopModule) + `"), c => c.charCodeAt(0));
 const mem = new WebAssembly.Memory({initial: 1});
 try {
@@ -62,6 +74,11 @@ try {
   const direct = new WebAssembly.Instance(new WebAssembly.Module(directBytes), {env: {mem}});
   direct.exports.block(cpu);
   const directValue = dv.getUint32(cpu + ` + strconv.FormatUint(uint64(unsafe.Offsetof(CPU{}.A)), 10) + `, true);
+  dv.setUint32(cpu + ` + strconv.FormatUint(uint64(unsafe.Offsetof(CPU{}.X)), 10) + `, ram + 0x300, true);
+  dv.setUint32(ram + 0x300, 0xC0FFEE, true);
+  const dynamic = new WebAssembly.Instance(new WebAssembly.Module(dynamicBytes), {env: {mem}});
+  dynamic.exports.block(cpu);
+  const dynamicValue = dv.getUint32(cpu + ` + strconv.FormatUint(uint64(unsafe.Offsetof(CPU{}.A)), 10) + `, true);
   dv.setUint32(ram + 0x200, 9, true);
   const loop = new WebAssembly.Instance(new WebAssembly.Module(loopBytes), {env: {mem}});
   loop.exports.block(cpu);
@@ -69,7 +86,7 @@ try {
   const b = dv.getUint32(cpu + ` + strconv.FormatUint(uint64(unsafe.Offsetof(CPU{}.B)), 10) + `, true);
   const stored = dv.getUint32(ram + 0x204, true);
   const pc = dv.getUint32(cpu + ` + strconv.FormatUint(uint64(unsafe.Offsetof(CPU{}.PC)), 10) + `, true);
-  document.body.textContent = directValue === 0x5B0E && a === 9 && b === 0 && stored === 9 && pc === ` + strconv.FormatUint(uint64(loopStart+4*INSTRUCTION_SIZE), 10) + ` ? "PASS" : "FAIL: " + JSON.stringify({directValue, a, b, stored, pc});
+  document.body.textContent = directValue === 0x5B0E && dynamicValue === 0xC0FFEE && a === 9 && b === 0 && stored === 9 && pc === ` + strconv.FormatUint(uint64(loopStart+4*INSTRUCTION_SIZE), 10) + ` ? "PASS" : "FAIL: " + JSON.stringify({directValue, dynamicValue, a, b, stored, pc});
 } catch (err) {
   document.body.textContent = "FAIL:" + err;
 }

@@ -90,6 +90,46 @@ func TestIE32JIT_NonOverlappingWriteRetainsPureBlockCache(t *testing.T) {
 	if _, ok := cpu.jit.nativeCache[second]; !ok {
 		t.Fatal("non-overlapping retained block was discarded")
 	}
+	if got := cpu.JITStats().InvalidatedBlocks; got != 1 {
+		t.Fatalf("invalidated retained blocks=%d, want 1", got)
+	}
+}
+
+func TestIE32JIT_DataWritePreservesRetainedReturnCache(t *testing.T) {
+	if !ie32JITRuntimeAvailable() || ie32JITBackend != "native" {
+		t.Skip("native IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	putIE32Instruction(cpu.memory, PROG_START, LDA, 0, ADDR_IMMEDIATE, 1)
+	cpu.memory[PROG_START+INSTRUCTION_SIZE] = HALT
+	cpu.Execute()
+	if cpu.jit.returnCache[0].addr == 0 {
+		t.Fatal("initial retained block did not populate the return cache")
+	}
+	cpu.Write32(0x8800, 0xC0FFEE)
+	cpu.drainIE32JITInvalidations()
+	if _, ok := cpu.jit.nativeCache[PROG_START]; !ok {
+		t.Fatal("data write evicted an unrelated retained block")
+	}
+	if cpu.jit.returnCache[0].addr == 0 {
+		t.Fatal("data write cleared an unrelated retained return block")
+	}
+}
+
+func TestIE32JIT_UnrelatedDataWriteSkipsInvalidationPublication(t *testing.T) {
+	if !ie32JITRuntimeAvailable() || ie32JITBackend != "native" {
+		t.Skip("native IE32 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	cpu := NewCPU(bus)
+	putIE32Instruction(cpu.memory, PROG_START, LDA, 0, ADDR_IMMEDIATE, 1)
+	cpu.memory[PROG_START+INSTRUCTION_SIZE] = HALT
+	cpu.Execute()
+	before := cpu.jit.invalidationGeneration.Load()
+	bus.Write32(0x8800, 0xC0FFEE)
+	if got := cpu.jit.invalidationGeneration.Load(); got != before {
+		t.Fatalf("unrelated data write published generation %d, want %d", got, before)
+	}
 }
 
 func TestIE32JIT_StaticRegionTracksDiscontiguousSources(t *testing.T) {
@@ -142,6 +182,16 @@ func TestIE32JIT_DynamicWriteInvalidatesEveryRetainedBlock(t *testing.T) {
 	}
 }
 
+func TestIE32JIT_SourceWriteClearsTransientFragmentFallback(t *testing.T) {
+	cpu := NewCPU(NewMachineBus())
+	cpu.noteIE32TransientFragment(PROG_START)
+	cpu.publishIE32JITWrite(PROG_START, INSTRUCTION_SIZE)
+	cpu.drainIE32JITInvalidations()
+	if cpu.jit.transientFragments[PROG_START] != 0 {
+		t.Fatal("source rewrite retained transient-fragment fallback")
+	}
+}
+
 func TestIE32JIT_CPUWriteDropsPureBlockCache(t *testing.T) {
 	if !ie32JITRuntimeAvailable() || ie32JITBackend != "native" {
 		t.Skip("native IE32 JIT unavailable")
@@ -176,6 +226,9 @@ func TestIE32JIT_SourceStampRejectsUnpublishedCodeWrite(t *testing.T) {
 	if len(cpu.jit.nativeCache) != 1 {
 		t.Fatalf("initial pure cache entries=%d, want 1", len(cpu.jit.nativeCache))
 	}
+	if got := cpu.JITStats().SourceStampDeopts; got != 0 {
+		t.Fatalf("initial execution source-stamp deoptimizations=%d, want 0", got)
+	}
 	// Simulate a faulty raw host writer: no CPU or MachineBus publication.
 	putIE32Instruction(cpu.memory, PROG_START, LDA, 0, ADDR_IMMEDIATE, 2)
 	cpu.PC = PROG_START
@@ -187,14 +240,46 @@ func TestIE32JIT_SourceStampRejectsUnpublishedCodeWrite(t *testing.T) {
 	if got := cpu.JITStats().CacheHits; got != 0 {
 		t.Fatalf("source-stamp mismatch cache hits=%d, want 0", got)
 	}
-	if got := cpu.JITStats().Deoptimizations; got != 1 {
-		t.Fatalf("source-stamp mismatch deoptimizations=%d, want 1", got)
-	}
 	if got := cpu.JITStats().SourceStampDeopts; got != 1 {
 		t.Fatalf("source-stamp deoptimizations=%d, want 1", got)
 	}
 	if got := len(cpu.jit.nativeCache); got != 0 {
 		t.Fatalf("source-stamp mismatch retained stale native entries=%d", got)
+	}
+}
+
+func TestIE32CachedSourceMatchesRejectsChangedDiscontiguousInstruction(t *testing.T) {
+	memory := make([]byte, 0x400)
+	first := ie32JITInvalidation{addr: 0x100, size: INSTRUCTION_SIZE}
+	second := ie32JITInvalidation{addr: 0x200, size: INSTRUCTION_SIZE}
+	for index := uint64(0); index < INSTRUCTION_SIZE; index++ {
+		memory[first.addr+index] = byte(index + 1)
+		memory[second.addr+index] = byte(index + 17)
+	}
+	cached := ie32NativeCachedBlock{sourceRanges: []ie32JITInvalidation{first, second}}
+	cached.sourceSnapshot = ie32SourceSnapshot(memory, cached.sourceRanges)
+	if !ie32CachedSourceMatches(memory, cached) {
+		t.Fatal("fresh source snapshot was rejected")
+	}
+	memory[second.addr+3] ^= 0xFF
+	if ie32CachedSourceMatches(memory, cached) {
+		t.Fatal("changed discontiguous source instruction was accepted")
+	}
+}
+
+func TestIE32JITDispatchCacheHintIsOneShotAndPCBound(t *testing.T) {
+	cpu := NewCPU(NewMachineBus())
+	cached := ie32NativeCachedBlock{pc: PROG_START, retired: 3}
+	cpu.noteIE32DispatchCacheHint(cached)
+	if got, ok := cpu.takeIE32DispatchCacheHint(PROG_START); !ok || got.retired != 3 {
+		t.Fatalf("dispatch cache hint=%+v ok=%v, want retained entry", got, ok)
+	}
+	if _, ok := cpu.takeIE32DispatchCacheHint(PROG_START); ok {
+		t.Fatal("dispatch cache hint was reused")
+	}
+	cpu.noteIE32DispatchCacheHint(cached)
+	if _, ok := cpu.takeIE32DispatchCacheHint(PROG_START + INSTRUCTION_SIZE); ok {
+		t.Fatal("dispatch cache hint matched a different PC")
 	}
 }
 
@@ -225,6 +310,35 @@ func TestIE32JIT_GeneratedStoreDrainsBeforeChainedTarget(t *testing.T) {
 	}
 	if got := cpu.jit.invalidations.Load(); got == 0 {
 		t.Fatal("generated code write was not drained before target dispatch")
+	}
+}
+
+func TestIE32JIT_GeneratedFirstIndirectStoreRetainsUnrelatedCache(t *testing.T) {
+	if !ie32JITRuntimeAvailable() || ie32JITBackend != "native" {
+		t.Skip("native IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	target := uint32(PROG_START + 8*INSTRUCTION_SIZE)
+	putIE32Instruction(cpu.memory, target, LDA, 0, ADDR_IMMEDIATE, 1)
+	cpu.memory[target+INSTRUCTION_SIZE] = HALT
+	cpu.PC = target
+	cpu.Execute()
+	if _, ok := cpu.jit.nativeCache[target]; !ok {
+		t.Fatal("failed to establish unrelated cached block")
+	}
+
+	cpu.A = 0xBEEF
+	cpu.X = 0x8800
+	putIE32Instruction(cpu.memory, PROG_START, STORE, REG_A, ADDR_REG_IND, REG_X)
+	cpu.memory[PROG_START+INSTRUCTION_SIZE] = HALT
+	cpu.PC = PROG_START
+	cpu.running.Store(true)
+	cpu.Execute()
+	if got := cpu.Read32(0x8800); got != 0xBEEF {
+		t.Fatalf("generated indirect store=%#x, want %#x", got, uint32(0xBEEF))
+	}
+	if _, ok := cpu.jit.nativeCache[target]; !ok {
+		t.Fatal("exact generated indirect store evicted unrelated cache entry")
 	}
 }
 

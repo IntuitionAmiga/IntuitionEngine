@@ -402,12 +402,13 @@ test-ie32-jit-parity:
 	@$(MAKE) test-ie32-jit-race
 	@$(MAKE) test-wasm-build
 	@$(MAKE) test-wasm-node WASM_NODE_TEST_REGEX='$(IE32_JIT_TEST_REGEX)'
+	IE_REQUIRE_IE32_WASM_BROWSER=1 GOEXPERIMENT=none $(GO) test -tags headless -count=1 -run '^TestIE32WasmBrowser_PairedPerformanceHarness$$' .
 	@QEMU_AARCH64="$$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)"; \
 	test -n "$$QEMU_AARCH64" || { echo "missing qemu-aarch64 or qemu-aarch64-static" >&2; exit 1; }; \
 	./scripts/require-go-test-inventory.sh "empty IE32 ARM64 JIT inventory" env GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOEXPERIMENT=none $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -list '$(IE32_JIT_TEST_REGEX)' . || exit $$?; \
 	GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOEXPERIMENT=none $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -count=1 -run '$(IE32_JIT_TEST_REGEX)' .
 
-IE32_JIT_RACE_TEST_REGEX := ^TestIE32JIT_(BusWritePublishesInvalidationGeneration|BusWriteIsDrainedAtNextExecutionBoundary|ExternalWriteDropsPureBlockCache|CPUWriteDropsPureBlockCache|NonOverlappingWriteRetainsPureBlockCache|StaticRegionTracksDiscontiguousSources|DynamicWriteInvalidatesEveryRetainedBlock|GeneratedStoreDrainsBeforeChainedTarget|SelfOverwritingGeneratedStorePublishesInvalidation|SourceStampRejectsUnpublishedCodeWrite|ProgramLoadInvalidatesOtherCPUCache)$$
+IE32_JIT_RACE_TEST_REGEX := ^TestIE32JIT_(BusWritePublishesInvalidationGeneration|BusWriteIsDrainedAtNextExecutionBoundary|ExternalWriteDropsPureBlockCache|CPUWriteDropsPureBlockCache|NonOverlappingWriteRetainsPureBlockCache|StaticRegionTracksDiscontiguousSources|DynamicWriteInvalidatesEveryRetainedBlock|SourceWriteClearsTransientFragmentFallback|GeneratedStoreDrainsBeforeChainedTarget|SelfOverwritingGeneratedStorePublishesInvalidation|SourceStampRejectsUnpublishedCodeWrite|ProgramLoadInvalidatesOtherCPUCache)$$
 test-ie32-jit-race:
 	@./scripts/require-go-test-inventory.sh "empty IE32 JIT race inventory" env GOTOOLCHAIN=go1.26.4 $(GO) test -tags headless -list '$(IE32_JIT_RACE_TEST_REGEX)' .
 	GOTOOLCHAIN=go1.26.4 $(GO) test -race -tags headless -count=1 -run '$(IE32_JIT_RACE_TEST_REGEX)' .
@@ -561,25 +562,26 @@ z80-bench-compare:
 		BENCH_TAGS='headless' \
 		BENCH_PKG='.'
 
-# IE32 uses matched interpreter/JIT workload names. Three samples are retained
-# for each side so benchstat reports a median-quality comparison on Linux x64.
+# IE32 uses matched interpreter/JIT workload names, including the shipped
+# Voodoo Mega Demo. Three samples are retained for each side so benchstat
+# reports a median-quality comparison on Linux x64.
 ie32-bench-baseline:
 	@$(MAKE) bench-baseline \
-		BENCH_REGEX='BenchmarkIE32_(ALU|Memory|Mixed|Call)_(Interpreter|JIT)' \
+		BENCH_REGEX='BenchmarkIE32_(ALU|Memory|Mixed|Call|VoodooMegaDemo)_(Interpreter|JIT)' \
 		BENCH_TAGS='headless' \
 		BENCH_PKG='.' \
 		BENCH_COUNT=3
 
 ie32-bench-after:
 	@$(MAKE) bench-after \
-		BENCH_REGEX='BenchmarkIE32_(ALU|Memory|Mixed|Call)_(Interpreter|JIT)' \
+		BENCH_REGEX='BenchmarkIE32_(ALU|Memory|Mixed|Call|VoodooMegaDemo)_(Interpreter|JIT)' \
 		BENCH_TAGS='headless' \
 		BENCH_PKG='.' \
 		BENCH_COUNT=3
 
 ie32-bench-compare:
 	@$(MAKE) bench-compare \
-		BENCH_REGEX='BenchmarkIE32_(ALU|Memory|Mixed|Call)_(Interpreter|JIT)' \
+		BENCH_REGEX='BenchmarkIE32_(ALU|Memory|Mixed|Call|VoodooMegaDemo)_(Interpreter|JIT)' \
 		BENCH_TAGS='headless' \
 		BENCH_PKG='.'
 

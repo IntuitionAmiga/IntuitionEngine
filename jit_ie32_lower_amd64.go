@@ -20,9 +20,19 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 		cpu.jit.residentSpillsSaved.Add(cached.residentSpillsSaved)
 		return cached.retired
 	}
-	if !cpu.timerEnabled.Load() && cpu.jit.testStopAfter == 0 && cpu.jit.nativeCache != nil {
-		if cached, ok := cpu.jit.nativeCache[cpu.PC]; ok {
-			if cached.stamp == ie32CachedSourceStamp(cpu.memory, cached) {
+	if !cpu.timerEnabled.Load() && !cpu.jit.testExactRetirement && cpu.jit.nativeCache != nil {
+		cached, ok := cpu.takeIE32DispatchCacheHint(cpu.PC)
+		if !ok {
+			cached, ok = cpu.jit.nativeCache[cpu.PC]
+		}
+		if ok {
+			if !ie32CachedSourceMatches(cpu.memory, cached) {
+				cpu.dropIE32NativeCodeCache()
+				cpu.jit.deoptimizations.Add(1)
+				cpu.jit.sourceStampDeopts.Add(1)
+				return 0
+			}
+			if !cached.stackPointerGuard || cpu.SP == cached.stackPointer {
 				callNative(cached.addr, uintptr(unsafe.Pointer(cpu)))
 				cpu.jit.nativeEntries.Add(1)
 				cpu.jit.instructions.Add(cached.retired)
@@ -31,12 +41,15 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				cpu.jit.residentSpillsSaved.Add(cached.residentSpillsSaved)
 				return cached.retired
 			}
-			cpu.dropIE32NativeCodeCache()
-			cpu.jit.deoptimizations.Add(1)
-			cpu.jit.sourceStampDeopts.Add(1)
-			return 0
 		}
 	}
+	if cpu.ie32JITShouldUseInterpreterForTransientFragment(cpu.PC) {
+		return 0
+	}
+	if first, ok := decodeIE32Instruction(cpu.memory, cpu.PC); !ok || ie32FirstInstructionNeedsHelper(cpu, first) {
+		return 0
+	}
+	entryStackPointer := cpu.SP
 	limit := 0
 	if cpu.jit.testStopAfter > cpu.jit.testRetired {
 		limit = int(cpu.jit.testStopAfter - cpu.jit.testRetired)
@@ -44,7 +57,9 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 	if cpu.timerEnabled.Load() && (limit == 0 || limit > 1) {
 		limit = 1
 	}
-	regionTier := cpu.ie32JITShouldCompileRegion(cpu.PC)
+	// Exact checkpoints compare a precise architectural boundary. Keep their
+	// lowering compact so hot-region formation cannot cross that boundary.
+	regionTier := !cpu.jit.testExactRetirement && cpu.ie32JITShouldCompileRegion(cpu.PC)
 	block := scanIE32FusedBlock(cpu.memory, cpu.PC, limit)
 	if regionTier && !ie32BlockHasLeafFusion(block) {
 		block = scanIE32Region(cpu.memory, cpu.PC, limit)
@@ -53,6 +68,7 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 	block = ie32AnnotateKnownBranches(block)
 	block = ie32AnnotateResidentImmediateALU(block)
 	block = ie32SpecialiseKnownConstantRegisterAddresses(block)
+	block = ie32AnnotateRangeProvenRegisterIndirect(cpu, block)
 	if cpu.jit.testStopAfter == 0 {
 		if plan := ie32AnalyseCountedLoop(block); plan != nil {
 			if retired := cpu.ie32JITTryRunCountedLoop(block, plan); retired != 0 {
@@ -70,11 +86,6 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 			retired++
 			continue
 		}
-		specialised, ok := ie32SpecialiseFirstIndirect(cpu, in, retired == 0)
-		if !ok {
-			goto done
-		}
-		in = specialised
 		kind, ok := ie32FormLowering[ie32OpcodeForm{Opcode: in.Opcode, AddrMode: in.AddrMode}]
 		if !ok || kind != ie32LoweringDirect {
 			goto done
@@ -89,6 +100,10 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				src, _ := ie32AMD64RegisterOffset(in.operandRegisterIndex())
 				emitIE32AMD64LoadEAX(&code, src)
 				emitIE32AMD64StoreEAX(&code, uint32(unsafe.Offsetof(CPU{}.A)))
+			} else if in.rangeProvenRegisterIndirect {
+				base, _ := ie32AMD64RegisterOffset(in.rangeBaseRegister)
+				emitIE32AMD64LoadEAXFromDynamicRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), base, in.rangeAddressOffset)
+				emitIE32AMD64StoreEAX(&code, uint32(unsafe.Offsetof(CPU{}.A)))
 			} else if in.AddrMode == ADDR_REG_IND && retired == 0 {
 				addr, ok := ie32StaticRegisterIndirectAddress(cpu, in)
 				if !ok {
@@ -96,7 +111,7 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				}
 				emitIE32AMD64LoadEAXFromRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), addr)
 				emitIE32AMD64StoreEAX(&code, uint32(unsafe.Offsetof(CPU{}.A)))
-			} else if (in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND) && ie32CanDirectRAMRead(cpu, in.Operand) {
+			} else if in.AddrMode == ADDR_DIRECT && ie32CanDirectRAMRead(cpu, in.Operand) {
 				emitIE32AMD64LoadEAXFromRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), in.Operand)
 				emitIE32AMD64StoreEAX(&code, uint32(unsafe.Offsetof(CPU{}.A)))
 			} else {
@@ -113,6 +128,10 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				src, _ := ie32AMD64RegisterOffset(in.operandRegisterIndex())
 				emitIE32AMD64LoadEAX(&code, src)
 				emitIE32AMD64StoreEAX(&code, off)
+			} else if in.rangeProvenRegisterIndirect {
+				base, _ := ie32AMD64RegisterOffset(in.rangeBaseRegister)
+				emitIE32AMD64LoadEAXFromDynamicRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), base, in.rangeAddressOffset)
+				emitIE32AMD64StoreEAX(&code, off)
 			} else if in.AddrMode == ADDR_REG_IND && retired == 0 {
 				addr, ok := ie32StaticRegisterIndirectAddress(cpu, in)
 				if !ok {
@@ -120,7 +139,7 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				}
 				emitIE32AMD64LoadEAXFromRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), addr)
 				emitIE32AMD64StoreEAX(&code, off)
-			} else if (in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND) && ie32CanDirectRAMRead(cpu, in.Operand) {
+			} else if in.AddrMode == ADDR_DIRECT && ie32CanDirectRAMRead(cpu, in.Operand) {
 				emitIE32AMD64LoadEAXFromRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), in.Operand)
 				emitIE32AMD64StoreEAX(&code, off)
 			} else {
@@ -161,6 +180,10 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				src, _ := ie32AMD64RegisterOffset(in.operandRegisterIndex())
 				emitIE32AMD64LoadEAX(&code, src)
 				emitIE32AMD64StoreEAX(&code, off)
+			} else if in.rangeProvenRegisterIndirect {
+				base, _ := ie32AMD64RegisterOffset(in.rangeBaseRegister)
+				emitIE32AMD64LoadEAXFromDynamicRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), base, in.rangeAddressOffset)
+				emitIE32AMD64StoreEAX(&code, off)
 			} else if in.AddrMode == ADDR_REG_IND && retired == 0 {
 				addr, ok := ie32StaticRegisterIndirectAddress(cpu, in)
 				if !ok {
@@ -168,7 +191,7 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				}
 				emitIE32AMD64LoadEAXFromRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), addr)
 				emitIE32AMD64StoreEAX(&code, off)
-			} else if (in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND) && ie32CanDirectRAMRead(cpu, in.Operand) {
+			} else if in.AddrMode == ADDR_DIRECT && ie32CanDirectRAMRead(cpu, in.Operand) {
 				emitIE32AMD64LoadEAXFromRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), in.Operand)
 				emitIE32AMD64StoreEAX(&code, off)
 			} else {
@@ -211,6 +234,11 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				code = append(code, 0x8B, 0x97, byte(src), byte(src>>8), byte(src>>16), byte(src>>24))
 				ops := map[byte][]byte{ADD: {0x01, 0xD0}, SUB: {0x29, 0xD0}, AND: {0x21, 0xD0}, OR: {0x09, 0xD0}, XOR: {0x31, 0xD0}, MUL: {0x0F, 0xAF, 0xC2}}
 				code = append(code, ops[in.Opcode]...)
+			} else if in.rangeProvenRegisterIndirect {
+				base, _ := ie32AMD64RegisterOffset(in.rangeBaseRegister)
+				emitIE32AMD64LoadEDXFromDynamicRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), base, in.rangeAddressOffset)
+				ops := map[byte][]byte{ADD: {0x01, 0xD0}, SUB: {0x29, 0xD0}, AND: {0x21, 0xD0}, OR: {0x09, 0xD0}, XOR: {0x31, 0xD0}, MUL: {0x0F, 0xAF, 0xC2}}
+				code = append(code, ops[in.Opcode]...)
 			} else if in.AddrMode == ADDR_REG_IND && retired == 0 {
 				addr, ok := ie32StaticRegisterIndirectAddress(cpu, in)
 				if !ok {
@@ -219,7 +247,7 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				emitIE32AMD64LoadEDXFromRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), addr)
 				ops := map[byte][]byte{ADD: {0x01, 0xD0}, SUB: {0x29, 0xD0}, AND: {0x21, 0xD0}, OR: {0x09, 0xD0}, XOR: {0x31, 0xD0}, MUL: {0x0F, 0xAF, 0xC2}}
 				code = append(code, ops[in.Opcode]...)
-			} else if (in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND) && ie32CanDirectRAMRead(cpu, in.Operand) {
+			} else if in.AddrMode == ADDR_DIRECT && ie32CanDirectRAMRead(cpu, in.Operand) {
 				emitIE32AMD64LoadEDXFromRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), in.Operand)
 				ops := map[byte][]byte{ADD: {0x01, 0xD0}, SUB: {0x29, 0xD0}, AND: {0x21, 0xD0}, OR: {0x09, 0xD0}, XOR: {0x31, 0xD0}, MUL: {0x0F, 0xAF, 0xC2}}
 				code = append(code, ops[in.Opcode]...)
@@ -289,7 +317,7 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 					code = append(code, 0xFF, 0x8F)
 				}
 				code = append(code, byte(off), byte(off>>8), byte(off>>16), byte(off>>24))
-			} else if (in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND) && ie32CanDirectRAMRead(cpu, in.Operand) && ie32CanDirectRAMWrite(cpu, in.Operand) && !ie32WriteMutatesRemainingBlock(in, block) {
+			} else if in.AddrMode == ADDR_DIRECT && ie32CanDirectRAMRead(cpu, in.Operand) && ie32CanDirectRAMWrite(cpu, in.Operand) && !ie32WriteMutatesRemainingBlock(in, block) {
 				emitIE32AMD64LoadEAXFromRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), in.Operand)
 				emitIE32AMD64ALUImm32(&code, map[bool]byte{true: ADD, false: SUB}[in.Opcode == INC], 1)
 				emitIE32AMD64StoreEAXToRAM(&code, uint32(unsafe.Offsetof(CPU{}.memBase)), in.Operand)
@@ -434,7 +462,7 @@ done:
 		return 0
 	}
 	if !terminated {
-		emitIE32AMD64StoreImm32(&code, uint32(unsafe.Offsetof(CPU{}.PC)), ie32BlockNextPC(block, retired))
+		emitIE32AMD64StoreImm32(&code, uint32(unsafe.Offsetof(CPU{}.PC)), ie32BlockResumePC(block, retired))
 	}
 	code = append(code, 0xC3)
 	addr, ok := cpu.writeIE32NativeCode(code)
@@ -451,21 +479,30 @@ done:
 	cpu.jit.instructions.Add(uint64(retired))
 	cpu.jit.directInstructions.Add(uint64(retired))
 	cpu.jit.residentSpillsSaved.Add(residentSpillsSaved)
-	if !cpu.timerEnabled.Load() && cpu.jit.testStopAfter == 0 && ie32CacheableNativeBlock(block, retired) && (!ie32BlockEndsInJMP(block, retired) || ie32BlockIsRegion(block, retired)) {
-		if cpu.jit.nativeCache == nil {
-			cpu.jit.nativeCache = make(map[uint32]ie32NativeCachedBlock)
-		}
-		cpu.jit.nativeCache[block[0].PC] = ie32NativeCachedBlock{
+	cacheable := ie32CacheableNativeBlock(block, retired)
+	if !cpu.timerEnabled.Load() && !cpu.jit.testExactRetirement && cacheable && (!ie32BlockEndsInJMP(block, retired) || ie32BlockIsRegion(block, retired) || ie32BlockEndsInBackwardJMP(block, retired)) {
+		cached := ie32NativeCachedBlock{
 			pc:                  block[0].PC,
 			addr:                addr,
 			retired:             uint64(retired),
 			residentSpillsSaved: residentSpillsSaved,
-			stamp:               ie32DecodedBlockSourceStamp(cpu.memory, block, retired),
+			stackPointer:        entryStackPointer,
+			stackPointerGuard:   ie32BlockUsesFixedStackCursor(block, retired),
 			sourceStart:         uint64(block[0].PC),
-			sourceEnd:           uint64(ie32BlockNextPC(block, retired)),
+			sourceEnd:           uint64(ie32BlockResumePC(block, retired)),
 			sourceRanges:        ie32DecodedBlockSourceRanges(block, retired),
+			writeRanges:         ie32CachedBlockWriteRanges(block, retired),
+			returns:             ie32DecodedBlockReturns(block, uint64(retired)),
 		}
-		cpu.rememberIE32ReturnCache(cpu.jit.nativeCache[block[0].PC])
+		cached.sourceSnapshot = ie32SourceSnapshot(cpu.memory, cached.sourceRanges)
+		if cpu.jit.nativeCache == nil {
+			cpu.jit.nativeCache = make(map[uint32]ie32NativeCachedBlock)
+		}
+		cpu.jit.nativeCache[block[0].PC] = cached
+		cpu.noteIE32NativeCacheSource(cached)
+		cpu.rememberIE32ReturnCache(cached)
+	} else if !cacheable {
+		cpu.noteIE32TransientFragment(block[0].PC)
 	}
 	return uint64(retired)
 }
@@ -603,6 +640,20 @@ func emitIE32AMD64LoadEAXFromRAM(code *[]byte, memBaseOffset, addr uint32) {
 func emitIE32AMD64LoadEDXFromRAM(code *[]byte, memBaseOffset, addr uint32) {
 	*code = append(*code, 0x48, 0x8B, 0x8F, byte(memBaseOffset), byte(memBaseOffset>>8), byte(memBaseOffset>>16), byte(memBaseOffset>>24))
 	*code = append(*code, 0x8B, 0x91, byte(addr), byte(addr>>8), byte(addr>>16), byte(addr>>24))
+}
+
+func emitIE32AMD64LoadEAXFromDynamicRAM(code *[]byte, memBaseOffset, registerOffset, offset uint32) {
+	// mov rcx,[rdi+memBase]; mov edx,[rdi+register]; mov eax,[rcx+rdx+offset]
+	*code = append(*code, 0x48, 0x8B, 0x8F, byte(memBaseOffset), byte(memBaseOffset>>8), byte(memBaseOffset>>16), byte(memBaseOffset>>24))
+	*code = append(*code, 0x8B, 0x97, byte(registerOffset), byte(registerOffset>>8), byte(registerOffset>>16), byte(registerOffset>>24))
+	*code = append(*code, 0x8B, 0x84, 0x11, byte(offset), byte(offset>>8), byte(offset>>16), byte(offset>>24))
+}
+
+func emitIE32AMD64LoadEDXFromDynamicRAM(code *[]byte, memBaseOffset, registerOffset, offset uint32) {
+	// mov rcx,[rdi+memBase]; mov edx,[rdi+register]; mov edx,[rcx+rdx+offset]
+	*code = append(*code, 0x48, 0x8B, 0x8F, byte(memBaseOffset), byte(memBaseOffset>>8), byte(memBaseOffset>>16), byte(memBaseOffset>>24))
+	*code = append(*code, 0x8B, 0x97, byte(registerOffset), byte(registerOffset>>8), byte(registerOffset>>16), byte(registerOffset>>24))
+	*code = append(*code, 0x8B, 0x94, 0x11, byte(offset), byte(offset>>8), byte(offset>>16), byte(offset>>24))
 }
 
 func emitIE32AMD64LoadECXFromRAM(code *[]byte, memBaseOffset, addr uint32) {

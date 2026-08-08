@@ -200,6 +200,12 @@ func TestIE32JITManifestCoversEveryKnownOpcode(t *testing.T) {
 		if _, ok := ie32OpcodeManifest[opcode]; !ok {
 			t.Fatalf("missing opcode %#02x", opcode)
 		}
+		if !ie32KnownOpcode[opcode] {
+			t.Fatalf("scanner mirror missing opcode %#02x", opcode)
+		}
+	}
+	if ie32KnownOpcode[0x00] {
+		t.Fatal("scanner mirror admitted unknown opcode 0x00")
 	}
 }
 
@@ -221,8 +227,10 @@ func TestIE32JITFormLedgerClassifiesEveryOpcodeAndAddressingByte(t *testing.T) {
 	if got := ie32FormLowering[ie32OpcodeForm{STORE, ADDR_IMMEDIATE}]; got != ie32LoweringDirect {
 		t.Fatalf("immediate store = %d, want direct", got)
 	}
-	if got := ie32FormLowering[ie32OpcodeForm{ADD, ADDR_MEM_IND}]; got != ie32LoweringDirect {
-		t.Fatalf("guarded memory-indirect arithmetic = %d, want direct", got)
+	for _, opcode := range []byte{LOAD, LDA, LDX, LDY, LDZ, LDB, LDC, LDD, LDE, LDF, LDG, LDH, LDS, LDT, LDU, LDV, LDW, ADD, SUB, MUL, AND, OR, XOR} {
+		if got := ie32FormLowering[ie32OpcodeForm{opcode, ADDR_MEM_IND}]; got != ie32LoweringHelper {
+			t.Fatalf("memory-indirect %s = %d, want helper", ie32OpcodeName(opcode), got)
+		}
 	}
 }
 
@@ -490,6 +498,65 @@ func TestIE32JITDirectRAMWriteAdmissionRejectsVRAM(t *testing.T) {
 	}
 }
 
+func TestIE32JITRangeProofAnnotatesBoundedRegisterIndirectRead(t *testing.T) {
+	cpu := NewCPU(NewMachineBus())
+	block := []ie32DecodedInstruction{
+		{PC: PROG_START, Opcode: AND, Reg: REG_A, AddrMode: ADDR_IMMEDIATE, Operand: 0xFF},
+		{PC: PROG_START + INSTRUCTION_SIZE, Opcode: MUL, Reg: REG_A, AddrMode: ADDR_IMMEDIATE, Operand: 4},
+		{PC: PROG_START + 2*INSTRUCTION_SIZE, Opcode: LDX, AddrMode: ADDR_IMMEDIATE, Operand: 0x400},
+		{PC: PROG_START + 3*INSTRUCTION_SIZE, Opcode: ADD, Reg: REG_X, AddrMode: ADDR_REGISTER, Operand: REG_A},
+		{PC: PROG_START + 4*INSTRUCTION_SIZE, Opcode: LDA, AddrMode: ADDR_REG_IND, Operand: REG_X},
+	}
+	got := ie32AnnotateRangeProvenRegisterIndirect(cpu, block)
+	last := got[len(got)-1]
+	if !last.rangeProvenRegisterIndirect || last.rangeBaseRegister != REG_X || last.rangeAddressOffset != 0 {
+		t.Fatalf("range proof annotation = %#v", last)
+	}
+}
+
+func TestIE32JITRangeProofRejectsUnalignedAndOutOfRangeRegisterIndirectReads(t *testing.T) {
+	cpu := NewCPU(NewMachineBus())
+	for _, tc := range []struct {
+		name  string
+		block []ie32DecodedInstruction
+	}{
+		{
+			name: "unaligned scaled index",
+			block: []ie32DecodedInstruction{
+				{PC: PROG_START, Opcode: AND, Reg: REG_A, AddrMode: ADDR_IMMEDIATE, Operand: 0xFF},
+				{PC: PROG_START + INSTRUCTION_SIZE, Opcode: MUL, Reg: REG_A, AddrMode: ADDR_IMMEDIATE, Operand: 2},
+				{PC: PROG_START + 2*INSTRUCTION_SIZE, Opcode: LDX, AddrMode: ADDR_IMMEDIATE, Operand: 0x400},
+				{PC: PROG_START + 3*INSTRUCTION_SIZE, Opcode: ADD, Reg: REG_X, AddrMode: ADDR_REGISTER, Operand: REG_A},
+				{PC: PROG_START + 4*INSTRUCTION_SIZE, Opcode: LDA, AddrMode: ADDR_REG_IND, Operand: REG_X},
+			},
+		},
+		{
+			name: "MMIO table range",
+			block: []ie32DecodedInstruction{
+				{PC: PROG_START, Opcode: LDX, AddrMode: ADDR_IMMEDIATE, Operand: IO_REGION_START},
+				{PC: PROG_START + INSTRUCTION_SIZE, Opcode: LDA, AddrMode: ADDR_REG_IND, Operand: REG_X},
+			},
+		},
+		{
+			name: "range crossing into MMIO",
+			block: []ie32DecodedInstruction{
+				{PC: PROG_START, Opcode: AND, Reg: REG_A, AddrMode: ADDR_IMMEDIATE, Operand: 3},
+				{PC: PROG_START + INSTRUCTION_SIZE, Opcode: MUL, Reg: REG_A, AddrMode: ADDR_IMMEDIATE, Operand: 4},
+				{PC: PROG_START + 2*INSTRUCTION_SIZE, Opcode: LDX, AddrMode: ADDR_IMMEDIATE, Operand: IO_REGION_START - 12},
+				{PC: PROG_START + 3*INSTRUCTION_SIZE, Opcode: ADD, Reg: REG_X, AddrMode: ADDR_REGISTER, Operand: REG_A},
+				{PC: PROG_START + 4*INSTRUCTION_SIZE, Opcode: LDA, AddrMode: ADDR_REG_IND, Operand: REG_X},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ie32AnnotateRangeProvenRegisterIndirect(cpu, tc.block)
+			if got[len(got)-1].rangeProvenRegisterIndirect {
+				t.Fatal("unsafe register-indirect read received a retained native range proof")
+			}
+		})
+	}
+}
+
 func TestIE32JITDirectStoreStopsBeforeItMutatesRemainingBlock(t *testing.T) {
 	block := []ie32DecodedInstruction{
 		{PC: PROG_START, Opcode: STORE, AddrMode: ADDR_DIRECT, Operand: PROG_START + INSTRUCTION_SIZE},
@@ -521,5 +588,40 @@ func TestIE32JITElidesOnlyUnobservedImmediateLoads(t *testing.T) {
 	block[1] = ie32DecodedInstruction{Opcode: LOAD, Reg: REG_A, AddrMode: ADDR_REG_IND, Operand: REG_A}
 	if ie32ElideDeadImmediateLoad(block, 0) {
 		t.Fatal("load whose address is the overwritten register was elided")
+	}
+}
+
+func TestIE32JITNamedRegisterOpcodeMappings(t *testing.T) {
+	loads := []byte{LDA, LDX, LDY, LDZ, LDB, LDC, LDD, LDE, LDF, LDG, LDH, LDS, LDT, LDU, LDV, LDW}
+	stores := []byte{STA, STX, STY, STZ, STB, STC, STD, STE, STF, STG, STH, STS, STT, STU, STV, STW}
+	for reg := range loads {
+		if got, ok := ie32ImmediateLoadDestination(ie32DecodedInstruction{Opcode: loads[reg]}); !ok || got != byte(reg) {
+			t.Fatalf("load opcode %#x maps to %d/%t, want %d/true", loads[reg], got, ok, reg)
+		}
+		if got, ok := ie32NamedStoreRegister(stores[reg]); !ok || got != reg {
+			t.Fatalf("store opcode %#x maps to %d/%t, want %d/true", stores[reg], got, ok, reg)
+		}
+	}
+	if _, ok := ie32ImmediateLoadDestination(ie32DecodedInstruction{Opcode: NOP}); ok {
+		t.Fatal("NOP was accepted as a named load")
+	}
+	if _, ok := ie32NamedStoreRegister(NOP); ok {
+		t.Fatal("NOP was accepted as a named store")
+	}
+}
+
+func TestIE32JITFirstInstructionMMIOHelperAdmission(t *testing.T) {
+	cpu := NewCPU(NewMachineBus())
+	if !ie32FirstInstructionNeedsHelper(cpu, ie32DecodedInstruction{Opcode: STA, AddrMode: ADDR_DIRECT, Operand: VOODOO_TRIANGLE_CMD}) {
+		t.Fatal("direct Voodoo store was admitted to frontend lowering")
+	}
+	if !ie32FirstInstructionNeedsHelper(cpu, ie32DecodedInstruction{Opcode: LDA, AddrMode: ADDR_DIRECT, Operand: VIDEO_STATUS}) {
+		t.Fatal("direct MMIO load was admitted to frontend lowering")
+	}
+	if ie32FirstInstructionNeedsHelper(cpu, ie32DecodedInstruction{Opcode: STA, AddrMode: ADDR_DIRECT, Operand: 0x8800}) {
+		t.Fatal("ordinary RAM store was incorrectly routed to the helper")
+	}
+	if ie32FirstInstructionNeedsHelper(cpu, ie32DecodedInstruction{Opcode: JMP, AddrMode: ADDR_DIRECT, Operand: VOODOO_TRIANGLE_CMD}) {
+		t.Fatal("control-flow target was incorrectly treated as a memory operand")
 	}
 }

@@ -52,6 +52,17 @@ var ie32OpcodeManifest = func() map[byte]ie32OpcodeManifestEntry {
 	return m
 }()
 
+// ie32KnownOpcode is the scanner's allocation-free mirror of the manifest.
+// The manifest remains the authoritative provenance table; the fixed lookup
+// merely avoids hashing every opcode while forming hot blocks.
+var ie32KnownOpcode = func() [256]bool {
+	var known [256]bool
+	for opcode := range ie32OpcodeManifest {
+		known[opcode] = true
+	}
+	return known
+}()
+
 var ie32FormLowering = func() map[ie32OpcodeForm]ie32LoweringKind {
 	forms := make(map[ie32OpcodeForm]ie32LoweringKind, len(ie32OpcodeManifest)*256)
 	for opcode, entry := range ie32OpcodeManifest {
@@ -71,7 +82,7 @@ var ie32FormLowering = func() map[ie32OpcodeForm]ie32LoweringKind {
 
 	loads := []byte{LOAD, LDA, LDX, LDY, LDZ, LDB, LDC, LDD, LDE, LDF, LDG, LDH, LDS, LDT, LDU, LDV, LDW}
 	for _, opcode := range loads {
-		setIE32FormLowering(forms, opcode, ie32LoweringDirect, ADDR_IMMEDIATE, ADDR_REGISTER, ADDR_REG_IND, ADDR_MEM_IND, ADDR_DIRECT)
+		setIE32FormLowering(forms, opcode, ie32LoweringDirect, ADDR_IMMEDIATE, ADDR_REGISTER, ADDR_REG_IND, ADDR_DIRECT)
 	}
 
 	stores := []byte{STORE, STA, STX, STY, STZ, STB, STC, STD, STE, STF, STG, STH, STS, STT, STU, STV, STW}
@@ -80,7 +91,7 @@ var ie32FormLowering = func() map[ie32OpcodeForm]ie32LoweringKind {
 	}
 
 	for _, opcode := range []byte{ADD, SUB, MUL, AND, OR, XOR} {
-		setIE32FormLowering(forms, opcode, ie32LoweringDirect, ADDR_IMMEDIATE, ADDR_REGISTER, ADDR_REG_IND, ADDR_MEM_IND, ADDR_DIRECT)
+		setIE32FormLowering(forms, opcode, ie32LoweringDirect, ADDR_IMMEDIATE, ADDR_REGISTER, ADDR_REG_IND, ADDR_DIRECT)
 	}
 	for _, opcode := range []byte{SHL, SHR} {
 		setIE32FormLowering(forms, opcode, ie32LoweringDirect, ADDR_IMMEDIATE, ADDR_REGISTER)

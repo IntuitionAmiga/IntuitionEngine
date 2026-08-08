@@ -17,10 +17,26 @@ import (
 // binary and runs its paired CPU benchmark in Chromium.  The page publishes
 // PASS only after the Go test has timed both Execute modes in the browser.
 func TestIE32WasmBrowser_PairedPerformanceHarness(t *testing.T) {
+	required := os.Getenv("IE_REQUIRE_IE32_WASM_BROWSER") == "1"
 	if runtime.GOARCH != "amd64" {
+		if required {
+			t.Fatal("the required IE32 browser performance harness needs an amd64 host")
+		}
 		t.Skip("Chromium performance evidence is collected on the x64 host")
 	}
-	chrome := findChromeForWasmTest(t)
+	var chrome string
+	for _, name := range []string{"google-chrome", "chromium", "chromium-browser"} {
+		if path, err := exec.LookPath(name); err == nil {
+			chrome = path
+			break
+		}
+	}
+	if chrome == "" {
+		if required {
+			t.Fatal("the required IE32 browser performance harness needs Chrome or Chromium in PATH")
+		}
+		t.Skip("no Chrome/Chromium binary found in PATH")
+	}
 	dir := t.TempDir()
 	wasmPath := filepath.Join(dir, "ie32_browser_perf.test.wasm")
 	cmd := exec.Command("go", "test", "-c", "-o", wasmPath, "-tags", "novulkan headless", ".")
@@ -60,6 +76,9 @@ WebAssembly.instantiateStreaming(fetch("/ie32_browser_perf.test.wasm"), go.impor
 	).CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(out), "setsockopt: Operation not permitted") || strings.Contains(string(out), "trace/breakpoint trap") {
+			if required {
+				t.Fatalf("required browser execution blocked by host sandbox: %s", strings.TrimSpace(string(out)))
+			}
 			t.Skipf("Chrome blocked by host sandbox: %s", strings.TrimSpace(string(out)))
 		}
 		t.Fatalf("Chrome paired IE32 performance harness failed: %v\n%s", err, out)

@@ -15,32 +15,41 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 	// addresses, so an RTS cannot safely retain a direct return target.
 	cpu.jit.returnCachePending = false
 	cpuAddress := uintptr(unsafe.Pointer(cpu))
-	if !cpu.timerEnabled.Load() && cpu.jit.testStopAfter == 0 {
+	if !cpu.timerEnabled.Load() && !cpu.jit.testExactRetirement {
 		if cached, found := ie32WasmCachedEntry(cpu); found {
-			if cached.cached.stamp != ie32CachedSourceStamp(cpu.memory, cached.cached) {
+			if !ie32CachedSourceMatches(cpu.memory, cached.cached) {
 				ie32DropWasmCachedEntry(cpu, cpu.PC)
 				cpu.jit.deoptimizations.Add(1)
 				cpu.jit.sourceStampDeopts.Add(1)
 				return 0
 			}
-			retired := cached.cached.retired
-			if cached.countedPlan != nil {
-				if !cached.countedStatic || cached.countedCount == 0 || cached.countedCount > 4096 {
-					return 0
+			if !cached.cached.stackPointerGuard || cpu.SP == cached.cached.stackPointer {
+				retired := cached.cached.retired
+				if cached.countedPlan != nil {
+					if !cached.countedStatic || cached.countedCount == 0 || cached.countedCount > 4096 {
+						return 0
+					}
+					retired = uint64(cached.countedPlan.head) + uint64(cached.countedCount)*cached.countedPlan.bodyRetired
 				}
-				retired = uint64(cached.countedPlan.head) + uint64(cached.countedCount)*cached.countedPlan.bodyRetired
+				cached.fn.Invoke(int(uint32(cpuAddress)))
+				cpu.jit.nativeEntries.Add(1)
+				cpu.jit.instructions.Add(retired)
+				cpu.jit.directInstructions.Add(retired)
+				cpu.jit.cacheHits.Add(1)
+				if cached.countedPlan != nil {
+					cpu.jit.countedLoops.Add(1)
+				}
+				return retired
 			}
-			cached.fn.Invoke(int(uint32(cpuAddress)))
-			cpu.jit.nativeEntries.Add(1)
-			cpu.jit.instructions.Add(retired)
-			cpu.jit.directInstructions.Add(retired)
-			cpu.jit.cacheHits.Add(1)
-			if cached.countedPlan != nil {
-				cpu.jit.countedLoops.Add(1)
-			}
-			return retired
 		}
 	}
+	if cpu.ie32JITShouldUseInterpreterForTransientFragment(cpu.PC) {
+		return 0
+	}
+	if first, ok := decodeIE32Instruction(cpu.memory, cpu.PC); !ok || ie32FirstInstructionNeedsHelper(cpu, first) {
+		return 0
+	}
+	entryStackPointer := cpu.SP
 	limit := 0
 	if cpu.jit.testStopAfter > cpu.jit.testRetired {
 		limit = int(cpu.jit.testStopAfter - cpu.jit.testRetired)
@@ -49,13 +58,16 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 		limit = 1
 	}
 	block := scanIE32FusedBlock(cpu.memory, cpu.PC, limit)
-	if cpu.ie32JITShouldCompileRegion(cpu.PC) && !ie32BlockHasLeafFusion(block) {
+	// Exact checkpoints compare a precise architectural boundary. Keep their
+	// lowering compact so hot-region formation cannot cross that boundary.
+	if !cpu.jit.testExactRetirement && cpu.ie32JITShouldCompileRegion(cpu.PC) && !ie32BlockHasLeafFusion(block) {
 		block = scanIE32Region(cpu.memory, cpu.PC, limit)
 	}
 	block = ie32FoldImmediateALU(block)
 	block = ie32AnnotateKnownBranches(block)
 	block = ie32AnnotateResidentImmediateALU(block)
 	block = ie32SpecialiseKnownConstantRegisterAddresses(block)
+	block = ie32AnnotateRangeProvenRegisterIndirect(cpu, block)
 	if cpu.jit.testStopAfter == 0 {
 		if plan := ie32AnalyseCountedLoop(block); plan != nil {
 			if count, ok := ie32CountedLoopInitialCount(cpu, block, plan); ok && count > 0 && count <= 4096 && ie32CountedLoopDirectMemoryAdmissible(cpu, block, plan) {
@@ -73,14 +85,8 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 		lowered := append([]ie32DecodedInstruction(nil), block...)
 		admitted := true
 		for i, in := range lowered {
-			specialised, ok := ie32SpecialiseFirstIndirect(cpu, in, i == 0)
-			if !ok {
-				admitted = false
-				break
-			}
-			in = specialised
 			lowered[i] = in
-			if (isIE32LoadOpcode(in.Opcode) || in.Opcode == STORE || ie32IsNamedStore(in.Opcode)) && in.AddrMode == ADDR_REG_IND {
+			if (isIE32LoadOpcode(in.Opcode) || in.Opcode == STORE || ie32IsNamedStore(in.Opcode)) && in.AddrMode == ADDR_REG_IND && !in.rangeProvenRegisterIndirect {
 				if i != 0 {
 					admitted = false
 					break
@@ -136,7 +142,7 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				lowered[i].Operand = addr
 				in = lowered[i]
 			}
-			if ie32IsDirectALUOpcode(in.Opcode) && in.AddrMode == ADDR_REG_IND {
+			if ie32IsDirectALUOpcode(in.Opcode) && in.AddrMode == ADDR_REG_IND && !in.rangeProvenRegisterIndirect {
 				if i != 0 {
 					admitted = false
 					break
@@ -229,7 +235,15 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 		cpu.jit.instructions.Add(uint64(len(block)))
 		cpu.jit.directInstructions.Add(uint64(len(block)))
 		cpu.jit.residentSpillsSaved.Add(ie32ResidentALUSpillsSaved(block, len(block)))
-		ie32RememberWasmCachedEntry(cpu, lowered, uint64(len(block)), entry, nil)
+		cacheable := ie32CacheableNativeBlock(block, len(block))
+		if cacheable {
+			// Retention uses the original decoded forms. A lowered first indirect
+			// access may contain an address resolved from mutable guest state and
+			// is valid for this entry only.
+			ie32RememberWasmCachedEntry(cpu, block, uint64(len(block)), entry, nil, entryStackPointer)
+		} else {
+			cpu.noteIE32TransientFragment(block[0].PC)
+		}
 		return uint64(len(block))
 	}
 	return 0
@@ -239,6 +253,7 @@ func (cpu *CPU) ie32JITTryRunCountedLoop(block []ie32DecodedInstruction, plan *i
 	if cpu == nil || cpu.jit == nil || plan == nil || count == 0 {
 		return 0
 	}
+	entryStackPointer := cpu.SP
 	retired := uint64(plan.head) + uint64(count)*plan.bodyRetired
 	modBytes, err := compileIE32WasmCountedLoopBlockAtStack(block, plan, cpu.SP)
 	if err != nil {
@@ -272,7 +287,7 @@ func (cpu *CPU) ie32JITTryRunCountedLoop(block []ie32DecodedInstruction, plan *i
 	cpu.jit.instructions.Add(retired)
 	cpu.jit.directInstructions.Add(retired)
 	cpu.jit.countedLoops.Add(1)
-	ie32RememberWasmCachedEntry(cpu, block, retired, entry, plan)
+	ie32RememberWasmCachedEntry(cpu, block, retired, entry, plan, entryStackPointer)
 	return retired
 }
 

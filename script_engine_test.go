@@ -1795,6 +1795,8 @@ func TestScriptEngine_CPUJITStats_IE32(t *testing.T) {
 	cpu.jit.instructions.Store(19)
 	cpu.jit.directInstructions.Store(17)
 	cpu.jit.helperInstructions.Store(2)
+	cpu.jit.helperExits.Store(4)
+	cpu.jit.helperResumes.Store(3)
 	cpu.jit.chains.Store(3)
 	cpu.jit.chainBudgetExits.Store(1)
 	cpu.jit.deoptimizations.Store(2)
@@ -1802,11 +1804,14 @@ func TestScriptEngine_CPUJITStats_IE32(t *testing.T) {
 	cpu.jit.sourceStampDeopts.Store(1)
 	cpu.jit.codeCacheResets.Store(4)
 	cpu.jit.invalidations.Store(4)
+	cpu.jit.invalidatedBlocks.Store(2)
 	cpu.jit.cacheHits.Store(6)
 	cpu.jit.returnCacheHits.Store(2)
 	cpu.jit.mmioPollIterations.Store(3)
+	cpu.jit.mmioStoreHelpers.Store(5)
 	cpu.jit.residentSpillsSaved.Store(9)
 	cpu.jit.countedLoops.Store(6)
+	cpu.jit.profitabilityFallbacks.Store(8)
 	runtimeStatus.setCPUs(runtimeCPUIE32, cpu, nil, nil, nil, nil, nil)
 	t.Cleanup(func() {
 		runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil)
@@ -1822,6 +1827,8 @@ func TestScriptEngine_CPUJITStats_IE32(t *testing.T) {
 		if stats.retired_instructions ~= 19 then error("retired_instructions") end
 		if stats.direct_instructions ~= 17 then error("direct_instructions") end
 		if stats.helper_instructions ~= 2 then error("helper_instructions") end
+		if stats.helper_exits ~= 4 then error("helper_exits") end
+		if stats.helper_resumes ~= 3 then error("helper_resumes") end
 		if stats.chains ~= 3 then error("chains") end
 		if stats.chain_budget_exits ~= 1 then error("chain_budget_exits") end
 		if stats.deoptimizations ~= 2 then error("deoptimizations") end
@@ -1829,11 +1836,14 @@ func TestScriptEngine_CPUJITStats_IE32(t *testing.T) {
 		if stats.source_stamp_deopts ~= 1 then error("source_stamp_deopts") end
 		if stats.code_cache_resets ~= 4 then error("code_cache_resets") end
 		if stats.invalidations ~= 4 then error("invalidations") end
+		if stats.invalidated_blocks ~= 2 then error("invalidated_blocks") end
 		if stats.cache_hits ~= 6 then error("cache_hits") end
 		if stats.return_cache_hits ~= 2 then error("return_cache_hits") end
 		if stats.mmio_poll_iterations ~= 3 then error("mmio_poll_iterations") end
+		if stats.mmio_store_helpers ~= 5 then error("mmio_store_helpers") end
 		if stats.resident_spills_saved ~= 9 then error("resident_spills_saved") end
 		if stats.counted_loops ~= 6 then error("counted_loops") end
+		if stats.profitability_fallbacks ~= 8 then error("profitability_fallbacks") end
 	`
 	if err := se.RunString(script, "cpu_jit_stats_ie32"); err != nil {
 		t.Fatalf("RunString failed: %v", err)

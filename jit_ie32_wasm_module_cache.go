@@ -39,18 +39,20 @@ func ie32WasmCachedEntry(cpu *CPU) (ie32WasmCachedBlock, bool) {
 	return entry, ok
 }
 
-func ie32RememberWasmCachedEntry(cpu *CPU, block []ie32DecodedInstruction, retired uint64, fn js.Value, plan *ie32CountedLoopPlan) {
+func ie32RememberWasmCachedEntry(cpu *CPU, block []ie32DecodedInstruction, retired uint64, fn js.Value, plan *ie32CountedLoopPlan, entryStackPointer uint32) {
 	if cpu == nil || len(block) == 0 || !fn.Truthy() || retired == 0 {
 		return
 	}
-	// The wasm execution cache has the same source-stamp-only validation as
-	// native retained blocks. Do not retain an operation whose admission also
+	// The wasm execution cache snapshots the same source bytes as native
+	// retained blocks. Do not retain an operation whose admission also
 	// depended on mutable guest register or RAM state.
 	if plan == nil && !ie32CacheableNativeBlock(block, int(retired)) {
 		return
 	}
 	ranges := ie32DecodedBlockSourceRanges(block, len(block))
-	entry := ie32WasmCachedBlock{fn: fn, cached: ie32NativeCachedBlock{pc: block[0].PC, retired: retired, stamp: ie32DecodedBlockSourceStamp(cpu.memory, block, len(block)), sourceRanges: ranges}, countedPlan: plan}
+	cached := ie32NativeCachedBlock{pc: block[0].PC, retired: retired, stackPointer: entryStackPointer, stackPointerGuard: ie32BlockUsesFixedStackCursor(block, int(retired)), sourceRanges: ranges}
+	cached.sourceSnapshot = ie32SourceSnapshot(cpu.memory, ranges)
+	entry := ie32WasmCachedBlock{fn: fn, cached: cached, countedPlan: plan}
 	if plan != nil {
 		for i := plan.head - 1; i >= 0; i-- {
 			in := block[i]

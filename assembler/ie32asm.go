@@ -106,8 +106,10 @@ const (
 	ADDR_IMMEDIATE = 0x00
 	ADDR_REGISTER  = 0x01
 	ADDR_REG_IND   = 0x02
-	ADDR_MEM_IND   = 0x03
-	ADDR_DIRECT    = 0x04 // Direct memory addressing (write to operand address)
+	// Memory-indirect is an encoded CPU mode. IE32 assembly has no source
+	// syntax for it, but binary tools preserve the mode byte.
+	ADDR_MEM_IND = 0x03
+	ADDR_DIRECT  = 0x04 // Direct memory addressing (write to operand address)
 
 	// Memory Map
 	PROG_START = 0x1000

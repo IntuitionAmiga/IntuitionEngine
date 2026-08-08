@@ -2,9 +2,21 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestIE32JITParityTargetRunsBrowserHarness(t *testing.T) {
+	makefile, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	if !strings.Contains(string(makefile), "TestIE32WasmBrowser_PairedPerformanceHarness") {
+		t.Fatal("test-ie32-jit-parity must run the IE32 Chromium performance harness")
+	}
+}
 
 func TestIE32JIT_DefaultPolicyMatchesBackendAvailability(t *testing.T) {
 	cpu := NewCPU(NewMachineBus())
@@ -35,6 +47,95 @@ func TestIE32JIT_ConfiguredConstructorAppliesOnlyStartupPolicy(t *testing.T) {
 				t.Fatalf("jitEnabled=%v, want %v", cpu.jitEnabled, want)
 			}
 		})
+	}
+}
+
+func TestIE32JIT_DirectMMIOStoreUsesSpecialisedHelper(t *testing.T) {
+	if !ie32JITRuntimeAvailable() {
+		t.Skip("IE32 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	const addr = IO_REGION_START + 0x1C00
+	var writes uint32
+	var value uint32
+	bus.MapIO(addr, addr+WORD_SIZE-1, nil, func(_ uint32, got uint32) {
+		writes++
+		value = got
+	})
+	cpu := NewCPU(bus)
+	cpu.A = 0xC0FFEE
+	putIE32Instruction(cpu.memory, PROG_START, STA, 0, ADDR_DIRECT, addr)
+	cpu.memory[PROG_START+INSTRUCTION_SIZE] = HALT
+	cpu.Execute()
+	if writes != 1 || value != cpu.A {
+		t.Fatalf("MMIO write count=%d value=%#x, want one write of %#x", writes, value, cpu.A)
+	}
+	if got := cpu.JITStats().MMIOStoreHelpers; got != 1 {
+		t.Fatalf("specialised MMIO stores=%d, want 1", got)
+	}
+}
+
+func TestIE32JIT_DirectMMIOStorePreservesOperandReadBeforeWrite(t *testing.T) {
+	if !ie32JITRuntimeAvailable() {
+		t.Skip("IE32 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	const addr = IO_REGION_START + 0x1C40
+	var order []string
+	bus.MapIO(addr, addr+WORD_SIZE-1, func(_ uint32) uint32 {
+		order = append(order, "read")
+		return 0
+	}, func(_ uint32, _ uint32) {
+		order = append(order, "write")
+	})
+	cpu := NewCPU(bus)
+	cpu.A = 0xC0FFEE
+	putIE32Instruction(cpu.memory, PROG_START, STA, 0, ADDR_DIRECT, addr)
+	cpu.memory[PROG_START+INSTRUCTION_SIZE] = HALT
+	cpu.Execute()
+	if got, want := strings.Join(order, ","), "read,write"; got != want {
+		t.Fatalf("MMIO access order=%q, want %q", got, want)
+	}
+}
+
+func TestIE32JITWaitResolverMatchesMemoryIndirectOperand(t *testing.T) {
+	cpu := NewCPU(NewMachineBus())
+	const pointerSlot = uint32(0x400)
+	const delaySlot = uint32(0x404)
+	cpu.Write32(pointerSlot, delaySlot)
+	cpu.Write32(delaySlot, 37)
+	in := ie32DecodedInstruction{Opcode: WAIT, AddrMode: ADDR_MEM_IND, Operand: pointerSlot}
+	if got, want := ie32ResolveOperand(cpu, in), delaySlot; got != want {
+		t.Fatalf("WAIT memory-indirect delay=%d, want %d", got, want)
+	}
+}
+
+func TestIE32JIT_RegionJumpToMMIOHelperPreservesTargetPC(t *testing.T) {
+	if !ie32JITRuntimeAvailable() {
+		t.Skip("IE32 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	const addr = IO_REGION_START + 0x1C00
+	var writes uint32
+	bus.MapIO(addr, addr+WORD_SIZE-1, nil, func(_ uint32, _ uint32) { writes++ })
+	cpu := NewCPU(bus)
+	start := uint32(PROG_START)
+	target := start + 3*INSTRUCTION_SIZE
+	putIE32Instruction(cpu.memory, start, JMP, 0, ADDR_IMMEDIATE, target)
+	putIE32Instruction(cpu.memory, start+INSTRUCTION_SIZE, LDA, 0, ADDR_IMMEDIATE, 0xBAD)
+	cpu.memory[start+2*INSTRUCTION_SIZE] = HALT
+	putIE32Instruction(cpu.memory, target, STA, 0, ADDR_DIRECT, addr)
+	cpu.memory[target+INSTRUCTION_SIZE] = HALT
+	cpu.A = 0xC0FFEE
+	cpu.Execute()
+	cpu.PC = start
+	cpu.running.Store(true)
+	cpu.Execute()
+	if writes != 2 {
+		t.Fatalf("MMIO writes=%d, want 2", writes)
+	}
+	if cpu.A != 0xC0FFEE {
+		t.Fatalf("region resumed at fall-through A=%#x, want %#x", cpu.A, uint32(0xC0FFEE))
 	}
 }
 
@@ -574,6 +675,365 @@ func TestIE32JIT_PureBlockCacheReusesGeneratedCode(t *testing.T) {
 	}
 	if ie32JITBackend == "native" && second.Blocks != first.Blocks {
 		t.Fatalf("native cache miss recompiled block: first=%d second=%d", first.Blocks, second.Blocks)
+	}
+}
+
+// A backward jump is the compact form used by ordinary guest loops. It is not
+// eligible for forward-region promotion, but it must still retain its direct
+// fragment or every iteration recompiles the loop edge.
+func TestIE32JIT_BackwardJumpBlockReusesGeneratedCode(t *testing.T) {
+	if !ie32JITRuntimeAvailable() || ie32JITBackend != "native" {
+		t.Skip("native IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	putIE32Instruction(cpu.memory, PROG_START, JMP, 0, ADDR_DIRECT, PROG_START)
+
+	ie32JITEnterGenerated(cpu)
+	if got := ie32JITTryRunDirect(cpu); got != 1 {
+		t.Fatalf("first backward jump retired %d instructions, want 1", got)
+	}
+	if _, ok := cpu.jit.nativeCache[PROG_START]; !ok {
+		t.Fatal("backward jump block was not retained")
+	}
+	first := cpu.JITStats()
+	if got := ie32JITTryRunDirect(cpu); got != 1 {
+		t.Fatalf("cached backward jump retired %d instructions, want 1", got)
+	}
+	second := cpu.JITStats()
+	if second.CacheHits <= first.CacheHits {
+		t.Fatalf("backward jump was recompiled instead of reused: first=%d second=%d", first.CacheHits, second.CacheHits)
+	}
+}
+
+// Long-running demos encounter many compact fragments before their hot paths
+// stabilise. The executable arena must retain that working set rather than
+// resetting the cache after a few dozen lowering attempts.
+func TestIE32JIT_DefaultExecutableArenaSupportsLongRunningCache(t *testing.T) {
+	if !ie32JITRuntimeAvailable() || ie32JITBackend != "native" {
+		t.Skip("native IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	ie32JITEnterGenerated(cpu)
+	if cpu.jit.execMem == nil {
+		t.Fatal("IE32 JIT did not allocate its executable arena")
+	}
+	const required = 16 * 1024 * 1024
+	if got := ie32JITExecutableArenaSize(cpu); got < required {
+		t.Fatalf("IE32 executable arena=%d bytes, want at least %d", got, required)
+	}
+}
+
+// A fixed store to ordinary data RAM cannot change this block's source. It
+// must therefore retain the generated fragment in the same way as a pure
+// register block. The Voodoo demo relies on this for its per-frame state.
+func TestIE32JIT_FixedRAMWriteBlockReusesGeneratedCode(t *testing.T) {
+	if !ie32JITRuntimeAvailable() {
+		t.Skip("IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	const state = uint32(0x8800)
+	putIE32Instruction(cpu.memory, PROG_START, LDA, 0, ADDR_IMMEDIATE, 0x5A3C)
+	putIE32Instruction(cpu.memory, PROG_START+INSTRUCTION_SIZE, STA, 0, ADDR_DIRECT, state)
+	cpu.memory[PROG_START+2*INSTRUCTION_SIZE] = HALT
+
+	cpu.Execute()
+	first := cpu.JITStats()
+	if got := cpu.Read32(state); got != 0x5A3C {
+		t.Fatalf("first generated store=%#x, want %#x", got, uint32(0x5A3C))
+	}
+	cpu.PC = PROG_START
+	cpu.running.Store(true)
+	cpu.Execute()
+	second := cpu.JITStats()
+	if second.CacheHits <= first.CacheHits {
+		t.Fatalf("fixed RAM write did not reuse generated code: first=%d second=%d", first.CacheHits, second.CacheHits)
+	}
+	if ie32JITBackend == "native" && second.Blocks != first.Blocks {
+		t.Fatalf("fixed RAM write recompiled block: first=%d second=%d", first.Blocks, second.Blocks)
+	}
+}
+
+// Register-only increments and decrements do not write guest memory. They
+// must not prevent an otherwise direct loop fragment from entering the cache.
+func TestIE32JIT_RegisterIncrementBlockReusesGeneratedCode(t *testing.T) {
+	if !ie32JITRuntimeAvailable() || ie32JITBackend != "native" {
+		t.Skip("native IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	putIE32Instruction(cpu.memory, PROG_START, INC, 0, ADDR_REGISTER, REG_A)
+	cpu.memory[PROG_START+INSTRUCTION_SIZE] = HALT
+
+	cpu.Execute()
+	first := cpu.JITStats()
+	if _, ok := cpu.jit.nativeCache[PROG_START]; !ok {
+		t.Fatal("register increment block was not retained")
+	}
+	cpu.PC = PROG_START
+	cpu.running.Store(true)
+	cpu.Execute()
+	second := cpu.JITStats()
+	if second.CacheHits <= first.CacheHits {
+		t.Fatalf("register increment did not reuse generated code: first=%d second=%d", first.CacheHits, second.CacheHits)
+	}
+}
+
+func TestIE32JITDecodedBlockWritesExcludesRegisterOnlyIncrementAndDecrement(t *testing.T) {
+	registerOnly := []ie32DecodedInstruction{
+		{PC: PROG_START, Opcode: INC, AddrMode: ADDR_REGISTER, Operand: REG_A},
+		{PC: PROG_START + INSTRUCTION_SIZE, Opcode: DEC, AddrMode: ADDR_REGISTER, Operand: REG_X},
+	}
+	if ie32DecodedBlockWrites(registerOnly, uint64(len(registerOnly))) {
+		t.Fatal("register-only INC and DEC were classified as RAM writes")
+	}
+	direct := append([]ie32DecodedInstruction(nil), registerOnly...)
+	direct[1].AddrMode = ADDR_DIRECT
+	direct[1].Operand = 0x400
+	if !ie32DecodedBlockWrites(direct, uint64(len(direct))) {
+		t.Fatal("direct DEC was not classified as a RAM write")
+	}
+}
+
+func TestIE32JIT_StaticStoreOverlappingSourceIsNotCacheable(t *testing.T) {
+	block := []ie32DecodedInstruction{
+		{PC: PROG_START, Opcode: STA, AddrMode: ADDR_DIRECT, Operand: PROG_START},
+	}
+	if ie32CacheableNativeBlock(block, len(block)) {
+		t.Fatal("a static store overlapping the generated source entered the cache")
+	}
+}
+
+func TestIE32JIT_MMIOHelperResumesCachedDirectFragments(t *testing.T) {
+	if !ie32JITRuntimeAvailable() {
+		t.Skip("IE32 JIT unavailable")
+	}
+	bus := NewMachineBus()
+	const mmio = uint32(0xF7000)
+	var writes []uint32
+	bus.MapIO(mmio, mmio+WORD_SIZE-1,
+		func(uint32) uint32 { return 0 },
+		func(_ uint32, value uint32) { writes = append(writes, value) },
+	)
+	cpu := NewCPU(bus)
+	const state = uint32(0x8800)
+	putIE32Instruction(cpu.memory, PROG_START, LDA, 0, ADDR_IMMEDIATE, 0x1234)
+	putIE32Instruction(cpu.memory, PROG_START+INSTRUCTION_SIZE, STA, 0, ADDR_DIRECT, mmio)
+	putIE32Instruction(cpu.memory, PROG_START+2*INSTRUCTION_SIZE, LDA, 0, ADDR_IMMEDIATE, 0x5678)
+	putIE32Instruction(cpu.memory, PROG_START+3*INSTRUCTION_SIZE, STA, 0, ADDR_DIRECT, state)
+	cpu.memory[PROG_START+4*INSTRUCTION_SIZE] = HALT
+
+	cpu.Execute()
+	first := cpu.JITStats()
+	if len(writes) != 1 || writes[0] != 0x1234 {
+		t.Fatalf("MMIO writes=%#v, want [0x1234]", writes)
+	}
+	if got := cpu.Read32(state); got != 0x5678 {
+		t.Fatalf("post-helper state=%#x, want %#x", got, uint32(0x5678))
+	}
+	if first.HelperExits != 1 || first.HelperResumes != 1 {
+		t.Fatalf("first helper provenance exits=%d resumes=%d, want 1/1", first.HelperExits, first.HelperResumes)
+	}
+
+	cpu.PC = PROG_START
+	cpu.running.Store(true)
+	cpu.Execute()
+	second := cpu.JITStats()
+	if second.CacheHits <= first.CacheHits {
+		t.Fatalf("direct fragments around MMIO were not reused: first=%d second=%d", first.CacheHits, second.CacheHits)
+	}
+	if second.HelperExits != 2 || second.HelperResumes != 2 {
+		t.Fatalf("second helper provenance exits=%d resumes=%d, want 2/2", second.HelperExits, second.HelperResumes)
+	}
+}
+
+func TestIE32JIT_StopsRecompilingTransientDirectFragments(t *testing.T) {
+	if !ie32JITRuntimeAvailable() {
+		t.Skip("IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	const data = uint32(0x8800)
+	cpu.X = data
+	cpu.Write32(data, 0xA55A)
+	putIE32Instruction(cpu.memory, PROG_START, LDA, 0, ADDR_REG_IND, REG_X)
+	cpu.memory[PROG_START+INSTRUCTION_SIZE] = HALT
+
+	cpu.Execute()
+	first := cpu.JITStats()
+	if first.DirectInstructions != 1 || first.Blocks == 0 {
+		t.Fatalf("initial transient fragment provenance direct=%d blocks=%d, want 1/non-zero", first.DirectInstructions, first.Blocks)
+	}
+	cpu.PC = PROG_START
+	cpu.running.Store(true)
+	cpu.Execute()
+	second := cpu.JITStats()
+	if cpu.A != 0xA55A {
+		t.Fatalf("interpreter fallback value=%#x, want %#x", cpu.A, uint32(0xA55A))
+	}
+	if second.ProfitabilityFallbacks <= first.ProfitabilityFallbacks {
+		t.Fatalf("transient fragment did not enter profitability fallback: first=%d second=%d", first.ProfitabilityFallbacks, second.ProfitabilityFallbacks)
+	}
+	if ie32JITBackend == "native" && second.Blocks != first.Blocks {
+		t.Fatalf("transient fragment recompiled: first=%d second=%d", first.Blocks, second.Blocks)
+	}
+}
+
+func TestIE32JIT_StaticWriteRegionReusesGeneratedCode(t *testing.T) {
+	if !ie32JITRuntimeAvailable() {
+		t.Skip("IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	const state = uint32(0x8800)
+	start := uint32(PROG_START)
+	target := start + 4*INSTRUCTION_SIZE
+	putIE32Instruction(cpu.memory, start, ADD, REG_A, ADDR_IMMEDIATE, 1)
+	putIE32Instruction(cpu.memory, start+INSTRUCTION_SIZE, STA, 0, ADDR_DIRECT, state)
+	putIE32Instruction(cpu.memory, start+2*INSTRUCTION_SIZE, JMP, 0, ADDR_IMMEDIATE, target)
+	putIE32Instruction(cpu.memory, target, ADD, REG_A, ADDR_IMMEDIATE, 1)
+	cpu.memory[target+INSTRUCTION_SIZE] = HALT
+
+	cpu.Execute() // Compact first-tier block.
+	cpu.PC = start
+	cpu.running.Store(true)
+	cpu.Execute() // Hot static jump region.
+	second := cpu.JITStats()
+	if second.Regions == 0 {
+		t.Fatal("fixed write region was not compiled")
+	}
+	cpu.PC = start
+	cpu.running.Store(true)
+	cpu.Execute()
+	third := cpu.JITStats()
+	if third.CacheHits <= second.CacheHits {
+		t.Fatalf("fixed write region did not reuse generated code: second=%d third=%d", second.CacheHits, third.CacheHits)
+	}
+	if got := cpu.Read32(state); got != 5 {
+		t.Fatalf("cached region state=%d, want 5", got)
+	}
+}
+
+// A non-exact checkpoint is a benchmark control, not an architectural
+// boundary. It must therefore permit retained-cache measurement.
+func TestIE32JIT_NonExactCheckpointRetainsCache(t *testing.T) {
+	if !ie32JITRuntimeAvailable() || ie32JITBackend != "native" {
+		t.Skip("native IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	putIE32Instruction(cpu.memory, PROG_START, LDA, 0, ADDR_IMMEDIATE, 1)
+	cpu.memory[PROG_START+INSTRUCTION_SIZE] = HALT
+	cpu.jit.testStopAfter = 1
+	cpu.Execute()
+	if len(cpu.jit.nativeCache) != 1 {
+		t.Fatal("non-exact checkpoint did not retain generated block")
+	}
+	cpu.PC = PROG_START
+	cpu.running.Store(true)
+	cpu.jit.testRetired = 0
+	cpu.Execute()
+	if got := cpu.JITStats().CacheHits; got == 0 {
+		t.Fatal("non-exact checkpoint did not reuse retained block")
+	}
+}
+
+func TestIE32JIT_FixedStackCallAndReturnBlocksReuseGeneratedCode(t *testing.T) {
+	if !ie32JITRuntimeAvailable() || ie32JITBackend != "native" {
+		t.Skip("native IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	start := uint32(PROG_START)
+	callee := start + 4*INSTRUCTION_SIZE
+	const state = uint32(0x8800)
+	cpu.Write32(state, 1)
+	putIE32Instruction(cpu.memory, start, JSR, 0, ADDR_DIRECT, callee)
+	putIE32Instruction(cpu.memory, start+INSTRUCTION_SIZE, LDA, 0, ADDR_IMMEDIATE, 7)
+	cpu.memory[start+2*INSTRUCTION_SIZE] = HALT
+	putIE32Instruction(cpu.memory, callee, LDA, 0, ADDR_DIRECT, state)
+	putIE32Instruction(cpu.memory, callee+INSTRUCTION_SIZE, RTS, 0, ADDR_DIRECT, 0)
+
+	cpu.Execute()
+	first := cpu.JITStats()
+	if _, ok := cpu.jit.nativeCache[start]; !ok {
+		t.Fatal("fixed-stack JSR block was not retained")
+	}
+	if _, ok := cpu.jit.nativeCache[callee]; !ok {
+		t.Fatal("fixed-stack RTS block was not retained")
+	}
+	cpu.PC, cpu.SP = start, STACK_START
+	cpu.running.Store(true)
+	cpu.Execute()
+	second := cpu.JITStats()
+	if second.CacheHits <= first.CacheHits {
+		t.Fatalf("fixed-stack call path did not reuse generated code: first=%d second=%d", first.CacheHits, second.CacheHits)
+	}
+	if cpu.A != 7 || cpu.SP != STACK_START {
+		t.Fatalf("cached call state A=%d SP=%#x, want 7/%#x", cpu.A, cpu.SP, uint32(STACK_START))
+	}
+}
+
+// A retained return block must guard the stack pointer observed at its entry.
+// Recording SP after RTS instead turns every ordinary call into a cache miss.
+func TestIE32JIT_ReturnBlockUsesEntryStackPointerForCacheReuse(t *testing.T) {
+	if !ie32JITRuntimeAvailable() || ie32JITBackend != "native" {
+		t.Skip("native IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	const state = uint32(0x8800)
+	entry := uint32(PROG_START)
+	returnPC := entry + 3*INSTRUCTION_SIZE
+	putIE32Instruction(cpu.memory, entry, LDA, 0, ADDR_IMMEDIATE, 0xC0FFEE)
+	putIE32Instruction(cpu.memory, entry+INSTRUCTION_SIZE, STA, 0, ADDR_DIRECT, state)
+	putIE32Instruction(cpu.memory, entry+2*INSTRUCTION_SIZE, RTS, 0, ADDR_IMMEDIATE, 0)
+
+	entrySP := uint32(STACK_START - WORD_SIZE)
+	cpu.SP = entrySP
+	cpu.Write32(entrySP, returnPC)
+	ie32JITEnterGenerated(cpu)
+	if got := ie32JITTryRunDirect(cpu); got != 3 {
+		t.Fatalf("first return block retired %d instructions, want 3", got)
+	}
+	cached, ok := cpu.jit.nativeCache[entry]
+	if !ok {
+		t.Fatal("return block was not retained")
+	}
+	if cached.stackPointer != entrySP {
+		t.Fatalf("cached stack pointer=%#x, want entry %#x", cached.stackPointer, entrySP)
+	}
+
+	cpu.PC, cpu.SP = entry, entrySP
+	cpu.Write32(entrySP, returnPC)
+	first := cpu.JITStats()
+	if got := ie32JITTryRunDirect(cpu); got != 3 {
+		t.Fatalf("cached return block retired %d instructions, want 3", got)
+	}
+	second := cpu.JITStats()
+	if second.CacheHits <= first.CacheHits {
+		t.Fatalf("return block did not reuse generated code: first=%d second=%d", first.CacheHits, second.CacheHits)
+	}
+}
+
+func TestIE32JIT_ExactRetirementKeepsImmediateALUAndIndirectStoreOrder(t *testing.T) {
+	if !ie32JITRuntimeAvailable() {
+		t.Skip("IE32 JIT unavailable")
+	}
+	interpreter := newIE32CPUConfigured(NewMachineBus(), true)
+	jit := NewCPU(NewMachineBus())
+	for _, cpu := range []*CPU{interpreter, jit} {
+		cpu.A = 0xF6
+		cpu.X = 0x10208
+		putIE32Instruction(cpu.memory, PROG_START, ADD, REG_A, ADDR_IMMEDIATE, 127)
+		putIE32Instruction(cpu.memory, PROG_START+INSTRUCTION_SIZE, STA, 0, ADDR_REG_IND, REG_X)
+		putIE32Instruction(cpu.memory, PROG_START+2*INSTRUCTION_SIZE, ADD, REG_X, ADDR_IMMEDIATE, 4)
+		cpu.memory[PROG_START+3*INSTRUCTION_SIZE] = HALT
+	}
+	if interpreter.StepOne() == 0 || interpreter.StepOne() == 0 {
+		t.Fatal("interpreter did not execute the two-instruction sequence")
+	}
+	jit.jit.testStopAfter = 2
+	jit.jit.testExactRetirement = true
+	jit.Execute()
+	if jit.jit.testRetired != 2 {
+		t.Fatalf("JIT retired %d instructions, want 2", jit.jit.testRetired)
+	}
+	if interpreter.PC != jit.PC || interpreter.A != jit.A || interpreter.X != jit.X || interpreter.Read32(0x10208) != jit.Read32(0x10208) {
+		t.Fatalf("two-instruction state diverged: interpreter PC=%#x A=%#x X=%#x RAM=%#x; JIT PC=%#x A=%#x X=%#x RAM=%#x", interpreter.PC, interpreter.A, interpreter.X, interpreter.Read32(0x10208), jit.PC, jit.A, jit.X, jit.Read32(0x10208))
 	}
 }
 
@@ -1407,20 +1867,58 @@ func TestIE32JIT_DirectRegisterIndirectLoad(t *testing.T) {
 	}
 }
 
+func TestIE32JIT_RangeProvenRegisterIndirectLoadReusesNativeBlock(t *testing.T) {
+	if !ie32JITRuntimeAvailable() {
+		t.Skip("IE32 JIT unavailable")
+	}
+	cpu := NewCPU(NewMachineBus())
+	const table = uint32(0x400)
+	cpu.Write32(table+4, 0x11111111)
+	cpu.Write32(table+8, 0x22222222)
+	putIE32Instruction(cpu.memory, PROG_START, AND, REG_A, ADDR_IMMEDIATE, 0xFF)
+	putIE32Instruction(cpu.memory, PROG_START+INSTRUCTION_SIZE, MUL, REG_A, ADDR_IMMEDIATE, 4)
+	putIE32Instruction(cpu.memory, PROG_START+2*INSTRUCTION_SIZE, LDX, 0, ADDR_IMMEDIATE, table)
+	putIE32Instruction(cpu.memory, PROG_START+3*INSTRUCTION_SIZE, ADD, REG_X, ADDR_REGISTER, REG_A)
+	putIE32Instruction(cpu.memory, PROG_START+4*INSTRUCTION_SIZE, LDA, 0, ADDR_REG_IND, REG_X)
+	cpu.memory[PROG_START+5*INSTRUCTION_SIZE] = HALT
+
+	cpu.A = 1
+	cpu.Execute()
+	first := cpu.JITStats()
+	if got := cpu.A; got != 0x11111111 {
+		t.Fatalf("first dynamic table load=%#x", got)
+	}
+	cpu.PC = PROG_START
+	cpu.A = 2
+	cpu.running.Store(true)
+	cpu.Execute()
+	second := cpu.JITStats()
+	if got := cpu.A; got != 0x22222222 {
+		t.Fatalf("cached dynamic table load=%#x", got)
+	}
+	if second.CacheHits <= first.CacheHits {
+		t.Fatalf("range-proven dynamic block did not hit cache: first=%d second=%d", first.CacheHits, second.CacheHits)
+	}
+}
+
 func TestIE32JIT_DirectMemoryIndirectLoad(t *testing.T) {
 	if !ie32JITRuntimeAvailable() {
 		t.Skip("IE32 JIT unavailable")
 	}
 	cpu := NewCPU(NewMachineBus())
-	cpu.Write32(0x400, 0xCAFEBABE)
+	// Read-style ADDR_MEM_IND returns the word at its operand. Write-style
+	// memory-indirect operations alone use that word as a destination pointer.
+	cpu.Write32(0x400, 0x404)
+	cpu.Write32(0x404, 0xCAFEBABE)
 	putIE32Instruction(cpu.memory, PROG_START, LOAD, REG_A, ADDR_MEM_IND, 0x400)
 	cpu.memory[PROG_START+INSTRUCTION_SIZE] = HALT
 	cpu.Execute()
-	if cpu.A != 0xCAFEBABE {
+	if cpu.A != 0x404 {
 		t.Fatalf("memory indirect A=%#x", cpu.A)
 	}
-	if got := cpu.JITStats().DirectInstructions; got != 1 {
-		t.Fatalf("memory indirect direct instructions=%d, want 1", got)
+	stats := cpu.JITStats()
+	if stats.DirectInstructions != 0 || stats.HelperInstructions < 1 {
+		t.Fatalf("memory indirect provenance direct=%d helpers=%d, want helper path", stats.DirectInstructions, stats.HelperInstructions)
 	}
 }
 
@@ -1446,12 +1944,8 @@ func TestIE32JIT_FirstMemoryIndirectOperationMatchesInterpreter(t *testing.T) {
 			jit := NewCPU(NewMachineBus())
 			for _, cpu := range []*CPU{interpreter, jit} {
 				cpu.A = tc.initial
-				if ie32MemoryIndirectWrites(tc.opcode) {
-					cpu.Write32(0x400, 0x404)
-					cpu.Write32(0x404, 5)
-				} else {
-					cpu.Write32(0x400, 5)
-				}
+				cpu.Write32(0x400, 0x404)
+				cpu.Write32(0x404, 5)
 				putIE32Instruction(cpu.memory, PROG_START, tc.opcode, tc.reg, ADDR_MEM_IND, 0x400)
 				cpu.memory[PROG_START+INSTRUCTION_SIZE] = HALT
 			}
@@ -1465,8 +1959,12 @@ func TestIE32JIT_FirstMemoryIndirectOperationMatchesInterpreter(t *testing.T) {
 			if interpreter.A != jit.A || interpreter.PC != jit.PC || interpreter.SP != jit.SP || interpreter.Read32(0x404) != jit.Read32(0x404) {
 				t.Fatalf("memory-indirect state differs: interpreter A=%#x memory=%#x, JIT A=%#x memory=%#x", interpreter.A, interpreter.Read32(0x404), jit.A, jit.Read32(0x404))
 			}
-			if got := jit.JITStats().DirectInstructions; got != 1 {
-				t.Fatalf("direct instructions=%d, want 1", got)
+			if ie32MemoryIndirectWrites(tc.opcode) {
+				if got := jit.JITStats().DirectInstructions; got != 1 {
+					t.Fatalf("direct instructions=%d, want 1", got)
+				}
+			} else if stats := jit.JITStats(); stats.DirectInstructions != 0 || stats.HelperInstructions < 1 {
+				t.Fatalf("read provenance direct=%d helpers=%d, want helper path", stats.DirectInstructions, stats.HelperInstructions)
 			}
 		})
 	}

@@ -35,7 +35,9 @@ emit:
 				emitIE32WasmStoreImm(&b, uint32(unsafe.Offsetof(CPU{}.A)), in.Operand)
 			} else if in.AddrMode == ADDR_REGISTER {
 				emitIE32WasmCopyReg(&b, ie32WasmRegisterOffset(in.operandRegisterIndex()), uint32(unsafe.Offsetof(CPU{}.A)))
-			} else if in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND {
+			} else if in.rangeProvenRegisterIndirect {
+				emitIE32WasmLoadDynamicRAMToReg(&b, uint32(unsafe.Offsetof(CPU{}.memory)), ie32WasmRegisterOffset(in.rangeBaseRegister), in.rangeAddressOffset, uint32(unsafe.Offsetof(CPU{}.A)))
+			} else if in.AddrMode == ADDR_DIRECT {
 				emitIE32WasmLoadRAMToReg(&b, uint32(unsafe.Offsetof(CPU{}.memory)), in.Operand, uint32(unsafe.Offsetof(CPU{}.A)))
 			} else {
 				return nil, fmt.Errorf("LDA mode")
@@ -46,7 +48,9 @@ emit:
 				emitIE32WasmStoreImm(&b, off, in.Operand)
 			} else if in.AddrMode == ADDR_REGISTER {
 				emitIE32WasmCopyReg(&b, ie32WasmRegisterOffset(in.operandRegisterIndex()), off)
-			} else if in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND {
+			} else if in.rangeProvenRegisterIndirect {
+				emitIE32WasmLoadDynamicRAMToReg(&b, uint32(unsafe.Offsetof(CPU{}.memory)), ie32WasmRegisterOffset(in.rangeBaseRegister), in.rangeAddressOffset, off)
+			} else if in.AddrMode == ADDR_DIRECT {
 				emitIE32WasmLoadRAMToReg(&b, uint32(unsafe.Offsetof(CPU{}.memory)), in.Operand, off)
 			} else {
 				return nil, fmt.Errorf("LOAD mode")
@@ -65,7 +69,9 @@ emit:
 				emitIE32WasmStoreImm(&b, off, in.Operand)
 			} else if in.AddrMode == ADDR_REGISTER {
 				emitIE32WasmCopyReg(&b, ie32WasmRegisterOffset(in.operandRegisterIndex()), off)
-			} else if in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND {
+			} else if in.rangeProvenRegisterIndirect {
+				emitIE32WasmLoadDynamicRAMToReg(&b, uint32(unsafe.Offsetof(CPU{}.memory)), ie32WasmRegisterOffset(in.rangeBaseRegister), in.rangeAddressOffset, off)
+			} else if in.AddrMode == ADDR_DIRECT {
 				emitIE32WasmLoadRAMToReg(&b, uint32(unsafe.Offsetof(CPU{}.memory)), in.Operand, off)
 			} else {
 				return nil, fmt.Errorf("named load mode")
@@ -88,7 +94,9 @@ emit:
 				}
 			} else if in.AddrMode == ADDR_REGISTER {
 				emitIE32WasmALUReg(&b, ie32WasmRegisterOffset(in.registerIndex()), in.Opcode, ie32WasmRegisterOffset(in.operandRegisterIndex()))
-			} else if in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND {
+			} else if in.rangeProvenRegisterIndirect {
+				emitIE32WasmALUDynamicRAM(&b, ie32WasmRegisterOffset(in.registerIndex()), in.Opcode, uint32(unsafe.Offsetof(CPU{}.memory)), ie32WasmRegisterOffset(in.rangeBaseRegister), in.rangeAddressOffset)
+			} else if in.AddrMode == ADDR_DIRECT {
 				emitIE32WasmALURAM(&b, ie32WasmRegisterOffset(in.registerIndex()), in.Opcode, uint32(unsafe.Offsetof(CPU{}.memory)), in.Operand)
 			} else {
 				return nil, fmt.Errorf("ALU mode")
@@ -110,7 +118,7 @@ emit:
 			}
 			if in.AddrMode == ADDR_REGISTER {
 				emitIE32WasmALUImm(&b, ie32WasmRegisterOffset(in.operandRegisterIndex()), op, 1)
-			} else if in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND {
+			} else if in.AddrMode == ADDR_DIRECT {
 				emitIE32WasmRMWRAM(&b, op, uint32(unsafe.Offsetof(CPU{}.memory)), in.Operand)
 			} else {
 				return nil, fmt.Errorf("INC/DEC mode")
@@ -202,7 +210,7 @@ emit:
 		}
 	}
 	if !terminated {
-		emitIE32WasmStoreImm(&b, uint32(unsafe.Offsetof(CPU{}.PC)), ie32BlockNextPC(block, len(block)))
+		emitIE32WasmStoreImm(&b, uint32(unsafe.Offsetof(CPU{}.PC)), ie32BlockResumePC(block, len(block)))
 	}
 	b.end()
 	idx := m.addFunc(typ, []byte{wasmTypeI32, wasmTypeI32}, b.code)
@@ -420,6 +428,27 @@ func emitIE32WasmLoadRAMToReg(b *wasmBody, memoryFieldOff, addr, regOff uint32) 
 	b.op(wasmOpI32Add)
 	b.memOp(wasmOpI32Load, 2, 0)
 	b.i32Const(int32(addr))
+	b.op(wasmOpI32Add)
+	b.memOp(wasmOpI32Load, 2, 0)
+	b.localSet(2)
+	b.localGet(0)
+	b.i32Const(int32(regOff))
+	b.op(wasmOpI32Add)
+	b.localGet(2)
+	b.memOp(wasmOpI32Store, 2, 0)
+}
+
+func emitIE32WasmLoadDynamicRAMToReg(b *wasmBody, memoryFieldOff, baseRegOff, offset, regOff uint32) {
+	b.localGet(0)
+	b.i32Const(int32(memoryFieldOff))
+	b.op(wasmOpI32Add)
+	b.memOp(wasmOpI32Load, 2, 0)
+	b.localGet(0)
+	b.i32Const(int32(baseRegOff))
+	b.op(wasmOpI32Add)
+	b.memOp(wasmOpI32Load, 2, 0)
+	b.op(wasmOpI32Add)
+	b.i32Const(int32(offset))
 	b.op(wasmOpI32Add)
 	b.memOp(wasmOpI32Load, 2, 0)
 	b.localSet(2)
@@ -654,6 +683,45 @@ func emitIE32WasmALURAM(b *wasmBody, offset uint32, opcode byte, memoryFieldOff,
 	b.op(wasmOpI32Add)
 	b.memOp(wasmOpI32Load, 2, 0)
 	b.i32Const(int32(addr))
+	b.op(wasmOpI32Add)
+	b.memOp(wasmOpI32Load, 2, 0)
+	switch opcode {
+	case ADD:
+		b.op(wasmOpI32Add)
+	case SUB:
+		b.op(wasmOpI32Sub)
+	case AND:
+		b.op(wasmOpI32And)
+	case OR:
+		b.op(wasmOpI32Or)
+	case XOR:
+		b.op(wasmOpI32Xor)
+	case MUL:
+		b.op(wasmOpI32Mul)
+	}
+	b.localSet(2)
+	b.localGet(1)
+	b.localGet(2)
+	b.memOp(wasmOpI32Store, 2, 0)
+}
+
+func emitIE32WasmALUDynamicRAM(b *wasmBody, registerOff uint32, opcode byte, memoryFieldOff, baseRegOff, offset uint32) {
+	b.localGet(0)
+	b.i32Const(int32(registerOff))
+	b.op(wasmOpI32Add)
+	b.localSet(1)
+	b.localGet(1)
+	b.memOp(wasmOpI32Load, 2, 0)
+	b.localGet(0)
+	b.i32Const(int32(memoryFieldOff))
+	b.op(wasmOpI32Add)
+	b.memOp(wasmOpI32Load, 2, 0)
+	b.localGet(0)
+	b.i32Const(int32(baseRegOff))
+	b.op(wasmOpI32Add)
+	b.memOp(wasmOpI32Load, 2, 0)
+	b.op(wasmOpI32Add)
+	b.i32Const(int32(offset))
 	b.op(wasmOpI32Add)
 	b.memOp(wasmOpI32Load, 2, 0)
 	switch opcode {

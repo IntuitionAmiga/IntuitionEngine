@@ -19,9 +19,19 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 		cpu.jit.residentSpillsSaved.Add(cached.residentSpillsSaved)
 		return cached.retired
 	}
-	if !cpu.timerEnabled.Load() && cpu.jit.testStopAfter == 0 && cpu.jit.nativeCache != nil {
-		if cached, ok := cpu.jit.nativeCache[cpu.PC]; ok {
-			if cached.stamp == ie32CachedSourceStamp(cpu.memory, cached) {
+	if !cpu.timerEnabled.Load() && !cpu.jit.testExactRetirement && cpu.jit.nativeCache != nil {
+		cached, ok := cpu.takeIE32DispatchCacheHint(cpu.PC)
+		if !ok {
+			cached, ok = cpu.jit.nativeCache[cpu.PC]
+		}
+		if ok {
+			if !ie32CachedSourceMatches(cpu.memory, cached) {
+				cpu.dropIE32NativeCodeCache()
+				cpu.jit.deoptimizations.Add(1)
+				cpu.jit.sourceStampDeopts.Add(1)
+				return 0
+			}
+			if !cached.stackPointerGuard || cpu.SP == cached.stackPointer {
 				callNative(cached.addr, uintptr(unsafe.Pointer(cpu)))
 				cpu.jit.nativeEntries.Add(1)
 				cpu.jit.instructions.Add(cached.retired)
@@ -30,12 +40,15 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 				cpu.jit.residentSpillsSaved.Add(cached.residentSpillsSaved)
 				return cached.retired
 			}
-			cpu.dropIE32NativeCodeCache()
-			cpu.jit.deoptimizations.Add(1)
-			cpu.jit.sourceStampDeopts.Add(1)
-			return 0
 		}
 	}
+	if cpu.ie32JITShouldUseInterpreterForTransientFragment(cpu.PC) {
+		return 0
+	}
+	if first, ok := decodeIE32Instruction(cpu.memory, cpu.PC); !ok || ie32FirstInstructionNeedsHelper(cpu, first) {
+		return 0
+	}
+	entryStackPointer := cpu.SP
 	limit := 0
 	if cpu.jit.testStopAfter > cpu.jit.testRetired {
 		limit = int(cpu.jit.testStopAfter - cpu.jit.testRetired)
@@ -43,7 +56,9 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 	if cpu.timerEnabled.Load() && (limit == 0 || limit > 1) {
 		limit = 1
 	}
-	regionTier := cpu.ie32JITShouldCompileRegion(cpu.PC)
+	// Exact checkpoints compare a precise architectural boundary. Keep their
+	// lowering compact so hot-region formation cannot cross that boundary.
+	regionTier := !cpu.jit.testExactRetirement && cpu.ie32JITShouldCompileRegion(cpu.PC)
 	block := scanIE32FusedBlock(cpu.memory, cpu.PC, limit)
 	if regionTier && !ie32BlockHasLeafFusion(block) {
 		block = scanIE32Region(cpu.memory, cpu.PC, limit)
@@ -52,6 +67,7 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 	block = ie32AnnotateKnownBranches(block)
 	block = ie32AnnotateResidentImmediateALU(block)
 	block = ie32SpecialiseKnownConstantRegisterAddresses(block)
+	block = ie32AnnotateRangeProvenRegisterIndirect(cpu, block)
 	if cpu.jit.testStopAfter == 0 {
 		if plan := ie32AnalyseCountedLoop(block); plan != nil {
 			if retired := cpu.ie32JITTryRunCountedLoop(block, plan); retired != 0 {
@@ -69,11 +85,6 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 			retired++
 			continue
 		}
-		specialised, ok := ie32SpecialiseFirstIndirect(cpu, in, retired == 0)
-		if !ok {
-			goto done
-		}
-		in = specialised
 		kind, ok := ie32FormLowering[ie32OpcodeForm{Opcode: in.Opcode, AddrMode: in.AddrMode}]
 		if !ok || kind != ie32LoweringDirect {
 			goto done
@@ -86,13 +97,16 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 			} else if in.AddrMode == ADDR_REGISTER {
 				src, _ := ie32ARM64RegisterOffset(in.operandRegisterIndex())
 				emitIE32ARM64LdrW(&code, 1, src)
+			} else if in.rangeProvenRegisterIndirect {
+				src, _ := ie32ARM64RegisterOffset(in.rangeBaseRegister)
+				emitIE32ARM64LoadWAtDynamicRAM(&code, 1, src, in.rangeAddressOffset)
 			} else if in.AddrMode == ADDR_REG_IND && retired == 0 {
 				addr, ok := ie32StaticRegisterIndirectAddress(cpu, in)
 				if !ok {
 					goto done
 				}
 				emitIE32ARM64LoadWAtRAM(&code, 1, addr)
-			} else if (in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND) && ie32CanDirectRAMRead(cpu, in.Operand) {
+			} else if in.AddrMode == ADDR_DIRECT && ie32CanDirectRAMRead(cpu, in.Operand) {
 				emitIE32ARM64LoadWAtRAM(&code, 1, in.Operand)
 			} else {
 				goto done
@@ -108,13 +122,16 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 			} else if in.AddrMode == ADDR_REGISTER {
 				src, _ := ie32ARM64RegisterOffset(in.operandRegisterIndex())
 				emitIE32ARM64LdrW(&code, 1, src)
+			} else if in.rangeProvenRegisterIndirect {
+				src, _ := ie32ARM64RegisterOffset(in.rangeBaseRegister)
+				emitIE32ARM64LoadWAtDynamicRAM(&code, 1, src, in.rangeAddressOffset)
 			} else if in.AddrMode == ADDR_REG_IND && retired == 0 {
 				addr, ok := ie32StaticRegisterIndirectAddress(cpu, in)
 				if !ok {
 					goto done
 				}
 				emitIE32ARM64LoadWAtRAM(&code, 1, addr)
-			} else if (in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND) && ie32CanDirectRAMRead(cpu, in.Operand) {
+			} else if in.AddrMode == ADDR_DIRECT && ie32CanDirectRAMRead(cpu, in.Operand) {
 				emitIE32ARM64LoadWAtRAM(&code, 1, in.Operand)
 			} else {
 				goto done
@@ -154,13 +171,16 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 			} else if in.AddrMode == ADDR_REGISTER {
 				src, _ := ie32ARM64RegisterOffset(in.operandRegisterIndex())
 				emitIE32ARM64LdrW(&code, 1, src)
+			} else if in.rangeProvenRegisterIndirect {
+				src, _ := ie32ARM64RegisterOffset(in.rangeBaseRegister)
+				emitIE32ARM64LoadWAtDynamicRAM(&code, 1, src, in.rangeAddressOffset)
 			} else if in.AddrMode == ADDR_REG_IND && retired == 0 {
 				addr, ok := ie32StaticRegisterIndirectAddress(cpu, in)
 				if !ok {
 					goto done
 				}
 				emitIE32ARM64LoadWAtRAM(&code, 1, addr)
-			} else if (in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND) && ie32CanDirectRAMRead(cpu, in.Operand) {
+			} else if in.AddrMode == ADDR_DIRECT && ie32CanDirectRAMRead(cpu, in.Operand) {
 				emitIE32ARM64LoadWAtRAM(&code, 1, in.Operand)
 			} else {
 				goto done
@@ -203,13 +223,16 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 			} else if in.AddrMode == ADDR_REGISTER {
 				src, _ := ie32ARM64RegisterOffset(in.operandRegisterIndex())
 				emitIE32ARM64LdrW(&code, 2, src)
+			} else if in.rangeProvenRegisterIndirect {
+				src, _ := ie32ARM64RegisterOffset(in.rangeBaseRegister)
+				emitIE32ARM64LoadWAtDynamicRAM(&code, 2, src, in.rangeAddressOffset)
 			} else if in.AddrMode == ADDR_REG_IND && retired == 0 {
 				addr, ok := ie32StaticRegisterIndirectAddress(cpu, in)
 				if !ok {
 					goto done
 				}
 				emitIE32ARM64LoadWAtRAM(&code, 2, addr)
-			} else if (in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND) && ie32CanDirectRAMRead(cpu, in.Operand) {
+			} else if in.AddrMode == ADDR_DIRECT && ie32CanDirectRAMRead(cpu, in.Operand) {
 				emitIE32ARM64LoadWAtRAM(&code, 2, in.Operand)
 			} else {
 				goto done
@@ -274,7 +297,7 @@ func ie32JITTryRunDirect(cpu *CPU) uint64 {
 					emitIE32ARM64(&code, 0x51000421)
 				}
 				emitIE32ARM64StrW(&code, 1, off)
-			} else if (in.AddrMode == ADDR_DIRECT || in.AddrMode == ADDR_MEM_IND) && ie32CanDirectRAMRead(cpu, in.Operand) && ie32CanDirectRAMWrite(cpu, in.Operand) && !ie32WriteMutatesRemainingBlock(in, block) {
+			} else if in.AddrMode == ADDR_DIRECT && ie32CanDirectRAMRead(cpu, in.Operand) && ie32CanDirectRAMWrite(cpu, in.Operand) && !ie32WriteMutatesRemainingBlock(in, block) {
 				emitIE32ARM64LoadWAtRAM(&code, 1, in.Operand)
 				if in.Opcode == INC {
 					emitIE32ARM64(&code, 0x11000421)
@@ -427,7 +450,7 @@ done:
 		return 0
 	}
 	if !terminated {
-		emitIE32ARM64MovImm32(&code, 1, ie32BlockNextPC(block, retired))
+		emitIE32ARM64MovImm32(&code, 1, ie32BlockResumePC(block, retired))
 		emitIE32ARM64StrW(&code, 1, uint32(unsafe.Offsetof(CPU{}.PC)))
 	}
 	emitIE32ARM64(&code, 0xD65F03C0) // ret
@@ -445,21 +468,30 @@ done:
 	cpu.jit.instructions.Add(uint64(retired))
 	cpu.jit.directInstructions.Add(uint64(retired))
 	cpu.jit.residentSpillsSaved.Add(residentSpillsSaved)
-	if !cpu.timerEnabled.Load() && cpu.jit.testStopAfter == 0 && ie32CacheableNativeBlock(block, retired) && (!ie32BlockEndsInJMP(block, retired) || ie32BlockIsRegion(block, retired)) {
-		if cpu.jit.nativeCache == nil {
-			cpu.jit.nativeCache = make(map[uint32]ie32NativeCachedBlock)
-		}
-		cpu.jit.nativeCache[block[0].PC] = ie32NativeCachedBlock{
+	cacheable := ie32CacheableNativeBlock(block, retired)
+	if !cpu.timerEnabled.Load() && !cpu.jit.testExactRetirement && cacheable && (!ie32BlockEndsInJMP(block, retired) || ie32BlockIsRegion(block, retired) || ie32BlockEndsInBackwardJMP(block, retired)) {
+		cached := ie32NativeCachedBlock{
 			pc:                  block[0].PC,
 			addr:                addr,
 			retired:             uint64(retired),
 			residentSpillsSaved: residentSpillsSaved,
-			stamp:               ie32DecodedBlockSourceStamp(cpu.memory, block, retired),
+			stackPointer:        entryStackPointer,
+			stackPointerGuard:   ie32BlockUsesFixedStackCursor(block, retired),
 			sourceStart:         uint64(block[0].PC),
-			sourceEnd:           uint64(ie32BlockNextPC(block, retired)),
+			sourceEnd:           uint64(ie32BlockResumePC(block, retired)),
 			sourceRanges:        ie32DecodedBlockSourceRanges(block, retired),
+			writeRanges:         ie32CachedBlockWriteRanges(block, retired),
+			returns:             ie32DecodedBlockReturns(block, uint64(retired)),
 		}
-		cpu.rememberIE32ReturnCache(cpu.jit.nativeCache[block[0].PC])
+		cached.sourceSnapshot = ie32SourceSnapshot(cpu.memory, cached.sourceRanges)
+		if cpu.jit.nativeCache == nil {
+			cpu.jit.nativeCache = make(map[uint32]ie32NativeCachedBlock)
+		}
+		cpu.jit.nativeCache[block[0].PC] = cached
+		cpu.noteIE32NativeCacheSource(cached)
+		cpu.rememberIE32ReturnCache(cached)
+	} else if !cacheable {
+		cpu.noteIE32TransientFragment(block[0].PC)
 	}
 	return uint64(retired)
 }
@@ -607,6 +639,15 @@ func emitIE32ARM64LoadWAtRAM(code *[]byte, reg byte, addr uint32) {
 	emitIE32ARM64MovImm32(code, 4, addr)
 	emitIE32ARM64(code, 0x8B040063)             // add x3,x3,x4
 	emitIE32ARM64(code, 0xB9400060|uint32(reg)) // ldr w(reg),[x3]
+}
+
+func emitIE32ARM64LoadWAtDynamicRAM(code *[]byte, reg byte, registerOffset, offset uint32) {
+	emitIE32ARM64LdrX(code, 3, uint32(unsafe.Offsetof(CPU{}.memBase)))
+	emitIE32ARM64LdrW(code, 4, registerOffset)
+	emitIE32ARM64(code, 0x8B040063) // add x3,x3,x4
+	emitIE32ARM64MovImm32(code, 4, offset)
+	emitIE32ARM64(code, 0x8B040063) // add x3,x3,x4
+	emitIE32ARM64(code, 0xB9400060|uint32(reg))
 }
 
 func emitIE32ARM64StrW(code *[]byte, reg byte, offset uint32) {

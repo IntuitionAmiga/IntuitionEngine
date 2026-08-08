@@ -43,6 +43,23 @@ func TestIE32WasmEmitterBuildsDirectStoreModule(t *testing.T) {
 	}
 }
 
+func TestIE32WasmEmitterBuildsRangeProvenRegisterIndirectReadModule(t *testing.T) {
+	mod, err := compileIE32WasmBlock([]ie32DecodedInstruction{{
+		PC:                          PROG_START,
+		Opcode:                      LDA,
+		AddrMode:                    ADDR_REG_IND,
+		Operand:                     REG_X,
+		rangeProvenRegisterIndirect: true,
+		rangeBaseRegister:           REG_X,
+	}})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if len(mod) < 8 || string(mod[:4]) != "\x00asm" {
+		t.Fatalf("invalid wasm header: %x", mod)
+	}
+}
+
 func TestIE32WasmEmitterBuildsEveryDirectManifestForm(t *testing.T) {
 	forms := make([]ie32OpcodeForm, 0)
 	for form, kind := range ie32FormLowering {

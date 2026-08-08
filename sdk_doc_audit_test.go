@@ -3337,7 +3337,8 @@ func TestSDKCompanionDocs_IE32MemoryIndirectStoreSemantics(t *testing.T) {
 	source := readAuditFile(t, "cpu_ie32.go")
 	for _, needle := range []string{
 		"case ADDR_MEM_IND:",
-		"return cpu.Read32(operand)",
+		"addr := cpu.Read32(operand)",
+		"return cpu.Read32(addr)",
 		"} else if addrMode == ADDR_MEM_IND {",
 		"addr := cpu.Read32(operand)",
 		"cpu.Write32(addr, value)",
@@ -3350,6 +3351,7 @@ func TestSDKCompanionDocs_IE32MemoryIndirectStoreSemantics(t *testing.T) {
 	normalizedIntro := strings.Join(strings.Fields(intro), " ")
 	for _, needle := range []string{
 		"For memory-indirect store encodings, the CPU first reads a 32-bit pointer from `operand32`, then writes to the address contained in that pointer",
+		"memory-indirect mode uses `operand32` as the address of a 32-bit pointer to the final target address",
 	} {
 		if !strings.Contains(normalizedIntro, needle) {
 			t.Fatalf("IE32_ISA.md missing source-backed memory-indirect store semantics: %s", needle)

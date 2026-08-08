@@ -1703,7 +1703,7 @@ Encoding:
 | operand32 | address used by the memory-indirect mode |
 
 For load, ALU, branch-helper operand resolution, and `WAIT`, memory-indirect
-mode resolves exactly like direct mode:
+mode reads the 32-bit word at `operand32`:
 
 ```
 value = memory32[operand32]

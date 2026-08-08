@@ -2175,6 +2175,8 @@ func (se *ScriptEngine) luaCPUJITStats() lua.LGFunction {
 				L.SetField(tbl, "retired_instructions", lua.LNumber(stats.Instructions))
 				L.SetField(tbl, "direct_instructions", lua.LNumber(stats.DirectInstructions))
 				L.SetField(tbl, "helper_instructions", lua.LNumber(stats.HelperInstructions))
+				L.SetField(tbl, "helper_exits", lua.LNumber(stats.HelperExits))
+				L.SetField(tbl, "helper_resumes", lua.LNumber(stats.HelperResumes))
 				L.SetField(tbl, "chains", lua.LNumber(stats.Chains))
 				L.SetField(tbl, "chain_budget_exits", lua.LNumber(stats.ChainBudgetExits))
 				L.SetField(tbl, "deoptimizations", lua.LNumber(stats.Deoptimizations))
@@ -2182,11 +2184,14 @@ func (se *ScriptEngine) luaCPUJITStats() lua.LGFunction {
 				L.SetField(tbl, "source_stamp_deopts", lua.LNumber(stats.SourceStampDeopts))
 				L.SetField(tbl, "code_cache_resets", lua.LNumber(stats.CodeCacheResets))
 				L.SetField(tbl, "invalidations", lua.LNumber(stats.Invalidations))
+				L.SetField(tbl, "invalidated_blocks", lua.LNumber(stats.InvalidatedBlocks))
 				L.SetField(tbl, "cache_hits", lua.LNumber(stats.CacheHits))
 				L.SetField(tbl, "return_cache_hits", lua.LNumber(stats.ReturnCacheHits))
 				L.SetField(tbl, "mmio_poll_iterations", lua.LNumber(stats.MMIOPollIterations))
+				L.SetField(tbl, "mmio_store_helpers", lua.LNumber(stats.MMIOStoreHelpers))
 				L.SetField(tbl, "resident_spills_saved", lua.LNumber(stats.ResidentSpillsSaved))
 				L.SetField(tbl, "counted_loops", lua.LNumber(stats.CountedLoops))
+				L.SetField(tbl, "profitability_fallbacks", lua.LNumber(stats.ProfitabilityFallbacks))
 			}
 		case runtimeCPUM68K:
 			if snap.m68k != nil && snap.m68k.cpu != nil {

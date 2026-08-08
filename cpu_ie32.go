@@ -126,7 +126,7 @@ const (
 	ADDR_IMMEDIATE = 0x00 // Immediate value
 	ADDR_REGISTER  = 0x01 // Register direct
 	ADDR_REG_IND   = 0x02 // Register indirect
-	ADDR_MEM_IND   = 0x03 // Memory indirect (double indirection)
+	ADDR_MEM_IND   = 0x03 // Memory-indirect operand or write destination
 	ADDR_DIRECT    = 0x04 // Direct memory addressing (operand is the address)
 )
 
@@ -459,6 +459,18 @@ func newIE32CPUConfigured(bus Bus32, disableJIT bool) *CPU {
 func (cpu *CPU) noteIE32JITWrite(addr, size uint64) {
 	if cpu == nil || cpu.jit == nil {
 		return
+	}
+	if size != 0 {
+		high := cpu.jit.nativeSourceHighFast.Load()
+		if high != 0 {
+			low := cpu.jit.nativeSourceLowFast.Load()
+			end := addr + size
+			if addr >= high || end <= low {
+				// Retained source bytes cannot have changed. Avoid taking the
+				// invalidation lock for ordinary guest data writes.
+				return
+			}
+		}
 	}
 	cpu.jit.invalidationMu.Lock()
 	if size == 0 {
@@ -814,7 +826,7 @@ func (cpu *CPU) resolveOperand(addrMode byte, operand uint32) uint32 {
 	      - Immediate: direct value
 	      - Register: register contents
 	      - Register indirect: memory at register + byte offset
-	      - Memory indirect: memory at operand address
+	   - Memory indirect: memory at operand address
 	      - Direct: memory at operand address
 
 	   Reserved addressing-mode bytes resolve to zero on read-style operands.
@@ -1076,7 +1088,9 @@ func (cpu *CPU) executeInterpreter() {
 			resolvedOperand = *cpu.regs[operand&REG_INDEX_MASK]
 		case ADDR_REG_IND:
 			resolvedOperand = cpu.Read32(*cpu.regs[operand&REG_INDEX_MASK] + (operand & ^uint32(REG_INDEX_MASK)))
-		case ADDR_MEM_IND, ADDR_DIRECT:
+		case ADDR_MEM_IND:
+			resolvedOperand = cpu.Read32(operand)
+		case ADDR_DIRECT:
 			resolvedOperand = cpu.Read32(operand)
 		}
 
@@ -1654,7 +1668,9 @@ func (cpu *CPU) StepOne() int {
 		resolvedOperand = *cpu.regs[operand&REG_INDEX_MASK]
 	case ADDR_REG_IND:
 		resolvedOperand = cpu.Read32(*cpu.regs[operand&REG_INDEX_MASK] + (operand & ^uint32(REG_INDEX_MASK)))
-	case ADDR_MEM_IND, ADDR_DIRECT:
+	case ADDR_MEM_IND:
+		resolvedOperand = cpu.Read32(operand)
+	case ADDR_DIRECT:
 		resolvedOperand = cpu.Read32(operand)
 	}
 
