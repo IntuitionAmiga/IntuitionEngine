@@ -47,7 +47,7 @@ make sdk
 
 ## Build
 
-Use the Go toolchain selected by `go.mod`, currently Go 1.26.4. The pinned version is required because the default build uses the experimental `simd/archsimd` API.
+Requires Go 1.26.0 or later. The default amd64 build enables the experimental `simd/archsimd` API.
 
 The default build shown in the quick start produces the emulator at `bin/IntuitionEngine` and core SDK tools under `sdk/bin/`.
 

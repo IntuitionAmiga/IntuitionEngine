@@ -12,9 +12,8 @@ MMIO or an architecture-specific I/O window.
 
 ## 1. Prerequisites
 
-Use the Go toolchain selected by `go.mod`, currently Go 1.26.4. The project uses
-the experimental `simd/archsimd` API, so another Go 1.26 patch release is not
-assumed to be compatible.
+Requires Go 1.26.0 or later. The default amd64 build enables the experimental
+`simd/archsimd` API.
 
 The default native build uses Ebiten, Oto and the Vulkan-backed Voodoo renderer.
 It therefore needs the normal native compiler, window-system, audio and Vulkan

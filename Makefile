@@ -410,8 +410,8 @@ test-ie32-jit-parity:
 
 IE32_JIT_RACE_TEST_REGEX := ^TestIE32JIT_(BusWritePublishesInvalidationGeneration|BusWriteIsDrainedAtNextExecutionBoundary|ExternalWriteDropsPureBlockCache|CPUWriteDropsPureBlockCache|NonOverlappingWriteRetainsPureBlockCache|StaticRegionTracksDiscontiguousSources|DynamicWriteInvalidatesEveryRetainedBlock|SourceWriteClearsTransientFragmentFallback|GeneratedStoreDrainsBeforeChainedTarget|SelfOverwritingGeneratedStorePublishesInvalidation|SourceStampRejectsUnpublishedCodeWrite|ProgramLoadInvalidatesOtherCPUCache)$$
 test-ie32-jit-race:
-	@./scripts/require-go-test-inventory.sh "empty IE32 JIT race inventory" env GOTOOLCHAIN=go1.26.4 $(GO) test -tags headless -list '$(IE32_JIT_RACE_TEST_REGEX)' .
-	GOTOOLCHAIN=go1.26.4 $(GO) test -race -tags headless -count=1 -run '$(IE32_JIT_RACE_TEST_REGEX)' .
+	@./scripts/require-go-test-inventory.sh "empty IE32 JIT race inventory" $(GO) test -tags headless -list '$(IE32_JIT_RACE_TEST_REGEX)' .
+	$(GO) test -race -tags headless -count=1 -run '$(IE32_JIT_RACE_TEST_REGEX)' .
 
 # test-z80-jit-parity is the bounded cross-backend Z80 correctness gate. It
 # requires native manifest/fixture coverage, the real Chromium wasm module
