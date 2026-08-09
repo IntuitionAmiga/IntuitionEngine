@@ -3711,6 +3711,41 @@ Notes: The existing uncommitted SDK-DOC-0101 audit corrections were preserved.
 No protected reference-manual file was edited.
 Disposition: KEEP.
 
+ID: SDK-DOC-0103
+Status: FIXED
+Document: `sdk/docs/architecture.md`, `sdk/docs/iescript.md`, the Architecture
+and IEScript empirical inventories, and companion gates.
+Section: M68020 exact self-modifying-code tracking and presentation scale API.
+Claim: Commits `40a2fb18` and `39f057e0` add explicit IEScript presentation
+scale selection, expand M68020 JIT diagnostics, and replace page-granular
+M68020 code-write detection with sparse exact byte occupancy on amd64, arm64,
+and wasm. A write to a data gap on a page containing compiled code does not
+invalidate code; removing a block rebuilds occupancy for every page it covered.
+Purpose judgement: Host presentation controls and returned diagnostics belong
+in IEScript. Cross-backend JIT cache and invalidation behaviour belongs in
+Architecture. Neither processor ISA nor IEMon command behaviour changed.
+Canonical sources checked: complete diffs from `ca712763..39f057e0` and the
+tracked tree; `script_engine.go`, `video_compositor.go`,
+`script_scale_control_test.go`, `cpu_m68k.go`, `jit_m68k_exec.go`,
+`jit_m68k_exec_arm64.go`, `jit_m68k_emit_amd64.go`,
+`jit_m68k_emit_arm64.go`, `jit_m68k_wasm_emit.go`, and their focused tests.
+Runnable verification: source-inventory golden generation and coverage,
+companion-document and ledger gates, focused scale-control and exact-range SMC
+tests, `make check-docs`, PDF manifest verification, and final five-book PDF
+inspection.
+Observed result: Retained and verified the complete two-function IEScript API
+entries and expanded M68020 statistics field list. Replaced Architecture's
+stale page-bitmap wording with the exact byte-overlap contract and added
+semantic inventory rows for both changes. Updated modification dates only for
+the two changed manuals.
+Action: Updated the two affected manuals, inventory generator and goldens,
+companion gates, and this ledger. Regenerate all five PDFs and the render
+manifest after all pre-render gates pass.
+Notes: `go.sum` and website-only commits in the reviewed range have no
+five-book contract effect. Untracked files were excluded. The protected
+`sdk/docs/refman/` and `sdk/docs/refman.publish/` trees were not edited.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -3749,7 +3784,7 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0089`, `SDK-DOC-0090`, `SDK-DOC-0091`,
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
-`SDK-DOC-0100`
+`SDK-DOC-0100`, `SDK-DOC-0101`, `SDK-DOC-0102`, and `SDK-DOC-0103`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -3831,7 +3866,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0100` and
+Open claim-group backlog: none for this run after `SDK-DOC-0103` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate

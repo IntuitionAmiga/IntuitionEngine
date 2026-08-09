@@ -282,8 +282,42 @@ inspection:
 | `video.get_crt_mode()` | Return `"flat"`, `"curved"`, or `"off"`. |
 | `video.set_crt_mode(mode)` | Select `"flat"`, `"curved"`, or `"off"`. |
 | `video.cycle_crt_mode()` | Advance flat, curved, off, flat; return the new mode. |
+| `video.get_scale_mode()` | Return `"fit"` or `"stretch"`. |
+| `video.set_scale_mode(mode)` | Select `"fit"` or `"stretch"`. |
 
-### 34.9.1 CRT presentation and two-stage capture
+### 34.9.1 Presentation scale
+
+Presentation scale controls how a source rectangle is placed in the final
+output. `stretch` is the default. It fills the output even when that changes
+the source aspect ratio. `fit` preserves the aspect ratio and centres the
+source in the largest matching rectangle. A source which already matches the
+output aspect ratio looks the same in either mode.
+
+The calls report and change presentation state only. They do not write video
+MMIO, alter source framebuffer bytes, or inject a key into the running
+programme.
+
+This example saves the current mode, selects `fit`, checks it, then restores
+the saved mode:
+
+```ies
+old_scale = video.get_scale_mode()
+video.set_scale_mode('fit')
+sys.print('SCALE ' .. video.get_scale_mode())
+
+video.set_scale_mode(old_scale)
+sys.print('RESTORED ' .. video.get_scale_mode())
+```
+
+The first line printed is `SCALE fit`. On an unchanged startup the second is
+`RESTORED stretch`, because `stretch` is the default. If a script inherited a
+different mode, the second line names that restored mode instead.
+
+`video.get_scale_mode()` raises a script error when the selected output has no
+compositor. `video.set_scale_mode()` raises the same error, and also rejects
+every name except `fit` and `stretch`.
+
+### 34.9.2 CRT presentation and two-stage capture
 
 CRT mode changes the final presentation of the completed picture. It does not
 change video registers, framebuffer bytes, palette values, or the composited

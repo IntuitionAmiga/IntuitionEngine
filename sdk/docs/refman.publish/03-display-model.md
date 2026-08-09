@@ -118,9 +118,17 @@ stack.
 
 A source that produces a frame at the full `1920` × `1080` resolution
 is copied to the output 1:1. A source that produces a smaller frame
-is scaled up by the compositor. The scale mode is **stretch-fill**:
-the source frame is rescaled to fill the entire output area, even
-if the aspect ratios differ.
+is scaled up by the compositor. The default presentation mode is
+**stretch**: the source frame fills the entire output area even when
+the aspect ratios differ. The optional **fit** mode preserves the
+source aspect ratio and centres it in the largest matching rectangle
+inside the output. A source which already matches the output aspect
+ratio uses the same rectangle in both modes.
+
+Presentation scale does not change a display card's resolution,
+framebuffer bytes, or registers. IE Script can inspect and select the
+mode with `video.get_scale_mode()` and `video.set_scale_mode()`; see
+Chapter 34.
 
 ## 3.5 The coordinate system
 

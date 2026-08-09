@@ -211,6 +211,31 @@ with the video card, blitter, or compositor. If it appears only in
 when the selected output cannot provide the requested control or capture
 stage.
 
+### 44.9.1 Check presentation scale
+
+If a picture has the right pixels but the wrong proportions, compare the two
+presentation-scale modes before changing guest drawing code:
+
+```ies
+old_scale = video.get_scale_mode()
+
+video.set_scale_mode('fit')
+sys.wait_frames(2)
+rec.screenshot_composed('fit.png')
+
+video.set_scale_mode('stretch')
+sys.wait_frames(2)
+rec.screenshot_composed('stretch.png')
+
+video.set_scale_mode(old_scale)
+```
+
+If `fit.png` has the intended proportions and `stretch.png` does not, the
+source geometry is sound and presentation stretching caused the difference.
+If both are wrong, inspect the display-card mode, framebuffer dimensions, and
+drawing calculations. This comparison changes no guest register or source
+framebuffer byte, and restores the scale mode that was active before the test.
+
 ## 44.10 Inspect A Stopped Z80 Load
 
 When a Z80 programme needs register setup before its first instruction,

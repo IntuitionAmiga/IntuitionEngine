@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-08-08*
+*Last modified: 2026-08-09*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -605,8 +605,12 @@ The M68020 JIT shares an untagged scanner, admission rules, CCR liveness,
 region formation and tier policy while keeping native and wasm lowering
 target-specific. M68020 JIT memory guards use the profile-visible RAM ceiling,
 and native and wasm stores invalidate compiled code before stale execution.
-The wasm backend additionally checks the captured guest bytes before entry and
-uses a code-page bitmap to stop self-modifying structured loops.
+The wasm backend additionally checks the captured guest bytes before entry.
+All three backends index compiled code by 4 KiB guest pages and retain one
+occupancy bit for each compiled guest byte. A write invalidates code only when
+its byte range overlaps compiled instruction bytes; writes to data gaps on the
+same page do not invalidate code. Removing a block rebuilds the occupancy of
+every page covered by that block from the surviving cache entries.
 
 Hot M68020 native blocks can form bounded regions using constant-address
 propagation, constant-only folding, loop-invariant hoisting, observed-path cold

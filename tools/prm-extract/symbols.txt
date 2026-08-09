@@ -269,6 +269,7 @@ video.get_crt_mode
 video.get_dimensions
 video.get_pixel
 video.get_region
+video.get_scale_mode
 video.gtia_color
 video.gtia_player_gfx
 video.gtia_player_pos
@@ -279,6 +280,7 @@ video.is_enabled
 video.read_reg
 video.set_crt_enabled
 video.set_crt_mode
+video.set_scale_mode
 video.ted_charset
 video.ted_colors
 video.ted_cursor

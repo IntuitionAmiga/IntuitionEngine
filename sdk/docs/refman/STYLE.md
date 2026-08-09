@@ -2327,6 +2327,49 @@ Execute this pass in ascending reader order:
    affected PRG harness and documentation checks, scan for forbidden terms and
    em dashes, publish strictly, and print PDFs last.
 
+## Current IE Script Presentation Scale Pass
+
+This is a focused IE-native scripting and display-model pass. Presentation
+scale is a public IE Script contract, not a video-card register, framebuffer
+format, or host implementation tutorial.
+
+Document only these source-backed programming contracts:
+
+- `stretch` is the default presentation scale mode. It scales each source to
+  the full output rectangle even when the source and output aspect ratios
+  differ.
+- `fit` preserves the source aspect ratio and centres the source in the largest
+  matching rectangle inside the output. Sources which already match the output
+  aspect ratio have the same rectangle in both modes.
+- `video.get_scale_mode()` returns exactly `fit` or `stretch`.
+- `video.set_scale_mode(mode)` accepts exactly `fit` or `stretch` and returns
+  no value. An invalid name or an output without a compositor raises a script
+  error.
+- Script scale selection changes presentation only. It does not write video
+  MMIO, alter source framebuffer bytes, or inject a guest key.
+
+Do not document graphics-library input handling, window or fullscreen policy,
+host rendering algorithms, texture filtering, implementation types, execution
+acceleration, diagnostic counters, platform matrices, or source paths. Those
+facts do not belong in the PRG reader path.
+
+Execute this pass in ascending reader order:
+
+1. Chapter 3: replace the unconditional stretch-fill statement with the
+   default `stretch` and optional `fit` presentation rules, then point to the
+   IE Script control chapter.
+2. Chapter 34: add both scale calls to the Video module table and document
+   purpose, exact names, status, errors, side effects, limitations, and a typed
+   example which saves, changes, checks, and restores the mode.
+3. Chapter 44: add a task-first recipe for distinguishing distorted guest
+   geometry from presentation stretching without changing guest state.
+4. Appendix L: add a concise presentation-scale lookup entry.
+5. Symbol inventory and claim ledger: record both public calls, canonical
+   sources, reader workflow, expected output, and explicit exclusions.
+6. Run the focused scale-control tests, affected PRG harnesses, documentation
+   checks, forbidden-term and dash scans, strict publication, and PDF
+   generation in that order. PDFs remain the final generated artefact.
+
 ## Uniform Chapter Taxonomy
 
 Name hardware chapters after the hardware block, not after every file

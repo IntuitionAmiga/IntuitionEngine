@@ -243,6 +243,7 @@ symbols, and Appendix J gives the full memory map.
 | Performance counters | Chapter 44, Chapter 64 |
 | Polling | Chapter 41 |
 | POKEY | Chapter 17, Chapter 27, Appendix D |
+| Presentation scale modes | Chapter 3, Chapter 34, Chapter 44 |
 | Profiling | Chapter 44, Chapter 64 |
 | PSG | Chapter 13, Chapter 28, Appendix D |
 

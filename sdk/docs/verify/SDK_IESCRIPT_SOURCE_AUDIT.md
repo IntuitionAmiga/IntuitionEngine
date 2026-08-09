@@ -8,7 +8,12 @@
 | IEScript | api contract | `Each pair performs its own ordered 32-bit bus write, exactly as audio.write_reg does.` | `script_engine.go` `luaAudioWriteRegs`, `script_batching_test.go` ordered-write coverage |
 | IEScript | api contract | `IE32 is available on Linux x64, Linux arm64, and browser js/wasm when its runtime backend is available.` | `script_engine.go` `luaCPUSetJITEnabled`, `jit_ie32_available_linux.go`, `jit_ie32_available_wasm.go` |
 | IEScript | api contract | `In IE32 mode, returns backend, instruction_count, native_entries, compiled_blocks, compiled_regions, hot_recompilations, retired_instructions, direct_instructions, helper_instructions, helper_exits, helper_resumes, chains, chain_budget_exits, deoptimizations, helper_deopts, source_stamp_deopts, code_cache_resets, invalidations, invalidated_blocks, cache_hits, return_cache_hits, mmio_poll_iterations, mmio_store_helpers, resident_spills_saved, counted_loops, and profitability_fallbacks.` | `script_engine.go` `luaCPUJITStats`, `jit_ie32_policy.go` `JITStats` |
+| IEScript | api contract | `In m68k mode, returns instruction_count, native_blocks, native_retired, native_chain_instructions, native_no_chain_returns, native_helper_exits, native_exception_exits, native_invalidation_exits, native_mmio_guard_exits, unsupported_one_exits, compile_failure_exits, transcendental_bursts, warmup_instructions, region_promotions, last_native_pc, fallback_instructions, bailouts, last_fallback_pc, last_fallback_opcode, fallback_opcodes, native_pcs, native_invalidation_pcs, native_pc_ring, and compile_failures.` | `script_engine.go` `luaCPUJITStats` m68k table fields |
+| IEScript | api contract | `Raises for an invalid mode or if the selected output has no compositor.` | `script_engine.go` `luaVideoSetScaleMode` and `script_scale_control_test.go` |
+| IEScript | api contract | `Raises if the selected output has no compositor.` | `script_engine.go` `luaVideoGetScaleMode` and `script_scale_control_test.go` |
+| IEScript | api contract | `Return the host presentation scale mode: "fit" for aspect-fit or "stretch" for stretch-fill.` | `script_engine.go` `luaVideoGetScaleMode` and `script_scale_control_test.go` |
 | IEScript | api contract | `Supported for IE32, m68k, z80, x86, 6502, and ie64` | `script_engine.go` `luaCPUJITEnabled` selected-CPU switch |
+| IEScript | api contract | `This is a host presentation action and does not inject a guest key.` | `script_engine.go` `luaVideoSetScaleMode` and `script_scale_control_test.go` |
 | IEScript | api contract | `bit32.arshift(x, disp) masks disp to 0..31, sign-extends, and returns number` | `script_engine.go` `registerBit32` `arshift` |
 | IEScript | api contract | `bit32.btest(...) returns boolean true when the bitwise AND result is non-zero` | `script_engine.go` `registerBit32` `btest` |
 | IEScript | api contract | `bit32.extract(x, field[, width]) raises an error for field < 0, width <= 0, or field + width > 32` | `script_engine.go` `registerBit32` `extract` range check |
@@ -371,6 +376,7 @@
 | IEScript | binding | `video.get_dimensions` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.get_pixel` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.get_region` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `video.get_scale_mode` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.gtia_color` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.gtia_player_gfx` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.gtia_player_pos` | `script_engine.go` `registerModules` binding |
@@ -381,6 +387,7 @@
 | IEScript | binding | `video.read_reg` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.set_crt_enabled` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.set_crt_mode` | `script_engine.go` `registerModules` binding |
+| IEScript | binding | `video.set_scale_mode` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ted_charset` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ted_colors` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `video.ted_cursor` | `script_engine.go` `registerModules` binding |

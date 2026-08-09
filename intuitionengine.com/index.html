@@ -1676,7 +1676,7 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
         <article class="card" style="margin-bottom: 1rem">
           <span class="kicker">CRT presentation</span>
           <h3>CRT presentation after composition</h3>
-          <p>CRT presentation is enabled by default in the live image and browser build. Compositor layers retain their source resolution for scanline spacing, while phosphor persistence, glow, bloom, a colour mask and deconvergence shape the completed frame. Several composited video chips appear as light on one display rather than as separately filtered screens. Press <code>F7</code> to cycle between flat CRT, curved CRT and unfiltered output.</p>
+          <p>CRT presentation is enabled by default in the live image and browser build. Compositor layers retain their source resolution for scanline spacing, while phosphor persistence, glow, bloom, a colour mask and deconvergence shape the completed frame. Several composited video chips appear as light on one display rather than as separately filtered screens. Press <code>F7</code> to cycle between flat CRT, curved CRT and unfiltered output. Pictures fill the output by default. When the active picture has a different aspect ratio, press <code>F11</code> to switch between stretch and aspect-fit presentation.</p>
         </article>
 
         <article class="card" style="margin-bottom: 1rem">
@@ -1823,7 +1823,7 @@ macro frame d pc 8; r</code></pre>
           <article class="card">
             <span class="kicker">Visual checks</span>
             <h3>Frames, hashes, recordings</h3>
-            <p>Scripts wait on compositor frames, pixels, settled frame hashes, or custom visual predicates, so a demo can be automated and then verified pixel-for-pixel across runs. Scripts can select flat, curved or off CRT presentation. They can capture either the composed guest image before CRT and host overlays or the final displayed frame after presentation. The recording module captures screenshots in pure Go with no external dependencies, and MP4 video with audio when FFmpeg is on the PATH, for demo clips and visual regressions.</p>
+            <p>Scripts wait on compositor frames, pixels, settled frame hashes, or custom visual predicates, so a demo can be automated and then verified pixel-for-pixel across runs. Scripts can select flat, curved or off CRT presentation, and fit or stretch scaling. They can capture either the composed guest image before CRT and host overlays or the final displayed frame after presentation. The recording module captures screenshots in pure Go with no external dependencies, and MP4 video with audio when FFmpeg is on the PATH, for demo clips and visual regressions.</p>
             <pre class="code-panel"><code>sys.wait_frames(2)
 video.wait_stable(3, 120)
 hash = video.frame_hash()
