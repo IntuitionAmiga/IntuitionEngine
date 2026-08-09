@@ -15,6 +15,11 @@ import (
 	"unsafe"
 )
 
+// m68kMMIOPollYield is the bounded scheduler hand-off after a complete fast
+// MMIO-poll batch. Tests replace it to prove the dispatcher yields before a
+// stale status loop is re-entered.
+var m68kMMIOPollYield = runtime.Gosched
+
 // M68K JIT configuration
 const m68kJitExecMemSize = 512 * 1024 * 1024 // large enough for long-running high-RAM M68K workloads
 
@@ -38,6 +43,12 @@ func m68kJITTraceExtensionPC() bool {
 // hot guests. Default stays on. Chain-patch stamp validation (cold path) is
 // unaffected by this flag.
 var m68kJITDispatchHashEnabled = os.Getenv("IE_M68K_JIT_DISPATCH_HASH") != "0"
+
+// IE_M68K_JIT_TRACE_INVALIDATIONS=1 prints a bounded sample of native stores
+// that request code invalidation. It is diagnostic-only and deliberately
+// bounded because a bad SMC predicate can otherwise produce thousands/sec.
+var m68kJITTraceInvalidations = os.Getenv("IE_M68K_JIT_TRACE_INVALIDATIONS") == "1"
+var m68kJITTraceInvalidationCount uint32
 
 func m68kJITDiagnosticDisabledPCs() map[uint32]struct{} {
 	raw := os.Getenv("IE_M68K_JIT_DISABLE_PC")
@@ -380,6 +391,7 @@ func (cpu *M68KCPU) initM68KJIT() error {
 	cpu.m68kJitCodeBitmap = make([]byte, pageCount)
 	cpu.m68kJitCodePageMin = make([]uint16, pageCount)
 	cpu.m68kJitCodePageMax = make([]uint16, pageCount)
+	cpu.m68kJitCodePageMap = make([]*[128]uint32, pageCount)
 	cpu.m68kJitCodePageBlocks = make([]map[*JITBlock]struct{}, pageCount)
 	for i := range cpu.m68kJitCodePageMin {
 		cpu.m68kJitCodePageMin[i] = 0xFFFF
@@ -410,6 +422,7 @@ func (cpu *M68KCPU) freeM68KJIT() {
 	cpu.m68kJitCodeBitmap = nil
 	cpu.m68kJitCodePageMin = nil
 	cpu.m68kJitCodePageMax = nil
+	cpu.m68kJitCodePageMap = nil
 	cpu.m68kJitCodePageBlocks = nil
 	cpu.m68kJitCodeLoAddr = 0xFFFFFFFF
 	cpu.m68kJitCodeEnv.Store(uint64(0xFFFFFFFF) << 32)
@@ -462,6 +475,9 @@ func (cpu *M68KCPU) m68kResetJITCodeCache() {
 	if cpu.m68kJitCodePageMax != nil {
 		clear(cpu.m68kJitCodePageMax)
 	}
+	if cpu.m68kJitCodePageMap != nil {
+		clear(cpu.m68kJitCodePageMap)
+	}
 	if cpu.m68kJitCodePageBlocks != nil {
 		clear(cpu.m68kJitCodePageBlocks)
 	}
@@ -485,6 +501,9 @@ func (cpu *M68KCPU) m68kRebuildJITCodeMetadata() {
 	}
 	if cpu.m68kJitCodePageMax != nil {
 		clear(cpu.m68kJitCodePageMax)
+	}
+	if cpu.m68kJitCodePageMap != nil {
+		clear(cpu.m68kJitCodePageMap)
 	}
 	if cpu.m68kJitCodePageBlocks != nil {
 		clear(cpu.m68kJitCodePageBlocks)
@@ -805,34 +824,17 @@ func (cpu *M68KCPU) m68kGuestWriteOverlapsJITCode(addr uint32, size uint32) bool
 	if cpu == nil || size == 0 {
 		return false
 	}
-	if cpu.m68kJitCodePageMin == nil || cpu.m68kJitCodePageMax == nil {
+	if cpu.m68kJitCodePageBlocks == nil {
 		return true
 	}
 	end := uint64(addr) + uint64(size)
-	if end == 0 {
-		return false
-	}
-	startPage := uint64(addr >> 12)
-	endPage := (end - 1) >> 12
-	if endPage >= uint64(len(cpu.m68kJitCodePageMin)) {
-		endPage = uint64(len(cpu.m68kJitCodePageMin) - 1)
-	}
-	for page := startPage; page <= endPage; page++ {
-		minOff := cpu.m68kJitCodePageMin[page]
-		if minOff == 0xFFFF {
-			continue
-		}
-		maxOff := cpu.m68kJitCodePageMax[page]
-		writeStart := uint16(0)
-		if page == startPage {
-			writeStart = uint16(addr & 0xFFF)
-		}
-		writeEnd := uint16(0x1000)
-		if page == endPage {
-			writeEnd = uint16(((end - 1) & 0xFFF) + 1)
-		}
-		if writeEnd > minOff && writeStart < maxOff {
-			return true
+	for page := uint64(addr >> 12); page <= (end-1)>>12 && page < uint64(len(cpu.m68kJitCodePageBlocks)); page++ {
+		for block := range cpu.m68kJitCodePageBlocks[page] {
+			for _, r := range JITBlockCoveredRanges(block) {
+				if r[1] > uint64(addr) && r[0] < end {
+					return true
+				}
+			}
 		}
 	}
 	return false
@@ -878,6 +880,13 @@ func (cpu *M68KCPU) m68kRebuildJITCodeMetadataRange(lo, hi uint64) {
 			cpu.m68kJitCodePageMin[page] = 0xFFFF
 			cpu.m68kJitCodePageMax[page] = 0
 		}
+	}
+	if cpu.m68kJitCodePageMap != nil && startPage < uint64(len(cpu.m68kJitCodePageMap)) {
+		mapEnd := endPage
+		if mapEnd >= uint64(len(cpu.m68kJitCodePageMap)) {
+			mapEnd = uint64(len(cpu.m68kJitCodePageMap) - 1)
+		}
+		clear(cpu.m68kJitCodePageMap[startPage : mapEnd+1])
 	}
 	pageLo := startPage << 12
 	pageHi := (endPage + 1) << 12
@@ -974,6 +983,18 @@ func (cpu *M68KCPU) m68kMarkJITCodeRanges(block *JITBlock) {
 				}
 			}
 		}
+		if cpu.m68kJitCodePageMap != nil {
+			for byteAddr := r[0]; byteAddr < r[1]; byteAddr++ {
+				page := byteAddr >> 12
+				if page < uint64(len(cpu.m68kJitCodePageMap)) {
+					if cpu.m68kJitCodePageMap[page] == nil {
+						cpu.m68kJitCodePageMap[page] = new([128]uint32)
+					}
+					off := byteAddr & 0xFFF
+					cpu.m68kJitCodePageMap[page][off>>5] |= uint32(1) << (off & 31)
+				}
+			}
+		}
 	}
 	// Publish the widened envelope for the cross-thread invalidator gate.
 	// Blocks are marked BEFORE they become reachable in the cache, so a bus
@@ -1042,7 +1063,7 @@ func (cpu *M68KCPU) m68kInterpretFallbackBurstThroughBranches(max int) uint64 {
 // stops on halt/exception/odd-PC/top-of-RAM or when the instruction budget is
 // spent, after which the dispatcher re-checks whether the new PC is still a
 // transcendental block.
-func (cpu *M68KCPU) m68kInterpretTranscendentalBurst(max int) uint64 {
+func (cpu *M68KCPU) m68kInterpretCrossCacheBurst(max int) uint64 {
 	if max <= 0 {
 		return 0
 	}
@@ -1068,6 +1089,10 @@ func (cpu *M68KCPU) m68kInterpretTranscendentalBurst(max int) uint64 {
 		}
 	}
 	return retired
+}
+
+func (cpu *M68KCPU) m68kInterpretTranscendentalBurst(max int) uint64 {
+	return cpu.m68kInterpretCrossCacheBurst(max)
 }
 
 func (cpu *M68KCPU) m68kExecuteJITFPUHelper(pc uint32) uint64 {
@@ -2251,6 +2276,13 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 				break
 			}
 			checkPending(prevInstructionCount)
+			if retired >= uint32(DefaultPollIterationCap*3) {
+				// Let the video/compositor goroutine publish a new status edge
+				// before another complete busy-poll batch. A direct edge wait is
+				// wrong for the two-phase M68K wait (clear, then set): it can wait
+				// past the edge that the guest is meant to observe.
+				m68kMMIOPollYield()
+			}
 			continue
 		}
 
@@ -2824,6 +2856,11 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			cpu.m68kRecordJITNativeInvalPC(uint32(block.startPC))
 			invalAddr := ctx.InvalAddr
 			invalSize := ctx.InvalSize
+			if m68kJITTraceInvalidations && m68kJITTraceInvalidationCount < 32 {
+				m68kJITTraceInvalidationCount++
+				fmt.Printf("M68K JIT invalidation block=%08X write=%08X size=%d deferred=%t ret=%08X\n",
+					uint32(block.startPC), invalAddr, invalSize, deferredInval, ctx.RetPC)
+			}
 			ctx.NeedInval = 0
 			ctx.InvalAddr = 0
 			ctx.InvalSize = 0

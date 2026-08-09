@@ -274,10 +274,12 @@ func newM68KJITContext(cpu *M68KCPU, codePageBitmap []byte, codePageMin []uint16
 	if len(codePageBitmap) > 0 {
 		ctx.CodePageBitmapPtr = uintptr(unsafe.Pointer(&codePageBitmap[0]))
 	}
+	if len(cpu.m68kJitCodePageMap) > 0 {
+		ctx.CodePageMinPtr = uintptr(unsafe.Pointer(&cpu.m68kJitCodePageMap[0]))
+		ctx.CodePageBoundsLen = uint32(len(cpu.m68kJitCodePageMap))
+	}
 	if len(codePageMin) > 0 && len(codePageMax) == len(codePageMin) {
-		ctx.CodePageMinPtr = uintptr(unsafe.Pointer(&codePageMin[0]))
 		ctx.CodePageMaxPtr = uintptr(unsafe.Pointer(&codePageMax[0]))
-		ctx.CodePageBoundsLen = uint32(len(codePageMin))
 	}
 	if len(cpu.m68kJitIOPageBitmap) > 0 {
 		ctx.IOPageBitmapPtr = uintptr(unsafe.Pointer(&cpu.m68kJitIOPageBitmap[0]))

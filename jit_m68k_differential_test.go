@@ -1394,6 +1394,174 @@ func TestM68KJIT_Differential_ADDCarryFeedsSUBXMask(t *testing.T) {
 	runM68KJITDifferentialBlock(t, tc, 2)
 }
 
+// AB3D2's inner renderer loop indexes a byte from the texture source and
+// writes the translated byte through A6.  Keep this as a native memory-write
+// differential: register parity alone cannot detect a bad rendered surface.
+func TestM68KJIT_Differential_AB3D2RendererInnerLoopWrite(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	const output = uint32(0x009C9890)
+	tc := m68kDiffCase{
+		name: "ab3d2_renderer_inner_loop_write",
+		words: []uint16{
+			0x1030, 0x1200, // MOVE.B 0(A0,D1.W),D0
+			0xE408,         // LSR.B #2,D0
+			0xC03C, 0x001F, // AND.B #$1F,D0
+			0x670A,         // BEQ.S skip translate lookup
+			0xE148,         // LSL.W #8,D0
+			0xD040,         // ADD.W D0,D0
+			0x1016,         // MOVE.B (A6),D0
+			0x1CB4, 0x0000, // MOVE.B 0(A4,D0.W),(A6)
+			0x4DEE, 0x0140, // LEA 320(A6),A6
+			0xDC82,         // ADD.L D2,D6
+			0xD342,         // ADDX.W D2,D1
+			0x51CC, 0xFFE0, // DBF D4, loop top
+		},
+		setup: func(cpu *M68KCPU) {
+			cpu.SR = M68K_SR_S
+			cpu.DataRegs[1] = 0x8000004E
+			cpu.DataRegs[2] = 0x78000000
+			cpu.DataRegs[4] = 0x009C0000 // DBF falls through after one iteration.
+			cpu.DataRegs[6] = 0xC800004B
+			cpu.AddrRegs[0] = 0x009C60A8
+			cpu.AddrRegs[4] = 0x008CAB60
+			cpu.AddrRegs[6] = output
+			cpu.Write8(0x009C60F6, 0x38)
+			cpu.Write8(output, 0x06)
+			cpu.Write8(0x008CAB60, 0xA5)
+		},
+		watch:            []m68kDiffMemWatch{{addr: output, size: M68K_SIZE_BYTE}},
+		requireProdSafe:  true,
+		requireNativeRun: true,
+	}
+
+	runM68KJITDifferentialBlockDynamicRetire(t, tc, 12)
+}
+
+// AB3D2 generates small return stubs with this exact post-increment DBF loop.
+// A native run must write every word that the interpreter writes before the
+// counter reaches -1; otherwise the generated guest code remains zero-filled.
+func TestM68KJIT_Differential_AB3D2StubGeneratorPostIncrementDBF(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	tc := m68kDiffCase{
+		name: "ab3d2_stub_generator_move_w_postinc_dbf",
+		words: []uint16{
+			0x30FC, 0x4E75, // MOVE.W #$4E75,(A0)+
+			0x51CF, 0xFFFA, // DBF D7, loop top
+		},
+		setup: func(cpu *M68KCPU) {
+			cpu.SR = M68K_SR_S
+			cpu.DataRegs[7] = 0x03FF // AB3D2 emits 1,024 RTE stubs.
+			cpu.AddrRegs[0] = 0x00002000
+		},
+		watch: []m68kDiffMemWatch{
+			{addr: 0x00002000, size: M68K_SIZE_WORD},
+			{addr: 0x00002400, size: M68K_SIZE_WORD},
+			{addr: 0x000027FE, size: M68K_SIZE_WORD},
+		},
+		requireProdSafe:  true,
+		requireNativeRun: true,
+	}
+
+	runM68KJITDifferentialBlockDynamicRetire(t, tc, 2)
+}
+
+// The direct compiler test above is deliberately complemented by this complete
+// production-dispatcher case.  AB3D2's failure occurs after the dispatcher has
+// installed and entered the native block at its original address.
+func TestM68KJIT_Differential_AB3D2StubGeneratorProductionDispatcher(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	const (
+		startPC  = uint32(0x0002A9B8)
+		returnPC = uint32(0x00029E70)
+		output   = uint32(0x006EF800)
+		stack    = uint32(0x00100000)
+	)
+	program := []uint16{
+		0x30FC, 0x4E75, // MOVE.W #$4E75,(A0)+
+		0x51CF, 0xFFFA, // DBF D7, loop top
+		0x41F9, 0x006E, 0xFEF2,
+		0x30FC, 0x4EF9,
+		0x20BC, 0x0002, 0x9E70,
+		0x4E75,
+	}
+	setup := func(cpu *M68KCPU) {
+		cpu.PC = startPC
+		cpu.SR = M68K_SR_S
+		cpu.DataRegs[7] = 0x03FF
+		cpu.AddrRegs[0] = output
+		cpu.AddrRegs[7] = stack
+		cpu.Write32(stack, returnPC)
+		writeM68KWords(cpu, startPC, program...)
+		writeM68KWords(cpu, returnPC, 0x4E72, 0x2700) // STOP #$2700
+	}
+
+	interp := newM68KTestProgramCPU(t, startPC)
+	setup(interp)
+	runM68KInterpreterUntilStopped(t, interp)
+
+	jit := newM68KTestProgramCPU(t, startPC)
+	jit.m68kJitEnabled = true
+	setup(jit)
+	runM68KJITUntilStopped(t, jit)
+
+	assertM68KCoreStateEqual(t, jit, interp)
+	for _, addr := range []uint32{output, output + 0x400, output + 0x7FE} {
+		if got, want := jit.Read16(addr), interp.Read16(addr); got != want {
+			t.Fatalf("generated stub at 0x%08X = 0x%04X, want 0x%04X", addr, got, want)
+		}
+	}
+}
+
+func TestM68KJIT_Differential_AB3D2RendererCCRProductionDispatcher(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	const startPC = uint32(0x00011236)
+	program := []uint16{
+		0x1030, 0x1200, 0xE408, 0xC03C, 0x001F, 0x670A,
+		0xE148, 0xD040, 0x1016, 0x1CB4, 0x0000, 0x4DEE,
+		0x0140, 0xDC82, 0xD342, 0x51CC, 0xFFE0,
+		0x381F, 0x51CB, 0xFF3C, // MOVE.W (A7)+,D4; DBF D3,$11198
+	}
+	setup := func(cpu *M68KCPU) {
+		cpu.PC = startPC
+		cpu.SR = M68K_SR_S
+		cpu.DataRegs = [8]uint32{0x00002004, 0x8000004E, 0x78000000, 0x00390001,
+			0x009C0000, 0x8000004B, 0xC800004B, 0x0005FA00}
+		cpu.AddrRegs = [8]uint32{0x009C60A8, 0x00000009, 0x0000AA00, 0x000851E8,
+			0x008CAB60, 0x009C9890, 0x0010097B, 0x00019000}
+		cpu.Write8(0x009C60F6, 0x38)
+		cpu.Write8(0x0010097B, 0x06)
+		cpu.Write8(0x008CAB66, 0xA5)
+		cpu.Write16(0x00019000, 0)
+		writeM68KWords(cpu, startPC, program...)
+		writeM68KWords(cpu, 0x00011198, 0x40C7, 0x4E72, 0x2700) // MOVE SR,D7; STOP
+	}
+
+	interp := newM68KTestProgramCPU(t, startPC)
+	setup(interp)
+	runM68KInterpreterUntilStopped(t, interp)
+
+	jit := newM68KTestProgramCPU(t, startPC)
+	jit.m68kJitEnabled = true
+	setup(jit)
+	runM68KJITUntilStopped(t, jit)
+
+	if got, want := jit.DataRegs[7]&0x1F, interp.DataRegs[7]&0x1F; got != want {
+		t.Fatalf("renderer CCR = 0x%02X, want interpreter 0x%02X", got, want)
+	}
+}
+
 func m68kExtendedArithmeticDiffCases() []m68kDiffCase {
 	var cases []m68kDiffCase
 

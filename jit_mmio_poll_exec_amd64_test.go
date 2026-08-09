@@ -349,6 +349,82 @@ func TestM68KJITFastMMIOPollLoop_BTST_BNE(t *testing.T) {
 	}
 }
 
+// AB3D2 waits for the display-edge bit with this exact sequence at 0x29e50
+// and 0x29e5e.  The MMIO MOVE must not force a native-dispatch round trip
+// merely to execute ANDI.L and its back branch: the fast path must leave the
+// same visible state as three interpreter instructions.
+func TestM68KJITFastMMIOPollLoop_AB3D2ANDILDisplayEdge(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		branch     uint16
+		firstValue uint32
+		lastValue  uint32
+		wantD0     uint32
+		wantZ      bool
+	}{
+		{name: "BNE_waits_for_clear", branch: 0x66F2, firstValue: 0x2, lastValue: 0, wantD0: 0, wantZ: true},
+		{name: "BEQ_waits_for_set", branch: 0x67F2, firstValue: 0, lastValue: 0x2, wantD0: 0x2, wantZ: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newCPU := func() (*M68KCPU, *MachineBus, *int) {
+				bus := NewMachineBus()
+				reads := 0
+				bus.MapIO(0xF0008, 0xF0008, func(addr uint32) uint32 {
+					reads++
+					if reads < 4 {
+						return tc.firstValue
+					}
+					return tc.lastValue
+				}, nil)
+				cpu := NewM68KCPU(bus)
+				cpu.PC = 0x1000
+				cpu.SR = M68K_SR_S | M68K_SR_X | M68K_SR_V | M68K_SR_C
+				cpu.DataRegs[0] = 0xAABBCCDD
+				cpu.running.Store(true)
+				mem := bus.GetMemory()
+				binary.BigEndian.PutUint16(mem[0x1000:], 0x2039) // MOVE.L abs.l,D0
+				binary.BigEndian.PutUint32(mem[0x1002:], 0x000F0008)
+				binary.BigEndian.PutUint16(mem[0x1006:], 0x0280) // ANDI.L #2,D0
+				binary.BigEndian.PutUint32(mem[0x1008:], 0x00000002)
+				binary.BigEndian.PutUint16(mem[0x100C:], tc.branch)
+				return cpu, bus, &reads
+			}
+
+			fast, _, reads := newCPU()
+			matched, retired := fast.tryFastM68KMMIOPollLoop()
+			if !matched {
+				t.Fatal("AB3D2 ANDI.L display-edge poll did not match")
+			}
+			if got, want := fast.PC, uint32(0x100E); got != want {
+				t.Fatalf("fast PC = 0x%08X, want 0x%08X", got, want)
+			}
+			if got, want := *reads, 4; got != want {
+				t.Fatalf("fast MMIO reads = %d, want %d", got, want)
+			}
+			if got, want := retired, uint32(12); got != want {
+				t.Fatalf("fast retired = %d, want %d", got, want)
+			}
+			if got := fast.DataRegs[0]; got != tc.wantD0 {
+				t.Fatalf("fast D0 = 0x%08X, want 0x%08X", got, tc.wantD0)
+			}
+			if gotZ := fast.SR&M68K_SR_Z != 0; gotZ != tc.wantZ {
+				t.Fatalf("fast Z = %v, want %v (SR=0x%04X)", gotZ, tc.wantZ, fast.SR)
+			}
+
+			interp, _, _ := newCPU()
+			for i := 0; i < 64 && interp.PC != fast.PC; i++ {
+				interp.StepOne()
+			}
+			if interp.PC != fast.PC {
+				t.Fatalf("interpreter PC = 0x%08X, never reached 0x%08X", interp.PC, fast.PC)
+			}
+			if interp.DataRegs != fast.DataRegs || interp.AddrRegs != fast.AddrRegs || interp.SR != fast.SR {
+				t.Fatalf("AB3D2 ANDI poll state mismatch: fast D0=0x%08X SR=0x%04X, interpreter D0=0x%08X SR=0x%04X", fast.DataRegs[0], fast.SR, interp.DataRegs[0], interp.SR)
+			}
+		})
+	}
+}
+
 func TestM68KJITFastMMIOPollLoop_BTSTCountdownFunction(t *testing.T) {
 	bus := NewMachineBus()
 	reads := 0

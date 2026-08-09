@@ -724,21 +724,24 @@ type M68KCPU struct {
 	m68kJitLockstep      *m68kJITLockstepSession
 
 	// JIT compiler state
-	m68kJitEnabled        bool
-	m68kJitForceNative    bool // tests only: bypass selected conservative fallback checks
-	m68kJitPersist        bool // keep code cache alive across benchmark iterations
-	m68kJitNativeMaxPC    uint32
-	m68kJitExecMem        any // *ExecMem (typed via accessor)
-	m68kJitCache          *CodeCache
-	m68kJitCtx            *M68KJITContext
-	m68kJitWarmupCounts   map[uint32]uint8
-	m68kJitWarmupLimit    uint8
-	m68kJitIOPageBitmap   []bool
-	m68kJitConstProof     *m68kConstAddrProof
-	m68kJitObserved       m68kObservedRecorder
-	m68kJitCodeBitmap     []byte // code page bitmap for self-mod detection
-	m68kJitCodePageMin    []uint16
-	m68kJitCodePageMax    []uint16
+	m68kJitEnabled      bool
+	m68kJitForceNative  bool // tests only: bypass selected conservative fallback checks
+	m68kJitPersist      bool // keep code cache alive across benchmark iterations
+	m68kJitNativeMaxPC  uint32
+	m68kJitExecMem      any // *ExecMem (typed via accessor)
+	m68kJitCache        *CodeCache
+	m68kJitCtx          *M68KJITContext
+	m68kJitWarmupCounts map[uint32]uint8
+	m68kJitWarmupLimit  uint8
+	m68kJitIOPageBitmap []bool
+	m68kJitConstProof   *m68kConstAddrProof
+	m68kJitObserved     m68kObservedRecorder
+	m68kJitCodeBitmap   []byte // code page bitmap for self-mod detection
+	m68kJitCodePageMin  []uint16
+	m68kJitCodePageMax  []uint16
+	// Sparse exact occupancy: one directory entry per 4 KiB guest page and a
+	// 512-byte leaf only for pages containing compiled instructions.
+	m68kJitCodePageMap    []*[128]uint32
 	m68kJitCodePageBlocks []map[*JITBlock]struct{}
 	// Conservative global envelope [lo,hi) of all compiled JIT code, widened on
 	// m68kMarkJITCodeRanges and reset with the page metadata. Drives the O(1)

@@ -2200,6 +2200,18 @@ func (se *ScriptEngine) luaCPUJITStats() lua.LGFunction {
 				cpu := snap.m68k.cpu
 				L.SetField(tbl, "instruction_count", lua.LNumber(cpu.InstructionCount))
 				L.SetField(tbl, "native_blocks", lua.LNumber(cpu.m68kJitNativeBlocksExecuted.Load()))
+				L.SetField(tbl, "native_retired", lua.LNumber(cpu.m68kJitNativeRetCountSum.Load()))
+				L.SetField(tbl, "native_chain_instructions", lua.LNumber(cpu.m68kJitNativeChainCountSum.Load()))
+				L.SetField(tbl, "native_no_chain_returns", lua.LNumber(cpu.m68kJitNativeNoChainReturns.Load()))
+				L.SetField(tbl, "native_helper_exits", lua.LNumber(cpu.m68kJitNativeHelperExits.Load()))
+				L.SetField(tbl, "native_exception_exits", lua.LNumber(cpu.m68kJitNativeExceptionExits.Load()))
+				L.SetField(tbl, "native_invalidation_exits", lua.LNumber(cpu.m68kJitNativeInvalExits.Load()))
+				L.SetField(tbl, "native_mmio_guard_exits", lua.LNumber(cpu.m68kJitMMIOGuardExits.Load()))
+				L.SetField(tbl, "unsupported_one_exits", lua.LNumber(cpu.m68kJitUnsupportedOneExits.Load()))
+				L.SetField(tbl, "compile_failure_exits", lua.LNumber(cpu.m68kJitCompileFailureExits.Load()))
+				L.SetField(tbl, "transcendental_bursts", lua.LNumber(cpu.m68kJitTranscendentalBursts.Load()))
+				L.SetField(tbl, "warmup_instructions", lua.LNumber(cpu.m68kJitWarmupInstructions.Load()))
+				L.SetField(tbl, "region_promotions", lua.LNumber(cpu.m68kJitRegionPromotions.Load()))
 				L.SetField(tbl, "last_native_pc", lua.LNumber(cpu.m68kJitLastNativePC.Load()))
 				L.SetField(tbl, "fallback_instructions", lua.LNumber(cpu.m68kJitFallbackInstructions.Load()))
 				L.SetField(tbl, "bailouts", lua.LNumber(cpu.m68kJitBailoutCount.Load()))
@@ -2207,6 +2219,7 @@ func (se *ScriptEngine) luaCPUJITStats() lua.LGFunction {
 				L.SetField(tbl, "last_fallback_opcode", lua.LNumber(cpu.m68kJitLastFallbackOpcode.Load()))
 				L.SetField(tbl, "fallback_opcodes", se.luaM68KJITFallbackOpcodeStats(L, cpu, 16))
 				L.SetField(tbl, "native_pcs", se.luaM68KJITNativePCStats(L, cpu, 16))
+				L.SetField(tbl, "native_invalidation_pcs", se.luaM68KJITNativeInvalidationPCStats(L, cpu, 16))
 				L.SetField(tbl, "native_pc_ring", se.luaM68KJITNativePCRing(L, cpu))
 				L.SetField(tbl, "compile_failures", se.luaM68KJITCompileFailures(L, cpu, 16))
 			}
@@ -2350,6 +2363,39 @@ func (se *ScriptEngine) luaM68KJITNativePCStats(L *lua.LState, cpu *M68KCPU, lim
 		L.SetField(entry, "pc", lua.LNumber(stat.pc))
 		L.SetField(entry, "count", lua.LNumber(stat.count))
 		L.RawSetInt(tbl, i+1, entry)
+	}
+	return tbl
+}
+
+// luaM68KJITNativeInvalidationPCStats reports native block entries that exited
+// for a guest code write. It is deliberately separate from native_pcs: one
+// attributes throughput, the other attributes cache churn.
+func (se *ScriptEngine) luaM68KJITNativeInvalidationPCStats(L *lua.LState, cpu *M68KCPU, limit int) *lua.LTable {
+	cpu.m68kJitNativePCMu.Lock()
+	stats := make([]m68kJITNativePCStat, 0, len(cpu.m68kJitNativeInvalPCCounts))
+	for pc, count := range cpu.m68kJitNativeInvalPCCounts {
+		if count != 0 {
+			stats = append(stats, m68kJITNativePCStat{pc: pc, count: count})
+		}
+	}
+	cpu.m68kJitNativePCMu.Unlock()
+
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].count == stats[j].count {
+			return stats[i].pc < stats[j].pc
+		}
+		return stats[i].count > stats[j].count
+	})
+	if limit > 0 && len(stats) > limit {
+		stats = stats[:limit]
+	}
+
+	tbl := L.NewTable()
+	for i, stat := range stats {
+		entry := L.NewTable()
+		L.SetField(entry, "pc", lua.LNumber(stat.pc))
+		L.SetField(entry, "count", lua.LNumber(stat.count))
+		tbl.RawSetInt(i+1, entry)
 	}
 	return tbl
 }

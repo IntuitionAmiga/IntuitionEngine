@@ -857,46 +857,59 @@ func (e *m68kA64Emitter) emitStoreBE(src, addrReg, scratch byte, size uint32) {
 }
 
 // emitSMCStoreCheck sets NeedInval/InvalAddr/InvalSize when the just-written
-// guest range touches a code page. Both the first and last byte's 4 KiB pages
-// are probed, so a word or long store that straddles a page boundary into a
-// compiled page is still caught (otherwise native chaining could run the
-// modified stale block before the dispatcher's stamp re-check). The per-page
-// code bitmap covers all of guest RAM and the store's bounds guard already
-// proved addr+size <= MemSize, so no extra bounds check is needed; a nil bitmap
-// (no compiled code, or a test context without one) short-circuits. This is the
-// arm64 analogue of the amd64 m68kEmitSMCInvalidateByteRangeCheck: the
-// dispatcher performs the precise-range invalidation on return. Clobbers scratch
-// and Tmp6; preserves addrReg.
+// guest range touches an exact compiled byte. Every written byte is probed so
+// a store straddling compiled data still exits
+// before native chaining can run stale code. CodePageMinPtr carries the shared
+// byte bitmap here (one bit per guest byte); a nil map
+// short-circuits. CBZ/CBNZ and the logical operations below do not modify NZCV,
+// preserving a pending guest condition result. Clobbers scratch and Tmp4-Tmp6;
+// preserves addrReg.
 func (e *m68kA64Emitter) emitSMCStoreCheck(addrReg, scratch byte, size uint32) {
 	cb := e.cb
-	cb.Emit32(arm64LDR_imm(m68kA64Tmp6, m68kA64Ctx, m68kCtxOffCodePageBitmapPtr/8))
-	noBitmap := e.localFwdCBZ(m68kA64Tmp6)
-
-	// First page.
-	cb.Emit32(arm64LSR_W_imm(scratch, addrReg, 12))
-	cb.Emit32(arm64LDRB_reg(scratch, m68kA64Tmp6, scratch))
-	hit := e.localFwdCBNZ(scratch)
-
-	var toEnd m68kA64BranchSite
-	if size > 1 {
-		// Last byte's page (only differs on a boundary-straddling store).
-		cb.Emit32(arm64ADD_W_imm(scratch, addrReg, size-1))
-		cb.Emit32(arm64LSR_W_imm(scratch, scratch, 12))
-		cb.Emit32(arm64LDRB_reg(scratch, m68kA64Tmp6, scratch))
-		toEnd = e.localFwdCBZ(scratch) // last page unmarked too: no SMC
-	} else {
-		toEnd = e.localFwdB() // single-byte store, first page missed: no SMC
+	var noMap, hit []m68kA64BranchSite
+	for offset := uint32(0); offset < size; offset++ {
+		if offset == 0 {
+			cb.Emit32(arm64ORR_W_lsl(scratch, addrReg, addrReg, 0))
+		} else {
+			cb.Emit32(arm64ADD_W_imm(scratch, addrReg, offset))
+		}
+		cb.Emit32(arm64LDR_imm(m68kA64Tmp6, m68kA64Ctx, m68kCtxOffCodePageMinPtr/8))
+		noMap = append(noMap, e.localFwdCBZ(m68kA64Tmp6))
+		cb.Emit32(arm64LSR_W_imm(m68kA64Tmp5, scratch, 12))
+		// The map is sized from guest RAM, while a store address can be an
+		// MMIO address. Do not let a diagnostic or an I/O path index host
+		// memory outside the map.
+		cb.Emit32(arm64LDR_W_imm(m68kA64Tmp4, m68kA64Ctx, m68kCtxOffCodePageBoundsLen/4))
+		cb.Emit32(arm64CMP_W(m68kA64Tmp5, m68kA64Tmp4))
+		noMap = append(noMap, e.localFwdBcond(m68kA64CondCS))
+		cb.Emit32(arm64LSL_W_imm(m68kA64Tmp5, m68kA64Tmp5, 3))
+		cb.Emit32(arm64LDR_reg(m68kA64Tmp6, m68kA64Tmp6, m68kA64Tmp5))
+		noMap = append(noMap, e.localFwdCBZ(m68kA64Tmp6))
+		// ((addr & 0xFFF) >> 5) * 4 selects the leaf uint32.
+		cb.Emit32(arm64LSL_W_imm(m68kA64Tmp5, scratch, 20))
+		cb.Emit32(arm64LSR_W_imm(m68kA64Tmp5, m68kA64Tmp5, 25))
+		cb.Emit32(arm64LSL_W_imm(m68kA64Tmp5, m68kA64Tmp5, 2))
+		cb.Emit32(arm64LDR_W_reg(m68kA64Tmp5, m68kA64Tmp6, m68kA64Tmp5))
+		m68kA64MovImm32(cb, m68kA64Tmp6, 1)
+		cb.Emit32(arm64LSLV_W(m68kA64Tmp6, m68kA64Tmp6, scratch))
+		cb.Emit32(arm64AND_W(scratch, m68kA64Tmp5, m68kA64Tmp6))
+		hit = append(hit, e.localFwdCBNZ(scratch))
+	}
+	toEnd := e.localFwdB()
+	for _, site := range hit {
+		e.bindLocal(site)
 	}
 
 	// Marked: record the exact written range and flag invalidation.
-	e.bindLocal(hit)
 	cb.Emit32(arm64STR_W_imm(addrReg, m68kA64Ctx, m68kCtxOffInvalAddr/4))
 	m68kA64MovImm32(cb, m68kA64Tmp6, size)
 	cb.Emit32(arm64STR_W_imm(m68kA64Tmp6, m68kA64Ctx, m68kCtxOffInvalSize/4))
 	m68kA64MovImm32(cb, m68kA64Tmp6, 1)
 	cb.Emit32(arm64STR_W_imm(m68kA64Tmp6, m68kA64Ctx, m68kCtxOffNeedInval/4))
 
-	e.bindLocal(noBitmap)
+	for _, site := range noMap {
+		e.bindLocal(site)
+	}
 	e.bindLocal(toEnd)
 }
 

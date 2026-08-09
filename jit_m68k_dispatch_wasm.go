@@ -23,8 +23,8 @@
 // live memory before the block runs, so a modified block recompiles rather than
 // executing stale code. Milestone 6 adds structured in-block loops, which can
 // re-execute their own body without returning to the dispatcher, so the
-// dispatcher also maintains a per-4KiB code-page bitmap (CodePageBitmapPtr): a
-// store into a compiled-code page sets NeedInval, a loop exits at that point,
+// dispatcher also maintains an exact compiled-byte bitmap (CodePageMinPtr): a
+// store that touches compiled code sets NeedInval, a loop exits at that point,
 // and the dispatcher drops the block cache.
 //
 // Interpreter fallback. A block that hits a guarded I/O access or a RAM bound
@@ -78,12 +78,12 @@ type m68kWasmRuntime struct {
 	ceiling   uint32 // profile-visible RAM ceiling (ProfileTopOfRAM); the guard bound
 	cache     map[uint32]*m68kWasmBlock
 	blacklist map[uint32]bool
-	// codePageBitmap marks each 4 KiB guest page holding compiled code. Stores
-	// into a marked page set NeedInval, which lets a structured in-block loop
+	// codeBytePages sparsely marks each compiled guest byte. Stores into a marked byte set
+	// NeedInval, which lets a structured in-block loop
 	// (milestone 6) exit before re-running self-modified code; the dispatcher
 	// then drops the cache. Straight-line blocks stay safe via the pre-entry
 	// stamp check either way.
-	codePageBitmap []byte
+	codeBytePages []*[128]uint32
 }
 
 // m68kWasmJITEnabled reports whether the wasm M68020 JIT should run: default on,
@@ -140,7 +140,7 @@ func newM68KWasmRuntime(cpu *M68KCPU) *m68kWasmRuntime {
 		cache:     map[uint32]*m68kWasmBlock{},
 		blacklist: map[uint32]bool{},
 	}
-	rt.codePageBitmap = make([]byte, (rt.ceiling>>12)+1)
+	rt.codeBytePages = make([]*[128]uint32, (rt.ceiling+4095)>>12)
 	rt.ctxAddr = int(uintptr(unsafe.Pointer(&rt.ctxImage[0])))
 	rt.fillStaticCtx()
 	return rt
@@ -179,9 +179,10 @@ func (rt *m68kWasmRuntime) fillStaticCtx() {
 	// Stack floor/ceiling for the milestone 6 push/pop guards (BSR/JSR/RTS).
 	putPtr(m68kCtxOffStackLowerBoundPtr, unsafe.Pointer(&cpu.stackLowerBound))
 	putPtr(m68kCtxOffStackUpperBoundPtr, unsafe.Pointer(&cpu.stackUpperBound))
-	// Code-page bitmap: stores into compiled-code pages set NeedInval so
+	// Exact code-byte map: stores into compiled code set NeedInval so
 	// structured in-block loops exit before re-running self-modified code.
-	putPtr(m68kCtxOffCodePageBitmapPtr, unsafe.Pointer(&rt.codePageBitmap[0]))
+	putPtr(m68kCtxOffCodePageMinPtr, unsafe.Pointer(&rt.codeBytePages[0]))
+	putU32(m68kCtxOffCodePageBoundsLen, uint32(len(rt.codeBytePages)))
 }
 
 func (rt *m68kWasmRuntime) ctxU32(off int) uint32 {
@@ -250,8 +251,15 @@ func (rt *m68kWasmRuntime) compile(pc uint32) (blk *m68kWasmBlock) {
 		ranges = append(ranges, [2]uint32{lo, hi})
 		snapshot := append([]byte(nil), cpu.memory[lo:hi]...)
 		guest = append(guest, snapshot)
-		for page := lo >> 12; page <= (hi-1)>>12 && int(page) < len(rt.codePageBitmap); page++ {
-			rt.codePageBitmap[page] = 1
+		for addr := lo; addr < hi; addr++ {
+			page := addr >> 12
+			if int(page) < len(rt.codeBytePages) {
+				if rt.codeBytePages[page] == nil {
+					rt.codeBytePages[page] = new([128]uint32)
+				}
+				off := addr & 0xFFF
+				rt.codeBytePages[page][off>>5] |= 1 << (off & 31)
+			}
 		}
 	}
 	return &m68kWasmBlock{fn: fn, startPC: pc, endPC: endPC, instrCount: prefix, ranges: ranges, guest: guest}
@@ -387,9 +395,7 @@ func (rt *m68kWasmRuntime) dispatch() {
 			// catch a stale straight-line block anyway; this keeps loops safe.
 			rt.cache = map[uint32]*m68kWasmBlock{}
 			rt.blacklist = map[uint32]bool{}
-			for i := range rt.codePageBitmap {
-				rt.codePageBitmap[i] = 0
-			}
+			clear(rt.codeBytePages)
 		}
 
 		if rt.ctxU32(m68kCtxOffNeedIOFallback) != 0 {

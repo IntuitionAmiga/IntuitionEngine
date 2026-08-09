@@ -29,7 +29,8 @@ const (
 	m68kWasmTestFPIAR    = uint32(0x4550)
 	m68kWasmTestStackLo  = uint32(0x4560) // cell holding cpu.stackLowerBound
 	m68kWasmTestStackHi  = uint32(0x4564) // cell holding cpu.stackUpperBound
-	m68kWasmTestCodeBmp  = uint32(0x4600) // per-4KiB-page code bitmap (SMC tests)
+	m68kWasmTestCodeBmp  = uint32(0x4600) // exact code-byte map (SMC tests)
+	m68kWasmTestCodeLeaf = uint32(0x5000)
 	m68kWasmTestGuestOff = uint32(0x8000)
 	m68kWasmTestGuestLen = uint32(0x8000)
 )
@@ -44,8 +45,8 @@ var m68kWasmTestStackBounds = [2]uint32{0, 0xFFFFFFF0}
 // across invocations, exactly as the dispatcher does.
 var m68kWasmTestReinvoke = false
 
-// m68kWasmTestCodePages, when true, marks the guest page holding the program
-// in the code-page bitmap so stores to it set NeedInval (loop SMC tests).
+// m68kWasmTestCodePages, when true, marks the program's exact first byte so
+// stores to compiled code set NeedInval (loop SMC tests).
 var m68kWasmTestCodePages = false
 
 type m68kWasmState struct {
@@ -130,8 +131,12 @@ func runM68KWasmBlock(t *testing.T, program []byte, initD, initA [8]uint32, init
 	lm.WriteUint32Le(m68kWasmTestStackLo, m68kWasmTestStackBounds[0])
 	lm.WriteUint32Le(m68kWasmTestStackHi, m68kWasmTestStackBounds[1])
 	if m68kWasmTestCodePages {
-		lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffCodePageBitmapPtr, m68kWasmTestCodeBmp)
-		lm.WriteByte(m68kWasmTestCodeBmp+(m68kWasmTestPC>>12), 1)
+		lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffCodePageMinPtr, m68kWasmTestCodeBmp)
+		lm.WriteUint32Le(m68kWasmTestCtxOff+m68kCtxOffCodePageBoundsLen, (uint32(len(mem))+4095)>>12)
+		page := m68kWasmTestPC >> 12
+		lm.WriteUint32Le(m68kWasmTestCodeBmp+page*4, m68kWasmTestCodeLeaf)
+		off := m68kWasmTestPC & 0xFFF
+		lm.WriteUint32Le(m68kWasmTestCodeLeaf+(off>>5)*4, 1<<(off&31))
 	}
 	if fp != nil {
 		for i, v := range fp.fp {
@@ -873,8 +878,8 @@ func TestM68KWasm_LoopGrid(t *testing.T) {
 	}
 }
 
-// TestM68KWasm_LoopSMC proves a loop body store that hits a compiled-code page
-// (per the code-page bitmap) exits the loop with NeedInval-style early return:
+// TestM68KWasm_LoopSMC proves a loop body store that touches compiled code
+// exits the loop with NeedInval-style early return:
 // the store lands, the instruction is retired, and the resume PC is the next
 // instruction, so the dispatcher can invalidate and recompile.
 func TestM68KWasm_LoopSMC(t *testing.T) {
@@ -882,13 +887,12 @@ func TestM68KWasm_LoopSMC(t *testing.T) {
 	m68kWasmTestCodePages = true
 	defer func() { m68kWasmTestCodePages = savedPages }()
 
-	// move.w D1,(A1) ; dbf D0,<-4>. A1 points into the block's own page
-	// (0x1000-0x1FFF), beyond the code bytes so the stamp itself stays valid.
+	// move.w D1,(A1) ; dbf D0,<-4>. A1 targets the block's first instruction.
 	program := m68kWasmWords(0x3281, 0x51C8, 0xFFFC)
 	var initD, initA [8]uint32
 	initD[0] = 5      // would loop 6 times without the SMC exit
 	initD[1] = 0x4E71 // value stored
-	initA[1] = 0x1800
+	initA[1] = m68kWasmTestPC
 	w := runM68KWasmBlock(t, program, initD, initA, 0x2000, nil, nil)
 	if w.needIOFallback != 0 {
 		t.Fatalf("SMC exit must not be an I/O bail")
@@ -899,8 +903,8 @@ func TestM68KWasm_LoopSMC(t *testing.T) {
 	if w.pc != m68kWasmTestPC+2 {
 		t.Errorf("resume PC = %08X, want %08X (the dbf)", w.pc, m68kWasmTestPC+2)
 	}
-	if w.guest[0x1800] != 0x4E || w.guest[0x1801] != 0x71 {
-		t.Errorf("store did not land: %02X %02X", w.guest[0x1800], w.guest[0x1801])
+	if w.guest[m68kWasmTestPC] != 0x4E || w.guest[m68kWasmTestPC+1] != 0x71 {
+		t.Errorf("store did not land: %02X %02X", w.guest[m68kWasmTestPC], w.guest[m68kWasmTestPC+1])
 	}
 	if w.dregs[0] != 5 {
 		t.Errorf("D0 = %08X, want 5 (dbf not executed)", w.dregs[0])

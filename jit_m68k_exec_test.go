@@ -1034,6 +1034,60 @@ func TestM68KJIT_DefaultDispatcherExecutesNativeAllBccConditions(t *testing.T) {
 	}
 }
 
+// AB3D2's packed-input conversion loop has a series of forward BEQ skips
+// inside a bounded DBF loop.  Each skip target is already in the same compiled
+// block, so returning to the Go dispatcher for it turns a small byte transform
+// into millions of native entries per frame.  This fixture uses the game's
+// actual MOVE.B/AND.B/BEQ/OR.B shape and requires native execution to retain
+// the whole inner loop locally while preserving interpreter state.
+func TestM68KJIT_AB3D2PackedInputLoopStaysInOneNativeBlock(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	const startPC = uint32(0x1000)
+	writeProgram := func(cpu *M68KCPU) {
+		writeM68KWords(cpu, startPC,
+			0x7000,                                 // MOVEQ #0,D0
+			0x1410, 0xC401, 0x6704, 0x803C, 0x0001, // (A0) -> bit 0
+			0x1411, 0xC401, 0x6704, 0x803C, 0x0002, // (A1) -> bit 1
+			0x1413, 0xC401, 0x6704, 0x803C, 0x0004, // (A3) -> bit 2
+			0x1414, 0xC401, 0x6704, 0x803C, 0x0008, // (A4) -> bit 3
+			0x1415, 0xC401, 0x6704, 0x803C, 0x0010, // (A5) -> bit 4
+			0x14C0,         // MOVE.B D0,(A2)+
+			0xE209,         // LSR.B #1,D1
+			0x51CB, 0xFFC4, // DBF D3,$1000
+			0x4E72, 0x2700, // STOP #$2700
+		)
+		cpu.DataRegs[1] = 0x80
+		cpu.DataRegs[3] = 31 // 32 packed output bytes, as in AB3D2's inner pass.
+		cpu.AddrRegs[0] = 0x2000
+		cpu.AddrRegs[1] = 0x2100
+		cpu.AddrRegs[2] = 0x3000
+		cpu.AddrRegs[3] = 0x2200
+		cpu.AddrRegs[4] = 0x2300
+		cpu.AddrRegs[5] = 0x2400
+		for _, addr := range []uint32{0x2000, 0x2100, 0x2200, 0x2300, 0x2400} {
+			cpu.Write8(addr, 0x80)
+		}
+	}
+
+	interp := newM68KTestProgramCPU(t, startPC)
+	writeProgram(interp)
+	runM68KInterpreterUntilStopped(t, interp)
+
+	jit := newM68KTestProgramCPU(t, startPC)
+	jit.m68kJitEnabled = true
+	jit.m68kJitForceNative = true
+	writeProgram(jit)
+	runM68KJITUntilStopped(t, jit)
+
+	assertM68KCoreStateEqual(t, jit, interp)
+	if got := jit.m68kJitNativeBlocksExecuted.Load(); got > 2 {
+		t.Fatalf("packed-input loop returned to dispatcher %d times, want at most 2 native entries", got)
+	}
+}
+
 func TestM68KJIT_DefaultDispatcherExecutesNativeDBFLoop(t *testing.T) {
 	if !m68kJitAvailable {
 		t.Skip("M68K JIT not available")
@@ -4359,6 +4413,50 @@ func TestM68KJIT_DefaultDispatcherUsesFastBTSTMMIOPoll(t *testing.T) {
 	}
 }
 
+// The AB3D2 wait_vsync routine polls VIDEO_STATUS with MOVE.L/ANDI.L/BEQ.
+// An exhausted fast-poll batch must yield before re-entering the stale loop,
+// allowing the compositor goroutine to publish the edge it is waiting for.
+func TestM68KJIT_AB3D2ANDIPollYieldsAfterExhaustedBatch(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	bus := NewMachineBus()
+	vblank := false
+	bus.MapIO(VIDEO_STATUS, VIDEO_STATUS, func(uint32) uint32 {
+		if vblank {
+			return videoStatusVBlank
+		}
+		return 0
+	}, nil)
+	cpu := NewM68KCPU(bus)
+	cpu.PC = 0x1000
+	cpu.SR = M68K_SR_S
+	writeM68KWords(cpu, 0x1000,
+		0x2039, 0x000F, 0x0008, // MOVE.L $F0008,D0
+		0x0280, 0x0000, 0x0002, // ANDI.L #2,D0
+		0x67F2,         // BEQ.S $1000
+		0x7207,         // MOVEQ #7,D1
+		0x4E72, 0x2700, // STOP #$2700
+	)
+	previousYield := m68kMMIOPollYield
+	yields := 0
+	m68kMMIOPollYield = func() {
+		yields++
+		vblank = true
+	}
+	t.Cleanup(func() { m68kMMIOPollYield = previousYield })
+	cpu.m68kJitEnabled = true
+	cpu.m68kJitWarmupLimit = 1
+	runM68KJITUntilStopped(t, cpu)
+	if yields != 1 {
+		t.Fatalf("M68K MMIO poll yields=%d, want 1", yields)
+	}
+	if got := cpu.DataRegs[1]; got != 7 {
+		t.Fatalf("post-poll D1=%d, want 7", got)
+	}
+}
+
 func TestM68KJIT_DefaultDispatcherExecutesAROSDOSMMIOMemoryMOVEViaHelperNoFallback(t *testing.T) {
 	if !m68kJitAvailable {
 		t.Skip("M68K JIT not available")
@@ -7403,6 +7501,101 @@ func TestM68KJIT_DefaultDispatcherRegToMemLongInvalidatesExactCodePage(t *testin
 	}
 	if got := jit.m68kJitBailoutCount.Load(); got != 0 {
 		t.Fatalf("MOVE.L D0,(A0) bailed out %d times", got)
+	}
+}
+
+// TestM68KJIT_DefaultDispatcherByteAccurateSMCGuardRejectsAdjacentData proves
+// native SMC detection does not round a compiled byte range out to a 16-byte
+// segment. AB3D2 keeps mutable state directly beside code, so a write at
+// dstPC+8 must leave the block at dstPC valid.
+func TestM68KJIT_DefaultDispatcherByteAccurateSMCGuardRejectsAdjacentData(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+
+	const (
+		startPC = uint32(0x1000)
+		dstPC   = uint32(0x9000)
+	)
+	jit := newM68KTestProgramCPU(t, startPC)
+	jit.m68kJitEnabled = true
+	jit.m68kJitPersist = true
+	t.Cleanup(jit.freeM68KJIT)
+	if err := jit.initM68KJIT(); err != nil {
+		t.Fatalf("initM68KJIT: %v", err)
+	}
+
+	// The target occupies bytes 0x9000..0x9003; the store starts at 0x9008,
+	// inside the same former 16-byte segment but outside the compiled bytes.
+	dstBlock := &JITBlock{startPC: uint64(dstPC), endPC: uint64(dstPC + 4)}
+	jit.m68kJitCache.Put(dstBlock)
+	jit.m68kMarkJITCodeRanges(dstBlock)
+	jit.DataRegs[0] = 0xA5A5A5A5
+	jit.AddrRegs[0] = dstPC + 8
+	writeM68KStopProgram(jit, startPC, 0x2080) // MOVE.L D0,(A0)
+
+	runM68KJITUntilStopped(t, jit)
+	if got := jit.Read32(dstPC + 8); got != 0xA5A5A5A5 {
+		t.Fatalf("adjacent data long=0x%08X, want 0xA5A5A5A5", got)
+	}
+	if got := jit.m68kJitCache.Get(uint64(dstPC)); got == nil {
+		t.Fatal("adjacent data write invalidated compiled bytes in the same 16-byte segment")
+	}
+	if got := jit.m68kJitNativeInvalExits.Load(); got != 0 {
+		t.Fatalf("native invalidation exits=%d, want 0", got)
+	}
+	if got := jit.m68kJitBailoutCount.Load(); got != 0 {
+		t.Fatalf("adjacent data write bailed to interpreter %d times, want native execution", got)
+	}
+	if got := jit.m68kJitFallbackOpcodeCounts[0x2080].Load(); got != 0 {
+		t.Fatalf("MOVE.L D0,(A0) fell back %d times, want native execution", got)
+	}
+}
+
+func TestM68KJIT_NativeStoreBesideCodeDoesNotTakePageLevelFallback(t *testing.T) {
+	if !m68kJitAvailable {
+		t.Skip("M68K JIT not available")
+	}
+	const (
+		startPC = uint32(0x1000)
+		codePC  = uint32(0x9000)
+		dataPC  = codePC + 8
+	)
+	cpu := newM68KTestProgramCPU(t, startPC)
+	if err := cpu.initM68KJIT(); err != nil {
+		t.Fatalf("initM68KJIT: %v", err)
+	}
+	t.Cleanup(cpu.freeM68KJIT)
+	cpu.m68kMarkJITCodeRanges(&JITBlock{startPC: uint64(codePC), endPC: uint64(codePC + 4)})
+	cpu.AddrRegs[0] = 0x8000
+	cpu.AddrRegs[1] = dataPC
+	cpu.Write8(0x8000, 0xA5)
+	writeM68KWords(cpu, startPC, 0x1290) // MOVE.B (A0),(A1)
+
+	execMem, err := AllocExecMem(64 * 1024)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+	block, err := m68kCompileBlockWithMem(
+		[]M68KJITInstr{{opcode: 0x1290, pcOffset: 0, length: 2, group: 1}},
+		startPC, execMem, cpu.memory,
+	)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	ctx := cpu.m68kJitCtx
+	ctx.NeedIOFallback = 0
+	ctx.NeedInval = 0
+	callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
+	if ctx.NeedIOFallback != 0 {
+		t.Fatal("data store beside compiled code took page-level interpreter fallback")
+	}
+	if ctx.NeedInval != 0 {
+		t.Fatal("data store beside compiled code requested invalidation")
+	}
+	if got := cpu.Read8(dataPC); got != 0xA5 {
+		t.Fatalf("data store = %02X, want A5", got)
 	}
 }
 
@@ -12173,6 +12366,50 @@ func newM68KTestProgramCPU(t *testing.T, startPC uint32) *M68KCPU {
 	cpu.SR = M68K_SR_S
 	cpu.m68kJitWarmupLimit = 1
 	return cpu
+}
+
+// AB3D2 stores input state in the gaps between compiled routines in its HUNK
+// text image. Page min/max metadata must not turn such a data write into SMC.
+func TestM68KJIT_CodePageMetadataRejectsWriteInGapBetweenCompiledRanges(t *testing.T) {
+	cpu := newM68KTestProgramCPU(t, 0x1000)
+	if err := cpu.initM68KJIT(); err != nil {
+		t.Fatalf("initM68KJIT: %v", err)
+	}
+
+	first := &JITBlock{startPC: 0x2A100, endPC: 0x2A180}
+	second := &JITBlock{startPC: 0x2AF80, endPC: 0x2AFF0}
+	cpu.m68kMarkJITCodeRanges(first)
+	cpu.m68kMarkJITCodeRanges(second)
+
+	if cpu.m68kGuestWriteOverlapsJITCode(0x2AEFC, 4) {
+		t.Fatal("write in the gap between compiled ranges was treated as self-modifying code")
+	}
+	if !cpu.m68kGuestWriteOverlapsJITCode(0x2A120, 2) {
+		t.Fatal("write in the first compiled range was not treated as self-modifying code")
+	}
+	if !cpu.m68kGuestWriteOverlapsJITCode(0x2AF90, 2) {
+		t.Fatal("write in the second compiled range was not treated as self-modifying code")
+	}
+}
+
+func TestM68KJIT_CodeOccupancyMetadataDoesNotScaleOneBitPerGuestByte(t *testing.T) {
+	cpu := newM68KTestProgramCPU(t, 0x1000)
+	if err := cpu.initM68KJIT(); err != nil {
+		t.Fatalf("initM68KJIT: %v", err)
+	}
+	t.Cleanup(cpu.freeM68KJIT)
+	pageCount := (len(cpu.memory) + 4095) >> 12
+	directoryBytes := len(cpu.m68kJitCodePageMap) * 8
+	maxSparseDirectoryBytes := pageCount * 8
+	if directoryBytes > maxSparseDirectoryBytes {
+		t.Fatalf("exact-code metadata eagerly allocated %d bytes for %d guest pages; want page-scaled sparse metadata <= %d bytes",
+			directoryBytes, pageCount, maxSparseDirectoryBytes)
+	}
+	for page, leaf := range cpu.m68kJitCodePageMap {
+		if leaf != nil {
+			t.Fatalf("page %d allocated an occupancy leaf before code compilation", page)
+		}
+	}
 }
 
 func runM68KInterpreterUntilStopped(t *testing.T, cpu *M68KCPU) {

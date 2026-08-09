@@ -1031,38 +1031,71 @@ func (e *m68kWasmEmitter) storeMemValueBE(size, valLocal uint32) {
 }
 
 // emitSMCStoreCheck sets NeedInval/InvalAddr/InvalSize when the just-written
-// guest range (EA in wm68kLEA) lands on a page holding compiled code. The
-// per-page code bitmap (CodePageBitmapPtr, one byte per 4 KiB page) is nil in
-// test contexts and when no block is compiled, which short-circuits. This
-// mirrors the arm64 emitSMCStoreCheck so native chaining (milestone 6) can rely
-// on precise invalidation. Uses T0-T2 scratch.
+// guest range (EA in wm68kLEA) lands on an exact compiled byte. The one-bit per
+// guest-byte map is nil in test contexts and when no block is compiled, which
+// short-circuits. Uses T0-T2 scratch.
 func (e *m68kWasmEmitter) emitSMCStoreCheck(size uint32) {
 	b := e.b
-	e.ctxLoadI32(m68kCtxOffCodePageBitmapPtr)
-	b.localSet(wm68kLT0) // bitmap base (0 = none)
+	e.ctxLoadI32(m68kCtxOffCodePageMinPtr)
+	b.localSet(wm68kLT0) // byte-map base (0 = none)
 	b.localGet(wm68kLT0)
 	b.op(wasmOpI32Eqz)
 	b.ifVoid()
 	b.elseBranch()
-	// hit = bitmap[EA>>12] | (size>1 ? bitmap[(EA+size-1)>>12] : 0)
-	b.localGet(wm68kLT0)
-	b.localGet(wm68kLEA)
-	b.i32Const(12)
-	b.op(wasmOpI32ShrU)
-	b.op(wasmOpI32Add)
-	b.memOp(wasmOpI32Load8U, 0, 0)
-	if size > 1 {
-		b.localGet(wm68kLT0)
+	b.i32Const(0)
+	b.localSet(wm68kLT1) // aggregate occupancy hit
+	for offset := uint32(0); offset < size; offset++ {
 		b.localGet(wm68kLEA)
-		b.i32Const(int32(size - 1))
-		b.op(wasmOpI32Add)
+		if offset != 0 {
+			b.i32Const(int32(offset))
+			b.op(wasmOpI32Add)
+		}
 		b.i32Const(12)
 		b.op(wasmOpI32ShrU)
+		b.localSet(wm68kLT2) // sparse directory page index
+		b.localGet(wm68kLT2)
+		e.ctxLoadI32(m68kCtxOffCodePageBoundsLen)
+		b.op(wasmOpI32LtU)
+		b.ifVoid() // an MMIO or otherwise out-of-map address is not code
+		b.localGet(wm68kLT0)
+		b.localGet(wm68kLT2)
+		b.i32Const(2)
+		b.op(wasmOpI32Shl)
 		b.op(wasmOpI32Add)
-		b.memOp(wasmOpI32Load8U, 0, 0)
+		b.memOp(wasmOpI32Load, 2, 0)
+		b.localSet(wm68kLT2) // page leaf pointer
+		b.localGet(wm68kLT2)
+		b.op(wasmOpI32Eqz)
+		b.ifVoid()
+		b.elseBranch()
+		b.localGet(wm68kLT2)
+		b.localGet(wm68kLEA)
+		if offset != 0 {
+			b.i32Const(int32(offset))
+			b.op(wasmOpI32Add)
+		}
+		b.i32Const(5)
+		b.op(wasmOpI32ShrU)
+		b.i32Const(0x7F)
+		b.op(wasmOpI32And)
+		b.i32Const(2)
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32Add)
+		b.memOp(wasmOpI32Load, 2, 0)
+		b.i32Const(1)
+		b.localGet(wm68kLEA)
+		if offset != 0 {
+			b.i32Const(int32(offset))
+			b.op(wasmOpI32Add)
+		}
+		b.op(wasmOpI32Shl)
+		b.op(wasmOpI32And)
+		b.localGet(wm68kLT1)
 		b.op(wasmOpI32Or)
+		b.localSet(wm68kLT1)
+		b.end() // leaf present
+		b.end() // word index in map
 	}
-	b.localSet(wm68kLT1)
 	b.localGet(wm68kLT1)
 	b.ifVoid()
 	e.storeCtxLocal(m68kCtxOffInvalAddr, wm68kLEA)

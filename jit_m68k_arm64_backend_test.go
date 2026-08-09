@@ -2403,6 +2403,82 @@ func TestM68KARM64_SMCExactRange(t *testing.T) {
 	}
 }
 
+// TestM68KARM64_SMCRejectsMutableGap pins the distinction between a page that
+// merely contains compiled code and the exact bytes compiled in
+// it. A data write in the gap must not force a native exit, while a write to a
+// marked segment remains covered by TestM68KARM64_SMCExactRange.
+func TestM68KARM64_SMCRejectsMutableGap(t *testing.T) {
+	execMem, err := AllocExecMem(1 << 20)
+	if err != nil {
+		t.Fatalf("AllocExecMem: %v", err)
+	}
+	defer execMem.Free()
+
+	cpu := m68kARM64NewCPU(t)
+	m68kARM64WriteWords(cpu, m68kARM64TestPC, 0x7001, 0x2080) // moveq #1,d0 ; move.l d0,(a0)
+	const storeAddr = m68kARM64BufBase + 0x180
+	cpu.AddrRegs[0] = storeAddr
+
+	pageCount := (uint32(len(cpu.memory)) + 4095) >> 12
+	bitmap := make([]byte, pageCount)
+	bitmap[storeAddr>>12] = 1 // old page-granular guard would falsely hit.
+	cpu.m68kJitCodePageMap = make([]*[128]uint32, pageCount)
+	compiledAddr := m68kARM64BufBase + 0x20
+	compiledPage := compiledAddr >> 12
+	cpu.m68kJitCodePageMap[compiledPage] = new([128]uint32)
+	compiledOff := compiledAddr & 0xFFF
+	cpu.m68kJitCodePageMap[compiledPage][compiledOff>>5] |= 1 << (compiledOff & 31)
+	ctx := newM68KJITContext(cpu, bitmap, nil, nil)
+
+	instrs := m68kScanBlock(cpu.memory, m68kARM64TestPC)
+	block, err := m68kCompileBlockARM64(instrs[:2], m68kARM64TestPC, execMem, cpu.memory, cpu.ProfileTopOfRAM())
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	callNative(block.execAddr, m68kJITContextPtr(ctx))
+	if ctx.NeedInval != 0 {
+		t.Fatalf("NeedInval=%d, want 0 for mutable data gap at %08X", ctx.NeedInval, uint32(storeAddr))
+	}
+}
+
+func TestM68KARM64_InvalidationClearsRemovedBlockAcrossEveryPage(t *testing.T) {
+	cpu := m68kARM64NewCPU(t)
+	pageCount := (uint32(len(cpu.memory)) + 4095) >> 12
+	cpu.m68kJitCache = NewCodeCache()
+	cpu.m68kJitCodeBitmap = make([]byte, pageCount)
+	cpu.m68kJitCodePageMap = make([]*[128]uint32, pageCount)
+
+	const blockLo = uint64(0x1FF0)
+	const blockHi = uint64(0x2010)
+	block := &JITBlock{startPC: blockLo, endPC: blockHi}
+	survivor := &JITBlock{startPC: 0x3000, endPC: 0x3010}
+	cpu.m68kJitCache.Put(block)
+	cpu.m68kJitCache.Put(survivor)
+	cpu.m68kARM64MarkCodePages(block)
+	cpu.m68kARM64MarkCodePages(survivor)
+	if cpu.m68kJitCodePageMap[1] == nil || cpu.m68kJitCodePageMap[2] == nil {
+		t.Fatal("test block did not populate both occupancy pages")
+	}
+
+	// A write on the first page removes the whole block. Exact occupancy on
+	// the block's second page must disappear as well.
+	cpu.invalidateM68KJITForGuestWrite(uint32(blockLo), 1)
+	if cpu.m68kJitCache.Len() != 1 {
+		t.Fatalf("cache length = %d, want unrelated survivor only", cpu.m68kJitCache.Len())
+	}
+	for page := 1; page <= 2; page++ {
+		if cpu.m68kJitCodeBitmap[page] != 0 {
+			t.Fatalf("page bitmap[%d] remained marked after whole-block eviction", page)
+		}
+		if cpu.m68kJitCodePageMap[page] != nil {
+			t.Fatalf("exact occupancy page %d remained allocated after whole-block eviction", page)
+		}
+	}
+	if cpu.m68kJitCodeBitmap[3] == 0 || cpu.m68kJitCodePageMap[3] == nil {
+		t.Fatal("unrelated surviving block lost occupancy during metadata rebuild")
+	}
+}
+
 // TestM68KARM64_DivLZeroBail pins the zero-divide contract for the 68020 long
 // divide: a DIVL with a zero divisor must bail before touching Dq/Dr so the
 // interpreter raises the trap.

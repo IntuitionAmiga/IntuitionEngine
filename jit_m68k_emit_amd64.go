@@ -4559,6 +4559,10 @@ func m68kEmitADDXSUBX_Dn_Dn(cb *CodeBuffer, opcode uint16, subtract bool) {
 	} else {
 		m68kEmitSizedALURegReg(cb, 0x10, 0x11, dst, src, size) // ADC dst,src
 	}
+	// X follows this ADDX/SUBX carry, not the prior arithmetic instruction.
+	// The block-exit materialiser reads X from its stack slot after DBF or a
+	// branch has clobbered host flags, so publish it before doing any flag work.
+	m68kSaveXToStack(cb)
 	m68kStoreDataReg(cb, dstReg, dst)
 
 	amd64SETcc(cb, amd64CondB, amd64RCX) // C
@@ -5315,28 +5319,13 @@ func m68kEmitMemRangeBailChecks(cb *CodeBuffer, startReg, countReg byte, bailSit
 }
 
 func m68kEmitSMCRangeBailChecks(cb *CodeBuffer, startReg, countReg byte, bailSites *[]int) {
-	amd64MOV_reg_reg32(cb, amd64RAX, startReg)
-	amd64MOV_mem_reg32(cb, amd64RSP, 20, amd64RAX) // original write start for post-check store
-	amd64ALU_reg_reg32(cb, 0x01, amd64RAX, countReg)
-	amd64ALU_reg_imm32_32bit(cb, 5, amd64RAX, 1)
-	amd64SHR_imm(cb, amd64RAX, 12)
-	amd64MOV_mem_reg32(cb, amd64RSP, 32, amd64RAX) // inclusive end page
-	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, 20)
-	amd64SHR_imm(cb, amd64RAX, 12)
-	amd64MOV_reg_mem(cb, amd64RCX, m68kAMD64RegCtx, int32(m68kCtxOffCodePageBitmapPtr))
-	amd64TEST_reg_reg(cb, amd64RCX, amd64RCX)
-	noBitmapOff := amd64Jcc_rel32(cb, amd64CondE)
-	smcLoopOff := cb.Len()
-	cb.EmitBytes(0x3B, 0x44, 0x24, 0x20) // CMP EAX,[RSP+32]
-	smcDoneOff := amd64Jcc_rel32(cb, amd64CondA)
-	cb.EmitBytes(0x80, 0x3C, 0x01, 0x00) // CMP BYTE [RCX+RAX],0
-	*bailSites = append(*bailSites, amd64Jcc_rel32(cb, amd64CondNE))
-	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, 1)
-	smcBackOff := amd64JMP_rel32(cb)
-	patchRel32(cb, smcBackOff, smcLoopOff)
-	patchRel32(cb, smcDoneOff, cb.Len())
-	patchRel32(cb, noBitmapOff, cb.Len())
-	amd64MOV_reg_mem32(cb, startReg, amd64RSP, 20)
+	// SMC is handled after the store by the exact-byte occupancy guard. The old
+	// pre-store page test forced mutable data sharing a code page through the
+	// interpreter and defeated that precision.
+	_ = cb
+	_ = startReg
+	_ = countReg
+	_ = bailSites
 }
 
 // m68kConstAddrDirectOK reports whether the compile-scoped constant-address
@@ -7047,9 +7036,28 @@ func m68kEmitSMCInvalidateRangeCheck(cb *CodeBuffer, addrReg byte, size int) {
 }
 
 func m68kEmitSMCInvalidateByteRangeCheck(cb *CodeBuffer, addrReg byte, accessBytes uint32) {
+	// Both the compact and legacy paths use host flag operations. Preserve a
+	// pending lazy guest CCR before either one, otherwise a later Bcc can read
+	// the bitmap TEST/BT flags rather than the preceding guest instruction.
 	if cs := m68kCurrentCS; cs != nil {
 		m68kMaterializeCCR(cb, cs)
 	}
+	// Check every written byte against the exact code occupancy map. Guest code
+	// routinely places mutable words directly beside instructions, so even a
+	// 16-byte segment map is too coarse for real M68K programs such as AB3D2.
+	// The probe uses RCX for the map pointer, so it can clobber an address held
+	// in RCX. Preserve the architectural write address for every byte and for
+	// the following store.
+	amd64MOV_mem_reg32(cb, amd64RSP, 20, addrReg)
+	for offset := uint32(0); offset < accessBytes; offset++ {
+		amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, 20)
+		if offset != 0 {
+			amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(offset))
+		}
+		m68kEmitSMCInvalidateByteCheck(cb, amd64RAX, accessBytes)
+	}
+	amd64MOV_reg_mem32(cb, addrReg, amd64RSP, 20)
+	return
 	amd64MOV_reg_reg32(cb, amd64RAX, addrReg)
 	amd64MOV_mem_reg32(cb, amd64RSP, 20, amd64RAX) // write start
 	amd64ALU_reg_imm32_32bit(cb, 0, amd64RAX, int32(accessBytes))
@@ -7133,6 +7141,38 @@ func m68kEmitSMCInvalidateByteRangeCheck(cb *CodeBuffer, addrReg byte, accessByt
 	for _, off := range doneOffs {
 		patchRel32(cb, off, doneLabel)
 	}
+}
+
+// m68kEmitSMCInvalidateByteCheck tests one guest byte in the compact exact
+// code occupancy map. The architectural write start is held in [RSP+20] by
+// the enclosing range check.
+func m68kEmitSMCInvalidateByteCheck(cb *CodeBuffer, checkAddr byte, accessBytes uint32) {
+	amd64MOV_reg_reg32(cb, amd64RDX, checkAddr)
+	amd64MOV_reg_reg32(cb, amd64R11, amd64RDX)
+	amd64SHR_imm(cb, amd64R11, 12) // sparse directory page index
+	amd64MOV_reg_mem(cb, amd64RCX, m68kAMD64RegCtx, int32(m68kCtxOffCodePageMinPtr))
+	amd64TEST_reg_reg(cb, amd64RCX, amd64RCX)
+	done := amd64Jcc_rel32(cb, amd64CondE)
+	amd64MOV_reg_mem32(cb, amd64RAX, m68kAMD64RegCtx, int32(m68kCtxOffCodePageBoundsLen))
+	amd64ALU_reg_reg32(cb, 0x39, amd64R11, amd64RAX) // CMP page index, directory length
+	bound := amd64Jcc_rel32(cb, amd64CondAE)
+	amd64SHL_imm(cb, amd64R11, 3)
+	amd64MOV_reg_memSIB(cb, amd64RCX, amd64RCX, amd64R11)
+	amd64TEST_reg_reg(cb, amd64RCX, amd64RCX)
+	noLeaf := amd64Jcc_rel32(cb, amd64CondE)
+	amd64ALU_reg_imm32_32bit(cb, 4, amd64RDX, 0xFFF)
+	// BT dword [leaf], EDX uses the within-page byte index.
+	emitREX(cb, false, amd64RDX, amd64RCX)
+	cb.EmitBytes(0x0F, 0xA3, modRM(0, amd64RDX, amd64RCX))
+	noHit := amd64Jcc_rel32(cb, amd64CondAE)
+	amd64MOV_reg_mem32(cb, amd64RAX, amd64RSP, 20)
+	amd64MOV_mem_reg32(cb, m68kAMD64RegCtx, int32(m68kCtxOffInvalAddr), amd64RAX)
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffInvalSize), accessBytes)
+	amd64MOV_mem_imm32(cb, m68kAMD64RegCtx, int32(m68kCtxOffNeedInval), 1)
+	patchRel32(cb, done, cb.Len())
+	patchRel32(cb, bound, cb.Len())
+	patchRel32(cb, noLeaf, cb.Len())
+	patchRel32(cb, noHit, cb.Len())
 }
 
 // m68kColdExitStub records a deferred cold exit (milestone 7 cold-exit

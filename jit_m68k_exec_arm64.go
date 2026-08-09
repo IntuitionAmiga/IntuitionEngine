@@ -88,31 +88,45 @@ func (cpu *M68KCPU) initM68KJIT() error {
 	// The I/O page bitmap must exist before the context snapshot: the
 	// slice-2 emitter's inline access guards read it through the context.
 	cpu.m68kBuildJITIOPageBitmap()
-	// Per-page code bitmap for native-exit exact-range SMC detection: one byte
-	// per 4 KiB guest page, covering all of guest RAM. Native stores consult it
-	// (emitSMCStoreCheck) and flag NeedInval with the precise byte range.
+	// Retain the page bitmap for shared cache metadata, and initialise the
+	// exact-byte map consumed by the ARM64 native SMC guard.
 	pageCount := (uint32(len(cpu.memory)) + 4095) >> 12
 	cpu.m68kJitCodeBitmap = make([]byte, pageCount)
+	cpu.m68kJitCodePageMap = make([]*[128]uint32, pageCount)
 	cpu.m68kJitCtx = newM68KJITContext(cpu, cpu.m68kJitCodeBitmap, nil, nil)
 	cpu.m68kJitWarmupLimit = m68kJITCompileWarmupLimit()
 	return nil
 }
 
-// m68kARM64MarkCodePages marks every 4 KiB page a freshly compiled block spans
-// so native stores into it flag an SMC invalidation. Marks are conservative:
-// a page stays marked after its block is removed, which only costs a redundant
-// (empty) precise-range invalidation later, never a missed one.
+// m68kARM64MarkCodePages publishes the shared page and exact-byte code
+// metadata for a freshly compiled block. The ARM64 emitter uses the latter to
+// distinguish a true self-modifying store from mutable data on the same page.
 func (cpu *M68KCPU) m68kARM64MarkCodePages(block *JITBlock) {
-	if cpu.m68kJitCodeBitmap == nil || block == nil {
+	if cpu == nil || block == nil {
 		return
 	}
-	last := block.endPC
-	if last > 0 {
-		last--
-	}
-	for p := uint32(block.startPC) >> 12; p <= uint32(last)>>12; p++ {
-		if int(p) < len(cpu.m68kJitCodeBitmap) {
-			cpu.m68kJitCodeBitmap[p] = 1
+	for _, r := range JITBlockCoveredRanges(block) {
+		if r[1] <= r[0] {
+			continue
+		}
+		if cpu.m68kJitCodeBitmap != nil {
+			for page := r[0] >> 12; page <= (r[1]-1)>>12; page++ {
+				if page < uint64(len(cpu.m68kJitCodeBitmap)) {
+					cpu.m68kJitCodeBitmap[page] = 1
+				}
+			}
+		}
+		if cpu.m68kJitCodePageMap != nil {
+			for addr := r[0]; addr < r[1]; addr++ {
+				page := addr >> 12
+				if page < uint64(len(cpu.m68kJitCodePageMap)) {
+					if cpu.m68kJitCodePageMap[page] == nil {
+						cpu.m68kJitCodePageMap[page] = new([128]uint32)
+					}
+					off := addr & 0xFFF
+					cpu.m68kJitCodePageMap[page][off>>5] |= uint32(1) << (off & 31)
+				}
+			}
 		}
 	}
 }
@@ -127,6 +141,7 @@ func (cpu *M68KCPU) freeM68KJIT() {
 		cpu.m68kJitCtx = nil
 		cpu.m68kJitWarmupCounts = nil
 		cpu.m68kJitCodeBitmap = nil
+		cpu.m68kJitCodePageMap = nil
 	}
 }
 
@@ -141,8 +156,61 @@ func (cpu *M68KCPU) invalidateM68KJITForGuestWrite(addr uint32, size uint32) {
 	}
 	end := uint64(addr) + uint64(size)
 	cpu.m68kJitCache.InvalidateRange(uint64(addr), end)
+	cpu.m68kARM64RebuildAllCodeMetadata()
 	// Any removed block leaves a dangling chain-cache entry.
 	m68kARM64ClearChainCache(cpu.m68kJitCtx)
+}
+
+// m68kARM64RebuildAllCodeMetadata reconstructs occupancy from every surviving
+// cache block. InvalidateRange removes whole blocks, which may cover pages
+// outside the triggering write; clearing only the written pages would leave
+// stale exact-byte occupancy on the rest of each removed block.
+func (cpu *M68KCPU) m68kARM64RebuildAllCodeMetadata() {
+	if cpu == nil {
+		return
+	}
+	clear(cpu.m68kJitCodeBitmap)
+	clear(cpu.m68kJitCodePageMap)
+	if cpu.m68kJitCache == nil {
+		return
+	}
+	for _, block := range cpu.m68kJitCache.blocks {
+		cpu.m68kARM64MarkCodePages(block)
+	}
+}
+
+// m68kARM64RebuildCodeMetadataRange removes occupancy for pages touched by an
+// invalidation, then reconstructs it from the surviving cache. This prevents
+// a former instruction address becoming permanently marked after its block is
+// evicted and reused as mutable data.
+func (cpu *M68KCPU) m68kARM64RebuildCodeMetadataRange(lo, hi uint64) {
+	if cpu == nil || hi <= lo {
+		return
+	}
+	firstPage := lo >> 12
+	lastPage := (hi - 1) >> 12
+	if cpu.m68kJitCodeBitmap != nil && firstPage < uint64(len(cpu.m68kJitCodeBitmap)) {
+		if lastPage >= uint64(len(cpu.m68kJitCodeBitmap)) {
+			lastPage = uint64(len(cpu.m68kJitCodeBitmap) - 1)
+		}
+		clear(cpu.m68kJitCodeBitmap[firstPage : lastPage+1])
+	}
+	if cpu.m68kJitCodePageMap != nil && firstPage < uint64(len(cpu.m68kJitCodePageMap)) {
+		mapEnd := lastPage
+		if mapEnd >= uint64(len(cpu.m68kJitCodePageMap)) {
+			mapEnd = uint64(len(cpu.m68kJitCodePageMap) - 1)
+		}
+		clear(cpu.m68kJitCodePageMap[firstPage : mapEnd+1])
+	}
+	pageLo, pageHi := firstPage<<12, (lastPage+1)<<12
+	for _, block := range cpu.m68kJitCache.blocks {
+		for _, r := range JITBlockCoveredRanges(block) {
+			if r[1] > pageLo && r[0] < pageHi {
+				cpu.m68kARM64MarkCodePages(block)
+				break
+			}
+		}
+	}
 }
 
 // m68kARM64ChainCacheInsert records a compiled block's (startPC -> chainEntry)
@@ -209,6 +277,9 @@ func (cpu *M68KCPU) m68kResetJITCodeCache() {
 	// be cleared too.
 	if cpu.m68kJitCodeBitmap != nil {
 		clear(cpu.m68kJitCodeBitmap)
+	}
+	if cpu.m68kJitCodePageMap != nil {
+		clear(cpu.m68kJitCodePageMap)
 	}
 	m68kARM64ClearChainCache(cpu.m68kJitCtx)
 }
@@ -346,7 +417,9 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 			block = cpu.m68kJitCache.Get(uint64(pc))
 		}
 		if block != nil && !m68kGuestBlockBytesStillMatch(cpu.memory, block) {
+			removedLo, removedHi := uint64(block.startPC), uint64(block.endPC)
 			cpu.m68kJitCache.RemoveBlock(block)
+			cpu.m68kARM64RebuildCodeMetadataRange(removedLo, removedHi)
 			block = nil
 			delete(uncompilable, pc)
 			// The removed block may be referenced by a chain-cache entry.
@@ -361,7 +434,7 @@ func (cpu *M68KCPU) M68KExecuteJIT() {
 					continue
 				}
 				instrs := m68kScanBlock(cpu.memory, pc)
-		instrs = m68kFuseJSRLeafCalls(instrs, pc, cpu.memory, cpu.ProfileTopOfRAM())
+				instrs = m68kFuseJSRLeafCalls(instrs, pc, cpu.memory, cpu.ProfileTopOfRAM())
 				prefix := m68kARM64SupportedPrefix(instrs, cpu.memory, pc, cpu.ProfileTopOfRAM())
 				if prefix >= m68kARM64MinPrefix {
 					compiled, err := m68kCompileBlockARM64(instrs[:prefix], pc, execMem, cpu.memory, cpu.ProfileTopOfRAM())

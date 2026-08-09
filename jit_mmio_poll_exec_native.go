@@ -333,7 +333,9 @@ func (cpu *M68KCPU) tryFastM68KMMIOPollLoop() (bool, uint32) {
 	}
 	testLen := uint32(2)
 	testIsBTST := false
+	testIsANDI := false
 	bitNum := uint16(0)
+	andMask := uint32(0)
 	tstOp := binary.BigEndian.Uint16(mem[pc+6:])
 	wantTST := uint16(reg)
 	switch size {
@@ -352,6 +354,16 @@ func (cpu *M68KCPU) tryFastM68KMMIOPollLoop() (bool, uint32) {
 		testLen = 4
 		testIsBTST = true
 		bitNum = binary.BigEndian.Uint16(mem[pc+8:])
+	} else if size == M68K_SIZE_LONG && tstOp == 0x0280|uint16(reg) {
+		// AB3D2's display-edge wait is MOVE.L <MMIO>,D0; ANDI.L #mask,D0;
+		// Bcc.s back.  The immediate is a 32-bit extension, unlike TST and
+		// BTST, so the branch begins six bytes after the MOVE.
+		if uint64(pc)+14 > uint64(len(mem)) {
+			return false, 0
+		}
+		testLen = 6
+		testIsANDI = true
+		andMask = binary.BigEndian.Uint32(mem[pc+8:])
 	} else {
 		return false, 0
 	}
@@ -412,6 +424,15 @@ func (cpu *M68KCPU) tryFastM68KMMIOPollLoop() (bool, uint32) {
 			bit := bitNum & 31
 			bitSet := cpu.DataRegs[reg]&(uint32(1)<<bit) != 0
 			cpu.m68kSetMoveThenBTSTFlags(value, size, !bitSet)
+		} else if testIsANDI {
+			// ANDI.L operates on the full register. Like all logical M68K
+			// operations it preserves X, sets N/Z from its result and clears
+			// V/C. Store the masked result before evaluating the branch so the
+			// visible Dn and CCR state match the interpreter on every exit.
+			value = cpu.DataRegs[reg] & andMask
+			cpu.DataRegs[reg] = value
+			cpu.SetFlagsNZ(value, M68K_SIZE_LONG)
+			cpu.SR &= ^uint16(M68K_SR_V | M68K_SR_C)
 		} else {
 			// MOVE then TST: both set N/Z from the value and clear V/C.
 			cpu.SetFlagsNZ(value, size)
