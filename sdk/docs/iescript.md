@@ -666,6 +666,10 @@ their toggle only switches flat and off.
 
 `video.cycle_crt_mode()` - Advance flat → curved → off → flat, exactly matching F7's host presentation transition. Unlike a physical F7 keypress, it does not inject a guest key. Raises if the selected output has no CRT presentation controller. Returns: string, the new mode.
 
+`video.get_scale_mode()` - Return the host presentation scale mode: `"fit"` for aspect-fit or `"stretch"` for stretch-fill. Raises if the selected output has no compositor. Returns: string.
+
+`video.set_scale_mode(mode)` - Select the host presentation scale mode. `mode` must be `"fit"` for aspect-fit or `"stretch"` for stretch-fill. This is a host presentation action and does not inject a guest key. It has the same scale choices as F11, but can select either mode even before a non-native source is active. Raises for an invalid mode or if the selected output has no compositor. Returns: nothing.
+
 ### General
 
 `video.write_reg(addr, value)` - Write a 32-bit `value` to a video register at bus address `addr` (MMIO). Returns: nothing.
@@ -1824,7 +1828,7 @@ Compact reference for IEScript API functions.
 | `audio.midi_is_playing()` | boolean |
 | `audio.midi_metadata()` | table |
 
-### video (71)
+### video (73)
 
 | Function | Returns |
 |----------|---------|
@@ -1834,6 +1838,8 @@ Compact reference for IEScript API functions.
 | `video.get_crt_mode()` | string |
 | `video.set_crt_mode(mode)` | - |
 | `video.cycle_crt_mode()` | string |
+| `video.get_scale_mode()` | string |
+| `video.set_scale_mode(mode)` | - |
 | `video.write_reg(addr, value)` | - |
 | `video.read_reg(addr)` | number |
 | `video.get_dimensions()` | width, height |

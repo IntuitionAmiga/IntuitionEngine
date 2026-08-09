@@ -983,6 +983,8 @@ func (se *ScriptEngine) registerModules(L *lua.LState, ctx context.Context) {
 		"get_crt_mode":          se.luaVideoCRTMode(),
 		"set_crt_mode":          se.luaVideoSetCRTMode(),
 		"cycle_crt_mode":        se.luaVideoCycleCRTMode(),
+		"get_scale_mode":        se.luaVideoGetScaleMode(),
+		"set_scale_mode":        se.luaVideoSetScaleMode(),
 		"write_reg":             se.luaVideoWriteReg(),
 		"read_reg":              se.luaVideoReadReg(),
 		"get_dimensions":        se.luaVideoGetDimensions(),
@@ -3431,6 +3433,39 @@ func (se *ScriptEngine) luaVideoCycleCRTMode() lua.LGFunction {
 		}
 		L.Push(lua.LString(mode))
 		return 1
+	}
+}
+
+func (se *ScriptEngine) luaVideoGetScaleMode() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if se.compositor == nil {
+			L.RaiseError("host presentation scale control is unavailable for this video output")
+			return 0
+		}
+		if se.compositor.GetScaleMode() == ScaleAspectFit {
+			L.Push(lua.LString("fit"))
+		} else {
+			L.Push(lua.LString("stretch"))
+		}
+		return 1
+	}
+}
+
+func (se *ScriptEngine) luaVideoSetScaleMode() lua.LGFunction {
+	return func(L *lua.LState) int {
+		if se.compositor == nil {
+			L.RaiseError("host presentation scale control is unavailable for this video output")
+			return 0
+		}
+		switch mode := L.CheckString(1); mode {
+		case "fit":
+			se.compositor.SetScaleMode(ScaleAspectFit)
+		case "stretch":
+			se.compositor.SetScaleMode(ScaleStretchFill)
+		default:
+			L.RaiseError("invalid presentation scale mode %q; want fit or stretch", mode)
+		}
+		return 0
 	}
 }
 
