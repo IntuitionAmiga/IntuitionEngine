@@ -183,27 +183,29 @@ assert_no_nested_external_git_checkouts() {
 }
 
 assert_ab3d2_prepares_embed_before_build() {
-  local dry copy_image build_vm
+  local dry copy_original copy_high build_original build_high
   dry="$(make_dry ab3d2)"
-  copy_image="$(printf '%s\n' "$dry" | rg -n 'cp ".*ab3d2_ie68_redux_high\.ie68" "embedded/ab3d2/ab3d2_ie68_redux_high\.ie68"' | head -n 1 | cut -d: -f1 || true)"
-  build_vm="$(printf '%s\n' "$dry" | rg -n 'test-cross-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2-Karlos-TKG-High VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=1' | head -n 1 | cut -d: -f1 || true)"
-  [[ -n "$copy_image" ]] || fail "ab3d2 dry-run does not stage the packed AB3D2 image"
-  [[ -n "$build_vm" ]] || fail "ab3d2 dry-run does not build AB3D2 binaries"
-  [[ "$copy_image" -lt "$build_vm" ]] || fail "ab3d2 builds binaries before refreshing the packed AB3D2 image"
+  copy_original="$(printf '%s\n' "$dry" | rg -n 'AB3D2_SOURCE=\.\./alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68\.ie68' | head -n 1 | cut -d: -f1 || true)"
+  copy_high="$(printf '%s\n' "$dry" | rg -n 'AB3D2_SOURCE=\.\./alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high\.ie68' | head -n 1 | cut -d: -f1 || true)"
+  build_original="$(printf '%s\n' "$dry" | rg -n 'test-cross-amd64-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2 VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=1' | head -n 1 | cut -d: -f1 || true)"
+  build_high="$(printf '%s\n' "$dry" | rg -n 'test-cross-amd64-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2-Karlos-TKG-High VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=1' | head -n 1 | cut -d: -f1 || true)"
+  [[ -n "$copy_original" && -n "$copy_high" ]] || fail "ab3d2 dry-run does not refresh both packed AB3D2 images"
+  [[ -n "$build_original" && -n "$build_high" ]] || fail "ab3d2 dry-run does not build both AB3D2 variants"
+  [[ "$copy_original" -lt "$build_original" && "$build_original" -lt "$copy_high" && "$copy_high" -lt "$build_high" ]] || fail "ab3d2 variants are not staged before their builds"
 }
 
 assert_ab3d2_starts_fullscreen() {
   local dry
   dry="$(make_dry ab3d2)"
-  printf '%s\n' "$dry" | rg -q 'test-cross-binaries .*EMBEDDED_AB3D2_START_FULLSCREEN=1' || \
+  printf '%s\n' "$dry" | rg -q 'test-cross-amd64-binaries .*EMBEDDED_AB3D2_START_FULLSCREEN=1' || \
     fail "AB3D2 package build does not stamp fullscreen startup"
 }
 
 assert_ab3d2_target_packages_redux_high() {
   local dry cp_rom build_vm
   dry="$(make_dry ab3d2)"
-  cp_rom="$(printf '%s\n' "$dry" | rg -n 'cp "\.\./alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high\.ie68" "embedded/ab3d2/ab3d2_ie68_redux_high\.ie68"' | head -n 1 | cut -d: -f1 || true)"
-  build_vm="$(printf '%s\n' "$dry" | rg -n 'test-cross-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2-Karlos-TKG-High VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=1' | head -n 1 | cut -d: -f1 || true)"
+  cp_rom="$(printf '%s\n' "$dry" | rg -n 'AB3D2_SOURCE=\.\./alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high\.ie68' | head -n 1 | cut -d: -f1 || true)"
+  build_vm="$(printf '%s\n' "$dry" | rg -n 'test-cross-amd64-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2-Karlos-TKG-High VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=1' | head -n 1 | cut -d: -f1 || true)"
   [[ -n "$cp_rom" ]] || fail "ab3d2 dry-run does not embed the Redux High IE68 image"
   [[ -n "$build_vm" ]] || fail "ab3d2 dry-run does not build Redux High binaries with the expected prefix"
   [[ "$cp_rom" -lt "$build_vm" ]] || fail "ab3d2 builds binaries before refreshing the embedded ROM"
@@ -424,8 +426,10 @@ assert_makefile_contains 'define build-linux-vm-binary'
 assert_makefile_contains 'define build-purego-novulkan-vm-binary'
 assert_makefile_contains '/opt/ie-sysroots/tumbleweed-aarch64/usr'
 assert_makefile_contains 'test-cross-binaries:'
+assert_makefile_contains 'test-cross-amd64-binaries:'
 assert_makefile_contains 'CROSS_BINARY_PREFIX \?= IntuitionEngine'
 assert_makefile_contains 'AB3D2_BINARY_PREFIX \?= IntuitionEngine-AB3D2-Karlos-TKG-High'
+assert_makefile_contains 'AB3D2_ORIGINAL_BINARY_PREFIX \?= IntuitionEngine-AB3D2'
 assert_makefile_contains '\$\(call build-linux-vm-binary,amd64'
 assert_makefile_contains '\$\(call build-linux-vm-binary,arm64'
 assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,\$\$goos,\$\$goarch'
@@ -433,13 +437,15 @@ assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,windows,\$\$g
 assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,darwin,amd64'
 assert_makefile_contains '\$\(call build-purego-novulkan-vm-binary,darwin,arm64'
 assert_makefile_contains 'AB3D2_SOURCE \?= \.\./alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high\.ie68'
+assert_makefile_contains 'AB3D2_ORIGINAL_SOURCE \?= \.\./alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68\.ie68'
 assert_makefile_contains 'AB3D2_START_FULLSCREEN \?= 1'
 assert_makefile_contains 'cp "\$\(AB3D2_SOURCE\)" "\$\(AB3D2_EMBED_FILE\)"'
 assert_makefile_not_contains 'AB3D2_EMBED_ZIP'
 assert_makefile_not_contains 'AB3D2_ASSET_ROOT'
 assert_makefile_not_contains 'AB3D2_ASSET_TREE'
 assert_makefile_not_contains 'BSDTAR'
-assert_makefile_contains 'test-cross-binaries CROSS_BUILD_DIR=\$\(AB3D2_BUILD_DIR\) CROSS_BINARY_PREFIX=\$\(AB3D2_BINARY_PREFIX\) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=\$\(AB3D2_START_FULLSCREEN\)'
+assert_makefile_contains 'test-cross-amd64-binaries CROSS_BUILD_DIR=\$\(AB3D2_BUILD_DIR\) CROSS_BINARY_PREFIX=\$\(AB3D2_BINARY_PREFIX\) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=\$\(AB3D2_START_FULLSCREEN\)'
+assert_makefile_contains 'test-cross-amd64-binaries CROSS_BUILD_DIR=\$\(AB3D2_BUILD_DIR\) CROSS_BINARY_PREFIX=\$\(AB3D2_ORIGINAL_BINARY_PREFIX\) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=\$\(AB3D2_START_FULLSCREEN\)'
 assert_makefile_not_contains '\$\(MAKE\) compress-ab3d2'
 assert_makefile_not_contains 'AB3D2_OVERDRIVE_'
 assert_makefile_not_contains '^ab3d2-overdrive:'

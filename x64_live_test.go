@@ -173,6 +173,41 @@ func TestX64LiveDemoPayloadTargets(t *testing.T) {
 	}
 }
 
+func TestAB3D2ReleaseTargetsBuildOnlyFourX64Binaries(t *testing.T) {
+	makefile, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatalf("read Makefile: %v", err)
+	}
+	text := string(makefile)
+
+	for _, want := range []string{
+		`AB3D2_ORIGINAL_SOURCE ?= ../alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68.ie68`,
+		`AB3D2_ORIGINAL_BINARY_PREFIX ?= IntuitionEngine-AB3D2`,
+		`test-cross-amd64-binaries:`,
+		`$(MAKE) test-cross-amd64-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_ORIGINAL_BINARY_PREFIX)`,
+		`$(MAKE) test-cross-amd64-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_BINARY_PREFIX)`,
+		`trap 'rm -f "$(AB3D2_EMBED_DIR)"/ab3d2_*.ie68' EXIT`,
+		`rm -f "$(AB3D2_BUILD_DIR)/$(AB3D2_ORIGINAL_BINARY_PREFIX)-"* "$(AB3D2_BUILD_DIR)/$(AB3D2_BINARY_PREFIX)-"*`,
+		`$(CROSS_BUILD_DIR)/$(CROSS_BINARY_PREFIX)-linux-amd64`,
+		`$(CROSS_BUILD_DIR)/$(CROSS_BINARY_PREFIX)-windows-amd64.exe`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Makefile missing bundled AB3D2 release contract %q", want)
+		}
+	}
+
+	for _, forbidden := range []string{
+		`ab3d2: prepare-ab3d2-embed`,
+		`test-cross-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR)`,
+		`$(AB3D2_BUILD_DIR)/$(AB3D2_BINARY_PREFIX)-darwin-`,
+		`$(AB3D2_BUILD_DIR)/$(AB3D2_BINARY_PREFIX)-linux-arm64`,
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("bundled AB3D2 release retains forbidden build path %q", forbidden)
+		}
+	}
+}
+
 func TestAROSRomMakefileBatchesWorkbenchTargets(t *testing.T) {
 	makefile, err := os.ReadFile("Makefile")
 	if err != nil {
