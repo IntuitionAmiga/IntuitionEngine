@@ -356,6 +356,9 @@ AB3D2_SOURCE_DIR ?= $(dir $(AB3D2_SOURCE))
 AB3D2_START_FULLSCREEN ?= 1
 AB3D2_EMBED_DIR := embedded/ab3d2
 AB3D2_EMBED_FILE := $(AB3D2_EMBED_DIR)/ab3d2_ie68_redux_high.ie68
+AB3D2_README_SOURCE := AB3D2_README.md
+AB3D2_README := $(AB3D2_BUILD_DIR)/README.md
+AB3D2_ARCHIVE := $(AB3D2_BUILD_DIR)/IntuitionEngine-AB3D2-x64.zip
 
 # Main targets
 .PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-wasm-crt-browser test-x86-jit-parity test-6502-jit-parity test-ie32-jit-parity test-ie32-jit-race test-z80-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries test-cross-amd64-binaries test-ie64-toolchain ab3d2 ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-bench-baseline x86-bench-after x86-bench-compare z80-bench-baseline z80-bench-after z80-bench-compare ie32-bench-baseline ie32-bench-after ie32-bench-compare x86-iedoom-timedemo
@@ -953,7 +956,15 @@ ab3d2:
 	$(MAKE) prepare-ab3d2-embed AB3D2_SOURCE=$(AB3D2_ORIGINAL_SOURCE); \
 	$(MAKE) test-cross-amd64-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_ORIGINAL_BINARY_PREFIX) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=$(AB3D2_START_FULLSCREEN); \
 	$(MAKE) prepare-ab3d2-embed AB3D2_SOURCE=$(AB3D2_SOURCE); \
-	$(MAKE) test-cross-amd64-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_BINARY_PREFIX) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=$(AB3D2_START_FULLSCREEN)
+	$(MAKE) test-cross-amd64-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_BINARY_PREFIX) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=$(AB3D2_START_FULLSCREEN); \
+	cp "$(AB3D2_README_SOURCE)" "$(AB3D2_README)"; \
+	rm -f "$(AB3D2_ARCHIVE)"; \
+	python3 scripts/package-ab3d2.py "$(AB3D2_BUILD_DIR)" "$(AB3D2_ARCHIVE)" \
+		"$(AB3D2_ORIGINAL_BINARY_PREFIX)-linux-amd64" \
+		"$(AB3D2_ORIGINAL_BINARY_PREFIX)-windows-amd64.exe" \
+		"$(AB3D2_BINARY_PREFIX)-linux-amd64" \
+		"$(AB3D2_BINARY_PREFIX)-windows-amd64.exe" \
+		"README.md"
 
 # AB3D64 - IE64 source-port of AB3D2 Redux High Overdrive via m68kto64.
 # Single-variant build; see sdk/ab3d64/README.md and sdk/docs/AB3D64.md.

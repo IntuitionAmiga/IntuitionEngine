@@ -186,6 +186,11 @@ func TestAB3D2ReleaseTargetsBuildOnlyFourX64Binaries(t *testing.T) {
 		`test-cross-amd64-binaries:`,
 		`$(MAKE) test-cross-amd64-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_ORIGINAL_BINARY_PREFIX)`,
 		`$(MAKE) test-cross-amd64-binaries CROSS_BUILD_DIR=$(AB3D2_BUILD_DIR) CROSS_BINARY_PREFIX=$(AB3D2_BINARY_PREFIX)`,
+		`AB3D2_README_SOURCE := AB3D2_README.md`,
+		`AB3D2_ARCHIVE := $(AB3D2_BUILD_DIR)/IntuitionEngine-AB3D2-x64.zip`,
+		`cp "$(AB3D2_README_SOURCE)" "$(AB3D2_README)"`,
+		`python3 scripts/package-ab3d2.py "$(AB3D2_BUILD_DIR)" "$(AB3D2_ARCHIVE)"`,
+		`"README.md"`,
 		`trap 'rm -f "$(AB3D2_EMBED_DIR)"/ab3d2_*.ie68' EXIT`,
 		`rm -f "$(AB3D2_BUILD_DIR)/$(AB3D2_ORIGINAL_BINARY_PREFIX)-"* "$(AB3D2_BUILD_DIR)/$(AB3D2_BINARY_PREFIX)-"*`,
 		`$(CROSS_BUILD_DIR)/$(CROSS_BINARY_PREFIX)-linux-amd64`,
@@ -204,6 +209,30 @@ func TestAB3D2ReleaseTargetsBuildOnlyFourX64Binaries(t *testing.T) {
 	} {
 		if strings.Contains(text, forbidden) {
 			t.Fatalf("bundled AB3D2 release retains forbidden build path %q", forbidden)
+		}
+	}
+
+	readme, err := os.ReadFile("AB3D2_README.md")
+	if err != nil {
+		t.Fatalf("read AB3D2 README: %v", err)
+	}
+	for _, want := range []string{
+		"contains one embedded, self-contained AB3D2 IE68 image",
+		"Intuition Engine is the home computer that never was",
+		"six CPU architectures sharing one",
+		"bus and the same hardware devices",
+		"Player 1 joystick or joypad",
+		"Guest-Advanced CRT filter is enabled by default in flat mode",
+		"through flat, curved and off",
+		"F11 toggles between stretch-fill and aspect-fit",
+		"F12 toggles the status bar",
+		"https://IntuitionEngine.io",
+		"https://youtube.com/@IntuitionAmiga",
+		"IntuitionEngine-AB3D2-linux-amd64",
+		"IntuitionEngine-AB3D2-Karlos-TKG-High-windows-amd64.exe",
+	} {
+		if !strings.Contains(string(readme), want) {
+			t.Fatalf("AB3D2 README missing %q", want)
 		}
 	}
 }
