@@ -56,6 +56,14 @@ func TestX64LiveMakefileTargets(t *testing.T) {
 			t.Fatalf("Makefile missing %q", want)
 		}
 	}
+	for _, forbidden := range []string{
+		`elif [ -f "$(AB3D2_EMBED_FILE)" ]; then`,
+		`Using existing packed AB3D2 image: $(AB3D2_EMBED_FILE)`,
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("x64-live AB3D2 target retains stale cached fallback %q", forbidden)
+		}
+	}
 }
 
 func TestX64LiveDemoPayloadTargets(t *testing.T) {
@@ -114,14 +122,10 @@ func TestX64LiveDemoPayloadTargets(t *testing.T) {
 		`./scripts/prepare-arosvision-probe.sh --overlay "$(AROSVISION_SOURCE)" "$(AROS_LIVE_DIR)"`,
 		"arosvision-live-tree: arosvision-live-overlays",
 		".PHONY: x64-live-ab3d2-assets",
-		`$(AB3D2_EMBED_FILE)`,
-		`Using existing packed AB3D2 image: $(AB3D2_EMBED_FILE)`,
-		`if [ -d "$(AB3D2_SOURCE_DIR)" ] && [ -n "$$(find "$(AB3D2_SOURCE_DIR)" -maxdepth 1 -type f -name 'ab3d2_*.ie68' -print -quit)" ]; then`,
+		`if [ -f "$(AB3D2_SOURCE_DIR)/ab3d2_ie68.ie68" ] && [ -f "$(AB3D2_SOURCE_DIR)/ab3d2_ie68_redux_high.ie68" ]; then`,
 		`rm -f "$(AB3D2_EMBED_DIR)"/ab3d2_*.ie68`,
-		`cp "$(AB3D2_SOURCE_DIR)"/ab3d2_*.ie68 "$(AB3D2_EMBED_DIR)/"`,
-		`missing cached packed AB3D2 image: $(AB3D2_EMBED_FILE)`,
-		`cp "$(AB3D2_SOURCE)" "$(AB3D2_EMBED_FILE)"`,
-		"prepare-ab3d2-embed",
+		`cp "$(AB3D2_SOURCE_DIR)/ab3d2_ie68.ie68" "$(AB3D2_SOURCE_DIR)/ab3d2_ie68_redux_high.ie68" "$(AB3D2_EMBED_DIR)/"`,
+		`missing AB3D2 IE68 demos: $(AB3D2_SOURCE_DIR)/ab3d2_ie68.ie68 and $(AB3D2_SOURCE_DIR)/ab3d2_ie68_redux_high.ie68`,
 		".PHONY: x64-live-aros-demos",
 		"x64-live-aros-demos: aros-ie-toolchain-assets rotozoom-textures",
 		".PHONY: aros-ie-live-assets",
@@ -605,8 +609,10 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`IEDOOM_IE86_PATH="${CHOCOLATE_DOOM_DIR}/${IEDOOM_IE86}"`,
 		`IEDOOM_IE68_PATH="${CHOCOLATE_DOOM_DIR}/${IEDOOM_IE68}"`,
 		`IEDOOM_WAD_PATH="${CHOCOLATE_DOOM_DIR}/${IEDOOM_WAD}"`,
-		`local ab3d2_demo_inputs=("${AB3D2_EMBED_DIR}"/ab3d2_*.ie68)`,
-		`AB3D2 IE68 demos not found: ${AB3D2_EMBED_DIR}/ab3d2_*.ie68`,
+		`AB3D2_IE68_NAMES=(ab3d2_ie68.ie68 ab3d2_ie68_redux_high.ie68)`,
+		`payload_require_file "${AB3D2_EMBED_DIR}/${ab3d2_name}" "make x64-live-ab3d2-assets"`,
+		`Unexpected AB3D2 IE68 demo found: $unexpected_ab3d2`,
+		`Expected only: ${AB3D2_IE68_NAMES[*]}`,
 		`payload_require_file "${SCRIPT_DIR}/sdk/examples/prebuilt/iewarp_service.ie64" "make iewarp-runtime-assets"`,
 		`payload_require_file "${AROS_RELEASE_DIR}/Systems/AROS/Libs/iewarp_service.ie64" "make arosvision-live-tree"`,
 		`payload_require_file "${SCRIPT_DIR}/sdk/intuitionos/iexec/iexec.ie64" "make intuitionos"`,
@@ -622,10 +628,6 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`payload_require_file "$HOST_SDK_ARCHIVE" "make dist-host-sdk-linux-amd64" "host SDK archive"`,
 		`payload_require_file "$HOST_SDK_SHA256" "make dist-host-sdk-linux-amd64" "host SDK checksum"`,
 		`sha256sum -c "$(basename "$HOST_SDK_SHA256")"`,
-		`find "${payload_root}/Demos/m68k" -maxdepth 1 -type f -name 'ab3d2_*.ie68' ! -name '*redux_high*' ! -name '*redux_low*'`,
-		`payload_require_file "${payload_root}/_build/ie_unpacked/media/includes/test.lnk" "make x64-live-ab3d2-assets"`,
-		`local ab3d2_low_demos=("${payload_root}"/Demos/m68k/ab3d2_ie68_redux_low*.ie68)`,
-		`payload_require_file "${payload_root}/_build/ie_media/redux-low/boot.dat" "make x64-live-ab3d2-assets"`,
 		`AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/build/arosvision}"`,
 		`AROS system tree not found: ${AROS_RELEASE_DIR}`,
 		`AROS default tool icon not found: ${AROS_RELEASE_DIR}/Prefs/Env-Archive/SYS/def_Tool.info`,
@@ -690,7 +692,8 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`cp -f "${IEDOOM_IE86_PATH}" "$demos_x86_dir/iedoom.ie86"`,
 		`cp -f "${IEDOOM_IE68_PATH}" "$demos_m68k_dir/iedoom.ie68"`,
 		`cp -f "${IEDOOM_WAD_PATH}" "$payload_root/doom1.wad"`,
-		`cp -f "${AB3D2_EMBED_DIR}"/ab3d2_*.ie68 "$demos_m68k_dir/"`,
+		`cp -f "${AB3D2_EMBED_DIR}/ab3d2_ie68.ie68" "$demos_m68k_dir/"`,
+		`cp -f "${AB3D2_EMBED_DIR}/ab3d2_ie68_redux_high.ie68" "$demos_m68k_dir/"`,
 		`verify_staged_share_payload "$payload_root"`,
 		`Forbidden live payload location: coproc worker staged under Demos`,
 		`Forbidden live payload content: AB3D2 build intermediates staged in runtime asset root`,
@@ -747,7 +750,7 @@ func TestX64LiveStagesDemoPayloadOnIESHARE(t *testing.T) {
 		`EmuTOS/GEMDOS demo files live under Systems/EmuTOS.`,
 		`Music    Music collections copied from the build host when available.`,
 		`It contains runnable Intuition Engine demos grouped by guest CPU:`,
-		`Packed AB3D2 IE68 demos live under m68k and contain their runtime assets.`,
+		`The two packed AB3D2 IE68 demos live under m68k and contain their runtime assets.`,
 		`Systems/AROS/Demos`,
 		`Systems/EmuTOS/Demos`,
 		`Systems/IntuitionOS`,

@@ -650,15 +650,12 @@ x64-live-sdk-companion-pdfs: x64-live-refman-pdfs
 
 .PHONY: x64-live-ab3d2-assets
 x64-live-ab3d2-assets:
-	@if [ -d "$(AB3D2_SOURCE_DIR)" ] && [ -n "$$(find "$(AB3D2_SOURCE_DIR)" -maxdepth 1 -type f -name 'ab3d2_*.ie68' -print -quit)" ]; then \
+	@if [ -f "$(AB3D2_SOURCE_DIR)/ab3d2_ie68.ie68" ] && [ -f "$(AB3D2_SOURCE_DIR)/ab3d2_ie68_redux_high.ie68" ]; then \
 		$(MKDIR) -p "$(AB3D2_EMBED_DIR)"; \
 		rm -f "$(AB3D2_EMBED_DIR)"/ab3d2_*.ie68; \
-		cp "$(AB3D2_SOURCE_DIR)"/ab3d2_*.ie68 "$(AB3D2_EMBED_DIR)/"; \
-	elif [ -f "$(AB3D2_EMBED_FILE)" ]; then \
-		echo "Using existing packed AB3D2 image: $(AB3D2_EMBED_FILE)"; \
+		cp "$(AB3D2_SOURCE_DIR)/ab3d2_ie68.ie68" "$(AB3D2_SOURCE_DIR)/ab3d2_ie68_redux_high.ie68" "$(AB3D2_EMBED_DIR)/"; \
 	else \
-		echo "missing AB3D2 IE68 demos: $(AB3D2_SOURCE_DIR)/ab3d2_*.ie68" >&2; \
-		echo "missing cached packed AB3D2 image: $(AB3D2_EMBED_FILE)" >&2; \
+		echo "missing AB3D2 IE68 demos: $(AB3D2_SOURCE_DIR)/ab3d2_ie68.ie68 and $(AB3D2_SOURCE_DIR)/ab3d2_ie68_redux_high.ie68" >&2; \
 		exit 1; \
 	fi
 

@@ -62,6 +62,7 @@ SDK_COMPANION_PDFS=(
 )
 AROS_RELEASE_DIR="${AROS_RELEASE_DIR:-${SCRIPT_DIR}/build/arosvision}"
 AB3D2_EMBED_DIR="${SCRIPT_DIR}/embedded/ab3d2"
+AB3D2_IE68_NAMES=(ab3d2_ie68.ie68 ab3d2_ie68_redux_high.ie68)
 CHOCOLATE_DOOM_DIR="${CHOCOLATE_DOOM_DIR:-${SCRIPT_DIR}/../chocolate-doom}"
 IEDOOM_IE86="${IEDOOM_IE86:-build/iedoom.ie86}"
 IEDOOM_IE68="${IEDOOM_IE68:-build/iedoom.ie68}"
@@ -271,11 +272,15 @@ check_live_payload_inputs() {
     fi
     payload_require_file "$PLYMOUTH_SPLASH" "restore splash.png" "Plymouth splash image"
 
-    shopt -s nullglob
-    local ab3d2_demo_inputs=("${AB3D2_EMBED_DIR}"/ab3d2_*.ie68)
-    shopt -u nullglob
-    if [[ ${#ab3d2_demo_inputs[@]} -eq 0 ]]; then
-        log_error "AB3D2 IE68 demos not found: ${AB3D2_EMBED_DIR}/ab3d2_*.ie68"
+    local ab3d2_name
+    for ab3d2_name in "${AB3D2_IE68_NAMES[@]}"; do
+        payload_require_file "${AB3D2_EMBED_DIR}/${ab3d2_name}" "make x64-live-ab3d2-assets" "AB3D2 IE68 demo ${ab3d2_name}"
+    done
+    local unexpected_ab3d2
+    unexpected_ab3d2="$(find "${AB3D2_EMBED_DIR}" -maxdepth 1 -type f -name 'ab3d2_*.ie68' ! -name 'ab3d2_ie68.ie68' ! -name 'ab3d2_ie68_redux_high.ie68' -print -quit)"
+    if [[ -n "$unexpected_ab3d2" ]]; then
+        log_error "Unexpected AB3D2 IE68 demo found: $unexpected_ab3d2"
+        log_error "Expected only: ${AB3D2_IE68_NAMES[*]}"
         log_error "Producer: make x64-live-ab3d2-assets"
         exit 1
     fi
@@ -382,16 +387,6 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/Demos/m68k/iedoom.ie68" "make iedoom-ie68" "staged IEDoom M68K guest image"
     payload_require_file "${payload_root}/Demos/x86/iedoom.ie86" "make iedoom-ie86" "staged IEDoom x86 guest image"
     payload_require_file "${payload_root}/doom1.wad" "copy DOOM1.WAD into CHOCOLATE_DOOM_DIR" "staged IEDoom shareware WAD"
-    payload_require_file "${payload_root}/_build/ie_media/redux-high/boot.dat" "make x64-live-ab3d2-assets" "staged AB3D2 runtime media"
-    if find "${payload_root}/Demos/m68k" -maxdepth 1 -type f -name 'ab3d2_*.ie68' ! -name '*redux_high*' ! -name '*redux_low*' | grep -q .; then
-        payload_require_file "${payload_root}/_build/ie_unpacked/media/includes/test.lnk" "make x64-live-ab3d2-assets" "staged AB3D2 unpacked media"
-    fi
-    shopt -s nullglob
-    local ab3d2_low_demos=("${payload_root}"/Demos/m68k/ab3d2_ie68_redux_low*.ie68)
-    shopt -u nullglob
-    if [[ ${#ab3d2_low_demos[@]} -gt 0 ]]; then
-        payload_require_file "${payload_root}/_build/ie_media/redux-low/boot.dat" "make x64-live-ab3d2-assets" "staged AB3D2 redux-low runtime media"
-    fi
     payload_require_file "${payload_root}/SDK/Examples/basic/rotozoomer_basic.bas" "make sdk-build" "staged BASIC example"
     payload_require_file "${payload_root}/SDK/Examples/assets/music/Yummy_Pizza.sid" "make sdk-build" "staged EhBASIC rotozoomer SID asset"
     payload_require_file "${payload_root}/SDK/Examples/assets/rotozoomtexture_ehbasic.raw" "make rotozoom-textures" "staged EhBASIC rotozoomer texture asset"
@@ -639,7 +634,8 @@ PY
     cp -f "${IEDOOM_IE86_PATH}" "$demos_x86_dir/iedoom.ie86"
     cp -f "${IEDOOM_IE68_PATH}" "$demos_m68k_dir/iedoom.ie68"
     cp -f "${IEDOOM_WAD_PATH}" "$payload_root/doom1.wad"
-    cp -f "${AB3D2_EMBED_DIR}"/ab3d2_*.ie68 "$demos_m68k_dir/"
+    cp -f "${AB3D2_EMBED_DIR}/ab3d2_ie68.ie68" "$demos_m68k_dir/"
+    cp -f "${AB3D2_EMBED_DIR}/ab3d2_ie68_redux_high.ie68" "$demos_m68k_dir/"
     cp -f \
         "${SCRIPT_DIR}/sdk/include/ie32.inc" \
         "${SCRIPT_DIR}/sdk/include/ie64.inc" \
@@ -704,7 +700,7 @@ z80
 m6502
 x86
 
-Packed AB3D2 IE68 demos live under m68k and contain their runtime assets.
+The two packed AB3D2 IE68 demos live under m68k and contain their runtime assets.
 
 OS-specific payloads live under Systems:
 
