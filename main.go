@@ -1489,17 +1489,6 @@ func main() {
 		fmt.Printf("Error resolving guest file root: %v\n", err)
 		exitProfiled(1)
 	}
-	if fileRoot == "" && shouldAutostartAB3D2() {
-		ab3d2RuntimeDir, err := ensureEmbeddedAB3D2Assets()
-		if err != nil {
-			fmt.Printf("Error preparing AB3D2 assets: %v\n", err)
-			exitProfiled(1)
-		}
-		if ab3d2RuntimeDir != "" {
-			runtimeBaseDir = ab3d2RuntimeDir
-		}
-	}
-
 	// Initialize File I/O
 	fileIO := newRuntimeFileIODevice(sysBus, runtimeBaseDir)
 	seedRuntimeFileIOAssets(fileIO) // js/wasm: preload the assets volume over HTTP

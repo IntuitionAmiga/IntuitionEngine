@@ -195,10 +195,15 @@ check_dependencies() {
         exit 1
     fi
 
-    if [[ "${CREATE_SHARE}" == "true" && ! -f "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" ]]; then
-        log_error "AB3D2 embedded asset zip not found: ${SCRIPT_DIR}/embedded/ab3d2/_build.zip"
-        log_error "Run: make x64-live-demos"
-        exit 1
+    if [[ "${CREATE_SHARE}" == "true" ]]; then
+        shopt -s nullglob
+        local ab3d2_images=("${AB3D2_EMBED_DIR}"/ab3d2_*.ie68)
+        shopt -u nullglob
+        if [[ ${#ab3d2_images[@]} -eq 0 ]]; then
+            log_error "Packed AB3D2 images not found: ${AB3D2_EMBED_DIR}/ab3d2_*.ie68"
+            log_error "Run: make x64-live-demos"
+            exit 1
+        fi
     fi
     if [[ "${CREATE_SHARE}" == "true" && ! -f "${AROS_RELEASE_DIR}/S/Startup-Sequence" ]]; then
         log_error "AROS system tree not found: ${AROS_RELEASE_DIR}"
@@ -266,7 +271,6 @@ check_live_payload_inputs() {
     fi
     payload_require_file "$PLYMOUTH_SPLASH" "restore splash.png" "Plymouth splash image"
 
-    payload_require_file "${AB3D2_EMBED_DIR}/_build.zip" "make x64-live-ab3d2-assets" "AB3D2 embedded runtime asset zip"
     shopt -s nullglob
     local ab3d2_demo_inputs=("${AB3D2_EMBED_DIR}"/ab3d2_*.ie68)
     shopt -u nullglob
@@ -334,24 +338,6 @@ check_live_payload_inputs() {
         log_error "Producer: make dist-host-sdk-linux-amd64"
         exit 1
     fi
-
-    python3 - "${SCRIPT_DIR}/embedded/ab3d2/_build.zip" <<'PY'
-import sys
-import zipfile
-
-zip_path = sys.argv[1]
-roots = (
-    "ab3d2_source/_build/ie_media/redux-high/",
-    "ab3d2_source/_build/ie_unpacked/",
-)
-with zipfile.ZipFile(zip_path) as zf:
-    names = [info.filename for info in zf.infolist() if not info.is_dir()]
-    for name in names:
-        if name.startswith("/") or ".." in name.split("/"):
-            raise SystemExit(f"unsafe AB3D2 zip entry path: {name}")
-    if not any(any(name.startswith(root) for root in roots) for name in names):
-        raise SystemExit("AB3D2 zip does not contain live runtime roots")
-PY
 
     log_success "Live payload manifest inputs are ready"
 }
@@ -653,43 +639,7 @@ PY
     cp -f "${IEDOOM_IE86_PATH}" "$demos_x86_dir/iedoom.ie86"
     cp -f "${IEDOOM_IE68_PATH}" "$demos_m68k_dir/iedoom.ie68"
     cp -f "${IEDOOM_WAD_PATH}" "$payload_root/doom1.wad"
-    python3 - "${AB3D2_EMBED_DIR}/_build.zip" "${AB3D2_EMBED_DIR}" "$demos_m68k_dir" <<'PY'
-import os
-import shutil
-import sys
-import zipfile
-
-zip_path, source_dir, demos_dir = sys.argv[1], sys.argv[2], sys.argv[3]
-with zipfile.ZipFile(zip_path) as zf:
-    names = zf.namelist()
-
-available_roots = {
-    "original": any(name.startswith("ab3d2_source/_build/ie_unpacked/") for name in names),
-    "redux-high": any(name.startswith("ab3d2_source/_build/ie_media/redux-high/") for name in names),
-    "redux-low": any(name.startswith("ab3d2_source/_build/ie_media/redux-low/") for name in names),
-}
-
-def profile_for(filename):
-    if "redux_low" in filename:
-        return "redux-low"
-    if "redux_high" in filename:
-        return "redux-high"
-    return "original"
-
-copied = 0
-for filename in sorted(os.listdir(source_dir)):
-    if not (filename.startswith("ab3d2_") and filename.endswith(".ie68")):
-        continue
-    profile = profile_for(filename)
-    if not available_roots[profile]:
-        print(f"Skipping AB3D2 {filename}: missing {profile} runtime media in {zip_path}", file=sys.stderr)
-        continue
-    shutil.copy2(os.path.join(source_dir, filename), os.path.join(demos_dir, filename))
-    copied += 1
-
-if copied == 0:
-    raise SystemExit(f"no AB3D2 IE68 demos matched available runtime media in {zip_path}")
-PY
+    cp -f "${AB3D2_EMBED_DIR}"/ab3d2_*.ie68 "$demos_m68k_dir/"
     cp -f \
         "${SCRIPT_DIR}/sdk/include/ie32.inc" \
         "${SCRIPT_DIR}/sdk/include/ie64.inc" \
@@ -741,44 +691,6 @@ PY
         "${SCRIPT_DIR}/sdk/examples/assets/rotozoomtexture_hw_c.raw" \
         "$aros_demos_dir/"
 
-    python3 - "${AB3D2_EMBED_DIR}/_build.zip" "$payload_root" <<'PY'
-import hashlib
-import os
-import sys
-import zipfile
-
-zip_path, dest = sys.argv[1], sys.argv[2]
-dest_real = os.path.realpath(dest)
-runtime_roots = (
-    "ab3d2_source/_build/ie_media/redux-high/",
-    "ab3d2_source/_build/ie_media/redux-low/",
-    "ab3d2_source/_build/ie_unpacked/",
-)
-seen = {}
-with zipfile.ZipFile(zip_path) as zf:
-    for info in zf.infolist():
-        name = info.filename
-        if name.startswith("/") or ".." in name.split("/"):
-            raise SystemExit(f"unsafe zip entry path: {name}")
-        if info.is_dir() or not name.startswith(runtime_roots):
-            continue
-        fat_name = name.removeprefix("ab3d2_source/").lower()
-        data = zf.read(info)
-        digest = hashlib.sha256(data).hexdigest()
-        existing = seen.get(fat_name)
-        if existing is not None:
-            if existing != digest:
-                raise SystemExit(f"case-colliding AB3D2 asset differs: {name}")
-            continue
-        seen[fat_name] = digest
-        target = os.path.realpath(os.path.join(dest, fat_name))
-        if target != dest_real and not target.startswith(dest_real + os.sep):
-            raise SystemExit(f"zip entry escapes destination: {name}")
-        os.makedirs(os.path.dirname(target), exist_ok=True)
-        with open(target, "wb") as out:
-            out.write(data)
-PY
-
     cat > "${demos_dir}/README.TXT" <<'EOF'
 Intuition Engine Live USB demos
 
@@ -792,7 +704,7 @@ z80
 m6502
 x86
 
-AB3D2 IE68 demos live under m68k.
+Packed AB3D2 IE68 demos live under m68k and contain their runtime assets.
 
 OS-specific payloads live under Systems:
 
@@ -812,8 +724,6 @@ Music    Music collections copied from the build host when available.
 Docs     Printable Programmer's Reference Guide PDFs.
 SDK      Reference include files, source examples and the Linux x86-64 host SDK archive.
 Systems  Guest OS payloads.
-_build   AB3D2 runtime assets used by the AB3D2 IE68 demos.
-
 AROS files live under Systems/AROS.
 EmuTOS/GEMDOS demo files live under Systems/EmuTOS.
 IntuitionOS SYS: lives under Systems/IntuitionOS.

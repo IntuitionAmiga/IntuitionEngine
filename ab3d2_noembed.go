@@ -7,4 +7,3 @@ func init() {
 }
 
 var embeddedAB3D2Image []byte
-var embeddedAB3D2AssetZip []byte
