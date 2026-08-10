@@ -2,19 +2,8 @@
 
 Build: `202605101918`
 
-This directory contains platform-specific packaged builds of Alien Breed 3D II
-for Intuition Engine. The standard Karlos-TKG-High builds are:
-
-| Binary | Host |
-|--------|------|
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-amd64` | macOS Intel |
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-arm64` | macOS Apple Silicon |
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-linux-amd64` | Linux x86-64 |
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-linux-arm64` | Linux ARM64 |
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-windows-amd64.exe` | Windows x86-64 |
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-windows-arm64.exe` | Windows ARM64 |
-
-The Overdrive Karlos-TKG-High builds are:
+This directory contains the Overdrive Karlos-TKG-High packaged builds of Alien
+Breed 3D II for Intuition Engine:
 
 | Binary | Host |
 |--------|------|
@@ -36,8 +25,7 @@ The Overdrive binaries bundle the Overdrive IE68 program and present the
 existing 320x240 CLUT8 renderer as a full-frame 1920x1080 stretch. Current IE
 desktop builds already start fullscreen with a 1920x1080 presentation frame, so
 Overdrive no longer relies on a package-specific fullscreen startup path.
-They use the same prepared Karlos-TKG-High asset pack as the standard packaged
-runtimes. The Overdrive runtime requires a display capable of 1920x1080. Press
+The Overdrive runtime requires a display capable of 1920x1080. Press
 F11 to drop out of fullscreen into a window if the host desktop is smaller or
 fullscreen is otherwise unwanted.
 
@@ -70,8 +58,8 @@ option.
 On Linux, the binary may need executable permission:
 
 ```sh
-chmod +x ./IntuitionEngine-AB3D2-Karlos-TKG-High-linux-amd64
-./IntuitionEngine-AB3D2-Karlos-TKG-High-linux-amd64
+chmod +x ./IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-linux-amd64
+./IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-linux-amd64
 ```
 
 The Linux binaries expect a working audio stack (ALSA, PulseAudio, or
@@ -97,9 +85,9 @@ quarantine attribute. If macOS refuses to run the binary from Terminal, use
 both commands:
 
 ```sh
-chmod +x ./IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-arm64
-xattr -d com.apple.quarantine ./IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-arm64
-./IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-arm64
+chmod +x ./IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-darwin-arm64
+xattr -d com.apple.quarantine ./IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-darwin-arm64
+./IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-darwin-arm64
 ```
 
 Use `darwin-amd64` instead of `darwin-arm64` on Intel Macs, and insert
@@ -114,7 +102,7 @@ after `xattr -d com.apple.quarantine`. Two fallbacks:
   then confirm at the warning dialog. macOS records the per-app override and
   Terminal launches succeed afterwards.
 - If quarantine returns or extra attributes remain, run
-  `xattr -cr ./IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-arm64` to clear all
+  `xattr -cr ./IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-darwin-arm64` to clear all
   extended attributes recursively.
 
 ## Windows SmartScreen
@@ -126,8 +114,8 @@ time an unsigned `.exe` is launched. Two ways through it:
 - From PowerShell, unblock the file before launch:
 
 ```powershell
-Unblock-File .\IntuitionEngine-AB3D2-Karlos-TKG-High-windows-amd64.exe
-.\IntuitionEngine-AB3D2-Karlos-TKG-High-windows-amd64.exe
+Unblock-File .\IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-windows-amd64.exe
+.\IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-windows-amd64.exe
 ```
 
 Bypassing SmartScreen is a local trust override; do it only for binaries

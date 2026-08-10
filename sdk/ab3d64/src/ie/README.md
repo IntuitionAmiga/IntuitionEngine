@@ -127,8 +127,7 @@ the Amiga code. Fresh local builds emit to `ab3d2_source/ie/bin/`.
 
 ### Packaged runtime binaries
 
-Twelve platform-specific packaged runtime binaries named
-`IntuitionEngine-AB3D2-Karlos-TKG-High-*` and
+Six platform-specific packaged runtime binaries named
 `IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-*` are distributed in
 `IntuitionEngine-AB3D2-Karlos-TKG-High.zip` (~450 MB) hosted at:
 
@@ -146,12 +145,6 @@ checkout at runtime. End-user instructions for these binaries live in
 
 | Binary | Host |
 |--------|------|
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-amd64` | macOS Intel |
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-darwin-arm64` | macOS Apple Silicon |
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-linux-amd64` | Linux x86-64 |
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-linux-arm64` | Linux ARM64 |
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-windows-amd64.exe` | Windows x86-64 |
-| `IntuitionEngine-AB3D2-Karlos-TKG-High-windows-arm64.exe` | Windows ARM64 |
 | `IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-darwin-amd64` | macOS Intel |
 | `IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-darwin-arm64` | macOS Apple Silicon |
 | `IntuitionEngine-AB3D2-Karlos-TKG-High-Overdrive-linux-amd64` | Linux x86-64 |
