@@ -124,9 +124,71 @@ buckets include video frame work, audio pulls, slow bus `Read32` and
 | `cpu.is_running()` | Return true if the selected CPU is running. |
 | `cpu.mode()` | Return the selected CPU name. |
 | `cpu.execution_mode()` | Return the current execution mode name. |
+| `cpu.jit_stats()` | Return execution statistics for the selected CPU. |
 
 Raw RAM access through `mem` requires the CPU to be frozen. MMIO
 access is allowed while the CPU is running.
+
+### 34.4.1 Inspecting CPU Execution
+
+`cpu.jit_stats()` returns a table owned by the selected CPU. If that CPU
+is unavailable, the table is empty. Where a `backend` field is present,
+its value is `native`, `wasm`, or `none`.
+
+Each processor has a different execution engine, so each returns a
+different field set:
+
+| CPU | Returned fields |
+|-----|-----------------|
+| IE64 | `backend`, `instruction_count`, `native_entries`, `native_retired`, `compiled_blocks`, `compiled_regions`, `region_candidates`, `region_rejections`, `fallback_instructions`, `helper_exits`, `helper_resumes`, `helper_resume_cancellations`, `io_bails`, `invalidations`, `cache_hits`, `cache_misses`, `spills`, `fpu_spills`, `direct_ram_proofs`, `inlined_calls` |
+| IE32 | `backend`, `instruction_count`, `native_entries`, `compiled_blocks`, `compiled_regions`, `hot_recompilations`, `retired_instructions`, `direct_instructions`, `helper_instructions`, `helper_exits`, `helper_resumes`, `chains`, `chain_budget_exits`, `deoptimizations`, `helper_deopts`, `source_stamp_deopts`, `code_cache_resets`, `invalidations`, `invalidated_blocks`, `cache_hits`, `return_cache_hits`, `mmio_poll_iterations`, `mmio_store_helpers`, `resident_spills_saved`, `counted_loops`, `profitability_fallbacks` |
+| M68K | `instruction_count`, `native_blocks`, `native_retired`, `native_chain_instructions`, `native_no_chain_returns`, `native_helper_exits`, `native_exception_exits`, `native_invalidation_exits`, `native_mmio_guard_exits`, `unsupported_one_exits`, `compile_failure_exits`, `transcendental_bursts`, `warmup_instructions`, `region_promotions`, `last_native_pc`, `fallback_instructions`, `bailouts`, `last_fallback_pc`, `last_fallback_opcode`, `fallback_opcodes`, `native_pcs`, `native_invalidation_pcs`, `native_pc_ring`, `compile_failures` |
+| 6502 | `instruction_count`, `tier1_blocks`, `native_entries`, `bailouts`, `invalidations`, `chain_exits` |
+| Z80 | `backend`, `instruction_count`, `native_entries`, `helper_exits`, `bailouts`, `invalidations`, `chain_exits`, `region_promotions` |
+| x86 | `backend`, `instruction_count`, `native_entries`, `native_retired`, `compiled_blocks`, `compiled_regions`, `region_candidates`, `fallback_instructions`, `helper_exits`, `io_bails`, `invalidations`, `invalidated_blocks`, `chain_exits`, `cache_hits`, `cache_misses`, `code_cache_resets` |
+
+For IE64, `instruction_count` is the processor's total retired-instruction
+count. For x86, it is the work accounted by the selected execution path and equals
+`native_retired` plus `fallback_instructions`. `native_entries` counts
+entries into generated code. `native_retired` counts instructions
+completed there. `fallback_instructions` counts instructions completed by
+the fallback path while accelerated execution remains active. These distinctions
+matter because `cpu.execution_mode()` reports the selected execution mode,
+not proof that a particular programme reached generated code.
+
+The compilation fields count installed blocks, installed regions, and
+region attempts. Cache fields count lookup outcomes. Invalidation fields
+show that programme writes removed compiled code. Helper and I/O fields
+show work handed back for individual operations. On IE64, the resume fields
+describe continuations after a helper; the spill, direct-RAM, and inlined-
+call fields describe cumulative properties of installed compilation units.
+
+IE64 and x86 statistics belong to one CPU instance. Resetting that CPU or
+loading another programme clears its table without changing another
+instance's counters.
+
+This script prints a small summary without assuming that every processor
+uses the same field names:
+
+```ies
+local s = cpu.jit_stats()
+local entered = s.native_entries or s.native_blocks or 0
+local retired = s.native_retired or s.retired_instructions or 0
+local fallback = s.fallback_instructions or 0
+
+sys.print("CPU " .. cpu.mode())
+sys.print("MODE " .. cpu.execution_mode())
+sys.print("NATIVE ENTRIES " .. tostring(entered))
+sys.print("NATIVE RETIRED " .. tostring(retired))
+sys.print("FALLBACK " .. tostring(fallback))
+```
+
+Run it after the programme has done representative work. The first two
+lines identify the selected CPU and execution mode. The remaining lines
+show whether generated code was entered, how much work it retired, and how
+much work fell back where that counter exists. A zero can be meaningful: a
+programme may not yet be hot, a backend may be unavailable, or that CPU may
+report the same event under a different field.
 
 `cpu.load_stopped` is supported for IE64, IE32, and Z80. It reads the
 stored image, resets the selected CPU, loads the bytes, and leaves the

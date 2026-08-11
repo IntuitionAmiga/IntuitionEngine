@@ -278,7 +278,49 @@ instrumented path ran during the measured span. A non-empty report is a
 guide to where time went. It is not a promise that the same programme
 will take the same time on every machine.
 
-## 44.12 A Practical Debug Order
+## 44.12 Measure IE64 And x86 Execution
+
+`sys.perf_report()` measures time in instrumented machine subsystems.
+`cpu.jit_stats()` answers a different question: how the selected CPU
+executed its programme. For IE64 and x86, compare two snapshots around a
+representative interval:
+
+```ies
+local before = cpu.jit_stats()
+sys.wait_frames(60)
+local after = cpu.jit_stats()
+
+local function change(name)
+  return (after[name] or 0) - (before[name] or 0)
+end
+
+sys.print("NATIVE " .. change("native_retired"))
+sys.print("FALLBACK " .. change("fallback_instructions"))
+sys.print("INVALIDATIONS " .. change("invalidations"))
+sys.print("CACHE HITS " .. change("cache_hits"))
+sys.print("CACHE MISSES " .. change("cache_misses"))
+```
+
+Lines 1 to 3 bracket sixty completed frames without resetting the running
+programme. Lines 5 to 7 turn cumulative counters into interval counts.
+The final lines report generated-code retirement, fallback execution,
+code invalidation, and cache lookup results.
+
+If `native_retired` remains zero, check `native_entries` and
+`cpu.execution_mode()` before concluding that generated code ran. A high
+fallback count points to work that the selected backend did not complete
+directly. Repeated invalidation suggests that the programme is rewriting
+code. Many cache misses beside few hits suggest poor reuse. Region
+candidates without corresponding compiled regions show attempted promotion
+that did not install a region. Large helper or I/O counts show frequent
+hand-offs for individual operations.
+
+Read these as comparisons between equivalent runs. They are cumulative
+diagnostic counts, not timing guarantees. Use `sys.perf_report()` beside
+them when the question is which video, audio, bus, or Voodoo stage consumed
+time.
+
+## 44.13 A Practical Debug Order
 
 When a programme misbehaves, use this order:
 

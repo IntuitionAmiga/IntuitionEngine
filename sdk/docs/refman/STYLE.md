@@ -28,6 +28,46 @@ documentation is wrong unless the code itself is being changed in the
 same pass and verified. Record the exact files checked in
 `verify/CLAIM_LEDGER.txt`.
 
+## Current IE Script JIT Statistics Editorial Pass
+
+This pass documents the complete reader-visible `cpu.jit_stats()`
+contract after commit `11295748`. Execute it in ascending reader order
+over Chapters 34 and 44, then Appendix L and the claim ledger. Finish
+with focused source and script checks, strict publication, and PDF
+generation.
+
+The reader-facing contracts are:
+
+- `cpu.jit_stats()` returns statistics for the selected CPU and returns
+  an empty table when that CPU is unavailable;
+- IE32, M68K, 6502, Z80, IE64, and x86 each expose their documented
+  CPU-specific field set;
+- where present, `backend` is `native`, `wasm`, or `none`;
+- IE64 `instruction_count` is the processor's total retired-instruction
+  count, while x86 `instruction_count` is the work accounted by JIT
+  dispatch and equals `native_retired` plus `fallback_instructions`;
+- generated-code entry and retirement are distinct from interpreter
+  fallback, so `cpu.execution_mode()` alone does not prove that generated
+  code ran;
+- compilation, region, helper, I/O, cache, invalidation, chaining, and
+  IE64 compiler-metadata counters have the exact meanings established by
+  their update sites;
+- IE64 and x86 statistics belong to one CPU instance and are cleared by
+  CPU reset or programme loading.
+
+Chapter 34 must add the function to the CPU-module table, give the exact
+per-CPU field inventories, explain the principal counter families, and
+include a typed IE Script inspection example which tolerates the
+different tables. Chapter 44 must add a task-first IE64/x86 recipe that
+compares snapshots around a measured interval and distinguishes CPU
+execution statistics from `sys.perf_report()` subsystem timing. Appendix
+L must index the public function and the principal diagnostic concepts.
+
+Do not add JIT statistics to the IE64 or x86 ISA chapters. Do not mention
+console statistics switches, host architectures, code emitters, source
+files, tests, repository paths, or implementation-only algorithms in
+reader-facing prose. These are author-verification material only.
+
 ## Current VGA Text And Palette Editorial Pass
 
 This pass integrates the reader-visible VGA and Z80 contracts introduced

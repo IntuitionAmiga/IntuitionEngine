@@ -61,6 +61,7 @@ symbols, and Appendix J gives the full memory map.
 | CLUT8 | Chapter 4 |
 | CMOVcc | Chapter 30, Appendix G |
 | Clipboard bridge monitor view | Chapter 33 |
+| Code invalidation | Chapter 34, Chapter 44 |
 | COMPILE | Chapter 2, Chapter 35, Appendix I |
 | Compiled BASIC | Chapter 1, Chapter 2, Chapter 25, Chapter 35 |
 | Compositor | Chapter 3, Appendix K |
@@ -80,6 +81,7 @@ symbols, and Appendix J gives the full memory map.
 | COSTOP | Chapter 2, Chapter 32, Chapter 43 |
 | COWAIT | Chapter 2, Chapter 32, Chapter 43 |
 | CPU-local snapshots | Chapter 33, Chapter 34 |
+| cpu.jit_stats | Chapter 34, Chapter 44 |
 | cpu.load_stopped | Chapter 34, Chapter 44 |
 | CR_RAM_SIZE_BYTES | Chapter 25, Appendix I |
 | CRT presentation modes | Chapter 34, Chapter 44 |
@@ -125,6 +127,7 @@ symbols, and Appendix J gives the full memory map.
 | FILE TOO LARGE | Chapter 35, Appendix I |
 | FBZ_MODE | Chapter 9 |
 | fa command | Chapter 33, Chapter 44 |
+| Fallback execution | Chapter 34, Chapter 44 |
 | Fixed-point maths | Chapter 4, Chapter 9, Appendix F |
 | Frame loop | Chapter 46 |
 | Frequency tables | Appendix E |
@@ -225,6 +228,7 @@ symbols, and Appendix J gives the full memory map.
 
 | Term | See |
 |------|-----|
+| Native retirement | Chapter 34, Chapter 44 |
 | Network sockets | Chapter 39, Appendix D, Appendix H, Appendix I, Appendix J |
 | NOT A TEXT FILE | Chapter 35, Appendix I |
 
@@ -255,6 +259,7 @@ symbols, and Appendix J gives the full memory map.
 | RawlandMini drum table | Chapter 21, Appendix E |
 | RawlandMini programme table | Chapter 21, Appendix E |
 | Registers | Chapter 24, Appendix D |
+| Region promotion | Chapter 34, Chapter 44 |
 | Reverse history | Chapter 33, Chapter 34 |
 | RTC_MONO_USEC_HI | Chapter 37, Appendix D, Appendix H |
 | RTC_MONO_USEC_LO | Chapter 37, Appendix D, Appendix H |

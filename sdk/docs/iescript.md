@@ -370,6 +370,32 @@ In x86 mode, returns `backend`, `instruction_count`, `native_entries`,
 `invalidated_blocks`, `chain_exits`, `cache_hits`, `cache_misses`, and
 `code_cache_resets`.
 
+For IE64, `instruction_count` is the processor's total retired-instruction
+count. For x86, it is the total accounted by the JIT dispatcher and equals
+`native_retired` plus `fallback_instructions`. `native_entries` counts entries
+into generated code, `native_retired` counts instructions retired there, and
+`fallback_instructions` counts instructions executed through interpreter
+fallback while JIT dispatch is active.
+
+`compiled_blocks` counts installed single-block compilations,
+`compiled_regions` counts successful promoted regions, and
+`region_candidates` counts promotion attempts. IE64 `region_rejections` counts
+candidates that do not install a region. `cache_hits` and `cache_misses` count
+JIT block-cache lookup outcomes. `invalidations` counts code-write invalidation
+events; x86 `invalidated_blocks` counts blocks removed and `code_cache_resets`
+counts complete cache or allocator resets.
+
+`helper_exits` counts semantic helper hand-offs and `io_bails` counts I/O or
+guarded-memory hand-offs. x86 `chain_exits` counts returns from generated block
+chains to the dispatcher. IE64 `helper_resumes` counts generated-code
+continuations after helper completion, `helper_resume_cancellations` counts
+rejected continuations, and `spills`, `fpu_spills`, `direct_ram_proofs`, and
+`inlined_calls` are cumulative compiler metadata for installed compilation
+units.
+
+IE64 and x86 counters are owned by one CPU instance and reset when that CPU
+resets or loads a program; they do not require the console statistics switches.
+
 In 6502 mode, returns CPU-owned `instruction_count`, `tier1_blocks`,
 `native_entries`, `bailouts`, `invalidations`, and `chain_exits`. Reset clears
 all 6502 counters. `native_entries` counts emitted backend calls, including a

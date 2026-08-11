@@ -304,6 +304,30 @@ func sdkIEMonFactsFromSource(t *testing.T) []sdkSourceFact {
 func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 	t.Helper()
 	source := readAuditFile(t, "script_engine.go")
+	statsFunction := sourceBetween(t, source, "func (se *ScriptEngine) luaCPUJITStats", "type m68kJITCompileFailureStat")
+	ie64StatsBlock := sourceBetween(t, statsFunction, "case runtimeCPUIE64:", "case runtimeCPUX86:")
+	x86StatsBlock := sourceBetween(t, statsFunction, "case runtimeCPUX86:", "L.Push(tbl)")
+	for mode, block := range map[string]string{"IE64": ie64StatsBlock, "x86": x86StatsBlock} {
+		for _, field := range map[string][]string{
+			"IE64": {"backend", "instruction_count", "native_entries", "native_retired", "compiled_blocks", "compiled_regions", "region_candidates", "region_rejections", "fallback_instructions", "helper_exits", "helper_resumes", "helper_resume_cancellations", "io_bails", "invalidations", "cache_hits", "cache_misses", "spills", "fpu_spills", "direct_ram_proofs", "inlined_calls"},
+			"x86":  {"backend", "instruction_count", "native_entries", "native_retired", "compiled_blocks", "compiled_regions", "region_candidates", "fallback_instructions", "helper_exits", "io_bails", "invalidations", "invalidated_blocks", "chain_exits", "cache_hits", "cache_misses", "code_cache_resets"},
+		}[mode] {
+			if !strings.Contains(block, `L.SetField(tbl, "`+field+`"`) {
+				t.Fatalf("script_engine.go %s JIT statistics table changed; review iescript.md: %s", mode, field)
+			}
+		}
+	}
+	statsSource := readAuditFile(t, "jit_ies_stats.go")
+	for _, needle := range []string{
+		"Each CPU owns its counters",
+		"func (s *cpuJITStats) reset()",
+		"NativeEntries:             s.nativeEntries.Load()",
+		"FallbackInstructions:      s.fallbackInstructions.Load()",
+	} {
+		if !strings.Contains(statsSource, needle) {
+			t.Fatalf("JIT statistics ownership or reset contract changed; review iescript.md: %s", needle)
+		}
+	}
 	for _, needle := range []string{
 		"base := VGA_PALETTE + idx*3",
 		"se.bus.Write8(base, uint8(r))",
@@ -405,7 +429,14 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"In m68k mode, returns instruction_count, native_blocks, native_retired, native_chain_instructions, native_no_chain_returns, native_helper_exits, native_exception_exits, native_invalidation_exits, native_mmio_guard_exits, unsupported_one_exits, compile_failure_exits, transcendental_bursts, warmup_instructions, region_promotions, last_native_pc, fallback_instructions, bailouts, last_fallback_pc, last_fallback_opcode, fallback_opcodes, native_pcs, native_invalidation_pcs, native_pc_ring, and compile_failures.", "`script_engine.go` `luaCPUJITStats` m68k table fields"},
 		{"In IE64 mode, returns backend, instruction_count, native_entries, native_retired, compiled_blocks, compiled_regions, region_candidates, region_rejections, fallback_instructions, helper_exits, helper_resumes, helper_resume_cancellations, io_bails, invalidations, cache_hits, cache_misses, spills, fpu_spills, direct_ram_proofs, and inlined_calls.", "`script_engine.go` `luaCPUJITStats`, `jit_ies_stats.go`, and IE64 native and wasm dispatchers"},
 		{"In x86 mode, returns backend, instruction_count, native_entries, native_retired, compiled_blocks, compiled_regions, region_candidates, fallback_instructions, helper_exits, io_bails, invalidations, invalidated_blocks, chain_exits, cache_hits, cache_misses, and code_cache_resets.", "`script_engine.go` `luaCPUJITStats`, `jit_ies_stats.go`, and x86 amd64, ARM64, and wasm dispatchers"},
-		{"instruction_count, tier1_blocks, native_entries, bailouts, invalidations, and chain_exits; reset clears all 6502 counters", "`script_engine.go` `luaCPUJITStats`, `cpu_six5go2.go` `Reset`, and `jit_6502_policy.go` `resetJITStats`"},
+		{"In 6502 mode, returns CPU-owned instruction_count, tier1_blocks, native_entries, bailouts, invalidations, and chain_exits. Reset clears all 6502 counters.", "`script_engine.go` `luaCPUJITStats`, `cpu_six5go2.go` `Reset`, and `jit_6502_policy.go` `resetJITStats`"},
+		{"For IE64, instruction_count is the processor's total retired-instruction count. For x86, it is the total accounted by the JIT dispatcher and equals native_retired plus fallback_instructions.", "`script_engine.go` `luaCPUJITStats`, `jit_exec_test.go` and `jit_x86_exec_test.go` execution-provenance coverage"},
+		{"native_entries counts entries into generated code, native_retired counts instructions retired there, and fallback_instructions counts instructions executed through interpreter fallback while JIT dispatch is active.", "`jit_exec.go`, `jit_exec_wasm.go`, `jit_x86_exec.go`, `jit_x86_exec_arm64.go`, and `jit_x86_exec_wasm.go` counter updates"},
+		{"IE64 and x86 counters are owned by one CPU instance and reset when that CPU resets or loads a program; they do not require the console statistics switches.", "`jit_ies_stats.go` ownership/reset, CPU reset/load paths, and `script_engine_test.go` `TestCPUJITStatsResetAndOwnership`"},
+		{"compiled_blocks counts installed single-block compilations, compiled_regions counts successful promoted regions, and region_candidates counts promotion attempts. IE64 region_rejections counts candidates that do not install a region.", "IE64 and x86 native/ARM64/wasm compilation and promotion paths"},
+		{"cache_hits and cache_misses count JIT block-cache lookup outcomes. invalidations counts code-write invalidation events; x86 invalidated_blocks counts blocks removed and code_cache_resets counts complete cache or allocator resets.", "IE64 and x86 native/ARM64/wasm cache and invalidation paths"},
+		{"IE64 helper_resumes counts generated-code continuations after helper completion, helper_resume_cancellations counts rejected continuations, and spills, fpu_spills, direct_ram_proofs, and inlined_calls are cumulative compiler metadata for installed compilation units.", "IE64 helper dispatch/resume and native/wasm block installation paths"},
+		{"helper_exits counts semantic helper hand-offs and io_bails counts I/O or guarded-memory hand-offs. x86 chain_exits counts returns from generated block chains to the dispatcher.", "IE64 and x86 native/ARM64/wasm exit-accounting paths"},
 		{"Available backends start enabled during normal CPU and runner construction; the primary command-line CPU starts disabled when --nojit is used.", "CPU constructors and runner defaults; `main.go` `nojit` flag and per-primary-CPU disable paths"},
 		{"dbg.open() freezes every CPU and the audio clock; final dbg.close() restores the pre-entry audio state unless fa or ta changed it during the session", "`script_engine.go` `luaDbgOpen`/`luaDbgClose`, `debug_monitor.go` media-freeze entry/exit contract"},
 		{"coproc.start(cpu_type, filename [, instance]), coproc.stop(cpu_type [, instance]), and coproc.enqueue(cpu_type, op, request [, instance]) default to instance 0; M68K, x86, and IE64 accept instance 1, while IE32, 6502, and Z80 reject it", "`script_engine.go` `coprocLuaInstance`/`luaCoprocStart`/`luaCoprocStop`/`luaCoprocEnqueue`, `coprocessor_constants.go` `coprocInstanceLimit`"},

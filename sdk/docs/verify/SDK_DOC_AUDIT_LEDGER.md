@@ -3786,6 +3786,45 @@ have no five-book effect. Untracked files were excluded. The protected
 `sdk/docs/refman/` and `sdk/docs/refman.publish/` trees were not edited.
 Disposition: KEEP.
 
+ID: SDK-DOC-0105
+Status: FIXED
+Document: `sdk/docs/iescript.md`, the IEScript empirical inventory, the
+Architecture source-file inventory, and companion gates.
+Section: IE64 and x86 `cpu.jit_stats()` contracts.
+Claim: Commit `11295748` adds CPU-owned IE64 and x86 JIT statistics across
+native, ARM64, and wasm dispatchers and exposes those counters through
+`cpu.jit_stats()`. Field existence alone is insufficient: the manual must also
+define execution provenance, compilation and promotion events, helper and I/O
+handoffs, cache and invalidation events, compiler metadata, ownership, and
+reset lifetime.
+Purpose judgement: These are public Lua API return fields and belong in
+IEScript. They describe JIT diagnostics rather than IE64 or IE32 processor
+instruction semantics, IEMon commands, or system architecture.
+Canonical sources checked: every commit and the clean tracked tree from
+`4f43b215..11295748`; `jit_ies_stats.go`, `script_engine.go`, IE64 native and
+wasm dispatchers, x86 amd64, ARM64, and wasm dispatchers, CPU reset/load paths,
+and the execution-provenance and API tests.
+Runnable verification: focused IE64/x86 statistics field, provenance,
+ownership, reset, native-dispatch, and source-inventory tests; all companion
+and ledger gates; `make check-docs`; PDF manifest verification; and final
+five-book PDF inspection.
+Observed result: Retained the committed field lists and added self-contained
+field semantics, including the different IE64 and x86 `instruction_count`
+contracts. Repaired the reformatted 6502 coverage row, made the generator
+verify every emitted IE64/x86 field directly, and added semantic inventory
+rows. The Architecture golden was regenerated because the new root Go source
+file changes its empirical source-file inventory; no Architecture prose claim
+changed.
+Action: Updated IEScript, the inventory generator and goldens, companion gates,
+and this ledger. Regenerate all five PDFs and the render manifest after all
+pre-render gates pass.
+Notes: The wasm and website refresh commits alter published binaries and web
+content but no five-book contract. The manual already carries today's date, so
+its page-one date remains `2026-08-11`. Untracked files were excluded. The
+protected `sdk/docs/refman/` and `sdk/docs/refman.publish/` trees were not
+edited.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -3825,7 +3864,7 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
 `SDK-DOC-0100`, `SDK-DOC-0101`, `SDK-DOC-0102`, `SDK-DOC-0103`, and
-`SDK-DOC-0104`
+`SDK-DOC-0104`, and `SDK-DOC-0105`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -3907,7 +3946,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0104` and
+Open claim-group backlog: none for this run after `SDK-DOC-0105` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate
