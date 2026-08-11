@@ -308,7 +308,8 @@ SHOWREEL_IE32_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/robocop_intro.iex
 SHOWREEL_IE64_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_ie64.ie64 \
-	$(SHOWREEL_PREBUILT_DIR)/mandelbrot_ie64.ie64
+	$(SHOWREEL_PREBUILT_DIR)/mandelbrot_ie64.ie64 \
+	$(SHOWREEL_PREBUILT_DIR)/ula_boing_ie64.ie64
 SHOWREEL_M68K_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_68k.ie68 \
 	$(SHOWREEL_PREBUILT_DIR)/ted_121_colors_68k.ie68 \
@@ -365,12 +366,16 @@ AB3D2_ARCHIVE := $(AB3D2_BUILD_DIR)/IntuitionEngine-AB3D2-x64.zip
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
-.PHONY: ie32asm ie64asm ie64dis ie64ld ie64-cproc ie64-ar ie64-ranlib ie32to64 m68kto64 test-m68kto64 rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets aros-iewarp-library iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos cputest-musashi dist-ie64-toolchain-linux-amd64
+.PHONY: ie32asm ie64asm ie64dis ie64ld ie64-cproc ie64-ar ie64-ranlib ie32to64 m68kto64 test-m68kto64 rotozoom-textures ula-boing-ie64 gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets aros-iewarp-library iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos cputest-musashi dist-ie64-toolchain-linux-amd64
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis ie64ld ie64-cproc ie64-ar ie64-ranlib
 	@echo "Build complete! VM in $(BIN_DIR)/, tools in $(SDK_BIN_DIR)/"
 	@$(MAKE) list
+
+ula-boing-ie64: ie64-cproc
+	@$(MKDIR) -p sdk/examples/prebuilt
+	$(SDK_BIN_DIR)/ie64-cproc -O3 --map sdk/examples/prebuilt/ula_boing_ie64.map -o sdk/examples/prebuilt/ula_boing_ie64.ie64 sdk/examples/c/ula_boing_ie64.c sdk/examples/c/ula_boing_music_data.s
 
 test-race:
 	$(GO) test -race -tags headless -run 'TestMonitor|TestBreakpoint|TestWatchpoint|TestSnapshot|TestTrace|TestRunUntil|TestStep|TestHunt|TestParse|TestEval|TestDisasm|TestBacktrace|TestIOView|TestHexEdit|TestStopHook|TestPublishEvent|TestAdapter|TestBP_' ./...
@@ -1995,7 +2000,7 @@ showreel-ie32: ie32asm robocop-32 rotozoom-textures
 		mv sdk/examples/asm/$$out $(SHOWREEL_PREBUILT_DIR)/; \
 	done
 
-showreel-ie64: ie64asm rotozoom-textures
+showreel-ie64: ie64asm rotozoom-textures ula-boing-ie64
 	@echo "Building showreel IE64 artifacts..."
 	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
 	@set -e; \

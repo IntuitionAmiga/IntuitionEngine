@@ -69,6 +69,7 @@ SHA256SUMS
 !intuitionengine.com/assets/intuition-engine-host-sdk-linux-amd64.tar.xz
 !intuitionengine.com/assets/intuition-engine-host-sdk-linux-amd64.tar.xz.sha256
 *.zip
+*_PLAN*
 
 # Cross-compilation sysroot
 sysroot/
@@ -80,7 +81,8 @@ sysroot/
 # SDK build artifacts
 /Systems/
 sdk/bin/
-sdk/examples/prebuilt/
+sdk/examples/prebuilt/*
+!sdk/examples/prebuilt/*.ie*
 sdk/ab3d64/bin/
 sdk/ab3d64/build/
 sdk/ab3d64/_build/

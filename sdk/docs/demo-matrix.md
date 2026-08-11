@@ -23,6 +23,7 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | Example | CPU | Video | Audio | Description |
 |---------|-----|-------|-------|-------------|
 | `mandelbrot_ie64.asm` | IE64 | IEVideoChip | -- | Real-time Mandelbrot fractal with fixed-point arithmetic |
+| `ula_boing_ie64.c` | IE64 C23 | ULA (Spectrum) | SoundChip | Real-time FPU sphere mapping, bounce physics, synthesised impact and reverb |
 
 ## Video Chip Showcases
 
@@ -31,6 +32,7 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | `vga_text_hello.asm` | IE32 | VGA (text) | -- | Simplest demo: coloured text on 80x25 screen |
 | `vga_mode13h_fire.asm` | IE32 | VGA (Mode 13h) | -- | Classic DOS-era 256-colour fire effect |
 | `ula_rotating_cube_65.asm` | 6502 | ULA (Spectrum) | AHX | Wireframe 3D cube on ZX Spectrum display |
+| `ula_boing_ie64.c` | IE64 C23 | ULA (Spectrum) | SoundChip | Bright chequered Boing ball on a cell-safe perspective grid |
 | `ted_121_colors_68k.asm` | M68K | TED (Plus/4) | PSG | Full-screen plasma using all 121 TED colours |
 | `antic_plasma_x86.asm` | x86 | ANTIC/GTIA | SID | IE-native display list + Player/Missile graphics |
 | `voodoo_cube_68k.asm` | M68K | Voodoo 3D | -- | Z-buffered 3D cube on 3DFX Voodoo hardware |

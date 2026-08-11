@@ -133,6 +133,7 @@ The rotozoomer examples demonstrate a hardware-accelerated rotating/zooming text
 | `vga_modex_circles.asm` | IE32 | VGA (Mode X) | -- | Animated circles in 320x240 planar mode |
 | `vga_mode12h_bars.asm` | IE32 | VGA (Mode 12h) | -- | Planar tunnel plasma in 640x480 4-plane mode |
 | `ula_rotating_cube_65.asm` | 6502 | ULA (Spectrum) | AHX | Wireframe 3D cube on ZX Spectrum display |
+| `ula_boing_ie64.c` | IE64 C23 | ULA (Spectrum) | SoundChip | Real-time FPU-mapped Boing ball with synthesised impact and reverb |
 | `ted_121_colors_68k.asm` | M68K | TED (Plus/4) | PSG | Full-screen plasma using all 121 TED colours |
 | `antic_plasma_x86.asm` | x86 | ANTIC/GTIA | SID | Atari 8-bit display list + Player/Missile graphics |
 | `rotating_cube_copper_68k.asm` | M68K | IEVideoChip + Copper | -- | 3D cube with copper rasterbars |

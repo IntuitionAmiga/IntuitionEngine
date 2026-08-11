@@ -460,6 +460,19 @@ monitor_tour({
 })
 
 title_card({
+    "ULA Boing",
+    "CPU: IE64 C23 + native JIT + FPU",
+    "Video: ZX Spectrum ULA | Audio: SoundChip synthesis + reverb",
+}, 3)
+run_demo(P.."ula_boing_ie64.ie64", 15)
+monitor_tour({
+    {"r",        2000},
+    {"d",        2000},
+    {"io ula",   1800},
+    {"io sound", 1800},
+})
+
+title_card({
     "ULA Cube Rendering",
     "CPU: MOS 6502 (8-bit)",
     "Video: ULA (ZX Spectrum, 256x192 15 colors)",

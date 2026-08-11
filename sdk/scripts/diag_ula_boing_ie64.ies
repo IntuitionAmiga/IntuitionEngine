@@ -1,0 +1,330 @@
+-- ULA Boing IE64 development and acceptance harness.
+-- IE_ULA_BOING_MODE: static, motion, performance, capture, or audio.
+
+local mode = os.getenv("IE_ULA_BOING_MODE") or "motion"
+local out_root = "ula_boing_ie64_out"
+local map_path = "sdk/examples/prebuilt/ula_boing_ie64.map"
+local image_path = "sdk/examples/prebuilt/ula_boing_ie64.ie64"
+local ULA_CTRL = 0x000f2004
+local AUDIO_CTRL = 0x000f0800
+local REVERB_MIX = 0x000f0a50
+local REVERB_DECAY = 0x000f0a54
+local FLEX_CH0 = 0x000f0a80
+local FLEX_CH1 = 0x000f0ac0
+
+local map = sys.read_file(map_path)
+local function symbol(name)
+    local hex = string.match(map, "0x([0-9a-fA-F]+)%s+" .. name .. "[%s\n]")
+    assert(hex, "missing linker-map symbol: " .. name)
+    return tonumber(hex, 16)
+end
+
+local D = symbol("boing_diagnostics")
+local FRAME = symbol("boing_frame")
+local ABI = 0x00010000
+local OFF = {
+    abi = 0, started = 4, rendered = 8, committed = 12,
+    x = 16, y = 20, vx = 24, vy = 28, rot_x = 32, rot_y = 36,
+    motion = 40, impacts = 44, impact_velocity = 48, ula_bytes = 52,
+    audio_triggers = 56, last_audio_frame = 60, squash = 64,
+    render_request = 68, renderer_pixels = 72, boundary_cells = 76,
+    tuning = 80
+}
+
+local function read_u32(off) return mem.read32(D + off) end
+local function write_u32(off, value) mem.write32(D + off, value) end
+local function read_f32(off)
+    local bits = mem.read32(D + off)
+    local sign = bits >= 0x80000000 and -1 or 1
+    local exponent = math.floor(bits / 0x800000) % 256
+    local mantissa = bits % 0x800000
+    if exponent == 0 then
+        if mantissa == 0 then return sign < 0 and -0.0 or 0.0 end
+        return sign * (mantissa / 0x800000) * 2^-126
+    end
+    assert(exponent ~= 255, "diagnostic float is NaN or infinity")
+    return sign * (1.0 + mantissa / 0x800000) * 2^(exponent - 127)
+end
+local function write_f32(off, value)
+    if value == 0 then mem.write32(D + off, 0); return end
+    local sign = 0
+    if value < 0 then sign = 0x80000000; value = -value end
+    local exponent = math.floor(math.log(value) / math.log(2))
+    local fraction = value / 2^exponent - 1.0
+    local mantissa = math.floor(fraction * 0x800000 + 0.5)
+    if mantissa >= 0x800000 then mantissa = 0; exponent = exponent + 1 end
+    assert(exponent >= -126 and exponent <= 127, "diagnostic float is out of range")
+    mem.write32(D + off, sign + (exponent + 127) * 0x800000 + mantissa)
+end
+
+local function frozen(fn)
+    cpu.freeze()
+    local ok, err = pcall(fn)
+    cpu.resume()
+    assert(ok, err)
+end
+
+local function safe_u32(off)
+    local value
+    frozen(function() value = read_u32(off) end)
+    return value
+end
+
+local function safe_f32(off)
+    local value
+    frozen(function() value = read_f32(off) end)
+    return value
+end
+
+local function wait_commit(after, limit)
+    for _ = 1, limit or 300 do
+        if not cpu.is_running() then error("IE64 CPU stopped before committing a frame") end
+        -- Wall-clock polling also works in headless mode, where compositor
+        -- notifications can outrun a compute-heavy guest's first frame.
+        sys.wait_ms(5)
+        cpu.freeze()
+        local committed = read_u32(OFF.committed)
+        cpu.resume()
+        if committed > after then return committed end
+    end
+    error("timed out waiting for a committed ULA frame")
+end
+
+local function snapshot(name)
+    local committed, rendered, bytes, hash, frame
+    frozen(function()
+        committed = read_u32(OFF.committed)
+        rendered = read_u32(OFF.rendered)
+        bytes = read_u32(OFF.ula_bytes)
+        frame = mem.read_block(FRAME, 6912)
+        hash = video.frame_hash()
+    end)
+    assert(committed <= rendered and rendered - committed <= 1,
+           "frame commit/render ordering is invalid")
+    assert(bytes == 6912, "ULA commit did not contain exactly 6912 bytes")
+    assert(#frame == 6912, "RAM frame has the wrong size")
+    assert(hash ~= 0, "compositor frame hash is zero")
+    rec.screenshot(out_root .. "/" .. name .. ".png")
+    sys.print(string.format("[ula boing] %s frame=%d hash=%s", name, committed, tostring(hash)))
+    return hash
+end
+
+local function force_state(name, x, y, rx, ry, squash)
+    local before = safe_u32(OFF.committed)
+    frozen(function()
+        write_u32(OFF.motion, 1)
+        write_f32(OFF.x, x)
+        write_f32(OFF.y, y)
+        write_f32(OFF.vx, 0)
+        write_f32(OFF.vy, 0)
+        write_f32(OFF.rot_x, rx)
+        write_f32(OFF.rot_y, ry)
+        write_u32(OFF.squash, squash or 0)
+        write_u32(OFF.render_request, 1)
+    end)
+    wait_commit(before)
+    return snapshot(name)
+end
+
+local function static_mode()
+    local hashes = {}
+    hashes[#hashes + 1] = force_state("centre_zero", 128, 78, 0, 0, 0)
+    hashes[#hashes + 1] = force_state("quarter_rotation", 128, 78, 1.5707963, 0.35, 0)
+    hashes[#hashes + 1] = force_state("checker_pole", 128, 78, 0.25, 1.25, 0)
+    hashes[#hashes + 1] = force_state("left_edge", 48, 92, 2.1, -0.4, 0)
+    hashes[#hashes + 1] = force_state("right_edge", 208, 92, -2.1, 0.4, 0)
+    hashes[#hashes + 1] = force_state("above_floor", 128, 131, 0.8, 0.7, 0)
+    hashes[#hashes + 1] = force_state("maximum_squash", 128, 132, 0.9, 0.75, 3)
+    local unique = {}
+    for _, h in ipairs(hashes) do unique[tostring(h)] = true end
+    local n = 0
+    for _ in pairs(unique) do n = n + 1 end
+    assert(n >= 6, "static phases did not produce meaningfully distinct frames")
+end
+
+local function motion_mode()
+    frozen(function()
+        write_u32(OFF.motion, 0)
+        write_f32(OFF.x, 70)
+        write_f32(OFF.y, 57)
+        write_f32(OFF.vx, 0.75)
+        write_f32(OFF.vy, 0)
+    end)
+    local initial_impacts = safe_u32(OFF.impacts)
+    local initial_audio = safe_u32(OFF.audio_triggers)
+    local last_commit = safe_u32(OFF.committed)
+    local last_impact = initial_impacts
+    local last_rot = safe_f32(OFF.rot_x)
+    local min_y, max_y = 999, -999
+    local impact_frames = {}
+    local phase_hashes = {}
+    local captured = {}
+    while safe_u32(OFF.impacts) < initial_impacts + 3 do
+        local committed = wait_commit(last_commit)
+        local capture_name
+        frozen(function()
+            local y = read_f32(OFF.y)
+            local x = read_f32(OFF.x)
+            local vy = read_f32(OFF.vy)
+            local impacts = read_u32(OFF.impacts)
+            local audio_count = read_u32(OFF.audio_triggers)
+            local rot = read_f32(OFF.rot_x)
+            local rendered = read_u32(OFF.rendered)
+            assert(committed <= rendered and rendered - committed <= 1,
+                   "render/commit ordering failure")
+            assert(read_u32(OFF.ula_bytes) == 6912, "partial ULA upload")
+            assert(y >= 25 and y <= 133, "ball escaped vertical bounds")
+            assert(rot ~= last_rot, "rotation stopped during motion")
+            if y < min_y then min_y = y end
+            if y > max_y then max_y = y end
+            if impacts ~= last_impact then
+                assert(impacts == last_impact + 1, "more than one impact in a frame")
+                assert(audio_count == initial_audio + (impacts - initial_impacts),
+                       "impact did not trigger exactly one guest sound")
+                assert(y > 131.5 and y < 132.5, "impact occurred away from the floor")
+                impact_frames[#impact_frames + 1] = committed
+                phase_hashes[#phase_hashes + 1] = video.frame_hash()
+                last_impact = impacts
+            end
+            if not captured.apex and math.abs(vy) < 0.16 then capture_name = "apex"; captured.apex = true
+            elseif not captured.descent and vy > 1.5 and y < 110 then capture_name = "descent"; captured.descent = true
+            elseif not captured.preimpact and vy > 0 and y > 126 then capture_name = "preimpact"; captured.preimpact = true
+            elseif not captured.squash and read_u32(OFF.squash) > 0 then capture_name = "maximum_squash"; captured.squash = true
+            elseif not captured.rebound and vy < 0 and y > 125 then capture_name = "initial_rebound"; captured.rebound = true
+            elseif not captured.left and x < 50 then capture_name = "left_travel_extreme"; captured.left = true
+            elseif not captured.right and x > 206 then capture_name = "right_travel_extreme"; captured.right = true end
+            last_rot = rot
+        end)
+        if capture_name then snapshot(capture_name) end
+        last_commit = committed
+    end
+    assert(min_y < 68, "bounce never reached its intended apex")
+    assert(max_y > 131, "bounce never reached the floor")
+    assert(#impact_frames == 3, "did not observe three complete bounces")
+    snapshot("motion_after_three_bounces")
+end
+
+local function performance_mode()
+    frozen(function()
+        write_u32(OFF.motion, 0)
+        write_f32(OFF.vx, -0.75)
+        write_f32(OFF.vy, 0)
+    end)
+    local start_frame = safe_u32(OFF.committed)
+    local last = start_frame
+    for _ = 1, 100 do last = wait_commit(last) end
+    assert(cpu.execution_mode() == "jit", "performance mode requires IE64 JIT execution")
+    assert(last - start_frame == 100, "performance interval lost committed frames")
+    assert(audio.midi_is_playing(), "guest MIDI soundtrack did not start")
+    sys.print("[ula boing] performance frames=100 execution_mode=jit")
+end
+
+local function audio_mode()
+    local presets = {
+        soft_rubber = {mix=42, decay=92, body=150, noise=42, freq=190},
+        classic_boing = {mix=55, decay=105, body=178, noise=68, freq=205},
+        heavy_ball = {mix=62, decay=116, body=205, noise=54, freq=178},
+        reject_reverb = {mix=150, decay=220, body=178, noise=68, freq=205}
+    }
+    local selected = os.getenv("IE_ULA_BOING_AUDIO_PRESET") or "classic_boing"
+    local p = assert(presets[selected], "unknown audio preset " .. selected)
+    audio.reset()
+    audio.start()
+    audio.set_master_gain_db(-5.0)
+    audio.write_regs({
+        {REVERB_MIX, p.mix}, {REVERB_DECAY, p.decay},
+        {FLEX_CH0 + 0x24, 1}, {FLEX_CH0 + 0x14, 1}, {FLEX_CH0 + 0x18, 85},
+        {FLEX_CH0 + 0x1c, 0}, {FLEX_CH0 + 0x20, 65},
+        {FLEX_CH1 + 0x24, 3}, {FLEX_CH1 + 0x14, 1}, {FLEX_CH1 + 0x18, 18},
+        {FLEX_CH1 + 0x1c, 0}, {FLEX_CH1 + 0x20, 8}
+    })
+    for _ = 1, 4 do
+        audio.write_regs({
+            {FLEX_CH0 + 0x08, 0}, {FLEX_CH1 + 0x08, 0},
+            {FLEX_CH0 + 0x00, p.freq * 256}, {FLEX_CH0 + 0x04, p.body},
+            {FLEX_CH0 + 0x30, 0}, {FLEX_CH1 + 0x00, 3200 * 256},
+            {FLEX_CH1 + 0x04, p.noise}, {FLEX_CH1 + 0x30, 0},
+            {FLEX_CH0 + 0x08, 3}, {FLEX_CH1 + 0x08, 3}
+        })
+        sys.wait_frames(55)
+    end
+    sys.print("[ula boing] auditioned " .. selected)
+end
+
+local function capture_mode()
+    static_mode()
+    frozen(function()
+        write_u32(OFF.motion, 0)
+        write_f32(OFF.x, 70)
+        write_f32(OFF.y, 57)
+        write_f32(OFF.vx, -0.75)
+        write_f32(OFF.vy, 0)
+    end)
+    local initial_impacts = safe_u32(OFF.impacts)
+    local initial_audio = safe_u32(OFF.audio_triggers)
+    rec.start(out_root .. "/ula_boing_ie64_20s.mp4")
+    -- The compositor recorder runs at 60 Hz, independently of the 50 Hz guest.
+    sys.wait_frames(1200)
+    rec.stop()
+    local captured_impacts = safe_u32(OFF.impacts) - initial_impacts
+    local captured_audio = safe_u32(OFF.audio_triggers) - initial_audio
+    assert(captured_impacts >= 10 and captured_impacts <= 40,
+           "capture bounce cadence is implausible: " .. captured_impacts)
+    assert(captured_audio == captured_impacts,
+           "capture did not produce exactly one sound per bounce")
+    snapshot("capture_final")
+    local report = string.format(
+        "abi=%08x\nframes=%d\nimpacts=%d\naudio_triggers=%d\nexecution_mode=%s\n" ..
+        "gravity=%.5f\nrestitution=%.5f\nangular_velocity_x=%.5f\n" ..
+        "angular_velocity_y=%.5f\nreverb_mix=%d\nreverb_decay=%d\n",
+        safe_u32(OFF.abi), safe_u32(OFF.committed), safe_u32(OFF.impacts),
+        safe_u32(OFF.audio_triggers), cpu.execution_mode(),
+        safe_f32(OFF.tuning), safe_f32(OFF.tuning + 4), safe_f32(OFF.tuning + 12),
+        safe_f32(OFF.tuning + 16), safe_u32(OFF.tuning + 56), safe_u32(OFF.tuning + 60))
+    sys.write_file(out_root .. "/report.txt", report)
+end
+
+local function run()
+assert(cpu.mode() == "ie64", "select the IE64 CPU before running this diagnostic")
+sys.mkdir(out_root)
+for _, name in ipairs(dbg.device_list()) do sys.print("[ula boing] device=" .. name) end
+if os.getenv("IE_ULA_BOING_PRELOADED") == "true" then
+    assert(cpu.is_running(), "preloaded mode requires the guest on the command line")
+    sys.print("[ula boing] using preloaded image")
+else
+    sys.print("[ula boing] loading " .. image_path)
+    local loaded, load_error = pcall(cpu.load_stopped, image_path)
+    assert(loaded, "load failed: " .. tostring(load_error))
+    sys.print("[ula boing] image loaded")
+    cpu.start()
+end
+local boot_started, boot_committed
+frozen(function()
+    boot_started = read_u32(OFF.started)
+    boot_committed = read_u32(OFF.committed)
+end)
+sys.print(string.format("[ula boing] diagnostics=%x started=%d committed=%d",
+    D, boot_started, boot_committed))
+local first_ok, first = pcall(wait_commit, 0, 600)
+if not first_ok then sys.print("[ula boing] first-frame failure: " .. tostring(first)) end
+assert(first_ok, first)
+assert(first > 0, "demo did not commit its first frame")
+assert(safe_u32(OFF.abi) == ABI, "diagnostic ABI mismatch")
+assert(video.read_reg(ULA_CTRL) ~= 0, "ULA is disabled")
+local audio_control
+frozen(function() audio_control = mem.read32(AUDIO_CTRL) end)
+assert(audio_control ~= 0, "SoundChip is disabled")
+
+if mode == "static" then static_mode()
+elseif mode == "motion" then motion_mode()
+elseif mode == "performance" then performance_mode()
+elseif mode == "capture" then capture_mode()
+elseif mode == "audio" then audio_mode()
+else error("unknown IE_ULA_BOING_MODE: " .. mode) end
+
+sys.print("[ula boing] PASS mode=" .. mode)
+end
+
+local ok, err = xpcall(run, function(value) return tostring(value) end)
+if not ok then sys.print("[ula boing] FAIL " .. tostring(err)) end
+assert(ok, err)
