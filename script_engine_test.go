@@ -1943,6 +1943,155 @@ func TestScriptEngine_CPUJITStats_Z80(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_CPUJITStats_IE64(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.running.Store(false)
+	cpu.InstructionCount = 31
+	cpu.jitStats.nativeEntries.Store(7)
+	cpu.jitStats.nativeRetired.Store(23)
+	cpu.jitStats.compiledBlocks.Store(5)
+	cpu.jitStats.compiledRegions.Store(2)
+	cpu.jitStats.regionCandidates.Store(3)
+	cpu.jitStats.regionRejections.Store(1)
+	cpu.jitStats.fallbackInstructions.Store(4)
+	cpu.jitStats.helperExits.Store(6)
+	cpu.jitStats.helperResumes.Store(8)
+	cpu.jitStats.helperResumeCancellations.Store(9)
+	cpu.jitStats.ioBails.Store(10)
+	cpu.jitStats.invalidations.Store(11)
+	cpu.jitStats.cacheHits.Store(12)
+	cpu.jitStats.cacheMisses.Store(13)
+	cpu.jitStats.spills.Store(14)
+	cpu.jitStats.fpuSpills.Store(15)
+	cpu.jitStats.directRAMProofs.Store(16)
+	cpu.jitStats.inlinedCalls.Store(17)
+	runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu, nil, nil, nil, nil)
+	t.Cleanup(func() { runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil) })
+
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`
+		local s = cpu.jit_stats()
+		local expected = {
+			backend=true, instruction_count=true, native_entries=true, native_retired=true,
+			compiled_blocks=true, compiled_regions=true, region_candidates=true,
+			region_rejections=true, fallback_instructions=true, helper_exits=true,
+			helper_resumes=true, helper_resume_cancellations=true, io_bails=true,
+			invalidations=true, cache_hits=true, cache_misses=true, spills=true,
+			fpu_spills=true, direct_ram_proofs=true, inlined_calls=true,
+		}
+		local count = 0
+		for key in pairs(s) do if not expected[key] then error("unexpected field " .. key) end count = count + 1 end
+		if count ~= 20 then error("field count " .. count) end
+		if s.backend == nil or s.instruction_count ~= 31 or s.native_entries ~= 7 or
+		   s.native_retired ~= 23 or s.compiled_blocks ~= 5 or s.compiled_regions ~= 2 or
+		   s.region_candidates ~= 3 or s.region_rejections ~= 1 or
+		   s.fallback_instructions ~= 4 or s.helper_exits ~= 6 or
+		   s.helper_resumes ~= 8 or s.helper_resume_cancellations ~= 9 or
+		   s.io_bails ~= 10 or s.invalidations ~= 11 or s.cache_hits ~= 12 or
+		   s.cache_misses ~= 13 or s.spills ~= 14 or s.fpu_spills ~= 15 or
+		   s.direct_ram_proofs ~= 16 or s.inlined_calls ~= 17 then error("values") end
+	`, "cpu_jit_stats_ie64"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestScriptEngine_CPUJITStats_X86(t *testing.T) {
+	bus := NewMachineBus()
+	runner := NewCPUX86Runner(bus, &CPUX86Config{})
+	runner.cpu.SetRunning(false)
+	runner.cpu.jitStats.instructionCount.Store(29)
+	runner.cpu.jitStats.nativeEntries.Store(7)
+	runner.cpu.jitStats.nativeRetired.Store(19)
+	runner.cpu.jitStats.compiledBlocks.Store(5)
+	runner.cpu.jitStats.compiledRegions.Store(2)
+	runner.cpu.jitStats.regionCandidates.Store(3)
+	runner.cpu.jitStats.fallbackInstructions.Store(4)
+	runner.cpu.jitStats.helperExits.Store(6)
+	runner.cpu.jitStats.ioBails.Store(8)
+	runner.cpu.jitStats.invalidations.Store(9)
+	runner.cpu.jitStats.invalidatedBlocks.Store(10)
+	runner.cpu.jitStats.chainExits.Store(11)
+	runner.cpu.jitStats.cacheHits.Store(12)
+	runner.cpu.jitStats.cacheMisses.Store(13)
+	runner.cpu.jitStats.codeCacheResets.Store(14)
+	runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, runner, nil)
+	t.Cleanup(func() { runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil) })
+
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`
+		local s = cpu.jit_stats()
+		local expected = {
+			backend=true, instruction_count=true, native_entries=true, native_retired=true,
+			compiled_blocks=true, compiled_regions=true, region_candidates=true,
+			fallback_instructions=true, helper_exits=true, io_bails=true,
+			invalidations=true, invalidated_blocks=true, chain_exits=true,
+			cache_hits=true, cache_misses=true, code_cache_resets=true,
+		}
+		local count = 0
+		for key in pairs(s) do if not expected[key] then error("unexpected field " .. key) end count = count + 1 end
+		if count ~= 16 then error("field count " .. count) end
+		if s.backend == nil or s.instruction_count ~= 29 or s.native_entries ~= 7 or
+		   s.native_retired ~= 19 or s.compiled_blocks ~= 5 or s.compiled_regions ~= 2 or
+		   s.region_candidates ~= 3 or s.fallback_instructions ~= 4 or
+		   s.helper_exits ~= 6 or s.io_bails ~= 8 or s.invalidations ~= 9 or
+		   s.invalidated_blocks ~= 10 or s.chain_exits ~= 11 or s.cache_hits ~= 12 or
+		   s.cache_misses ~= 13 or s.code_cache_resets ~= 14 then error("values") end
+	`, "cpu_jit_stats_x86"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
+func TestCPUJITStatsResetAndOwnership(t *testing.T) {
+	bus := NewMachineBus()
+	ie64a, ie64b := NewCPU64(bus), NewCPU64(bus)
+	ie64a.jitStats.nativeEntries.Store(3)
+	ie64b.jitStats.nativeEntries.Store(7)
+	ie64a.Reset()
+	if got := ie64a.jitStats.snapshot().NativeEntries; got != 0 {
+		t.Fatalf("reset IE64 native entries = %d, want 0", got)
+	}
+	if got := ie64b.jitStats.snapshot().NativeEntries; got != 7 {
+		t.Fatalf("second IE64 native entries = %d, want 7", got)
+	}
+	ie64b.LoadProgramBytes(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	if got := ie64b.jitStats.snapshot().NativeEntries; got != 0 {
+		t.Fatalf("reloaded IE64 native entries = %d, want 0", got)
+	}
+	ie64b.jitStats.nativeEntries.Store(5)
+	if err := ie64b.LoadFlatProgramBytes(ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0)); err != nil {
+		t.Fatalf("load flat IE64 program: %v", err)
+	}
+	if got := ie64b.jitStats.snapshot().NativeEntries; got != 0 {
+		t.Fatalf("flat-reloaded IE64 native entries = %d, want 0", got)
+	}
+
+	x86a, x86b := NewCPU_X86(NewX86BusAdapter(bus)), NewCPU_X86(NewX86BusAdapter(bus))
+	x86a.jitStats.compiledBlocks.Store(4)
+	x86b.jitStats.compiledBlocks.Store(9)
+	x86a.Reset()
+	if got := x86a.jitStats.snapshot().CompiledBlocks; got != 0 {
+		t.Fatalf("reset x86 compiled blocks = %d, want 0", got)
+	}
+	if got := x86b.jitStats.snapshot().CompiledBlocks; got != 9 {
+		t.Fatalf("second x86 compiled blocks = %d, want 9", got)
+	}
+	runner := NewCPUX86Runner(bus, &CPUX86Config{})
+	runner.cpu.jitStats.compiledBlocks.Store(6)
+	runner.LoadProgramBytes([]byte{0xF4})
+	if got := runner.cpu.jitStats.snapshot().CompiledBlocks; got != 0 {
+		t.Fatalf("reloaded x86 compiled blocks = %d, want 0", got)
+	}
+}
+
 func TestScriptEngine_CPUJITControls_X86(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()

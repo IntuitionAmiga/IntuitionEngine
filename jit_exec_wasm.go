@@ -69,6 +69,7 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 				return
 			}
 			cpu.InstructionCount++
+			cpu.jitStats.fallbackInstructions.Add(1)
 			if !cpu.running.Load() {
 				return
 			}
@@ -168,9 +169,11 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 
 		// Compiled block at this PC? (peek refuses while the MMU is on.)
 		if blk := rt.peek(cpu.PC); blk != nil {
+			cpu.jitStats.cacheHits.Add(1)
 			rt.runBlock(blk)
 			continue
 		}
+		cpu.jitStats.cacheMisses.Add(1)
 		rt.noteHot(cpu.PC)
 
 		rt.fallSteps++
@@ -182,6 +185,7 @@ func (cpu *CPU64) wasmJITDispatch(rt *wasmJITRuntime) {
 		// or MMU-on execution); account for it, matching the compiled path's
 		// RetCount accounting.
 		cpu.InstructionCount++
+		cpu.jitStats.fallbackInstructions.Add(1)
 		if !cpu.running.Load() {
 			return
 		}

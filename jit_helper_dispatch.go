@@ -84,6 +84,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 	if op < HELPER_SENTINEL {
 		globalIE64JITStats.helperExits[op].Add(1)
 	}
+	cpu.jitStats.helperExits.Add(1)
 	cpu.jitCtx.NeedHelper = HELPER_NONE
 
 	// Sync host SP back into the architectural register file. The
@@ -110,6 +111,7 @@ func (cpu *CPU64) handleJITHelper() (retired uint64, handled bool) {
 	if cpu.deliverPendingExternalInterrupt() {
 		if cpu.jitCtx.ResumeValid != 0 {
 			globalIE64JITStats.helperResumeCancels.Add(1)
+			cpu.jitStats.helperResumeCancellations.Add(1)
 			cpu.jitCtx.clearResume()
 		}
 		return 0, true

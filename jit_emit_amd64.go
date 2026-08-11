@@ -1168,8 +1168,9 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 	ie64CompileMu.Lock()
 	defer ie64CompileMu.Unlock()
 
-	if n := ie64CountFusedLeafCalls(instrs); n != 0 {
-		globalIE64JITStats.inlinedCalls.Add(uint64(n))
+	inlinedCalls := ie64CountFusedLeafCalls(instrs)
+	if inlinedCalls != 0 {
+		globalIE64JITStats.inlinedCalls.Add(uint64(inlinedCalls))
 	}
 
 	ie64MarkFPSRCCDead(instrs)
@@ -1285,13 +1286,15 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 	}
 
 	return &JITBlock{
-		startPC:    startPC,
-		endPC:      endPC,
-		instrCount: len(instrs),
-		execAddr:   addr,
-		execSize:   len(code),
-		chainEntry: addr + uintptr(chainEntryOffset),
-		chainSlots: chainSlots,
+		startPC:         startPC,
+		endPC:           endPC,
+		instrCount:      len(instrs),
+		execAddr:        addr,
+		execSize:        len(code),
+		chainEntry:      addr + uintptr(chainEntryOffset),
+		chainSlots:      chainSlots,
+		inlinedCalls:    inlinedCalls,
+		directRAMProofs: ie64CountDirectRAMProofs(instrs),
 	}, nil
 }
 
@@ -1821,6 +1824,8 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 		regionRegMask:   plan.residentMask(),
 		regionSpillOps:  plan.spillOps,
 		regionFPUSpills: plan.fpuSpillOps,
+		inlinedCalls:    ie64CountFusedLeafCalls(flattenIE64RegionBlocks(region.blocks)),
+		directRAMProofs: ie64CountDirectRAMProofs(flattenIE64RegionBlocks(region.blocks)),
 	}, nil
 }
 

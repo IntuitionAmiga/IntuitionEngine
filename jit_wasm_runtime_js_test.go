@@ -99,6 +99,14 @@ func TestWasmJIT_Node_EndToEndParity(t *testing.T) {
 	if rt.chainRuns == 0 {
 		t.Error("chain driver never engaged (block entries all went through Invoke)")
 	}
+	stats := cpu.jitStats.snapshot()
+	if stats.CompiledBlocks == 0 || stats.NativeEntries == 0 || stats.NativeRetired == 0 {
+		t.Fatalf("IES statistics = {blocks:%d entries:%d retired:%d}, want WebAssembly execution provenance",
+			stats.CompiledBlocks, stats.NativeEntries, stats.NativeRetired)
+	}
+	if got := ie64JITBackend(); got != "wasm" {
+		t.Fatalf("IES backend = %q, want wasm", got)
+	}
 	t.Logf("compiles=%d blockRuns=%d chainRuns=%d interp=%v jit=%v speedup=%.2fx",
 		rt.compiles, rt.blockRuns, rt.chainRuns, interpDur, jitDur,
 		float64(interpDur)/float64(jitDur))

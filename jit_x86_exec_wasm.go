@@ -168,6 +168,7 @@ func (rt *x86WasmJITRuntime) compileBlock(pc uint32, bounded bool) (*x86WasmJITB
 	block := &x86WasmJITBlock{fn: fn, module: instance, slot: slot, meta: compiled.block}
 	rt.blocks[pc] = block
 	rt.cpu.x86JitCache.Put(compiled.block)
+	rt.cpu.jitStats.compiledBlocks.Add(1)
 	x86MarkCodePagesForBlock(rt.cpu.x86JitCodeBM, compiled.block)
 	return block, nil
 }
@@ -199,6 +200,7 @@ func (rt *x86WasmJITRuntime) promoteRegion(pc uint32) *x86WasmJITBlock {
 	block := &x86WasmJITBlock{fn: fn, module: instance, slot: slot, meta: compiled.block}
 	rt.blocks[pc] = block
 	rt.cpu.x86JitCache.Put(compiled.block)
+	rt.cpu.jitStats.compiledRegions.Add(1)
 	x86MarkCodePagesForBlock(rt.cpu.x86JitCodeBM, compiled.block)
 	return block
 }
@@ -221,8 +223,13 @@ func (rt *x86WasmJITRuntime) runBlock(block *x86WasmJITBlock) int {
 	ctx.ExitReason = x86JITExitNone
 	rt.cacheStore(cpu.EIP, block.slot)
 	rt.driver.Invoke(rt.ctxPtr)
+	cpu.jitStats.nativeEntries.Add(1)
 	cpu.EIP = ctx.RetPC
 	completed := int(ctx.RetCount + ctx.ChainCount)
+	cpu.jitStats.nativeRetired.Add(uint64(completed))
+	if ctx.ChainCount != 0 {
+		cpu.jitStats.chainExits.Add(1)
+	}
 	if completed > len(block.meta.x86CyclePrefix) {
 		completed = len(block.meta.x86CyclePrefix)
 	}
@@ -310,18 +317,23 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		}
 		block := rt.blocks[pc]
 		if block == nil {
+			cpu.jitStats.cacheMisses.Add(1)
 			var err error
 			block, err = rt.compileBlock(pc, bounded)
 			if err != nil {
 				block = nil
 			}
-		} else if x86RegionPromotionEnabled && !bounded {
-			block.meta.execCount++
-			if x86TierController.ShouldPromote(block.meta.tier, block.meta.execCount, block.meta.ioBails, block.meta.lastPromoteAt) {
-				block.meta.lastPromoteAt = block.meta.execCount
-				if promoted := rt.promoteRegion(pc); promoted != nil {
-					promoted.meta.execCount = block.meta.execCount
-					block = promoted
+		} else {
+			cpu.jitStats.cacheHits.Add(1)
+			if x86RegionPromotionEnabled && !bounded {
+				block.meta.execCount++
+				if x86TierController.ShouldPromote(block.meta.tier, block.meta.execCount, block.meta.ioBails, block.meta.lastPromoteAt) {
+					cpu.jitStats.regionCandidates.Add(1)
+					block.meta.lastPromoteAt = block.meta.execCount
+					if promoted := rt.promoteRegion(pc); promoted != nil {
+						promoted.meta.execCount = block.meta.execCount
+						block = promoted
+					}
 				}
 			}
 		}
@@ -329,6 +341,8 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			cpu.syncJITRegsToNamed()
 			cpu.syncJITSegRegsToNamed()
 			cpu.x86RenormalizeFPUBoundary()
+			cpu.jitStats.instructionCount.Add(1)
+			cpu.jitStats.fallbackInstructions.Add(1)
 			cpu.Step()
 			cpu.syncJITRegsFromNamed()
 			cpu.syncJITSegRegsFromNamed()
@@ -338,6 +352,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			continue
 		}
 		completed := rt.runBlock(block)
+		cpu.jitStats.instructionCount.Add(uint64(completed))
 		if bounded {
 			cpu.x86InstrBudget -= int64(completed)
 		}
@@ -346,32 +361,41 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			cpu.syncJITSegRegsToNamed()
 			cpu.x86RenormalizeFPUBoundary()
 			if ctx.ExitReason == x86JITExitFPUHelper {
+				cpu.jitStats.helperExits.Add(1)
 				if payload, ok := x86FPUHelperPayloadFromContext(ctx); ok {
 					cpu.x86RunFPUHelper(payload)
 				} else {
 					cpu.Step()
 				}
 			} else {
+				cpu.jitStats.ioBails.Add(1)
 				cpu.Step()
 			}
 			cpu.syncJITRegsFromNamed()
 			cpu.syncJITSegRegsFromNamed()
+			cpu.jitStats.instructionCount.Add(1)
+			cpu.jitStats.fallbackInstructions.Add(1)
 			if bounded {
 				cpu.x86InstrBudget--
 			}
 		}
 		if ctx.NeedInval != 0 {
+			cpu.jitStats.invalidations.Add(1)
 			if jitSMCRangeDisabled {
+				cpu.jitStats.invalidatedBlocks.Add(uint64(len(rt.blocks)))
 				cpu.x86JitCache.Invalidate()
 				rt.blocks = map[uint32]*x86WasmJITBlock{}
 				clear(cpu.x86JitCodeBM)
 				x86WasmResetDriverCache(rt.pcCache, &rt.nextSlot)
 				x86ClearRTSCache(ctx)
+				cpu.jitStats.codeCacheResets.Add(1)
 			} else {
-				x86InvalidateSMCRange(cpu.x86JitCache, cpu.x86JitCodeBM, ctx)
+				removed := x86InvalidateSMCRange(cpu.x86JitCache, cpu.x86JitCodeBM, ctx)
+				cpu.jitStats.invalidatedBlocks.Add(uint64(removed))
 				rt.pruneInvalidatedBlocks()
 				if len(rt.blocks) == 0 {
 					x86WasmResetDriverCache(rt.pcCache, &rt.nextSlot)
+					cpu.jitStats.codeCacheResets.Add(1)
 				}
 			}
 			ctx.NeedInval = 0
@@ -400,6 +424,7 @@ func (cpu *CPU_X86) x86RunInterpreter() {
 		}
 		cpu.x86RenormalizeFPUBoundary()
 		cpu.Step()
+		cpu.jitStats.instructionCount.Add(1)
 		if bounded {
 			cpu.x86InstrBudget--
 			if cpu.x86InstrBudget <= 0 {

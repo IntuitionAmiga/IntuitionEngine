@@ -2250,6 +2250,50 @@ func (se *ScriptEngine) luaCPUJITStats() lua.LGFunction {
 				L.SetField(tbl, "chain_exits", lua.LNumber(cpu.jitStats.chainExits.Load()))
 				L.SetField(tbl, "region_promotions", lua.LNumber(cpu.jitStats.regionPromotions.Load()))
 			}
+		case runtimeCPUIE64:
+			if snap.ie64 != nil {
+				stats := snap.ie64.jitStats.snapshot()
+				L.SetField(tbl, "backend", lua.LString(ie64JITBackend()))
+				L.SetField(tbl, "instruction_count", lua.LNumber(snap.ie64.InstructionCount))
+				L.SetField(tbl, "native_entries", lua.LNumber(stats.NativeEntries))
+				L.SetField(tbl, "native_retired", lua.LNumber(stats.NativeRetired))
+				L.SetField(tbl, "compiled_blocks", lua.LNumber(stats.CompiledBlocks))
+				L.SetField(tbl, "compiled_regions", lua.LNumber(stats.CompiledRegions))
+				L.SetField(tbl, "region_candidates", lua.LNumber(stats.RegionCandidates))
+				L.SetField(tbl, "region_rejections", lua.LNumber(stats.RegionRejections))
+				L.SetField(tbl, "fallback_instructions", lua.LNumber(stats.FallbackInstructions))
+				L.SetField(tbl, "helper_exits", lua.LNumber(stats.HelperExits))
+				L.SetField(tbl, "helper_resumes", lua.LNumber(stats.HelperResumes))
+				L.SetField(tbl, "helper_resume_cancellations", lua.LNumber(stats.HelperResumeCancellations))
+				L.SetField(tbl, "io_bails", lua.LNumber(stats.IOBails))
+				L.SetField(tbl, "invalidations", lua.LNumber(stats.Invalidations))
+				L.SetField(tbl, "cache_hits", lua.LNumber(stats.CacheHits))
+				L.SetField(tbl, "cache_misses", lua.LNumber(stats.CacheMisses))
+				L.SetField(tbl, "spills", lua.LNumber(stats.Spills))
+				L.SetField(tbl, "fpu_spills", lua.LNumber(stats.FPUSpills))
+				L.SetField(tbl, "direct_ram_proofs", lua.LNumber(stats.DirectRAMProofs))
+				L.SetField(tbl, "inlined_calls", lua.LNumber(stats.InlinedCalls))
+			}
+		case runtimeCPUX86:
+			if snap.x86 != nil && snap.x86.cpu != nil {
+				stats := snap.x86.cpu.jitStats.snapshot()
+				L.SetField(tbl, "backend", lua.LString(x86JITBackend()))
+				L.SetField(tbl, "instruction_count", lua.LNumber(stats.InstructionCount))
+				L.SetField(tbl, "native_entries", lua.LNumber(stats.NativeEntries))
+				L.SetField(tbl, "native_retired", lua.LNumber(stats.NativeRetired))
+				L.SetField(tbl, "compiled_blocks", lua.LNumber(stats.CompiledBlocks))
+				L.SetField(tbl, "compiled_regions", lua.LNumber(stats.CompiledRegions))
+				L.SetField(tbl, "region_candidates", lua.LNumber(stats.RegionCandidates))
+				L.SetField(tbl, "fallback_instructions", lua.LNumber(stats.FallbackInstructions))
+				L.SetField(tbl, "helper_exits", lua.LNumber(stats.HelperExits))
+				L.SetField(tbl, "io_bails", lua.LNumber(stats.IOBails))
+				L.SetField(tbl, "invalidations", lua.LNumber(stats.Invalidations))
+				L.SetField(tbl, "invalidated_blocks", lua.LNumber(stats.InvalidatedBlocks))
+				L.SetField(tbl, "chain_exits", lua.LNumber(stats.ChainExits))
+				L.SetField(tbl, "cache_hits", lua.LNumber(stats.CacheHits))
+				L.SetField(tbl, "cache_misses", lua.LNumber(stats.CacheMisses))
+				L.SetField(tbl, "code_cache_resets", lua.LNumber(stats.CodeCacheResets))
+			}
 		}
 		L.Push(tbl)
 		return 1

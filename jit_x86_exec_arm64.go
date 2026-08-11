@@ -154,6 +154,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		}
 		block := cpu.x86JitCache.Get(uint64(pc))
 		if block == nil {
+			cpu.jitStats.cacheMisses.Add(1)
 			instrs := x86ScanBlock(cpu.memory, pc)
 			// Bounded execution is used by deterministic shadow-parity checks.
 			// A fresh compilation must not retire across its exact checkpoint.
@@ -168,9 +169,11 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				cpu.syncJITRegsToNamed()
 				cpu.syncJITSegRegsToNamed()
 				cpu.x86RenormalizeFPUBoundary()
+				helper := false
 				if len(instrs) != 0 {
 					if payload, ok := x86FPUHelperPayloadFor(instrs[0], cpu.memory, cpu.CS); ok {
 						cpu.x86RunFPUHelper(payload)
+						helper = true
 					} else {
 						cpu.Step()
 					}
@@ -179,30 +182,41 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				}
 				cpu.syncJITRegsFromNamed()
 				cpu.syncJITSegRegsFromNamed()
+				cpu.jitStats.instructionCount.Add(1)
+				cpu.jitStats.fallbackInstructions.Add(1)
+				if helper {
+					cpu.jitStats.helperExits.Add(1)
+				}
 				if bounded {
 					cpu.x86InstrBudget--
 				}
 				continue
 			}
 			cpu.x86JitCache.Put(block)
+			cpu.jitStats.compiledBlocks.Add(1)
 			x86MarkCodePagesForBlock(cpu.x86JitCodeBM, block)
 			x86ARM64PatchBlockChains(cpu.x86JitCache, block)
-		} else if x86RegionPromotionEnabled && !bounded {
-			// Region promotion is deliberately outside bounded shadow windows:
-			// those callers require one-instruction compilation and exact
-			// dispatcher observation.  The region compiler itself declines
-			// back-edges, preserving dynamic loop accounting at block exits.
-			block.execCount++
-			if x86TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
-				block.lastPromoteAt = block.execCount
-				region := x86FormRegion(pc, cpu.x86JitCache, cpu.memory)
-				if region != nil && x86TierController.ShouldPromoteRegion(len(region.blocks)) {
-					if promoted, err := x86CompileRegionForCPU(cpu, region, em); err == nil {
-						promoted.execCount = block.execCount
-						cpu.x86JitCache.Put(promoted)
-						x86MarkCodePagesForBlock(cpu.x86JitCodeBM, promoted)
-						x86ARM64PatchBlockChains(cpu.x86JitCache, promoted)
-						block = promoted
+		} else {
+			cpu.jitStats.cacheHits.Add(1)
+			if x86RegionPromotionEnabled && !bounded {
+				// Region promotion is deliberately outside bounded shadow windows:
+				// those callers require one-instruction compilation and exact
+				// dispatcher observation.  The region compiler itself declines
+				// back-edges, preserving dynamic loop accounting at block exits.
+				block.execCount++
+				if x86TierController.ShouldPromote(block.tier, block.execCount, block.ioBails, block.lastPromoteAt) {
+					cpu.jitStats.regionCandidates.Add(1)
+					block.lastPromoteAt = block.execCount
+					region := x86FormRegion(pc, cpu.x86JitCache, cpu.memory)
+					if region != nil && x86TierController.ShouldPromoteRegion(len(region.blocks)) {
+						if promoted, err := x86CompileRegionForCPU(cpu, region, em); err == nil {
+							promoted.execCount = block.execCount
+							cpu.x86JitCache.Put(promoted)
+							x86MarkCodePagesForBlock(cpu.x86JitCodeBM, promoted)
+							x86ARM64PatchBlockChains(cpu.x86JitCache, promoted)
+							block = promoted
+							cpu.jitStats.compiledRegions.Add(1)
+						}
 					}
 				}
 			}
@@ -218,6 +232,8 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			cpu.syncJITRegsFromNamed()
 			cpu.syncJITSegRegsFromNamed()
 			cpu.x86InstrBudget--
+			cpu.jitStats.instructionCount.Add(1)
+			cpu.jitStats.fallbackInstructions.Add(1)
 			continue
 		}
 		ctx.RetCount = 0
@@ -236,6 +252,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			ctx.ChainBudget = 65536
 		}
 		preESI, preEDI, preECX := cpu.jitRegs[6], cpu.jitRegs[7], cpu.jitRegs[1]
+		cpu.jitStats.nativeEntries.Add(1)
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
 		cpu.EIP = ctx.RetPC
 		completed := int(ctx.RetCount)
@@ -284,15 +301,22 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			}
 		}
 		if ctx.NeedInval != 0 {
+			cpu.jitStats.invalidations.Add(1)
 			// The native store is complete. Remove every cached block overlapping
 			// its exact guest range before the next dispatch can observe it.
 			if jitSMCRangeDisabled {
+				cpu.jitStats.invalidatedBlocks.Add(uint64(cpu.x86JitCache.Len()))
 				cpu.x86JitCache.Invalidate()
 				em.Reset()
 				clear(cpu.x86JitCodeBM)
 				x86ClearRTSCache(ctx)
+				cpu.jitStats.codeCacheResets.Add(1)
 			} else if removed := x86InvalidateSMCRange(cpu.x86JitCache, cpu.x86JitCodeBM, ctx); removed != 0 {
+				cpu.jitStats.invalidatedBlocks.Add(uint64(removed))
 				resetExecMemWhenCacheEmpty(cpu.x86JitCache, em)
+				if cpu.x86JitCache.Len() == 0 {
+					cpu.jitStats.codeCacheResets.Add(1)
+				}
 			}
 			ctx.NeedInval, ctx.InvalAddr, ctx.InvalSize = 0, 0, 0
 		}
@@ -301,6 +325,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			cpu.syncJITRegsToNamed()
 			cpu.syncJITSegRegsToNamed()
 			if ctx.ExitReason == x86JITExitFPUHelper {
+				cpu.jitStats.helperExits.Add(1)
 				payload, ok := x86FPUHelperPayloadFromContext(ctx)
 				if !ok {
 					panic("x86 ARM64 JIT: native FPU helper exit without decoded payload")
@@ -308,6 +333,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				cpu.x86RenormalizeFPUBoundary()
 				cpu.x86RunFPUHelper(payload)
 			} else {
+				cpu.jitStats.ioBails.Add(1)
 				// A guarded ordinary memory form has not touched guest state.
 				// Replay it through the bus, including MMIO and boundary faults.
 				cpu.Step()
@@ -315,8 +341,14 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			cpu.syncJITRegsFromNamed()
 			cpu.syncJITSegRegsFromNamed()
 			fallbackRetired = 1
+			cpu.jitStats.fallbackInstructions.Add(1)
 			ctx.NeedIOFallback = 0
 			ctx.ExitReason = x86JITExitNone
+		}
+		cpu.jitStats.nativeRetired.Add(uint64(completed))
+		cpu.jitStats.instructionCount.Add(uint64(completed + fallbackRetired))
+		if ctx.ChainCount != 0 {
+			cpu.jitStats.chainExits.Add(1)
 		}
 		if bounded {
 			cpu.x86InstrBudget -= int64(completed + fallbackRetired)
@@ -346,6 +378,7 @@ func (cpu *CPU_X86) x86RunInterpreter() {
 		}
 		cpu.x86RenormalizeFPUBoundary()
 		cpu.Step()
+		cpu.jitStats.instructionCount.Add(1)
 		if bounded {
 			cpu.x86InstrBudget--
 			if cpu.x86InstrBudget <= 0 {

@@ -1055,6 +1055,8 @@ type JITBlock struct {
 	regionRegMask   uint32
 	regionSpillOps  int
 	regionFPUSpills int
+	inlinedCalls    int
+	directRAMProofs int
 
 	// coveredRanges optionally enumerates every guest [start, end) span
 	// the block's native code was compiled from. Non-nil only for
@@ -1082,6 +1084,31 @@ type JITBlock struct {
 	// It avoids a 256-entry generation scan on every Z80 block dispatch.
 	z80CodePages         []uint8
 	z80MappingGeneration uint64
+}
+
+func flattenIE64RegionBlocks(blocks [][]JITInstr) []JITInstr {
+	total := 0
+	for _, block := range blocks {
+		total += len(block)
+	}
+	flat := make([]JITInstr, 0, total)
+	for _, block := range blocks {
+		flat = append(flat, block...)
+	}
+	return flat
+}
+
+func ie64CountDirectRAMProofs(instrs []JITInstr) int {
+	count := 0
+	for _, instr := range instrs {
+		if instr.opcode != OP_LOAD && instr.opcode != OP_STORE {
+			continue
+		}
+		if _, ok := ie64ConstLowRAMAccess(instr.rs, instr.imm32, instr.size); ok {
+			count++
+		}
+	}
+	return count
 }
 
 type chainPatchRef struct {

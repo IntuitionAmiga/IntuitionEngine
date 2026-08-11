@@ -168,6 +168,12 @@ func (cpu *CPU64) ExecuteJIT() {
 	var diagCacheMisses uint64   // block compiled (cache miss)
 	var diagFallbackInstr uint64 // instructions via interpretOne
 	var diagIOBails uint64       // I/O fallback bail count
+	accountRetired := func(executed uint64) {
+		cpu.InstructionCount += executed
+		if perfAcctOn {
+			cpu.perfAcct.AddInstrs(executed)
+		}
+	}
 	statsEnabled := ie64JITStatsEnabled()
 	statsBase := ie64JITStatsLoad()
 
@@ -254,6 +260,8 @@ func (cpu *CPU64) ExecuteJIT() {
 			ie64ClearHighCodePageSpan(cpu.jitCtx)
 			cpu.jitNeedInval = false
 			globalIE64JITStats.invalidations.Add(1)
+			cpu.jitStats.invalidations.Add(1)
+			cpu.jitStats.codeCacheResets.Add(1)
 			ie64ClearRTSCache(cpu.jitCtx)
 		}
 
@@ -268,6 +276,7 @@ func (cpu *CPU64) ExecuteJIT() {
 				cpu.perfAcct.AddInstrs(uint64(executed))
 			}
 			diagFallbackInstr += uint64(executed)
+			cpu.jitStats.fallbackInstructions.Add(uint64(executed))
 			if !cpu.running.Load() {
 				break
 			}
@@ -313,9 +322,7 @@ func (cpu *CPU64) ExecuteJIT() {
 		}
 
 		if matched, retired := cpu.tryFastIE64MMIOPollLoop(); matched {
-			if perfEnabled {
-				cpu.InstructionCount += uint64(retired)
-			}
+			cpu.InstructionCount += uint64(retired)
 			if perfAcctOn {
 				cpu.perfAcct.AddInstrs(uint64(retired))
 			}
@@ -401,6 +408,7 @@ func (cpu *CPU64) ExecuteJIT() {
 			block = cpu.jitCache.Get(pcVirt)
 		}
 		if block == nil {
+			cpu.jitStats.cacheMisses.Add(1)
 			// Scan: low pcPhys uses the cpu.memory[] fast path;
 			// high pcPhys (sparse backing or MMU mapping above the
 			// legacy window) routes per-instruction through the
@@ -440,6 +448,7 @@ func (cpu *CPU64) ExecuteJIT() {
 					cpu.perfAcct.AddInstrs(1)
 				}
 				diagFallbackInstr++
+				cpu.jitStats.fallbackInstructions.Add(1)
 				if !cpu.running.Load() {
 					break
 				}
@@ -454,6 +463,7 @@ func (cpu *CPU64) ExecuteJIT() {
 					cpu.perfAcct.AddInstrs(1)
 				}
 				diagFallbackInstr++
+				cpu.jitStats.fallbackInstructions.Add(1)
 				if !cpu.running.Load() {
 					break
 				}
@@ -475,12 +485,16 @@ func (cpu *CPU64) ExecuteJIT() {
 					cpu.perfAcct.AddInstrs(1)
 				}
 				diagFallbackInstr++
+				cpu.jitStats.fallbackInstructions.Add(1)
 				if !cpu.running.Load() {
 					break
 				}
 				continue
 			}
 			globalIE64JITStats.tier1Blocks.Add(1)
+			cpu.jitStats.compiledBlocks.Add(1)
+			cpu.jitStats.inlinedCalls.Add(uint64(block.inlinedCalls))
+			cpu.jitStats.directRAMProofs.Add(uint64(block.directRAMProofs))
 			// Tag the block with its compile-time PTBR so the chain
 			// patcher can keep cross-address-space blocks isolated. Non-
 			// MMU mode uses ptbr=0 implicitly, which preserves the
@@ -529,6 +543,7 @@ func (cpu *CPU64) ExecuteJIT() {
 			diagCacheMisses++
 		} else {
 			diagCacheHits++
+			cpu.jitStats.cacheHits.Add(1)
 
 			// Hot-block detection — when execCount crosses the shared
 			// TierController threshold, attempt multi-block region
@@ -591,7 +606,9 @@ func (cpu *CPU64) ExecuteJIT() {
 		cpu.jitCtx.clearResume()
 		cpu.jitCtx.ResumePTBR = cpu.ptbr
 		cpu.jitCtx.ResumeCountBase = 0
+		cpu.jitStats.nativeEntries.Add(1)
 		executed := runNative(block.execAddr)
+		cpu.jitStats.nativeRetired.Add(executed)
 
 		// Phase 5: helper-exit dispatch. Emitted code that hit an MMU
 		// translation, a high physical address, or any other case it
@@ -614,6 +631,7 @@ func (cpu *CPU64) ExecuteJIT() {
 		for helperHandled && cpu.canResumeJITHelper(helperRetired) {
 			if cpu.deliverPendingExternalInterrupt() {
 				globalIE64JITStats.helperResumeCancels.Add(1)
+				cpu.jitStats.helperResumeCancellations.Add(1)
 				cpu.jitCtx.clearResume()
 				break
 			}
@@ -622,7 +640,11 @@ func (cpu *CPU64) ExecuteJIT() {
 			cpu.jitCtx.ChainBudget = 0
 			cpu.jitCtx.ChainCount = 0
 			globalIE64JITStats.helperResumes.Add(1)
-			executed += runNative(resumeAddr)
+			cpu.jitStats.helperResumes.Add(1)
+			cpu.jitStats.nativeEntries.Add(1)
+			resumed := runNative(resumeAddr)
+			cpu.jitStats.nativeRetired.Add(resumed)
+			executed += resumed
 			helperRetired, helperHandled = handleHelperExit(block, &executed)
 		}
 		if !helperHandled && executed == 0 {
@@ -640,10 +662,7 @@ func (cpu *CPU64) ExecuteJIT() {
 		// after the interpreter would have stopped. Promote the
 		// retired count and exit immediately.
 		if helperHandled && !cpu.running.Load() {
-			cpu.InstructionCount += executed
-			if perfAcctOn {
-				cpu.perfAcct.AddInstrs(executed)
-			}
+			accountRetired(executed)
 			break
 		}
 
@@ -658,6 +677,7 @@ func (cpu *CPU64) ExecuteJIT() {
 		}
 		if ioBail {
 			diagIOBails++
+			cpu.jitStats.ioBails.Add(1)
 			globalIE64JITStats.ioBails.Add(1)
 			if cpu.PC < uint64(len(cpu.memory)) {
 				globalIE64JITStats.ioBailOpcodes[cpu.memory[cpu.PC]].Add(1)
@@ -669,7 +689,9 @@ func (cpu *CPU64) ExecuteJIT() {
 			interpretFallback(DeoptNone)
 			executed++
 			diagFallbackInstr++
+			cpu.jitStats.fallbackInstructions.Add(1)
 			if !cpu.running.Load() {
+				accountRetired(executed)
 				break
 			}
 		}
@@ -687,7 +709,9 @@ func (cpu *CPU64) ExecuteJIT() {
 			interpretFallback(DeoptMMIO)
 			executed++ // count the re-executed instruction
 			diagFallbackInstr++
+			cpu.jitStats.fallbackInstructions.Add(1)
 			if !cpu.running.Load() {
+				accountRetired(executed)
 				break
 			}
 		}
@@ -703,10 +727,7 @@ func (cpu *CPU64) ExecuteJIT() {
 		}
 
 		// Retired instruction count (uniform with interpreter)
-		cpu.InstructionCount += executed
-		if perfAcctOn {
-			cpu.perfAcct.AddInstrs(executed)
-		}
+		accountRetired(executed)
 
 		// Performance reporting
 		if perfEnabled && checkCounter&0x3FFF == 0 {
@@ -774,14 +795,21 @@ func ie64InstallPromotedBlock(cpu *CPU64, old *JITBlock, region *ie64Region, exe
 		}
 	}
 	globalIE64JITStats.regions.Add(1)
+	cpu.jitStats.compiledRegions.Add(1)
+	cpu.jitStats.spills.Add(uint64(newBlock.regionSpillOps))
+	cpu.jitStats.fpuSpills.Add(uint64(newBlock.regionFPUSpills))
+	cpu.jitStats.inlinedCalls.Add(uint64(newBlock.inlinedCalls))
+	cpu.jitStats.directRAMProofs.Add(uint64(newBlock.directRAMProofs))
 	return newBlock
 }
 
 func ie64ChoosePromotion(cpu *CPU64, block *JITBlock, pcVirt, pcPhys, memLen uint64, execMem *ExecMem) *JITBlock {
 	globalIE64JITStats.regionCandidates.Add(1)
+	cpu.jitStats.regionCandidates.Add(1)
 	block.lastPromoteAt = block.execCount
 	if !ie64RegionPromotionEnabled() {
 		globalIE64JITStats.regionRejected.Add(1)
+		cpu.jitStats.regionRejections.Add(1)
 		return block
 	}
 	var static *ie64Region
@@ -791,11 +819,13 @@ func ie64ChoosePromotion(cpu *CPU64, block *JITBlock, pcVirt, pcPhys, memLen uin
 		}
 		if static == nil {
 			globalIE64JITStats.regionRejected.Add(1)
+			cpu.jitStats.regionRejections.Add(1)
 		}
 		return ie64InstallPromotedBlock(cpu, block, static, execMem)
 	}
 	if pcPhys > memLen-IE64_INSTR_SIZE {
 		globalIE64JITStats.regionRejected.Add(1)
+		cpu.jitStats.regionRejections.Add(1)
 		return block
 	}
 	static = ie64FormRegion(pcPhys, cpu.memory)
@@ -811,6 +841,7 @@ func ie64ChoosePromotion(cpu *CPU64, block *JITBlock, pcVirt, pcPhys, memLen uin
 	newBlock := ie64InstallPromotedBlock(cpu, block, static, execMem)
 	if newBlock == block {
 		globalIE64JITStats.regionRejected.Add(1)
+		cpu.jitStats.regionRejections.Add(1)
 	}
 	return newBlock
 }
@@ -820,11 +851,13 @@ func ie64FinishObservedPromotion(cpu *CPU64, execMem *ExecMem, rejected bool) {
 	cpu.observedRegion.reset()
 	if cpu.jitCache.Generation() != r.generation {
 		globalIE64JITStats.regionRejected.Add(1)
+		cpu.jitStats.regionRejections.Add(1)
 		return
 	}
 	old := cpu.jitCache.Get(r.entryPC)
 	if old == nil || old.tier != ie64JITTier1 {
 		globalIE64JITStats.regionRejected.Add(1)
+		cpu.jitStats.regionRejections.Add(1)
 		return
 	}
 	if !rejected {
@@ -851,4 +884,5 @@ func ie64FinishObservedPromotion(cpu *CPU64, execMem *ExecMem, rejected bool) {
 		}
 	}
 	globalIE64JITStats.regionRejected.Add(1)
+	cpu.jitStats.regionRejections.Add(1)
 }

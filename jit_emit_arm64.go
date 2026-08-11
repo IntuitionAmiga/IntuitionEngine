@@ -1138,11 +1138,13 @@ func compileBlock(instrs []JITInstr, startPC uint64, execMem *ExecMem) (*JITBloc
 	}
 
 	return &JITBlock{
-		startPC:    startPC,
-		endPC:      startPC + uint64(len(instrs))*IE64_INSTR_SIZE,
-		instrCount: len(instrs),
-		execAddr:   addr,
-		execSize:   len(code),
+		startPC:         startPC,
+		endPC:           startPC + uint64(len(instrs))*IE64_INSTR_SIZE,
+		instrCount:      len(instrs),
+		inlinedCalls:    ie64CountFusedLeafCalls(instrs),
+		directRAMProofs: ie64CountDirectRAMProofs(instrs),
+		execAddr:        addr,
+		execSize:        len(code),
 	}, nil
 }
 
@@ -5552,12 +5554,14 @@ func ie64CompileRegion(region *ie64Region, execMem *ExecMem, memory []byte) (*JI
 	}
 	endPC := covered[len(covered)-1][1]
 	return &JITBlock{
-		startPC:       region.entryPC,
-		endPC:         endPC,
-		instrCount:    totalInstrCount,
-		execAddr:      addr,
-		execSize:      len(code),
-		coveredRanges: covered,
+		startPC:         region.entryPC,
+		endPC:           endPC,
+		instrCount:      totalInstrCount,
+		execAddr:        addr,
+		execSize:        len(code),
+		coveredRanges:   covered,
+		inlinedCalls:    ie64CountFusedLeafCalls(flattenIE64RegionBlocks(region.blocks)),
+		directRAMProofs: ie64CountDirectRAMProofs(flattenIE64RegionBlocks(region.blocks)),
 	}, nil
 }
 

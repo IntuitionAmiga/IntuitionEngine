@@ -747,6 +747,21 @@ Mid-block RTI/WAIT tests use manual scan+compile (no HALT stripping) to verify b
 
 ---
 
+## IEScript statistics
+
+`cpu.jit_stats()` reports CPU-owned IE64 compilation, generated-code entry,
+retirement, fallback, helper, cache, invalidation, region and register-pressure
+counters. The table reports `backend` as `native`, `wasm`, or `none`.
+
+The counters are available without `IE64_JIT_STATS`. That variable controls
+console reporting only. Resetting or loading a program clears the active CPU's
+counters, and activity on another IE64 CPU does not contribute to the table.
+
+`native_entries` counts calls into generated code. `native_retired` counts only
+instructions retired by generated code. Helper and interpreter work is counted
+separately, so `cpu.execution_mode()` alone is not evidence that generated code
+ran.
+
 ## Performance Guardrails
 
 ### Built In

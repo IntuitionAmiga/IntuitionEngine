@@ -325,6 +325,7 @@ type CPU64 struct {
 	jitCache       *CodeCache
 	jitExecMem     any // *ExecMem — uses any to avoid build tag dependency
 	jitCtx         *JITContext
+	jitStats       cpuJITStats
 	observedRegion ie64ObservedRecorder
 	// jitCodePageBitmap marks 256-byte guest pages that contain compiled IE64
 	// code. Native stores probe it to detect self-modifying writes without a
@@ -1354,6 +1355,7 @@ func (cpu *CPU64) LoadFlatProgram(filename string) error {
 // the open-ended slice tail. Boot paths must not touch advertised guest RAM;
 // they only touch the legacy program staging area.
 func (cpu *CPU64) LoadProgramBytes(program []byte) {
+	cpu.jitStats.reset()
 	progEnd := STACK_START
 	if progEnd > len(cpu.memory) {
 		progEnd = len(cpu.memory)
@@ -1402,6 +1404,7 @@ func (cpu *CPU64) LoadFlatProgramBytes(program []byte) error {
 		}
 		return fmt.Errorf("flat IE64 image too large: %d bytes exceeds %d bytes available at PROG_START", len(program), avail)
 	}
+	cpu.jitStats.reset()
 	progEnd := PROG_START + len(program)
 	for i := PROG_START; i < progEnd; i++ {
 		cpu.memory[i] = 0
@@ -1436,6 +1439,7 @@ func (cpu *CPU64) Reset() {
 	cpu.timerState.Store(TIMER_STOPPED)
 	cpu.timerEnabled.Store(false)
 	cpu.InstructionCount = 0
+	cpu.jitStats.reset()
 
 	// Clear JIT code cache
 	if cpu.jitCache != nil {

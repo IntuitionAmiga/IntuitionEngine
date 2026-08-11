@@ -119,6 +119,54 @@ func runX86InterpreterProgramWithSetup(t *testing.T, startPC uint32, setup func(
 	return cpu
 }
 
+func TestX86JITStatsRecordExecutionProvenance(t *testing.T) {
+	cpu := runX86JITProgram(t, 0x1000,
+		0xB8, 0x2A, 0x00, 0x00, 0x00, // MOV EAX, 42
+		0x40,       // INC EAX
+		0xEB, 0x00, // JMP to the following HLT
+		0xF4, // HLT
+	)
+	stats := cpu.jitStats.snapshot()
+	if stats.CompiledBlocks == 0 {
+		t.Fatal("compiled blocks = 0, want a compiled x86 block")
+	}
+	if stats.NativeEntries == 0 || stats.NativeRetired < 2 {
+		t.Fatalf("native execution = {entries:%d retired:%d}, want generated-code execution", stats.NativeEntries, stats.NativeRetired)
+	}
+	if stats.FallbackInstructions == 0 {
+		t.Fatal("fallback instructions = 0, want HLT interpreter provenance")
+	}
+	if stats.InstructionCount != stats.NativeRetired+stats.FallbackInstructions {
+		t.Fatalf("instruction count = %d, native retired + fallback = %d", stats.InstructionCount, stats.NativeRetired+stats.FallbackInstructions)
+	}
+}
+
+func TestScriptEngine_CPUJITStats_X86ExecutionProvenance(t *testing.T) {
+	cpu := runX86JITProgram(t, 0x1000,
+		0xB8, 0x2A, 0x00, 0x00, 0x00,
+		0x40,
+		0xEB, 0x00,
+		0xF4,
+	)
+	runner := &CPUX86Runner{cpu: cpu}
+	runtimeStatus.setCPUs(runtimeCPUX86, nil, nil, nil, nil, runner, nil)
+	t.Cleanup(func() { runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil) })
+	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`
+		local s = cpu.jit_stats()
+		if s.native_entries <= 0 then error("native_entries") end
+		if s.native_retired < 2 then error("native_retired") end
+		if s.fallback_instructions <= 0 then error("fallback_instructions") end
+		if s.instruction_count ~= s.native_retired + s.fallback_instructions then error("instruction_count") end
+	`, "cpu_jit_stats_x86_execution"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
 // ===========================================================================
 // Basic Execution Tests
 // ===========================================================================
@@ -3046,6 +3094,56 @@ func TestX86JIT_BoundedModeStopsBeforeOversizedBlock(t *testing.T) {
 	}
 }
 
+func TestX86JIT_BoundedCachedOversizedBlockCountsFallback(t *testing.T) {
+	if !x86JitAvailable {
+		t.Skip("x86 JIT not available on this platform")
+	}
+
+	bus := NewMachineBus()
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	cpu.memory = adapter.GetMemory()
+	cpu.x86JitIOBitmap = buildX86IOBitmap(adapter, bus)
+	cpu.x86JitEnabled = true
+	cpu.x86JitPersist = true
+	cpu.EIP = 0x1000
+	copy(cpu.memory[cpu.EIP:], []byte{
+		0xB8, 0x01, 0x00, 0x00, 0x00, // MOV EAX,1
+		0x83, 0xC0, 0x02, // ADD EAX,2
+		0xEB, 0x00, // JMP to HLT
+		0xF4,
+	})
+	if err := cpu.initX86JIT(); err != nil {
+		t.Fatalf("initialise x86 JIT: %v", err)
+	}
+	t.Cleanup(func() {
+		cpu.x86JitPersist = false
+		cpu.freeX86JIT()
+	})
+	instrs := x86ScanBlock(cpu.memory, cpu.EIP)
+	block, err := x86CompileBlockForCPU(cpu, instrs, cpu.EIP, cpu.x86GetJITExecMem())
+	if err != nil {
+		t.Fatalf("compile cached block: %v", err)
+	}
+	if block.instrCount <= 1 {
+		t.Fatalf("cached block instruction count = %d, want more than one", block.instrCount)
+	}
+	cpu.x86JitCache.Put(block)
+
+	before := cpu.jitStats.snapshot()
+	x86ShadowStepBudget(t, cpu, true, 1, 5*time.Second)
+	after := cpu.jitStats.snapshot()
+	if got := after.InstructionCount - before.InstructionCount; got != 1 {
+		t.Fatalf("IES instruction count delta = %d, want 1", got)
+	}
+	if got := after.FallbackInstructions - before.FallbackInstructions; got != 1 {
+		t.Fatalf("IES fallback instruction delta = %d, want 1", got)
+	}
+	if got := after.NativeEntries - before.NativeEntries; got != 0 {
+		t.Fatalf("IES native entry delta = %d, want 0", got)
+	}
+}
+
 func TestX86JIT_BoundedModeCountsFPUHelper(t *testing.T) {
 	if !x86JitAvailable {
 		t.Skip("x86 JIT not available on this platform")
@@ -3238,6 +3336,42 @@ func TestX86JIT_Exec_MMIOByteWriteFallbackFastPath(t *testing.T) {
 	}
 	if got := writes[0xF2102]; got != 0x34 {
 		t.Fatalf("[0xF2102] = 0x%02X, want 0x34", got)
+	}
+}
+
+func TestX86JIT_MMIOFallbackHaltingReplayPreservesRetirement(t *testing.T) {
+	if !x86JitAvailable {
+		t.Skip("x86 JIT not available on this platform")
+	}
+
+	const ioAddr = 0xF2100
+	bus := NewMachineBus()
+	bus.MapIO(ioAddr, ioAddr, nil, nil)
+	adapter := NewX86BusAdapter(bus)
+	cpu := NewCPU_X86(adapter)
+	bus.MapIOByte(ioAddr, ioAddr, func(uint32, uint8) {
+		cpu.Halted = true
+	})
+	cpu.memory = adapter.GetMemory()
+	cpu.x86JitEnabled = true
+	cpu.x86JitIOBitmap = buildX86IOBitmap(adapter, bus)
+	cpu.EIP = 0x1000
+	copy(cpu.memory[cpu.EIP:], []byte{
+		0xB0, 0x7F, // MOV AL, 0x7F
+		0xA2, 0x00, 0x21, 0x0F, 0x00, // MOV [0xF2100], AL
+	})
+
+	cpu.running.Store(true)
+	cpu.X86ExecuteJIT()
+
+	stats := cpu.jitStats.snapshot()
+	if stats.NativeRetired != 1 || stats.FallbackInstructions != 1 {
+		t.Fatalf("retirement provenance = native %d + fallback %d, want 1 + 1",
+			stats.NativeRetired, stats.FallbackInstructions)
+	}
+	if stats.InstructionCount != stats.NativeRetired+stats.FallbackInstructions {
+		t.Fatalf("instruction count = %d, want native %d + fallback %d",
+			stats.InstructionCount, stats.NativeRetired, stats.FallbackInstructions)
 	}
 }
 
@@ -3569,6 +3703,11 @@ func TestX86JIT_Exec_SelfMod(t *testing.T) {
 		uint32(cpu.memory[0x1002])<<16 | uint32(cpu.memory[0x1003])<<24
 	if val != 0x42 {
 		t.Errorf("[0x1000] = 0x%08X, want 0x42", val)
+	}
+	stats := cpu.jitStats.snapshot()
+	if stats.Invalidations == 0 || stats.InvalidatedBlocks == 0 {
+		t.Fatalf("IES invalidation statistics = {events:%d blocks:%d}, want an evicted self-modified block",
+			stats.Invalidations, stats.InvalidatedBlocks)
 	}
 }
 

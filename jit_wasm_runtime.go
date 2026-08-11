@@ -464,6 +464,7 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 		rt.markCodeRanges(ranges)
 		rt.indexBlock(pc, ranges)
 		rt.compiles++
+		rt.cpu.jitStats.compiledBlocks.Add(1)
 		if rt.compiles == 1 {
 			// One-shot diagnostic; the browser e2e harness greps for it.
 			// console.log, NOT fmt.Printf: Go print syscalls are
@@ -489,13 +490,16 @@ func (rt *wasmJITRuntime) enqueueCompile(pc uint64) {
 }
 
 func (rt *wasmJITRuntime) finishObserved(rejected bool) {
+	rt.cpu.jitStats.regionCandidates.Add(1)
 	r := rt.observed
 	rt.observed.reset()
 	if rt.gen != r.generation {
+		rt.cpu.jitStats.regionRejections.Add(1)
 		return
 	}
 	old := rt.blocks[r.entryPC]
 	if old == nil {
+		rt.cpu.jitStats.regionRejections.Add(1)
 		return
 	}
 	var blocks []wasmRegionBlock
@@ -520,6 +524,7 @@ func (rt *wasmJITRuntime) finishObserved(rejected bool) {
 		blocks = wasmFormRegion(rt.cpu.memory, r.entryPC)
 	}
 	if len(blocks) < 2 {
+		rt.cpu.jitStats.regionRejections.Add(1)
 		return
 	}
 	rt.enqueuePromotion(r.entryPC, old, blocks, r.generation)
@@ -528,6 +533,7 @@ func (rt *wasmJITRuntime) finishObserved(rejected bool) {
 func (rt *wasmJITRuntime) enqueuePromotion(pc uint64, old *wasmJITBlock, blocks []wasmRegionBlock, generation uint64) {
 	modBytes, err := wasmCompileBlocks(blocks)
 	if err != nil {
+		rt.cpu.jitStats.regionRejections.Add(1)
 		return
 	}
 	ranges := wasmRegionCodeRanges(blocks)
@@ -549,9 +555,11 @@ func (rt *wasmJITRuntime) enqueuePromotion(pc uint64, old *wasmJITBlock, blocks 
 	onOK = js.FuncOf(func(this js.Value, args []js.Value) any {
 		defer release()
 		if !rt.claimInFlight(pc, token) {
+			rt.cpu.jitStats.regionRejections.Add(1)
 			return nil
 		}
 		if rt.gen != generation || rt.blocks[pc] != old {
+			rt.cpu.jitStats.regionRejections.Add(1)
 			rt.rebuildCodePageBitmap()
 			return nil
 		}
@@ -566,11 +574,13 @@ func (rt *wasmJITRuntime) enqueuePromotion(pc uint64, old *wasmJITBlock, blocks 
 		rt.markCodeRanges(ranges)
 		rt.indexBlock(pc, ranges)
 		rt.compiles++
+		rt.cpu.jitStats.compiledRegions.Add(1)
 		return nil
 	})
 	onErr = js.FuncOf(func(this js.Value, args []js.Value) any {
 		defer release()
 		if rt.claimInFlight(pc, token) {
+			rt.cpu.jitStats.regionRejections.Add(1)
 			rt.rebuildCodePageBitmap()
 		}
 		return nil
@@ -633,6 +643,7 @@ func wasmResetCodePageSpans(spans []byte) {
 // size 0 is the emitter's degraded report (several dirty stores in one
 // block, exact range lost) and forces the full flush.
 func (rt *wasmJITRuntime) invalidateRange(addr uint64, size uint32) {
+	rt.cpu.jitStats.invalidations.Add(1)
 	if size == 0 {
 		rt.invalidateAll()
 		return
@@ -658,6 +669,7 @@ func (rt *wasmJITRuntime) invalidateRange(addr uint64, size uint32) {
 			continue // straddling block collected via both pages
 		}
 		rt.rangeDrops++
+		rt.cpu.jitStats.invalidatedBlocks.Add(1)
 		delete(rt.blocks, pc)
 		rt.cacheDrop(pc)
 		rt.unindexBlock(pc, blk.ranges)
@@ -750,6 +762,7 @@ func (rt *wasmJITRuntime) rebuildCodePageBitmap() {
 func (rt *wasmJITRuntime) invalidateAll() {
 	rt.gen++
 	rt.flushes++
+	rt.cpu.jitStats.codeCacheResets.Add(1)
 	rt.blocks = map[uint64]*wasmJITBlock{}
 	rt.hot = map[uint64]uint32{}
 	rt.inFlight = map[uint64]wasmPendingCompile{}
@@ -792,10 +805,12 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 		ctx.ChainBudget = ie64ChainBudget
 		rt.driver.Invoke(rt.ctxPtr)
 		rt.chainRuns++
+		cpu.jitStats.chainExits.Add(1)
 	} else {
 		ctx.ChainBudget = 0
 		blk.fn.Invoke(rt.ctxPtr)
 	}
+	cpu.jitStats.nativeEntries.Add(1)
 	blk.execs++
 	rt.blockRuns++
 
@@ -803,6 +818,7 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 	cpu.PC = ctx.RetPC
 	recordReject := ctx.NeedHelper != 0 || ctx.NeedIOFallback != 0 || ctx.NeedInval != 0 || cpu.PC >= uint64(len(cpu.memory))
 	executed := uint64(ctx.RetCount) + uint64(ctx.ChainCount)
+	cpu.jitStats.nativeRetired.Add(executed)
 	if rt.diag && executed == 0 && ctx.RetPC == entryPC && ctx.NeedHelper == 0 && ctx.NeedInval == 0 {
 		rt.zeroProg++
 		if rt.zeroProg&0xFFFF == 1 {
@@ -815,6 +831,7 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 	ctx.ChainCount = 0
 
 	if ctx.NeedHelper != 0 {
+		cpu.jitStats.helperExits.Add(1)
 		if ctx.NeedHelper < 16 {
 			rt.helperCnt[ctx.NeedHelper]++
 			if rt.diag && rt.helperCnt[ctx.NeedHelper]&0x3FFFF == 1 {
@@ -828,9 +845,11 @@ func (rt *wasmJITRuntime) runBlock(blk *wasmJITBlock) {
 		ctx.NeedHelper = 0
 	}
 	if ctx.NeedIOFallback == jitFallbackLoopPrecheck {
+		cpu.jitStats.ioBails.Add(1)
 		ctx.NeedIOFallback = 0
 		if cpu.StepOne() != 0 {
 			executed++
+			cpu.jitStats.fallbackInstructions.Add(1)
 		}
 	}
 	if ctx.NeedInval != 0 {

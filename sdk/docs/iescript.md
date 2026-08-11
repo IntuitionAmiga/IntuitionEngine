@@ -327,7 +327,64 @@ provenance.
 
 `cpu.execution_mode()` - Report the effective execution mode for the active CPU. Returns: `"jit"` if a JIT is enabled and available for that CPU, otherwise `"interpreter"`.
 
-`cpu.jit_stats()` - Return JIT diagnostic counters for the active CPU. In IE32 mode, returns `backend`, `instruction_count`, `native_entries`, `compiled_blocks`, `compiled_regions`, `hot_recompilations`, `retired_instructions`, `direct_instructions`, `helper_instructions`, `helper_exits`, `helper_resumes`, `chains`, `chain_budget_exits`, `deoptimizations`, `helper_deopts`, `source_stamp_deopts`, `code_cache_resets`, `invalidations`, `invalidated_blocks`, `cache_hits`, `return_cache_hits`, `mmio_poll_iterations`, `mmio_store_helpers`, `resident_spills_saved`, `counted_loops`, and `profitability_fallbacks`. `invalidated_blocks` counts retained IE32 blocks evicted because a published write overlaps their emitted source. `mmio_store_helpers` counts direct named-register MMIO stores completed by the dispatcher without the general instruction switch. `helper_resumes` counts retained direct-fragment entries following a non-HALT helper boundary. `profitability_fallbacks` counts transient direct fragments deliberately routed through the interpreter to avoid repeated compilation. In m68k mode, returns `instruction_count`, `native_blocks`, `native_retired`, `native_chain_instructions`, `native_no_chain_returns`, `native_helper_exits`, `native_exception_exits`, `native_invalidation_exits`, `native_mmio_guard_exits`, `unsupported_one_exits`, `compile_failure_exits`, `transcendental_bursts`, `warmup_instructions`, `region_promotions`, `last_native_pc`, `fallback_instructions`, `bailouts`, `last_fallback_pc`, `last_fallback_opcode`, `fallback_opcodes`, `native_pcs`, `native_invalidation_pcs`, `native_pc_ring`, and `compile_failures`. `native_invalidation_exits` is the key self-modifying-code churn counter: sustained growth while `native_retired` remains low identifies over-broad code-write detection. `native_mmio_guard_exits` counts native accesses deliberately handed to the interpreter because they target I/O. In 6502 mode, returns CPU-owned `instruction_count`, `tier1_blocks`, `native_entries`, `bailouts`, `invalidations`, and `chain_exits`; reset clears all 6502 counters. `native_entries` counts emitted backend calls, including a no-side-effect native bailout entry. In z80 mode, returns CPU-owned `backend`, `instruction_count`, `native_entries`, `helper_exits`, `bailouts`, `invalidations`, `chain_exits`, and `region_promotions`; reset clears all Z80 counters. `region_promotions` counts bounded four-block static JP/JR chains compiled and patched before first native entry. `backend` is `native` for an executable-memory backend, `wasm` for the browser module backend, and `none` when unavailable. Other CPU modes return an empty table. Returns: table.
+`cpu.jit_stats()` - Return JIT diagnostic counters for the active CPU.
+
+In IE32 mode, returns `backend`, `instruction_count`, `native_entries`,
+`compiled_blocks`, `compiled_regions`, `hot_recompilations`,
+`retired_instructions`, `direct_instructions`, `helper_instructions`,
+`helper_exits`, `helper_resumes`, `chains`, `chain_budget_exits`,
+`deoptimizations`, `helper_deopts`, `source_stamp_deopts`,
+`code_cache_resets`, `invalidations`, `invalidated_blocks`, `cache_hits`,
+`return_cache_hits`, `mmio_poll_iterations`, `mmio_store_helpers`,
+`resident_spills_saved`, `counted_loops`, and `profitability_fallbacks`.
+`invalidated_blocks` counts retained IE32 blocks evicted because a published
+write overlaps their emitted source. `mmio_store_helpers` counts direct
+named-register MMIO stores completed by the dispatcher without the general
+instruction switch. `helper_resumes` counts retained direct-fragment entries
+following a non-HALT helper boundary. `profitability_fallbacks` counts
+transient direct fragments deliberately routed through the interpreter to
+avoid repeated compilation.
+
+In m68k mode, returns `instruction_count`, `native_blocks`, `native_retired`,
+`native_chain_instructions`, `native_no_chain_returns`, `native_helper_exits`,
+`native_exception_exits`, `native_invalidation_exits`,
+`native_mmio_guard_exits`, `unsupported_one_exits`, `compile_failure_exits`,
+`transcendental_bursts`, `warmup_instructions`, `region_promotions`,
+`last_native_pc`, `fallback_instructions`, `bailouts`, `last_fallback_pc`,
+`last_fallback_opcode`, `fallback_opcodes`, `native_pcs`,
+`native_invalidation_pcs`, `native_pc_ring`, and `compile_failures`.
+`native_invalidation_exits` identifies self-modifying-code churn when it grows
+while `native_retired` remains low. `native_mmio_guard_exits` counts native
+accesses deliberately handed to the interpreter because they target I/O.
+
+In IE64 mode, returns `backend`, `instruction_count`, `native_entries`,
+`native_retired`, `compiled_blocks`, `compiled_regions`, `region_candidates`,
+`region_rejections`, `fallback_instructions`, `helper_exits`, `helper_resumes`,
+`helper_resume_cancellations`, `io_bails`, `invalidations`, `cache_hits`,
+`cache_misses`, `spills`, `fpu_spills`, `direct_ram_proofs`, and
+`inlined_calls`.
+
+In x86 mode, returns `backend`, `instruction_count`, `native_entries`,
+`native_retired`, `compiled_blocks`, `compiled_regions`, `region_candidates`,
+`fallback_instructions`, `helper_exits`, `io_bails`, `invalidations`,
+`invalidated_blocks`, `chain_exits`, `cache_hits`, `cache_misses`, and
+`code_cache_resets`.
+
+In 6502 mode, returns CPU-owned `instruction_count`, `tier1_blocks`,
+`native_entries`, `bailouts`, `invalidations`, and `chain_exits`. Reset clears
+all 6502 counters. `native_entries` counts emitted backend calls, including a
+no-side-effect native bailout entry.
+
+In z80 mode, returns CPU-owned `backend`, `instruction_count`,
+`native_entries`, `helper_exits`, `bailouts`, `invalidations`, `chain_exits`,
+and `region_promotions`. Reset clears all Z80 counters. `region_promotions`
+counts bounded four-block static JP/JR chains compiled and patched before the
+first native entry.
+
+For IE32, IE64, x86 and z80, `backend` is `native` for an executable-memory
+backend, `wasm` for a browser module backend, and `none` when unavailable.
+IE64 and x86 statistics are owned by the active CPU and reset with that CPU.
+Other CPU modes return an empty table. Returns: table.
 
 Example:
 

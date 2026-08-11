@@ -89,6 +89,14 @@ func TestX86WasmJIT_Node_EndToEndParity(t *testing.T) {
 	if rt.blocks[startPC] == nil || rt.blocks[0x1010] == nil {
 		t.Fatalf("missing compiled entry/loop blocks: have=%v", rt.blocks)
 	}
+	stats := jit.jitStats.snapshot()
+	if stats.CompiledBlocks < 2 || stats.NativeEntries == 0 || stats.NativeRetired == 0 {
+		t.Fatalf("IES statistics = {blocks:%d entries:%d retired:%d}, want WebAssembly execution provenance",
+			stats.CompiledBlocks, stats.NativeEntries, stats.NativeRetired)
+	}
+	if got := x86JITBackend(); got != "wasm" {
+		t.Fatalf("IES backend = %q, want wasm", got)
+	}
 }
 
 func TestX86WasmJIT_Node_BoundedDispatchHonoursInstructionBudget(t *testing.T) {

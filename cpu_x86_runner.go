@@ -677,6 +677,7 @@ func (r *CPUX86Runner) LoadProgramData(data []byte) error {
 // strict file-load via LoadProgramData errors on oversize; reload
 // routes here and clamps to the safe in-bounds portion.
 func (r *CPUX86Runner) LoadProgramBytes(data []byte) {
+	r.cpu.jitStats.reset()
 	cap := uint32(r.bus.bus.ProfileMemoryCap())
 	maxLen := uint32(0)
 	if cap > r.loadAddr {

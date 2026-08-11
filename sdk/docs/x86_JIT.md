@@ -721,6 +721,22 @@ bails, cache hits) and, on exit, a descending fallback-opcode histogram used to
 target native emitter work. Timing fields (`jit_ns`/`interp_ns`) and the deopt
 taxonomy are only populated when `IE_PERF_ACCT=1` is also set.
 
+## IEScript statistics
+
+`cpu.jit_stats()` reports CPU-owned x86 compilation, generated-code entry,
+retirement, fallback, helper, cache, invalidation, region and chaining counters.
+The table reports `backend` as `native`, `wasm`, or `none`.
+
+The counters are available without `X86_JIT_STATS`. That variable controls
+console reporting and the fallback-opcode histogram only. Resetting or loading
+a program clears the active CPU's counters, and activity on another x86 CPU
+does not contribute to the table.
+
+`native_entries` counts calls into generated code. `native_retired` counts only
+instructions retired by generated code. Helper and interpreter work is counted
+separately, so `cpu.execution_mode()` alone is not evidence that generated code
+ran.
+
 ## Host W^X
 
 The x86 JIT shares the `jit_mmap.go` dual-mapped executable memory

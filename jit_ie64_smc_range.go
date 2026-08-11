@@ -351,5 +351,6 @@ func (cpu *CPU64) handleJITSMCInvalidation(block *JITBlock, execMem *ExecMem) bo
 	cpu.jitCtx.InvalAddr = 0
 	cpu.jitCtx.InvalSize = 0
 	globalIE64JITStats.invalidations.Add(1)
+	cpu.jitStats.invalidations.Add(1)
 	return true
 }

@@ -118,6 +118,14 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 	var diagCacheMisses uint64
 	var diagFallbackInstr uint64
 	var diagIOBails uint64
+	accountRetired := func(executed, nativeRetired uint64) {
+		instructionCount += executed
+		cpu.jitStats.nativeRetired.Add(nativeRetired)
+		cpu.jitStats.instructionCount.Add(executed)
+		if perfAcctOn {
+			cpu.perfAcct.AddInstrs(executed)
+		}
+	}
 
 	// Performance monitoring
 	var perfStartTime time.Time
@@ -191,6 +199,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// Try cache lookup
 		block := cpu.x86JitCache.Get(uint64(pc))
 		if block == nil {
+			cpu.jitStats.cacheMisses.Add(1)
 			// Scan block
 			instrs := x86ScanBlock(cpu.memory, pc)
 			if len(instrs) == 0 {
@@ -208,6 +217,8 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				}
 				cpu.syncJITRegsFromNamed()
 				instructionCount++
+				cpu.jitStats.instructionCount.Add(1)
+				cpu.jitStats.fallbackInstructions.Add(1)
 				if perfAcctOn {
 					cpu.perfAcct.AddInstrs(1)
 					cpu.deoptStats.Add(DeoptUnsupported)
@@ -237,6 +248,8 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				}
 				cpu.syncJITRegsFromNamed()
 				instructionCount++
+				cpu.jitStats.instructionCount.Add(1)
+				cpu.jitStats.fallbackInstructions.Add(1)
 				if perfAcctOn {
 					cpu.perfAcct.AddInstrs(1)
 					cpu.deoptStats.Add(DeoptUnsupported)
@@ -253,7 +266,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			block, err = x86CompileBlockForCPU(cpu, instrs, pc, execMem)
 			if err != nil {
 				// "no instructions compiled" means the first scanned instr
-				// fell through every emit case — equivalent to an
+				// fell through every emit case, equivalent to an
 				// x86NeedsFallback hit that the static list missed. Treat
 				// as a per-instruction Step bail (the same protocol as
 				// MMIO bail). Any other compile error is a real JIT bug
@@ -276,6 +289,11 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 					}
 					cpu.syncJITRegsFromNamed()
 					instructionCount++
+					cpu.jitStats.instructionCount.Add(1)
+					cpu.jitStats.fallbackInstructions.Add(1)
+					if _, ok := x86FPUHelperPayloadFor(instrs[0], cpu.memory, cpu.CS); ok {
+						cpu.jitStats.helperExits.Add(1)
+					}
 					if perfAcctOn {
 						cpu.perfAcct.AddInstrs(1)
 						cpu.deoptStats.Add(DeoptUnsupported)
@@ -294,6 +312,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 
 			// Cache block and mark code pages
 			cpu.x86JitCache.Put(block)
+			cpu.jitStats.compiledBlocks.Add(1)
 			if x86JITStatsOn {
 				x86JITStats.tier1Blocks.Add(1)
 			}
@@ -319,6 +338,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			diagCacheMisses++
 		} else {
 			diagCacheHits++
+			cpu.jitStats.cacheHits.Add(1)
 
 			// Hot-block detection via shared Phase 3 TierController.
 			// Equivalent arithmetic to the prior inline gate (execCount >=
@@ -330,6 +350,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				if x86JITStatsOn {
 					x86JITStats.regionCandidates.Add(1)
 				}
+				cpu.jitStats.regionCandidates.Add(1)
 				region := x86FormRegion(pc, cpu.x86JitCache, cpu.memory)
 				if region != nil && x86TierController.ShouldPromoteRegion(len(region.blocks)) {
 					newBlock, err := x86CompileRegionForCPU(cpu, region, execMem)
@@ -341,6 +362,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 							x86InvalidateRTSCacheForPC(ctx, uint32(newBlock.startPC))
 						}
 						block = newBlock
+						cpu.jitStats.compiledRegions.Add(1)
 					}
 				}
 				// Single-block Tier-2 recompile is a no-op while
@@ -354,7 +376,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// Update RTS cache: shift entry 0 → 1, write new entry 0. Each
 		// slot carries the target block's regMap so the native RET
 		// probe can reject hits whose host-register layout differs from
-		// the running block — without that gate, a Tier-2 callee could
+		// the running block. Without that gate, a Tier-2 callee could
 		// chain back into a Tier-1 caller (or vice versa) with mapped
 		// guest registers reading the wrong host registers.
 		if !bounded && x86RTSChainingEnabled && block.chainEntry != 0 {
@@ -391,6 +413,8 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				cpu.deoptStats.Add(DeoptDebug)
 			}
 			diagFallbackInstr++
+			cpu.jitStats.instructionCount.Add(1)
+			cpu.jitStats.fallbackInstructions.Add(1)
 			if cpu.Halted || !cpu.Running() {
 				break
 			}
@@ -409,7 +433,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		// instructions before the outer loop revisits the budget check,
 		// blowing past the harness's per-checkpoint window. ChainBudget=1
 		// still allows the block itself to retire its full instrCount
-		// (block granularity is the irreducible overshoot — documented
+		// (block granularity is the irreducible overshoot, documented
 		// in jit_x86_shadow_parity_test.go); the outer-loop budget
 		// subtraction then catches up on the next iteration.
 		if bounded {
@@ -428,6 +452,8 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			cpu.syncJITRegsFromNamed()
 			instructionCount++
 			diagFallbackInstr++
+			cpu.jitStats.instructionCount.Add(1)
+			cpu.jitStats.fallbackInstructions.Add(1)
 			if cpu.Halted || !cpu.Running() {
 				break
 			}
@@ -439,6 +465,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		if perfAcctOn {
 			jitT0 = time.Now()
 		}
+		cpu.jitStats.nativeEntries.Add(1)
 		callNative(block.execAddr, uintptr(unsafe.Pointer(ctx)))
 		if perfAcctOn {
 			cpu.perfAcct.AddJit(time.Since(jitT0).Nanoseconds())
@@ -454,6 +481,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				executed = uint64(block.instrCount)
 			}
 		}
+		nativeRetired := executed
 		// Native blocks do not call the Go interpreter handlers that normally
 		// charge CPU.Cycles. Publish the matching completed-prefix charge here.
 		// A deferred bail can retire only a prefix, so never use the whole block
@@ -506,6 +534,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			if x86JITStatsOn {
 				x86JITStats.chainExits.Add(1)
 			}
+			cpu.jitStats.chainExits.Add(1)
 		}
 		if ctx.ChainBudget <= 0 {
 			block.unchainedExits++ // budget exhausted = unchained exit
@@ -515,19 +544,26 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		if ctx.NeedInval != 0 {
 			recordBlockDeopt(&cpu.deoptStats, block, DeoptSMC)
 			if jitSMCRangeDisabled {
+				cpu.jitStats.invalidatedBlocks.Add(uint64(cpu.x86JitCache.Len()))
 				cpu.x86JitCache.Invalidate()
 				execMem.Reset()
 				clear(cpu.x86JitCodeBM)
 				x86ClearRTSCache(ctx)
+				cpu.jitStats.codeCacheResets.Add(1)
 			} else {
 				removed := x86InvalidateSMCRange(cpu.x86JitCache, cpu.x86JitCodeBM, ctx)
+				cpu.jitStats.invalidatedBlocks.Add(uint64(removed))
 				if removed != 0 {
 					resetExecMemWhenCacheEmpty(cpu.x86JitCache, execMem)
+					if cpu.x86JitCache.Len() == 0 {
+						cpu.jitStats.codeCacheResets.Add(1)
+					}
 				}
 			}
 			if x86JITStatsOn {
 				x86JITStats.invalidations.Add(1)
 			}
+			cpu.jitStats.invalidations.Add(1)
 			ctx.NeedInval = 0
 			ctx.InvalAddr = 0
 			ctx.InvalSize = 0
@@ -538,6 +574,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		if ctx.NeedIOFallback != 0 {
 			ctx.NeedIOFallback = 0
 			if payload, ok := x86FPUHelperPayloadFromContext(ctx); ok {
+				cpu.jitStats.helperExits.Add(1)
 				ctx.ExitReason = x86JITExitNone
 				recordBlockDeopt(&cpu.deoptStats, block, DeoptUnsupported)
 				cpu.syncJITRegsToNamed()
@@ -555,10 +592,8 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				// This path continues above the shared retirement accounting below.
 				// Publish the native prefix plus the helper instruction first so a
 				// bounded JIT run cannot execute past its requested instruction count.
-				instructionCount += executed
-				if perfAcctOn {
-					cpu.perfAcct.AddInstrs(executed)
-				}
+				accountRetired(executed, nativeRetired)
+				cpu.jitStats.fallbackInstructions.Add(1)
 				cpu.syncJITRegsFromNamed()
 				if cpu.Halted || !cpu.Running() {
 					break
@@ -566,10 +601,12 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				continue
 			}
 			recordBlockDeopt(&cpu.deoptStats, block, DeoptMMIO)
+			cpu.jitStats.ioBails.Add(1)
 			block.ioBails++ // profile counter for promotion decisions
 			if !bounded {
 				if fastCount, ok := cpu.tryFastMMIOWriteFallbackJIT(); ok {
 					executed += fastCount
+					cpu.jitStats.fallbackInstructions.Add(fastCount)
 				} else {
 					cpu.syncJITRegsToNamed()
 					var stepT0 time.Time
@@ -582,6 +619,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 						cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
 					}
 					diagFallbackInstr++
+					cpu.jitStats.fallbackInstructions.Add(1)
 					executed++
 					cpu.syncJITRegsFromNamed()
 				}
@@ -597,19 +635,18 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 					cpu.perfAcct.AddInterp(time.Since(stepT0).Nanoseconds())
 				}
 				diagFallbackInstr++
+				cpu.jitStats.fallbackInstructions.Add(1)
 				executed++
 				cpu.syncJITRegsFromNamed()
 			}
 			diagIOBails++
 			if cpu.Halted || !cpu.Running() {
+				accountRetired(executed, nativeRetired)
 				break
 			}
 		}
 
-		instructionCount += executed
-		if perfAcctOn {
-			cpu.perfAcct.AddInstrs(executed)
-		}
+		accountRetired(executed, nativeRetired)
 
 		// Performance monitoring
 		if perfEnabled {
@@ -874,6 +911,7 @@ func (cpu *CPU_X86) x86RunInterpreter() {
 		}
 		cpu.x86RenormalizeFPUBoundary()
 		cpu.Step()
+		cpu.jitStats.instructionCount.Add(1)
 		if bounded {
 			cpu.x86InstrBudget--
 			if cpu.x86InstrBudget <= 0 {

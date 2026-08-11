@@ -204,6 +204,17 @@ func TestX86ARM64_ProductionDispatcherParity(t *testing.T) {
 	if got, want := jit.Cycles, interp.Cycles; got != want {
 		t.Fatalf("Cycles = %d, want %d", got, want)
 	}
+	stats := jit.jitStats.snapshot()
+	if stats.CompiledBlocks == 0 || stats.NativeEntries == 0 || stats.NativeRetired == 0 {
+		t.Fatalf("IES statistics = {blocks:%d entries:%d retired:%d}, want ARM64 generated-code execution provenance",
+			stats.CompiledBlocks, stats.NativeEntries, stats.NativeRetired)
+	}
+	if stats.FallbackInstructions == 0 {
+		t.Fatal("IES fallback instructions = 0, want interpreter boundary provenance")
+	}
+	if got := x86JITBackend(); got != "native" {
+		t.Fatalf("IES backend = %q, want native", got)
+	}
 }
 
 func TestX86ARM64_ProductionDispatcherHonoursInstructionBudget(t *testing.T) {

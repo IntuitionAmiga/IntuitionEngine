@@ -109,6 +109,7 @@ type CPU_X86 struct {
 	x86JitExecMem  any  // *ExecMem (typed via accessor)
 	x86JitCache    *CodeCache
 	x86JitCtx      *X86JITContext
+	jitStats       cpuJITStats
 	x86JitIOBitmap []byte // I/O page bitmap (256-byte granularity)
 	x86JitCodeBM   []byte // code page bitmap for self-mod detection
 
@@ -195,6 +196,7 @@ func NewCPU_X86(bus X86Bus) *CPU_X86 {
 
 // Reset initializes the CPU to its power-on state
 func (c *CPU_X86) Reset() {
+	c.jitStats.reset()
 	// Clear general purpose registers
 	c.EAX = 0
 	c.EBX = 0
@@ -973,6 +975,13 @@ func (c *CPU_X86) tryFastMMIOPollLoopWithRegs(useJITRegs bool) bool {
 	if iterCap <= 0 {
 		iterCap = 4096
 	}
+	var retired uint64
+	defer func() {
+		c.jitStats.instructionCount.Add(retired)
+		if useJITRegs {
+			c.jitStats.fallbackInstructions.Add(retired)
+		}
+	}()
 
 	bounded := c.x86BudgetActive
 	if bounded && c.x86InstrBudget <= 0 {
@@ -1010,6 +1019,7 @@ func (c *CPU_X86) tryFastMMIOPollLoopWithRegs(useJITRegs bool) bool {
 		}
 		c.bus.Tick(1)
 		iterations++
+		retired++
 		if bounded {
 			c.x86InstrBudget--
 			if c.x86InstrBudget <= 0 {
@@ -1020,6 +1030,7 @@ func (c *CPU_X86) tryFastMMIOPollLoopWithRegs(useJITRegs bool) bool {
 
 		testResult := eax & mask
 		c.setFlagsLogic32(testResult)
+		retired++
 		if bounded {
 			c.x86InstrBudget--
 			if c.x86InstrBudget <= 0 {
@@ -1032,6 +1043,7 @@ func (c *CPU_X86) tryFastMMIOPollLoopWithRegs(useJITRegs bool) bool {
 		if jcc == 0x75 {
 			branchTaken = !branchTaken
 		}
+		retired++
 		if !branchTaken {
 			c.EIP = pc + 12
 			return true

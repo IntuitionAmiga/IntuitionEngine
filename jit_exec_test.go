@@ -108,6 +108,45 @@ func TestJIT_SingleALU(t *testing.T) {
 	}
 }
 
+func TestIE64JITStatsRecordExecutionProvenance(t *testing.T) {
+	cpu := runJITProgram(t,
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 100),
+		ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 50),
+	)
+	stats := cpu.jitStats.snapshot()
+	if stats.CompiledBlocks == 0 {
+		t.Fatal("compiled blocks = 0, want a compiled IE64 block")
+	}
+	if stats.NativeEntries == 0 || stats.NativeRetired < 2 {
+		t.Fatalf("native execution = {entries:%d retired:%d}, want generated-code execution", stats.NativeEntries, stats.NativeRetired)
+	}
+	if stats.InstructionCount != 0 {
+		t.Fatalf("private instruction count = %d, want IE64 to use CPU64.InstructionCount", stats.InstructionCount)
+	}
+}
+
+func TestScriptEngine_CPUJITStats_IE64ExecutionProvenance(t *testing.T) {
+	cpu := runJITProgram(t,
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 1),
+		ie64Instr(OP_ADD, 1, IE64_SIZE_Q, 1, 1, 0, 2),
+	)
+	runtimeStatus.setCPUs(runtimeCPUIE64, nil, cpu, nil, nil, nil, nil)
+	t.Cleanup(func() { runtimeStatus.setCPUs(runtimeCPUNone, nil, nil, nil, nil, nil, nil) })
+	se := NewScriptEngine(cpu.bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`
+		local s = cpu.jit_stats()
+		if s.native_entries <= 0 then error("native_entries") end
+		if s.native_retired < 2 then error("native_retired") end
+		if s.compiled_blocks <= 0 then error("compiled_blocks") end
+	`, "cpu_jit_stats_ie64_execution"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatalf("script error: %v", err)
+	}
+}
+
 func TestExecuteJIT_TimerInterruptsBeforeMidBlockInstruction(t *testing.T) {
 	if !jitAvailable {
 		t.Skip("JIT not available")
@@ -740,6 +779,77 @@ func TestJIT_IOFallback_MMIO(t *testing.T) {
 	}
 	if cpu.regs[3] != 0x1234 {
 		t.Errorf("MMIO read: R3 = 0x%X, want 0x1234", cpu.regs[3])
+	}
+}
+
+func TestIE64JIT_IOFallbackHaltingReplayPreservesRetirement(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("IE64 JIT not available on this platform")
+	}
+
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+	program := [][]byte{
+		ie64Instr(OP_MOVE, 1, IE64_SIZE_Q, 1, 0, 0, 0x42),
+		ie64Instr(OP_RTI64, 0, 0, 0, 0, 0, 0),
+	}
+	for i, instr := range program {
+		copy(cpu.memory[PROG_START+uint64(i)*IE64_INSTR_SIZE:], instr)
+	}
+	cpu.preBlockHook = func() {
+		cpu.preBlockHook = nil
+		copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	}
+	cpu.running.Store(true)
+	cpu.ExecuteJIT()
+
+	stats := cpu.jitStats.snapshot()
+	if stats.NativeRetired != 1 || stats.FallbackInstructions != 1 {
+		t.Fatalf("retirement provenance = native %d + fallback %d, want 1 + 1",
+			stats.NativeRetired, stats.FallbackInstructions)
+	}
+	if cpu.InstructionCount != stats.NativeRetired+stats.FallbackInstructions {
+		t.Fatalf("instruction count = %d, want native %d + fallback %d",
+			cpu.InstructionCount, stats.NativeRetired, stats.FallbackInstructions)
+	}
+}
+
+func TestIE64JIT_LoopPrecheckHaltingReplayPreservesRetirement(t *testing.T) {
+	if !jitAvailable {
+		t.Skip("IE64 JIT not available on this platform")
+	}
+
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	cpu.jitEnabled = true
+	back := int32(-16)
+	program := [][]byte{
+		ie64Instr(OP_MOVE, 2, IE64_SIZE_Q, 1, 0, 0, 2),
+		ie64Instr(OP_LOAD, 3, IE64_SIZE_Q, 0, 5, 0, 0),
+		ie64Instr(OP_SUB, 2, IE64_SIZE_Q, 1, 2, 0, 1),
+		ie64Instr(OP_BNE, 0, 0, 0, 2, 0, uint32(back)),
+	}
+	for i, instr := range program {
+		copy(cpu.memory[PROG_START+uint64(i)*IE64_INSTR_SIZE:], instr)
+	}
+	cpu.regs[5] = 0x3000
+	cpu.preBlockHook = func() {
+		cpu.preBlockHook = nil
+		cpu.jitCtx.MMUEnabled = 1
+		copy(cpu.memory[PROG_START+IE64_INSTR_SIZE:], ie64Instr(OP_HALT64, 0, 0, 0, 0, 0, 0))
+	}
+	cpu.running.Store(true)
+	cpu.ExecuteJIT()
+
+	stats := cpu.jitStats.snapshot()
+	if stats.NativeRetired != 1 || stats.FallbackInstructions != 1 {
+		t.Fatalf("retirement provenance = native %d + fallback %d, want 1 + 1",
+			stats.NativeRetired, stats.FallbackInstructions)
+	}
+	if cpu.InstructionCount != stats.NativeRetired+stats.FallbackInstructions {
+		t.Fatalf("instruction count = %d, want native %d + fallback %d",
+			cpu.InstructionCount, stats.NativeRetired, stats.FallbackInstructions)
 	}
 }
 
