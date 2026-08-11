@@ -147,7 +147,10 @@ adapter routes the high page-window region as follows:
 | `$FFFA`-`$FFFF`     | NMI / reset / IRQ vectors. |
 
 The Z80 sees the same shape with port I/O substituted for the
-chip-aperture region; the bank-window scheme is identical.
+chip-aperture region. Its `$8000`-`$BFFF` VRAM window maps bank
+`$2E` to `$B8000`-`$BBFFF` and bank `$2F` to
+`$BC000`-`$BFFFF`, giving access to both halves of VGA text memory.
+Banks `$40` and above select main VRAM within its decoded range.
 
 ## J.8 Notes
 

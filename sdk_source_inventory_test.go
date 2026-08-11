@@ -304,6 +304,15 @@ func sdkIEMonFactsFromSource(t *testing.T) []sdkSourceFact {
 func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 	t.Helper()
 	source := readAuditFile(t, "script_engine.go")
+	for _, needle := range []string{
+		"base := VGA_PALETTE + idx*3",
+		"se.bus.Write8(base, uint8(r))",
+		"se.bus.Read8(base + 2)",
+	} {
+		if !strings.Contains(source, needle) {
+			t.Fatalf("script_engine.go VGA palette API contract changed; review iescript.md: %s", needle)
+		}
+	}
 	registerModules := sourceBetween(t, source, "func (se *ScriptEngine) registerModules", "func (se *ScriptEngine) luaSysWaitFrames")
 	re := regexp.MustCompile(`(?s)([a-zA-Z][a-zA-Z0-9_]*) := L\.SetFuncs\(L\.NewTable\(\), map\[string\]lua\.LGFunction\{(.*?)\}\)\s*L\.SetGlobal\("([^"]+)", ([a-zA-Z][a-zA-Z0-9_]*)\)`)
 	keyRe := regexp.MustCompile(`(?m)^\s*"([^"]+)":`)
@@ -402,6 +411,7 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"rec.start() and rec.start_screen() follow wall-clock time; after an encoder stall they discard missed video-frame debt and matching oldest buffered audio instead of producing an unbounded catch-up burst", "`video_recorder.go` `loop`/`audioPump`/`sampleRing.discard`, `video_recorder_test.go` discard and cursor-protocol coverage"},
 		{"rec.start() and rec.start_screen() pump video and audio independently; frozen or unchanged video is held, and audio starvation beyond 500 ms produces silence instead of stalling", "`video_recorder.go` wall-clock `loop`, independent `audioPump`, and `recorderAudioGraceTicks`; `video_recorder_test.go` audio-starvation coverage"},
 		{"video.get_crt_mode(), video.set_crt_mode(mode), and video.cycle_crt_mode() expose the full flat, curved, off cycle used by F7. The boolean functions remain compatibility controls: enabling selects flat and their toggle only switches flat and off.", "`script_engine.go` mode bindings, `video_compositor.go` mode controller, `video_backend_ebiten.go` shared F7 transition, and `script_crt_control_test.go`"},
+		{"video.vga_set_palette(idx, r, g, b) masks idx to 8 bits and stores the low 6 bits of each colour component; video.vga_get_palette(idx) returns those three 6-bit values.", "`script_engine.go` `luaVGASetPalette`/`luaVGAGetPalette`, `video_vga.go` direct palette access, and `script_engine_test.go` three-byte-entry coverage"},
 		{"Return the host presentation scale mode: \"fit\" for aspect-fit or \"stretch\" for stretch-fill.", "`script_engine.go` `luaVideoGetScaleMode` and `script_scale_control_test.go`"},
 		{"Raises if the selected output has no compositor.", "`script_engine.go` `luaVideoGetScaleMode` and `script_scale_control_test.go`"},
 		{"This is a host presentation action and does not inject a guest key.", "`script_engine.go` `luaVideoSetScaleMode` and `script_scale_control_test.go`"},
@@ -425,6 +435,27 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 
 func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 	t.Helper()
+	z80Source := readAuditFile(t, "cpu_z80_runner.go")
+	for _, needle := range []string{
+		"translated >= VGA_TEXT_WINDOW && translated < VGA_TEXT_WINDOW+VGA_TEXT_SIZE",
+		"b.vgaEngine.HandleTextWrite(translated, uint32(value))",
+		"VGA text buffer at 0xB8000 (bank 0x2E = 46)",
+	} {
+		if !strings.Contains(z80Source, needle) {
+			t.Fatalf("cpu_z80_runner.go VGA text-bank contract changed; review architecture.md: %s", needle)
+		}
+	}
+	vgaSource := readAuditFile(t, "video_vga.go")
+	for _, needle := range []string{
+		"displayStartCell := int(v.getStartAddressInternal()) % textCells",
+		"if blinkEnabled {",
+		"bg &= 0x07",
+		"cellAddress == cursorOff",
+	} {
+		if !strings.Contains(vgaSource, needle) {
+			t.Fatalf("video_vga.go text-mode contract changed; review architecture.md: %s", needle)
+		}
+	}
 	categoryEvidence := map[string][]string{
 		"Audio Subsystem": goFilesByPrefix(t, "audio_", "sid_", "ted_audio_", "pokey_", "ahx_", "mod_", "wav_", "midi_", "paula_"),
 		"Bus and RAM":     goFilesByPrefix(t, "machine_bus", "memory_sizing", "boot_guest_ram", "profile_bounds"),
@@ -677,6 +708,9 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"The x64 live image stages that archive and its SHA-256 file under SDK/Toolchains; the former per-platform SDK/Tools tree and standalone IE64 toolchain archive are not staged.", "`build_x64_ie_img.sh` `stage_share_payload`/`verify_staged_share_payload`, `x64_live_test.go` Host SDK payload assertions"},
 		{"M68020 JIT backends are available on amd64 and arm64 Linux, Windows and macOS, plus js/wasm; the wasm backend requires __goMem and M68K_WASM_JIT=0 disables it.", "`jit_m68k_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and `jit_m68k_dispatch_wasm.go` build and activation gates"},
 		{"The M68020 JIT shares an untagged scanner, admission rules, CCR liveness, region formation and tier policy while keeping native and wasm lowering target-specific.", "`jit_m68k_common.go`, `jit_m68k_admission.go`, `jit_m68k_ccr_liveness.go`, `jit_m68k_region_form.go`, `jit_m68k_policy.go`, and per-target dispatch/emitter files"},
+		{"Z80 VRAM banks 0x2E and 0x2F map the 16 KiB window at $8000-$BFFF onto the two halves of the VGA text aperture at 0xB8000-0xBFFFF; accesses are routed through the VGA text handler.", "`cpu_z80_runner.go` `translateVRAM`, `readNoDebug`/`Read`/`Write`, and `vga_cpu_access_test.go`"},
+		{"In VGA text mode, the CRTC start address selects a character-cell display origin modulo the 16K-cell text aperture, and the cursor address uses the same cell-address space.", "`video_vga.go` `renderTextMode`/`renderScanlineText` and `vga_engine_test.go` paged-display coverage"},
+		{"VGA attribute-controller mode bit 3 selects blink semantics: when set, attribute bit 7 blinks the foreground and the background index is three bits; when clear, bit 7 is the high background-colour bit.", "`video_vga.go` text renderers and `vga_engine_test.go` blink/bright-background parity coverage"},
 		{"M68020 JIT memory guards use the profile-visible RAM ceiling, and native and wasm stores invalidate compiled code before stale execution.", "`jit_m68k_exec.go` profile-bound context setup and invalidation, `jit_m68k_dispatch_wasm.go` ceiling/stamp checks, and per-target store guards"},
 		{"All three backends index compiled code by 4 KiB guest pages and retain one occupancy bit for each compiled guest byte.", "`cpu_m68k.go` `m68kJitCodePageMap`, `jit_m68k_exec_arm64.go`, and `jit_m68k_wasm_emit.go` `emitSMCStoreCheck`"},
 		{"A write invalidates code only when its byte range overlaps compiled instruction bytes; writes to data gaps on the same page do not invalidate code.", "`jit_m68k_exec.go` exact overlap checks and per-target store guards"},

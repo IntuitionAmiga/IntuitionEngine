@@ -28,6 +28,60 @@ documentation is wrong unless the code itself is being changed in the
 same pass and verified. Record the exact files checked in
 `verify/CLAIM_LEDGER.txt`.
 
+## Current VGA Text And Palette Editorial Pass
+
+This pass integrates the reader-visible VGA and Z80 contracts introduced
+by commit `0d132136` without importing its demonstration, implementation,
+or host-development material into the book. Execute it in ascending reader
+order over Chapters 5, 24, 28, and 34, then Appendices D, J, and L and the
+claim ledger. Finish with focused source and example checks, strict
+publication, and PDF generation.
+
+The reader-facing contracts are:
+
+- in VGA text mode, the CRTC display-start and cursor addresses use the
+  same `16`-K-cell address space;
+- the display start is reduced modulo the `16`-K-cell text aperture, and
+  character and attribute bytes remain paired when display addressing
+  wraps at the end of the `32`-KiB buffer;
+- VGA attribute-controller mode bit `3` selects the meaning of attribute
+  bit `7`: with blink enabled, bit `7` blinks the foreground and the
+  background index has three bits; with blink disabled, bit `7` is the
+  high background-colour bit;
+- full-frame and scanline text rendering apply the same display-start,
+  cursor, blink, and bright-background rules;
+- Z80 VRAM bank `0x2E` maps `$8000-$BFFF` to `$B8000-$BBFFF`, and bank
+  `0x2F` maps it to `$BC000-$BFFFF`; reads and writes in both banks pass
+  through the VGA text handler;
+- `video.vga_set_palette(i, r, g, b)` masks the index to eight bits,
+  addresses contiguous three-byte RGB entries, and stores the low six
+  bits of each component;
+- `video.vga_get_palette(i)` applies the same index mask and returns the
+  three stored component values in the range `0` to `63`.
+
+Chapter 5 must explain the complete text-address and attribute-mode rules,
+then demonstrate them with a commented BASIC listing and prose that tells
+the reader what changes on screen. Chapter 24 must add only the concise
+cross-CPU mapping rule. Chapter 28 must teach both VGA text banks and give
+a byte-entered, disassembled, and discussed IE Mon example that selects a
+bank, writes visible character and attribute pairs, then copies the pair
+back through the selected bank into ordinary RAM for inspection. Chapter 34 must
+document both palette functions and give a typed IE Script example that
+writes and reads a palette entry.
+
+Appendix D must identify the direct palette layout and component width.
+Appendix J must give the Z80 bank aliases. Appendix L must index VGA text
+paging, blink and bright-background selection, the Z80 VGA text banks, and
+the IE Script palette helpers. Do not add invented include symbols to
+Appendix H. If named constants are later added to the public Z80 include,
+document them in a separate source-backed pass.
+
+Do not mention the demonstration programme, prepared binaries, C source,
+Go source, repository paths, host build commands, tests, websites, or
+release packaging in reader-facing prose. Those materials may be used as
+author verification evidence only and must remain confined to
+`verify/CLAIM_LEDGER.txt`.
+
 ## Current IE-Native Workflow Exclusion Pass
 
 This pass audits the changes after `cfd0956a` without expanding the

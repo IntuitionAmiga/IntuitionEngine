@@ -1,6 +1,6 @@
 # IEScript Lua Automation Manual
 
-*Last modified: 2026-08-09*
+*Last modified: 2026-08-11*
 
 IEScript is the Lua automation layer for Intuition Engine. It is intended for developers who need reproducible emulator automation: boot flows, terminal input, debugger sessions, media playback, screenshots, and recordings.
 
@@ -686,9 +686,9 @@ their toggle only switches flat and off.
 
 `video.vga_set_mode(mode)` - Set the VGA video mode (e.g. 0x13 for Mode 13h). Returns: nothing.
 
-`video.vga_set_palette(idx, r, g, b)` - Set VGA palette entry `idx` (0..255) to the given RGB values (each 0..255). Returns: nothing.
+`video.vga_set_palette(idx, r, g, b)` - Set a VGA palette entry. The function masks `idx` to 8 bits and stores the low 6 bits of each colour component. Returns: nothing.
 
-`video.vga_get_palette(idx)` - Read VGA palette entry `idx`. Returns: r, g, b (three numbers, each 0..255).
+`video.vga_get_palette(idx)` - Read a VGA palette entry after masking `idx` to 8 bits. `video.vga_set_palette(idx, r, g, b)` masks `idx` to 8 bits and stores the low 6 bits of each colour component; `video.vga_get_palette(idx)` returns those three 6-bit values. Returns: r, g, b (three numbers, each 0..63).
 
 `video.vga_get_dimensions()` - Get VGA framebuffer dimensions. Returns: width, height.
 

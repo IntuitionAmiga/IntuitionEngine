@@ -258,9 +258,13 @@ raster compare registers, and raster pending status; see Chapter 6.
 | `$F1010`-`$F1018` | Sequencer (`VGA_SEQ_*`). |
 | `$F1020`-`$F102C` | CRTC (`VGA_CRTC_*`). |
 | `$F1030`-`$F103C` | Graphics controller (`VGA_GC_*`). |
-| `$F1040`-`$F1044` | Attribute controller (`VGA_ATTR_*`). |
+| `$F1040`-`$F1044` | Attribute controller (`VGA_ATTR_*`); mode bit `3` selects blink or bright-background use of text attribute bit `7`. |
 | `$F1050`-`$F105C` | DAC + palette index/data. |
-| `$F1100`-`$F13FF` | Palette RAM. |
+| `$F1100`-`$F13FF` | Palette RAM: `256` contiguous three-byte RGB entries, six bits stored per component. |
+
+In text mode, the CRTC start and cursor addresses count cells in the
+`16`-K-cell text aperture. Display addressing wraps modulo `16384`
+cells while preserving each character and attribute pair.
 
 ## D.12 ULA (`$F2000`-`$F2017`)
 

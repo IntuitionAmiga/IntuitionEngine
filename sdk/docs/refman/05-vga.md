@@ -131,6 +131,14 @@ Cursor position is held in CRTC indices `$0E` (high) and `$0F`
 (end). The `LOCATE` BASIC statement writes the cursor low and high
 bytes through `VGA_CRTC_INDEX`/`DATA`.
 
+In text mode, the start and cursor addresses both count character
+cells, not bytes. The `32`-KiB text buffer contains `16384` cells,
+so the displayed start is reduced modulo `16384`. The character and
+attribute bytes of a cell stay together when display addressing wraps
+from the end of the buffer to its beginning. A cursor address is
+compared with the resulting cell address, so the cursor follows a
+scrolled or page-flipped display.
+
 ### 5.3.4 Graphics controller
 
 The graphics controller decides how CPU bytes are combined with the
@@ -152,6 +160,17 @@ attribute control bits.
 |------------|-------------------|---------|
 | `$F1040`  | `VGA_ATTR_INDEX`  | Index (`0`-`20`). |
 | `$F1044`  | `VGA_ATTR_DATA`   | Read/write the indexed register. |
+
+Attribute register `$10` is the mode-control register. Its bit `3`
+selects how text attribute bit `7` is interpreted:
+
+| Mode-control bit 3 | Attribute bit 7 | Background field |
+|--------------------|-----------------|------------------|
+| `0` | High bit of the background colour | Bits `4`-`7`, colours `0`-`15`. |
+| `1` | Blink enable for that character | Bits `4`-`6`, colours `0`-`7`. |
+
+Blinking alternates every `16` completed VGA frames. Full-frame and
+scanline rendering use the same rule.
 
 ### 5.3.6 DAC and palette
 
@@ -309,13 +328,38 @@ same bit into plane `0` and plane `2`, giving colour index `5`.
 
 In text mode the buffer holds pairs of bytes: character code, then
 attribute. The attribute's low nibble is the foreground colour
-(`0`-`15`); the next three bits are the background colour (`0`-`7`);
-the top bit, if set, makes the character blink (depending on the
-attribute-mode setting).
+(`0`-`15`). Bits `4`-`6` are the low three background bits. Bit `7`
+either completes a four-bit background colour or requests blinking,
+as selected by attribute mode-control bit `3`.
 
 A bare `PRINT "HELLO"` writes characters into this buffer at the
 current cursor position using the attribute set by the most recent
 `COLOR` statement.
+
+This programme writes one character with attribute `$CF`. It first
+shows white text on a bright red background. It then enables blink
+semantics, which changes the same byte to white blinking text on the
+dark-red background:
+
+```basic
+10 SCREEN &H03
+20 POKE32 &H000F1040,&H10             : REM select attribute mode control
+30 POKE32 &H000F1044,0                : REM bit 7 is bright background
+40 POKE8 &H000B8000,ASC("A")
+50 POKE8 &H000B8001,&HCF              : REM white on bright red
+60 VSYNC
+70 FOR D=1 TO 200000:NEXT D
+80 POKE32 &H000F1040,&H10
+90 POKE32 &H000F1044,8                : REM bit 7 now requests blink
+100 FOR F=1 TO 64:VSYNC:NEXT F
+```
+
+Lines `20` and `30` make all four background bits visible. Lines
+`40` and `50` place the character and its attribute in the first text
+cell. Lines `80` and `90` change only the interpretation of bit `7`;
+the character and attribute bytes are not rewritten. The final loop
+leaves enough completed frames to see the foreground alternate between
+visible and hidden.
 
 ## 5.5 Hardware scrolling and page flipping
 
@@ -331,6 +375,10 @@ it in bytes. By changing this offset between frames you can:
   to scroll vertically; by one byte (Mode 13h) or one character
   (text mode) to scroll horizontally. The `SCROLL` BASIC keyword
   uses this in text mode.
+
+Text-mode addresses wrap modulo `16384` cells. The cursor uses the
+same cell-address space. In graphics modes the start offset is applied
+to the graphics memory for the selected mode instead.
 
 The CRTC also exposes a line-compare register (index `$18`) that
 splits the screen into two scrolling regions; this is the classic
@@ -357,6 +405,25 @@ display one text row later:
 100 POKE32 &H000F1028, 0
 110 POKE32 &H000F102C, 80
 ```
+
+The next example prepares the first cell of a second `80` by `25`
+text page and then displays that page. One text page contains `2000`
+cells, or `4000` bytes:
+
+```basic
+200 SCREEN &H03
+210 P=2000
+220 POKE8 &H000B8000+P*2,ASC("2")
+230 POKE8 &H000B8000+P*2+1,&H1E
+240 VSYNC
+250 POKE32 &H000F1028,INT(P/256)
+260 POKE32 &H000F102C,P AND 255
+```
+
+Lines `220` and `230` write a yellow `2` on blue into cell `2000`
+without disturbing the displayed first page. After `VSYNC`, lines
+`250` and `260` change the display origin to that completed page. The
+top-left cell then shows the prepared character.
 
 ## 5.6 The vertical retrace
 

@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-08-09*
+*Last modified: 2026-08-11*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -1241,10 +1241,15 @@ The banked 6502/Z80 ABI uses bank windows to access a 32 MiB banked-CPU visible 
 | `$2000-$3FFF` | 8KB | Bank 1 (sprite data) | `$F700/$F701` (lo/hi) |
 | `$4000-$5FFF` | 8KB | Bank 2 (font data) | `$F702/$F703` (lo/hi) |
 | `$6000-$7FFF` | 8KB | Bank 3 (general) | `$F704/$F705` (lo/hi) |
-| `$8000-$BFFF` | 16KB | VRAM window | `$F7F0` (bank number) |
+| `$8000-$BFFF` | 16KB | VGA text or main VRAM window | `$F7F0` (bank number) |
 | `$F000-$FFF9` | 4090B | I/O window, excluding 6502 vectors | Hardwired: `$Fxxx` -> bus `$F0xxx` |
 | `$F200-$F24F` | 80B | Coprocessor gateway subrange | Hardwired: -> bus `$F2340+offset` |
 | `$FFFA-$FFFF` | 6B | 6502 vectors (NMI/RESET/IRQ) | Identity mapped |
+
+Z80 VRAM banks `0x2E` and `0x2F` map the 16 KiB window at
+`$8000-$BFFF` onto the two halves of the VGA text aperture at
+`0xB8000-0xBFFFF`; accesses are routed through the VGA text handler. Banks
+`0x40` and above select the main VRAM aperture, subject to its decoded range.
 
 ### 6502 I/O Chip Page Dispatch
 
@@ -1355,6 +1360,19 @@ blitter fills in raster-op modes update the front buffer directly and mark the
 covered dirty tiles once when the destination stride is the display row stride;
 non-rectangular strides keep the per-pixel path for exact dirty tracking. Raster
 band writes through bus memory aggregate backing invalidation per row.
+
+### VGA Text Mode
+
+In VGA text mode, the CRTC start address selects a character-cell display
+origin modulo the 16K-cell text aperture, and the cursor address uses the same
+cell-address space. Character and attribute bytes wrap together at the end of
+the aperture, so a page may cross the physical end without splitting a pair.
+
+VGA attribute-controller mode bit 3 selects blink semantics: when set,
+attribute bit 7 blinks the foreground and the background index is three bits;
+when clear, bit 7 is the high background-colour bit. Full-frame and scanline
+rendering apply the same display-origin, cursor, blink, and bright-background
+rules.
 
 ### Voodoo Command Stream Replay
 

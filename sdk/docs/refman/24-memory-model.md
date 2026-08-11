@@ -474,7 +474,10 @@ For them, the I/O region appears at the top of the 16-bit space:
 - Z80: same `$F000`-`$FFF9` MMIO window with the same `$F700`
   bank-register intercept. The Z80 also exposes the VGA through
   `OUT ($A0..$AA)` port I/O, and the ULA through ports
-  `$FE`/`$FD`/`$BE`/`$FA`-`$FC` with a paged VRAM port.
+  `$FE`/`$FD`/`$BE`/`$FA`-`$FC` with a paged VRAM port. Writing
+  `0x2E` or `0x2F` to `VRAM_BANK_REG` maps `$8000`-`$BFFF` onto
+  the lower or upper `16` KiB half of VGA text memory at
+  `$B8000`-`$BFFFF`. Chapter 28 gives a typed example.
 
 IE32, M68K, and x86 see the low `32`-bit bus window directly. IE64
 sees that same low window and can also reach RAM above it through its

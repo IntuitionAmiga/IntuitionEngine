@@ -26,7 +26,6 @@ Demos/x86/iedoom.ie86
 Demos/x86/rotozoomer_x86.ie86
 Demos/z80/robocop_intro_z80.ie80
 Demos/z80/rotozoomer_z80.ie80
-Demos/z80/vga_text_sap_demo.ie80
 IE64 BASIC.png
 rotozoomer-social.jpg
 rotozoomtexture.raw
@@ -78,6 +77,7 @@ sdk/examples/assets/music/Chromaluma.sap
 sdk/examples/assets/music/Circus_Attractions.sid
 sdk/examples/assets/music/Edge_of_Disgrace.sid
 sdk/examples/assets/music/Fairlightz.ahx
+sdk/examples/assets/music/Hobbytronic_92_2.sap
 sdk/examples/assets/music/OdDnB.sid
 sdk/examples/assets/music/OverscanScreen.ym
 sdk/examples/assets/music/Platoon.ay
@@ -90,7 +90,7 @@ sdk/examples/assets/music/Turrican_Amiga_Port.sid
 sdk/examples/assets/music/Unipacker_v1.sid
 sdk/examples/assets/music/WaksonsZak018.ay
 sdk/examples/assets/music/Wize_Mixes.sid
-sdk/examples/assets/music/Hobbytronic_92_2.sap
+sdk/examples/assets/music/WooBooDoo.sap
 sdk/examples/assets/music/Xenon_2_Megablast.sid
 sdk/examples/assets/music/Yummy_Pizza.sid
 sdk/examples/assets/music/adagioforstrings.mid
@@ -122,6 +122,7 @@ sdk/examples/assets/music/enjoythesilence.mid
 sdk/examples/assets/music/krunkd.mod
 sdk/examples/assets/music/pattern_skank.mod
 sdk/examples/assets/music/professional_tracker.mod
+sdk/examples/assets/music/shadowofthebeast.mid
 sdk/examples/assets/music/way_too_rude.mod
 sdk/examples/assets/music/yourlove.mid
 sdk/examples/assets/resonance_scroll.rgba

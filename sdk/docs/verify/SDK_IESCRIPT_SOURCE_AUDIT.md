@@ -47,6 +47,7 @@
 | IEScript | api contract | `sys.perf_report() returns a string subsystem performance report; it is empty when IE_PERF_ACCT is off or no subsystem counters have recorded work` | `script_engine.go` `luaSysPerfReport`, `perf_accounting_subsys.go` `Report` |
 | IEScript | api contract | `sys.perf_reset() resets subsystem performance counters and returns nothing` | `script_engine.go` `luaSysPerfReset`, `perf_accounting_subsys.go` `Reset` |
 | IEScript | api contract | `video.get_crt_mode(), video.set_crt_mode(mode), and video.cycle_crt_mode() expose the full flat, curved, off cycle used by F7. The boolean functions remain compatibility controls: enabling selects flat and their toggle only switches flat and off.` | `script_engine.go` mode bindings, `video_compositor.go` mode controller, `video_backend_ebiten.go` shared F7 transition, and `script_crt_control_test.go` |
+| IEScript | api contract | `video.vga_set_palette(idx, r, g, b) masks idx to 8 bits and stores the low 6 bits of each colour component; video.vga_get_palette(idx) returns those three 6-bit values.` | `script_engine.go` `luaVGASetPalette`/`luaVGAGetPalette`, `video_vga.go` direct palette access, and `script_engine_test.go` three-byte-entry coverage |
 | IEScript | binding | `audio.ahx_is_playing` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `audio.ahx_load` | `script_engine.go` `registerModules` binding |
 | IEScript | binding | `audio.ahx_play` | `script_engine.go` `registerModules` binding |

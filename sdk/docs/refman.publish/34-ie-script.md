@@ -261,7 +261,7 @@ inspection:
 | `video.write_reg(addr, value)`, `video.read_reg(addr)` | Raw video MMIO. |
 | `video.get_dimensions()`, `video.is_enabled()` | Current VideoChip state. |
 | `video.vga_enable(on)`, `video.vga_set_mode(mode)` | VGA control. |
-| `video.vga_set_palette(i, r, g, b)` | VGA palette write. |
+| `video.vga_set_palette(i, r, g, b)`, `video.vga_get_palette(i)` | Write or read one VGA palette entry. |
 | `video.ula_enable(on)`, `video.ula_border(n)` | ULA control. |
 | `video.antic_enable(on)`, `video.antic_dlist(addr)` | ANTIC control. |
 | `video.gtia_color(i, value)` | GTIA colour register write. |
@@ -285,7 +285,34 @@ inspection:
 | `video.get_scale_mode()` | Return `"fit"` or `"stretch"`. |
 | `video.set_scale_mode(mode)` | Select `"fit"` or `"stretch"`. |
 
-### 34.9.1 Presentation scale
+### 34.9.1 VGA palette entries
+
+`video.vga_set_palette(i, r, g, b)` masks `i` to eight bits and
+writes one contiguous three-byte RGB entry. Each component is stored
+as its low six bits. `video.vga_get_palette(i)` applies the same index
+mask and returns the three stored values, each in the range `0` to
+`63`.
+
+This example deliberately uses index `257` and component values wider
+than six bits so that both rules are visible:
+
+```ies
+video.vga_set_palette(257, 255, 64, 130)
+r, g, b = video.vga_get_palette(1)
+sys.print('VGA ' .. r .. ' ' .. g .. ' ' .. b)
+```
+
+The index wraps to entry `1`. The stored components are `63`, `0`,
+and `2`, so the script prints:
+
+```
+VGA 63 0 2
+```
+
+The call changes palette RAM only. Select a VGA indexed-colour mode
+and draw with palette index `1` when you also want to see the colour.
+
+### 34.9.2 Presentation scale
 
 Presentation scale controls how a source rectangle is placed in the final
 output. `stretch` is the default. It fills the output even when that changes
@@ -317,7 +344,7 @@ different mode, the second line names that restored mode instead.
 compositor. `video.set_scale_mode()` raises the same error, and also rejects
 every name except `fit` and `stretch`.
 
-### 34.9.2 CRT presentation and two-stage capture
+### 34.9.3 CRT presentation and two-stage capture
 
 CRT mode changes the final presentation of the completed picture. It does not
 change video registers, framebuffer bytes, palette values, or the composited

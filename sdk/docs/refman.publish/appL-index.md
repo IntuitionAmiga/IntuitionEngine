@@ -33,6 +33,7 @@ symbols, and Appendix J gives the full memory map.
 | BASIC vocabulary | Chapter 2 |
 | Backed RAM | Chapter 24, Chapter 35 |
 | BLOAD | Chapter 2, Chapter 35 |
+| Bright-background text | Chapter 5 |
 | BLIT M | Chapter 2, Chapter 4 |
 | BLIT MEMCOPY | Chapter 2, Chapter 4, Appendix D |
 | Blitter | Chapter 4, Chapter 41, Chapter 46, Chapter 47, Chapter 54, Appendix D |
@@ -161,6 +162,7 @@ symbols, and Appendix J gives the full memory map.
 |------|-----|
 | IE Mon | Chapter 33 |
 | IE Script | Chapter 34, Chapter 44, Chapter 48 |
+| IE Script VGA palette | Chapter 34 |
 | IE32 | Chapter 26, Chapter 31, Appendix G, Appendix H |
 | IE64 | Chapter 25, Chapter 31, Appendix G, Appendix H |
 | IE64 flat images | Chapter 25, Chapter 35, Appendix H |
@@ -330,6 +332,8 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | VGA | Chapter 5, Chapter 26, Appendix D, Appendix H |
+| VGA blink attributes | Chapter 5, Appendix D |
+| VGA text paging | Chapter 5, Appendix D, Appendix J |
 | VBlank | Chapter 31, Chapter 41, Chapter 46 |
 | VideoChip | Chapter 4, Chapter 25, Chapter 40, Chapter 41, Chapters 45-46, Chapter 52, Chapter 54, Appendix D |
 | VIDEO_STATUS | Chapter 4, Appendix D |
@@ -371,4 +375,5 @@ symbols, and Appendix J gives the full memory map.
 | Term | See |
 |------|-----|
 | Z80 | Chapter 28, Chapter 31, Appendix G, Appendix H |
+| Z80 VGA text banks | Chapter 24, Chapter 28, Appendix J |
 | Z-buffer | Chapter 9 |

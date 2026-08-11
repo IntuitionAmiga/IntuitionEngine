@@ -3746,6 +3746,46 @@ five-book contract effect. Untracked files were excluded. The protected
 `sdk/docs/refman/` and `sdk/docs/refman.publish/` trees were not edited.
 Disposition: KEEP.
 
+ID: SDK-DOC-0104
+Status: FIXED
+Document: `sdk/docs/architecture.md`, `sdk/docs/iescript.md`, the Architecture
+and IEScript empirical inventories, and companion gates.
+Section: VGA text paging, Z80 text-bank routing, and scripted VGA palette
+access.
+Claim: Commit `0d132136` routes Z80 VRAM-bank accesses in the VGA text
+aperture through the VGA text handler, makes full-frame and scanline text
+rendering honour the same CRTC display origin, cursor, blink, and bright
+background rules, and changes the IEScript palette helpers to use contiguous
+three-byte VGA palette entries. The script setter masks its index to 8 bits
+and each stored colour component to 6 bits; the getter returns the stored
+6-bit components.
+Purpose judgement: Cross-CPU bridge and VGA display semantics belong in
+Architecture. Public function arguments, masking, storage precision, and
+returns belong in IEScript. No IE32 or IE64 processor instruction and no
+IEMon command contract changed.
+Canonical sources checked: every commit and the tracked tree from
+`06c7b885..aeb390c7`; `cpu_z80_runner.go`, `video_vga.go`,
+`vga_constants.go`, `script_engine.go`, `vga_cpu_access_test.go`,
+`vga_engine_test.go`, `script_engine_test.go`, and the Z80 VGA demo tests.
+Runnable verification: source-inventory golden generation and manual coverage,
+focused Z80 text-bank, VGA text parity, and IEScript palette tests, companion
+and ledger gates, `make check-docs`, PDF manifest verification, and final
+five-book PDF inspection.
+Observed result: Added the bank-to-text-aperture mapping and normative VGA
+text-mode paging/attribute semantics to Architecture. Corrected IEScript's
+8-bit palette overclaim to the executable 6-bit VGA contract. Added semantic
+inventory assertions and rows for both surfaces. Updated modification dates
+only for the two changed manuals.
+Action: Updated the two affected manuals, inventory generator and goldens,
+companion gates, and this ledger. Regenerate all five PDFs and the render
+manifest after all pre-render gates pass.
+Notes: The AB3D2 commits alter package composition and live-image payloads but
+not a contract currently published by the five books. The ULA and VGA demo
+commits otherwise add consumers of existing interfaces. Website-only commits
+have no five-book effect. Untracked files were excluded. The protected
+`sdk/docs/refman/` and `sdk/docs/refman.publish/` trees were not edited.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -3784,7 +3824,8 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0089`, `SDK-DOC-0090`, `SDK-DOC-0091`,
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
-`SDK-DOC-0100`, `SDK-DOC-0101`, `SDK-DOC-0102`, and `SDK-DOC-0103`
+`SDK-DOC-0100`, `SDK-DOC-0101`, `SDK-DOC-0102`, `SDK-DOC-0103`, and
+`SDK-DOC-0104`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -3866,7 +3907,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0103` and
+Open claim-group backlog: none for this run after `SDK-DOC-0104` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate
