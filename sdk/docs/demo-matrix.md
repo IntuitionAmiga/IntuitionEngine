@@ -4,7 +4,7 @@ Complete list of SDK example programs with their CPU, video, and audio combinati
 
 ## Rotozoomer Series
 
-The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotating/zooming texture using the Mode7 blitter (same technique as SNES F-Zero and Mario Kart). Each version is heavily commented to teach both the algorithm and CPU-specific programming patterns. The EhBASIC version (`rotozoomer_basic.bas`) is the primary entry point in the automated product demo — it is loaded, listed, and run first to showcase the BASIC interpreter with hardware blitter and SID music.
+The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotating/zooming texture using the Mode7 blitter (same technique as SNES F-Zero and Mario Kart). Each version is heavily commented to teach both the algorithm and CPU-specific programming patterns. The EhBASIC version (`rotozoomer_basic.bas`) is the primary entry point in the automated product demo. It is loaded, listed, and run first to showcase the BASIC interpreter with hardware blitter and SID music.
 
 | Example | CPU | Video | Audio | Description |
 |---------|-----|-------|-------|-------------|
@@ -15,7 +15,7 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | `rotozoomer_65.asm` | 6502 | IEVideoChip | AHX | Mode7 blitter + Amiga tracker music; loads `rotozoomtexture.raw` via File I/O |
 | `rotozoomer_x86.asm` | x86 | IEVideoChip | PSG | Mode7 blitter + AY-3-8910 music |
 | `rotozoomer_basic.bas` | IE64 (BASIC) | IEVideoChip | SID | Mode7 blitter from EhBASIC |
-| `rotozoomer_gem.asm` | M68K (EmuTOS) | IEVideoChip | -- | Mode7 blitter in a GEM desktop window (requires EmuTOS boot) — included in automated product demo |
+| `rotozoomer_gem.asm` | M68K (EmuTOS) | IEVideoChip | -- | Mode7 blitter in a GEM desktop window (requires EmuTOS boot), included in automated product demo |
 | `rotozoomer_ies.ies` | IEScript | IEVideoChip | MIDI | Standalone Mode7 blitter demo driven from Lua; not part of the six-CPU showreel sequence |
 
 ## Other Demos
@@ -30,6 +30,7 @@ The rotozoomer is the canonical "hello world" demo: a hardware-accelerated rotat
 | Example | CPU | Video | Audio | Description |
 |---------|-----|-------|-------|-------------|
 | `vga_text_hello.asm` | IE32 | VGA (text) | -- | Simplest demo: coloured text on 80x25 screen |
+| `vga_text_sap_demo.asm` | Z80 | VGA (Mode 03h text) | POKEY SAP | Four-wave character and attribute plasma with palette fades, logo and scroller |
 | `vga_mode13h_fire.asm` | IE32 | VGA (Mode 13h) | -- | Classic DOS-era 256-colour fire effect |
 | `ula_rotating_cube_65.asm` | 6502 | ULA (Spectrum) | AHX | Wireframe 3D cube on ZX Spectrum display |
 | `ula_boing_ie64.c` | IE64 C23 | ULA (Spectrum) | SoundChip | Bright chequered Boing ball on a cell-safe perspective grid |

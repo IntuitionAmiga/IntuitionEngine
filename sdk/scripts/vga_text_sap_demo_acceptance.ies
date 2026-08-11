@@ -1,0 +1,127 @@
+-- VGA Mode 03h plasma acceptance and diagnostic harness.
+
+local IMAGE = "sdk/examples/prebuilt/vga_text_sap_demo.ie80"
+local SCENE = 0x0F00
+local FRAME_DONE = 0x0F11
+local DISPLAYED_PAGE = 0x0F17
+local MOTION_ANGLE = 0x0F1B
+local MOTION_VX = 0x0F1C
+local MOTION_VY = 0x0F1D
+local TEXT = 0xB8000
+local TEXT_PAGE_BYTES = 4000
+local OUT = "vga_text_sap_demo_out"
+
+local names = {
+    [0] = "plasma_only",
+    [1] = "logo_in",
+    [2] = "both",
+    [3] = "both_late",
+    [4] = "plasma_out",
+    [5] = "logo_only",
+    [6] = "crossfade",
+}
+
+local scene_frames = {0x00, 0x70, 0x00, 0xC0, 0x70, 0x00, 0x70}
+
+local function frozen(fn)
+    cpu.freeze()
+    local ok, result = pcall(fn)
+    cpu.resume()
+    assert(ok, result)
+    return result
+end
+
+local function read_byte(address)
+    return frozen(function() return mem.read8(address) end)
+end
+
+local function diagnose(reason)
+    dbg.open()
+    local regs = dbg.get_regs()
+    local around_pc = dbg.disasm(regs.PC or 0, 12)
+    local state = dbg.read_mem(SCENE, 18)
+    local devices = dbg.io_devices()
+    dbg.close()
+    sys.print("[vga text sap] diagnostic", reason, regs, around_pc, state, devices)
+end
+
+local function force_scene(wanted, frame)
+    local before = read_byte(FRAME_DONE)
+    frozen(function()
+        mem.write8(0x0F01, frame)
+        mem.write8(0x0F02, wanted)
+    end)
+    local ok = sys.wait_until(function()
+        return read_byte(SCENE) == wanted and read_byte(FRAME_DONE) ~= before
+    end, 900)
+    if not ok then
+        diagnose("scene " .. tostring(wanted) .. " timed out")
+        error("timed out waiting for scene " .. tostring(wanted))
+    end
+    sys.wait_frames(2)
+end
+
+local previous_text = nil
+local function capture(scene)
+    local text = frozen(function()
+        local page = mem.read8(DISPLAYED_PAGE)
+        assert(page == 0 or page == 1, "displayed VGA text page is invalid")
+        return mem.read_block(TEXT + page * TEXT_PAGE_BYTES, TEXT_PAGE_BYTES)
+    end)
+    assert(#text == TEXT_PAGE_BYTES, "VGA text buffer has the wrong size")
+    if previous_text then
+        assert(text ~= previous_text, "VGA text buffer did not advance")
+    end
+    previous_text = text
+    local scroller = text:sub(22 * 160 + 1, 23 * 160)
+    assert(scroller:find("[^\0 ]"), "scrolltext is not visible")
+
+    local palette = {}
+    for index = 0, 15 do
+        local r, g, b = video.vga_get_palette(index)
+        palette[#palette + 1] = string.format("%d:%d,%d,%d", index, r, g, b)
+    end
+    rec.screenshot(OUT .. "/" .. names[scene] .. ".png")
+    sys.print("[vga text sap] " .. names[scene], table.concat(palette, " "))
+end
+
+assert(cpu.mode() == "z80", "run this harness in Z80 mode")
+sys.mkdir(OUT)
+cpu.load_stopped(IMAGE)
+local want_native = cpu.jit_enabled()
+cpu.start()
+
+local started = sys.wait_until(function() return read_byte(FRAME_DONE) ~= 0 end, 900)
+assert(started, "timed out waiting for the first rendered frame")
+
+for scene = 0, 6 do
+    force_scene(scene, scene_frames[scene + 1])
+    capture(scene)
+end
+
+local cardinal_motion = {
+    {0, 127, 0},
+    {64, 0, 127},
+    {128, 129, 0},
+    {192, 0, 129},
+}
+for _, motion in ipairs(cardinal_motion) do
+    local before = read_byte(FRAME_DONE)
+    frozen(function()
+        mem.write8(0x0F01, 0)
+        mem.write8(0x0F02, 2)
+        mem.write8(MOTION_ANGLE, motion[1])
+    end)
+    local advanced = sys.wait_until(function() return read_byte(FRAME_DONE) ~= before end, 900)
+    assert(advanced, "timed out waiting for a plasma motion checkpoint")
+    assert(read_byte(MOTION_ANGLE) == motion[1], "plasma motion angle advanced too early")
+    assert(read_byte(MOTION_VX) == motion[2] and read_byte(MOTION_VY) == motion[3], "plasma sine velocity is incorrect")
+end
+
+local stats = cpu.jit_stats()
+if want_native then
+    assert(stats.backend == "native" or stats.backend == "wasm", "Z80 JIT backend is unavailable")
+    assert((stats.native_entries or 0) > 0, "Z80 renderer did not enter compiled code")
+end
+assert(cpu.is_running(), "Z80 stopped before the sequence completed")
+sys.print("[vga text sap] acceptance complete", cpu.execution_mode(), stats)

@@ -319,9 +319,10 @@ current cursor position using the attribute set by the most recent
 
 ## 5.5 Hardware scrolling and page flipping
 
-The pair of registers `VGA_CRTC_STARTHI` and `VGA_CRTC_STARTLO`
-holds the byte offset within VRAM at which the displayed picture
-begins. By changing this offset between frames you can:
+The register pair `VGA_CRTC_STARTHI` and `VGA_CRTC_STARTLO` holds the
+offset within VRAM at which the displayed picture begins.
+Text mode measures the offset in character cells. Graphics modes measure
+it in bytes. By changing this offset between frames you can:
 
 - **Page flip.** Render to one half of VRAM while displaying the
   other, then swap by writing the new start address. The change

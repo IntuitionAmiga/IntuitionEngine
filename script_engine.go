@@ -2764,7 +2764,7 @@ func (se *ScriptEngine) luaTermMouseDoubleClick(ctx context.Context) lua.LGFunct
 		se.terminal.mouseY.Store(cy)
 		se.terminal.mouseChanged.Store(true)
 		se.sleepCtx(ctx, 50*time.Millisecond)
-		// Two quick clicks — short hold and gap for fast double-click
+		// Two quick clicks with a short hold and gap for fast double-click
 		for range 2 {
 			se.terminal.mouseButtons.Store(btn)
 			se.terminal.mouseChanged.Store(true)
@@ -3585,8 +3585,10 @@ func (se *ScriptEngine) luaVGASetPalette() lua.LGFunction {
 		r := uint32(L.CheckInt(2) & 0xFF)
 		g := uint32(L.CheckInt(3) & 0xFF)
 		b := uint32(L.CheckInt(4) & 0xFF)
-		base := VGA_PALETTE + idx*4
-		se.bus.Write32(base, r|(g<<8)|(b<<16))
+		base := VGA_PALETTE + idx*3
+		se.bus.Write8(base, uint8(r))
+		se.bus.Write8(base+1, uint8(g))
+		se.bus.Write8(base+2, uint8(b))
 		return 0
 	}
 }
@@ -3594,10 +3596,10 @@ func (se *ScriptEngine) luaVGASetPalette() lua.LGFunction {
 func (se *ScriptEngine) luaVGAGetPalette() lua.LGFunction {
 	return func(L *lua.LState) int {
 		idx := uint32(L.CheckInt(1) & 0xFF)
-		val := se.bus.Read32(VGA_PALETTE + idx*4)
-		L.Push(lua.LNumber(val & 0xFF))
-		L.Push(lua.LNumber((val >> 8) & 0xFF))
-		L.Push(lua.LNumber((val >> 16) & 0xFF))
+		base := VGA_PALETTE + idx*3
+		L.Push(lua.LNumber(se.bus.Read8(base)))
+		L.Push(lua.LNumber(se.bus.Read8(base + 1)))
+		L.Push(lua.LNumber(se.bus.Read8(base + 2)))
 		return 3
 	}
 }

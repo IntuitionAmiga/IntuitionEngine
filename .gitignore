@@ -107,6 +107,9 @@ FIRST.BAS
 # - sdk/scripts/iedoom_diag holds generated IEDoom diagnostic output (run
 #   logs + PNG frames). Local scratch; no source consumes it.
 sdk/scripts/iedoom_diag/
+# VGA text SAP acceptance screenshots are local diagnostic output.
+sdk/scripts/vga_text_sap_demo_out/
+sdk/scripts/vga_text_sap_motion_out/
 
 # Local Netlify folder
 .netlify

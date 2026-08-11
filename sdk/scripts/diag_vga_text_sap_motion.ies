@@ -1,0 +1,68 @@
+-- Diagnose visible VGA Mode 03h plasma motion independently from colour changes.
+
+local IMAGE = "sdk/examples/prebuilt/vga_text_sap_demo.ie80"
+local STATE = 0x0F00
+local STATE_SIZE = 45
+local FRAME_DONE = 0x0F11
+local DISPLAYED_PAGE_OFFSET = 0x17
+local TEXT = 0xB8000
+local TEXT_PAGE_BYTES = 4000
+local OUT = "vga_text_sap_motion_out"
+
+local function capture()
+    cpu.freeze()
+    local state = dbg.read_mem(STATE, STATE_SIZE)
+    local page = string.byte(state, DISPLAYED_PAGE_OFFSET + 1)
+    local text = mem.read_block(TEXT + page * TEXT_PAGE_BYTES, TEXT_PAGE_BYTES)
+    local pc = dbg.get_pc()
+    cpu.resume()
+    return state, text, pc
+end
+
+local function byte_at(data, offset)
+    return string.byte(data, offset + 1)
+end
+
+local function word_at(data, offset)
+    return byte_at(data, offset) + byte_at(data, offset + 1) * 256
+end
+
+local function compare_text(before, after)
+    local glyphs = 0
+    local attributes = 0
+    for offset = 1, TEXT_PAGE_BYTES, 2 do
+        if string.byte(before, offset) ~= string.byte(after, offset) then
+            glyphs = glyphs + 1
+        end
+        if string.byte(before, offset + 1) ~= string.byte(after, offset + 1) then
+            attributes = attributes + 1
+        end
+    end
+    return glyphs, attributes
+end
+
+assert(cpu.mode() == "z80", "run this diagnostic in Z80 mode")
+cpu.load_stopped(IMAGE)
+dbg.open()
+sys.mkdir(OUT)
+cpu.start()
+assert(sys.wait_until(function() return mem.read8(FRAME_DONE) ~= 0 end, 900), "demo did not produce a frame")
+
+local previous_state, previous_text = capture()
+for sample = 1, 12 do
+    sys.wait_frames(1)
+    local state, text, pc = capture()
+    local glyphs, attributes = compare_text(previous_text, text)
+    rec.screenshot(string.format("%s/frame_%02d.png", OUT, sample))
+    sys.print(string.format(
+        "[vga motion] sample=%d pc=%04X glyphs=%d attributes=%d phase=%d,%d,%d cross=%d angle=%d accum=%04X,%04X colour=%d logo_phase=%d,%d logo_pos=%d,%d logo_frac=%d,%d",
+        sample, pc, glyphs, attributes,
+        byte_at(state, 3), byte_at(state, 4), byte_at(state, 5), byte_at(state, 6),
+        byte_at(state, 27), word_at(state, 30), word_at(state, 32), byte_at(state, 34),
+        byte_at(state, 38), byte_at(state, 39), byte_at(state, 40), byte_at(state, 41),
+        byte_at(state, 42), byte_at(state, 43)))
+    previous_state, previous_text = state, text
+end
+
+dbg.close()
+sys.print("[vga motion] diagnostic complete")

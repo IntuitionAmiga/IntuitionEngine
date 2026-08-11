@@ -129,6 +129,7 @@ The rotozoomer examples demonstrate a hardware-accelerated rotating/zooming text
 | Example | CPU | Video | Audio | Description |
 |---------|-----|-------|-------|-------------|
 | `vga_text_hello.asm` | IE32 | VGA (text) | -- | Simplest demo: coloured text on an 80x25 screen |
+| `vga_text_sap_demo.asm` | Z80 | VGA (Mode 03h text) | POKEY SAP | Four-wave character and attribute plasma with palette fades, logo and scroller |
 | `vga_mode13h_fire.asm` | IE32 | VGA (Mode 13h) | -- | Palette-cycled firestorm with moving burner jets and RAM back buffering |
 | `vga_modex_circles.asm` | IE32 | VGA (Mode X) | -- | Animated circles in 320x240 planar mode |
 | `vga_mode12h_bars.asm` | IE32 | VGA (Mode 12h) | -- | Planar tunnel plasma in 640x480 4-plane mode |

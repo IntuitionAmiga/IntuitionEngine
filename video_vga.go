@@ -1066,13 +1066,18 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 	underlineEnabled := v.crtcRegs[VGA_CRTC_UNDERLINE] != 0
 	blinkEnabled := v.attrRegs[VGA_ATTR_MODE_CTRL]&0x08 != 0
 	blinkOn := (frame/16)%2 == 0
+	textCells := len(v.textBuffer) / 2
+	displayStartCell := int(v.getStartAddressInternal()) % textCells
+	displayStart := displayStartCell * 2
 
 	for row := range VGA_TEXT_ROWS {
 		for col := range VGA_TEXT_COLS {
+			cell := row*VGA_TEXT_COLS + col
+			cellAddress := uint16((displayStartCell + cell) % textCells)
 			// Get character and attribute from text buffer
-			bufOffset := (row*VGA_TEXT_COLS + col) * 2
+			bufOffset := (displayStart + cell*2) % len(v.textBuffer)
 			char := v.textBuffer[bufOffset]
-			attr := v.textBuffer[bufOffset+1]
+			attr := v.textBuffer[(bufOffset+1)%len(v.textBuffer)]
 
 			// Extract foreground/background from attribute
 			fg := attr & 0x0F
@@ -1093,8 +1098,7 @@ func (v *VGAEngine) renderTextMode() []uint8 {
 				if underlineEnabled && cy == underline && attr&0x01 != 0 {
 					fontRow = 0xFF
 				}
-				cell := uint16(row*VGA_TEXT_COLS + col)
-				if cursorConfigured && !cursorDisabled && cell == cursorOff && cy >= cursorStart && cy <= cursorEnd {
+				if cursorConfigured && !cursorDisabled && cellAddress == cursorOff && cy >= cursorStart && cy <= cursorEnd {
 					fontRow ^= 0xFF
 				}
 				if blinkEnabled && attr&0x80 != 0 && !blinkOn {
@@ -1433,19 +1437,41 @@ func (v *VGAEngine) renderScanlineText(y int) {
 	// Determine which character row and which line within the character
 	charRow := y / charHeight
 	charLine := y % charHeight
+	frame := v.frameCount.Load()
+	cursorOff := uint16(v.crtcRegs[VGA_CRTC_CURSOR_HI])<<8 | uint16(v.crtcRegs[VGA_CRTC_CURSOR_LO])
+	cursorDisabled := v.crtcRegs[VGA_CRTC_CURSOR_ST]&0x20 != 0
+	cursorStart := int(v.crtcRegs[VGA_CRTC_CURSOR_ST] & 0x1F)
+	cursorEnd := int(v.crtcRegs[VGA_CRTC_CURSOR_END] & 0x1F)
+	cursorConfigured := cursorOff != 0 || cursorStart != 0 || cursorEnd != 0
+	blinkEnabled := v.attrRegs[VGA_ATTR_MODE_CTRL]&0x08 != 0
+	blinkOn := (frame/16)%2 == 0
+	textCells := len(v.textBuffer) / 2
+	displayStartCell := int(v.getStartAddressInternal()) % textCells
+	displayStart := displayStartCell * 2
 
 	for col := range VGA_TEXT_COLS {
+		cell := charRow*VGA_TEXT_COLS + col
+		cellAddress := uint16((displayStartCell + cell) % textCells)
 		// Get character and attribute from text buffer
-		bufOffset := (charRow*VGA_TEXT_COLS + col) * 2
+		bufOffset := (displayStart + cell*2) % len(v.textBuffer)
 		char := v.textBuffer[bufOffset]
-		attr := v.textBuffer[bufOffset+1]
+		attr := v.textBuffer[(bufOffset+1)%len(v.textBuffer)]
 
 		// Extract foreground/background from attribute
 		fg := attr & 0x0F
 		bg := (attr >> 4) & 0x0F
+		if blinkEnabled {
+			bg &= 0x07
+		}
 
 		// Get font glyph row
 		fontRow := vgaFont8x16[int(char)*charHeight+charLine]
+		if cursorConfigured && !cursorDisabled && cellAddress == cursorOff && charLine >= cursorStart && charLine <= cursorEnd {
+			fontRow ^= 0xFF
+		}
+		if blinkEnabled && attr&0x80 != 0 && !blinkOn {
+			fontRow = 0
+		}
 
 		// Render 8 pixels for this character
 		for cx := range charWidth {

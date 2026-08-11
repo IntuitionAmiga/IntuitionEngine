@@ -26,6 +26,7 @@ Demos/x86/iedoom.ie86
 Demos/x86/rotozoomer_x86.ie86
 Demos/z80/robocop_intro_z80.ie80
 Demos/z80/rotozoomer_z80.ie80
+Demos/z80/vga_text_sap_demo.ie80
 IE64 BASIC.png
 rotozoomer-social.jpg
 rotozoomtexture.raw
@@ -63,6 +64,7 @@ sdk/examples/asm/vga_mode12h_bars.asm
 sdk/examples/asm/vga_mode13h_fire.asm
 sdk/examples/asm/vga_modex_circles.asm
 sdk/examples/asm/vga_text_hello.asm
+sdk/examples/asm/vga_text_sap_demo.asm
 sdk/examples/asm/voodoo_3dfx_logo_68k.asm
 sdk/examples/asm/voodoo_cube_68k.asm
 sdk/examples/asm/voodoo_mega_demo.asm
@@ -88,6 +90,7 @@ sdk/examples/assets/music/Turrican_Amiga_Port.sid
 sdk/examples/assets/music/Unipacker_v1.sid
 sdk/examples/assets/music/WaksonsZak018.ay
 sdk/examples/assets/music/Wize_Mixes.sid
+sdk/examples/assets/music/Hobbytronic_92_2.sap
 sdk/examples/assets/music/Xenon_2_Megablast.sid
 sdk/examples/assets/music/Yummy_Pizza.sid
 sdk/examples/assets/music/adagioforstrings.mid

@@ -79,6 +79,25 @@ func TestScriptEngine_WaitFramesAndMemoryAccess(t *testing.T) {
 	}
 }
 
+func TestScriptEngine_VGAPaletteUsesThreeByteEntries(t *testing.T) {
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	bus.MapIO(VGA_PALETTE, VGA_PALETTE_END, vga.HandleRead, vga.HandleWrite)
+	se := NewScriptEngine(bus, NewVideoCompositor(nil), NewTerminalMMIO())
+	if err := se.RunString(`
+		video.vga_set_palette(7, 11, 22, 33)
+		local r, g, b = video.vga_get_palette(7)
+		assert(r == 11 and g == 22 and b == 33,
+		       string.format("palette entry = %d,%d,%d", r, g, b))
+	`, "vga-palette"); err != nil {
+		t.Fatalf("RunString failed: %v", err)
+	}
+	waitScriptStopped(t, se)
+	if err := se.LastError(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestScriptEngine_ShowreelDiagnosisScriptsParse(t *testing.T) {
 	bus := NewMachineBus()
 	term := NewTerminalMMIO()
@@ -105,6 +124,8 @@ func TestScriptEngine_ShowreelDiagnosisScriptsParse(t *testing.T) {
 		filepath.Join("sdk", "scripts", "ie32_jit_timer_interrupt.ies"),
 		filepath.Join("sdk", "scripts", "ie32_jit_debugger.ies"),
 		filepath.Join("sdk", "scripts", "ie32_jit_performance.ies"),
+		filepath.Join("sdk", "scripts", "vga_text_sap_demo_acceptance.ies"),
+		filepath.Join("sdk", "scripts", "diag_vga_text_sap_motion.ies"),
 		filepath.Join("scripts", "diag_tracering.ies"),
 		filepath.Join("scripts", "diag_source_step.ies"),
 		filepath.Join("scripts", "diag_history_horizon.ies"),

@@ -482,6 +482,23 @@ func TestZ80_PSG_StillWorks_AfterVGA(t *testing.T) {
 	}
 }
 
+func TestZ80_VGATextBankWritesReachTextBuffer(t *testing.T) {
+	bus := NewMachineBus()
+	vga := NewVGAEngine(bus)
+	adapter := NewZ80BusAdapterWithVGA(bus, vga)
+
+	adapter.Write(Z80_VRAM_BANK_REG, 0x2E)
+	adapter.Write(Z80_VRAM_BANK_WINDOW_BASE, 'Q')
+	adapter.Write(Z80_VRAM_BANK_WINDOW_BASE+1, 0xE1)
+
+	if got := vga.HandleTextRead(VGA_TEXT_WINDOW); got != 'Q' {
+		t.Fatalf("text character = %#x, want 'Q'", got)
+	}
+	if got := vga.HandleTextRead(VGA_TEXT_WINDOW + 1); got != 0xE1 {
+		t.Fatalf("text attribute = %#x, want 0xE1", got)
+	}
+}
+
 // Test that existing PSG/SID still work for 6502 after VGA changes
 func Test6502_PSG_StillWorks_AfterVGA(t *testing.T) {
 	// Setup

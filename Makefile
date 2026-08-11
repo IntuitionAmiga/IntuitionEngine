@@ -321,6 +321,7 @@ SHOWREEL_M68K_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_gem.prg
 SHOWREEL_Z80_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_z80.ie80 \
+	$(SHOWREEL_PREBUILT_DIR)/vga_text_sap_demo.ie80 \
 	$(SHOWREEL_PREBUILT_DIR)/robocop_intro_z80.ie80
 SHOWREEL_6502_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_65.ie65 \
@@ -2024,11 +2025,11 @@ showreel-m68k: robocop-68k gem-rotozoomer rotozoom-textures
 		vasmm68k_mot -Fbin -m68020 -devpac -I sdk/include -o $(SHOWREEL_PREBUILT_DIR)/$$out sdk/examples/asm/$$src; \
 	done
 
-showreel-z80: robocop-z80 rotozoom-textures
+showreel-z80: robocop-z80 rotozoom-textures sdk/examples/assets/music/Hobbytronic_92_2.sap
 	@echo "Building showreel Z80 artifacts..."
 	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
 	@set -e; \
-	for src in rotozoomer_z80.asm; do \
+	for src in rotozoomer_z80.asm vga_text_sap_demo.asm; do \
 		out=$${src%.asm}.ie80; \
 		echo "  [Z80] $$src"; \
 		vasmz80_std -Fbin -I sdk/include -o $(SHOWREEL_PREBUILT_DIR)/$$out sdk/examples/asm/$$src; \

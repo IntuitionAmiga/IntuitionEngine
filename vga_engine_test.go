@@ -23,6 +23,148 @@ func TestVGA_DAC_WriteIndex(t *testing.T) {
 	}
 }
 
+func TestVGATextBrightBackgroundFrameAndScanlineParity(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_TEXT)
+	vga.SetPaletteEntry(1, 63, 0, 0)
+	vga.SetPaletteEntry(14, 0, 63, 0)
+
+	// A space exposes only the background. Bit 7 must remain the high
+	// background bit while blink is disabled.
+	vga.textBuffer[0] = ' '
+	vga.textBuffer[1] = 0xE1
+	vga.attrRegs[VGA_ATTR_MODE_CTRL] &^= 0x08
+
+	full := append([]byte(nil), vga.RenderFrame()...)
+	vga.StartFrame()
+	for y := 0; y < VGA_TEXT_ROWS*VGA_FONT_HEIGHT; y++ {
+		vga.ProcessScanline(y)
+	}
+	scanline := vga.FinishFrame()
+	if string(scanline) != string(full) {
+		t.Fatal("text-mode scanline rendering differs from full-frame rendering")
+	}
+	if full[0] != 0 || full[1] != 255 || full[2] != 0 || full[3] != 255 {
+		t.Fatalf("bright background pixel = (%d,%d,%d,%d), want palette entry 14", full[0], full[1], full[2], full[3])
+	}
+}
+
+func TestVGATextBlinkFrameAndScanlineParity(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_TEXT)
+	vga.SetPaletteEntry(1, 63, 0, 0)
+	vga.SetPaletteEntry(2, 0, 63, 0)
+	vga.textBuffer[0], vga.textBuffer[1] = 0xDB, 0xA1
+	vga.attrRegs[VGA_ATTR_MODE_CTRL] |= 0x08
+	vga.frameCount.Store(16)
+
+	full := append([]byte(nil), vga.RenderFrame()...)
+	vga.StartFrame()
+	for y := 0; y < VGA_TEXT_ROWS*VGA_FONT_HEIGHT; y++ {
+		vga.ProcessScanline(y)
+	}
+	scanline := vga.FinishFrame()
+	if string(scanline) != string(full) {
+		t.Fatal("blinking text differs between full-frame and scanline rendering")
+	}
+	if full[0] != 0 || full[1] != 255 || full[2] != 0 || full[3] != 255 {
+		t.Fatalf("blink-off pixel = (%d,%d,%d,%d), want background palette entry 2", full[0], full[1], full[2], full[3])
+	}
+}
+
+func TestVGATextCRTCStartSelectsHiddenPage(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_TEXT)
+	vga.SetPaletteEntry(1, 63, 0, 0)
+	vga.SetPaletteEntry(2, 0, 63, 0)
+	vga.textBuffer[0], vga.textBuffer[1] = ' ', 0x10
+	const secondPageCells = VGA_TEXT_COLS * VGA_TEXT_ROWS
+	const secondPageBytes = secondPageCells * 2
+	vga.textBuffer[secondPageBytes], vga.textBuffer[secondPageBytes+1] = ' ', 0x20
+	vga.HandleWrite(VGA_CRTC_STARTHI, secondPageCells>>8)
+	vga.HandleWrite(VGA_CRTC_STARTLO, secondPageCells&0xFF)
+
+	full := append([]byte(nil), vga.RenderFrame()...)
+	if full[0] != 0 || full[1] != 255 || full[2] != 0 || full[3] != 255 {
+		t.Fatalf("second text page pixel = (%d,%d,%d,%d), want green", full[0], full[1], full[2], full[3])
+	}
+	vga.StartFrame()
+	for y := 0; y < VGA_TEXT_ROWS*VGA_FONT_HEIGHT; y++ {
+		vga.ProcessScanline(y)
+	}
+	if scanline := vga.FinishFrame(); string(scanline) != string(full) {
+		t.Fatal("text-page scanline rendering differs from full-frame rendering")
+	}
+}
+
+func TestVGATextCursorUsesTextMemoryAddressOnPagedDisplay(t *testing.T) {
+	vga := NewVGAEngine(nil)
+	vga.HandleWrite(VGA_MODE, VGA_MODE_TEXT)
+	vga.SetPaletteEntry(1, 63, 0, 0)
+	const secondPageCells = VGA_TEXT_COLS * VGA_TEXT_ROWS
+	const secondPageBytes = secondPageCells * 2
+	vga.textBuffer[secondPageBytes], vga.textBuffer[secondPageBytes+1] = ' ', 0x01
+	vga.crtcRegs[VGA_CRTC_START_HI] = secondPageCells >> 8
+	vga.crtcRegs[VGA_CRTC_START_LO] = secondPageCells & 0xFF
+	vga.crtcRegs[VGA_CRTC_CURSOR_HI] = secondPageCells >> 8
+	vga.crtcRegs[VGA_CRTC_CURSOR_LO] = secondPageCells & 0xFF
+	vga.crtcRegs[VGA_CRTC_CURSOR_ST] = 0
+	vga.crtcRegs[VGA_CRTC_CURSOR_END] = VGA_FONT_HEIGHT - 1
+
+	full := append([]byte(nil), vga.RenderFrame()...)
+	vga.StartFrame()
+	for y := 0; y < VGA_TEXT_ROWS*VGA_FONT_HEIGHT; y++ {
+		vga.ProcessScanline(y)
+	}
+	scanline := vga.FinishFrame()
+	if string(scanline) != string(full) {
+		t.Fatal("paged text cursor differs between full-frame and scanline rendering")
+	}
+	if full[0] != 255 || full[1] != 0 || full[2] != 0 || full[3] != 255 {
+		t.Fatalf("paged cursor pixel = (%d,%d,%d,%d), want red", full[0], full[1], full[2], full[3])
+	}
+}
+
+func TestVGATextCRTCStartWrapsCharacterAttributePair(t *testing.T) {
+	newBoundaryVGA := func() *VGAEngine {
+		vga := NewVGAEngine(nil)
+		vga.HandleWrite(VGA_MODE, VGA_MODE_TEXT)
+		vga.SetPaletteEntry(1, 63, 0, 0)
+		vga.textBuffer[len(vga.textBuffer)-2] = ' '
+		vga.textBuffer[len(vga.textBuffer)-1] = 0x10
+		vga.HandleWrite(VGA_CRTC_STARTHI, 0x7F)
+		vga.HandleWrite(VGA_CRTC_STARTLO, 0xFF)
+		return vga
+	}
+
+	var full []byte
+	fullPanicked := func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
+		full = append([]byte(nil), newBoundaryVGA().RenderFrame()...)
+		return false
+	}()
+	if fullPanicked {
+		t.Error("full-frame text renderer panicked at the final CRTC character-cell address")
+	} else if full[0] != 255 || full[1] != 0 || full[2] != 0 || full[3] != 255 {
+		t.Errorf("wrapped full-frame pixel = (%d,%d,%d,%d), want red", full[0], full[1], full[2], full[3])
+	}
+
+	var scanline []byte
+	scanlinePanicked := func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
+		vga := newBoundaryVGA()
+		vga.StartFrame()
+		vga.ProcessScanline(0)
+		scanline = append([]byte(nil), vga.FinishFrame()...)
+		return false
+	}()
+	if scanlinePanicked {
+		t.Error("scanline text renderer panicked at the final CRTC character-cell address")
+	} else if scanline[0] != 255 || scanline[1] != 0 || scanline[2] != 0 || scanline[3] != 255 {
+		t.Errorf("wrapped scanline pixel = (%d,%d,%d,%d), want red", scanline[0], scanline[1], scanline[2], scanline[3])
+	}
+}
+
 func TestVGA_DAC_WritePalette(t *testing.T) {
 	vga := NewVGAEngine(nil)
 

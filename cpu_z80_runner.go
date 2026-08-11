@@ -210,6 +210,9 @@ func (b *Z80BusAdapter) readNoDebug(addr uint16) byte {
 		return b.readBus8NoDebug(translated)
 	}
 	if translated, ok := b.translateVRAM(addr); ok {
+		if b.vgaEngine != nil && translated >= VGA_TEXT_WINDOW && translated < VGA_TEXT_WINDOW+VGA_TEXT_SIZE {
+			return byte(b.vgaEngine.HandleTextRead(translated))
+		}
 		if b.vgaEngine != nil && translated >= VGA_VRAM_WINDOW && translated < VGA_VRAM_WINDOW+VGA_VRAM_SIZE {
 			return byte(b.vgaEngine.HandleVRAMRead(translated))
 		}
@@ -308,6 +311,9 @@ func (b *Z80BusAdapter) Read(addr uint16) byte {
 
 	// Handle VRAM bank window reads
 	if translated, ok := b.translateVRAM(addr); ok {
+		if b.vgaEngine != nil && translated >= VGA_TEXT_WINDOW && translated < VGA_TEXT_WINDOW+VGA_TEXT_SIZE {
+			return byte(b.vgaEngine.HandleTextRead(translated))
+		}
 		if b.vgaEngine != nil && translated >= VGA_VRAM_WINDOW && translated < VGA_VRAM_WINDOW+VGA_VRAM_SIZE {
 			return byte(b.vgaEngine.HandleVRAMRead(translated))
 		}
@@ -391,6 +397,10 @@ func (b *Z80BusAdapter) Write(addr uint16, value byte) {
 	// Use WriteMemoryDirect to bypass VideoChip handler, which does
 	// 32-bit writes even for single bytes (corrupting adjacent bytes)
 	if translated, ok := b.translateVRAM(addr); ok {
+		if b.vgaEngine != nil && translated >= VGA_TEXT_WINDOW && translated < VGA_TEXT_WINDOW+VGA_TEXT_SIZE {
+			b.vgaEngine.HandleTextWrite(translated, uint32(value))
+			return
+		}
 		if b.vgaEngine != nil && translated >= VGA_VRAM_WINDOW && translated < VGA_VRAM_WINDOW+VGA_VRAM_SIZE {
 			b.vgaEngine.HandleVRAMWrite(translated, uint32(value))
 			return
