@@ -69,7 +69,7 @@ Add `rpi-live-images` as the aggregate image target. Keep separate Pi 4 and Pi 4
 - Add one small shared Raspberry Pi binary recipe parameterised by board, CPU flags, PGO profile and output path.
 - Build with `GOOS=linux`, `GOARCH=arm64`, embedded BASIC, EmuTOS and AROS, the normal Vulkan-capable Linux tags and the `jack` tag.
 - Use Cortex-A72 C and C++ tuning with `GOARM64=v8.0` for Pi 4 and Pi 400. Use Cortex-A76 tuning with `GOARM64=v8.2` for Pi 5.
-- Use `default.pgo.rpi4`, `default.pgo.rpi400` and `default.pgo.rpi5` only when the respective file exists and is non-empty. Otherwise build with `-pgo=off`.
+- Use `default.pgo.rpi400` for both Pi 4 and Pi 400 builds, and `default.pgo.rpi5` for Pi 5, only when the respective file exists and is non-empty. Otherwise build with `-pgo=off`.
 - Require the selected ARM64 sysroot to contain JACK headers and libraries as well as the existing graphics, X11, Wayland, audio and Vulkan dependencies.
 - Validate each result as an ARM64 ELF. Resolve its interpreter, `libjack` and every other shared library first against `CROSS_SYSROOT`, then prove that the same interpreter, libraries and required versioned symbols exist in the golden root filesystem. Test the exact board build variables rather than claiming that ELF metadata proves the complete processor instruction baseline.
 - Run the existing bounded ARM64 JIT correctness tests with `qemu-aarch64 -L $(CROSS_SYSROOT)`, using the same selected sysroot as the release build. This proves executable correctness, not board performance.

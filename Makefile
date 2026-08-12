@@ -713,12 +713,12 @@ define build-rpi-binary-preflight
 endef
 
 rpi-arm64-preflight: validate-rpi-sysroot-preflight
-	$(call build-rpi-binary-preflight,pi4,v8.0,cortex-a72,build/rpi-preflight/IntuitionEngine-rpi4,default.pgo.rpi4)
+	$(call build-rpi-binary-preflight,pi4,v8.0,cortex-a72,build/rpi-preflight/IntuitionEngine-rpi4,default.pgo.rpi400)
 	$(call build-rpi-binary-preflight,pi400,v8.0,cortex-a72,build/rpi-preflight/IntuitionEngine-rpi400,default.pgo.rpi400)
 	$(call build-rpi-binary-preflight,pi5,v8.2,cortex-a76,build/rpi-preflight/IntuitionEngine-rpi5,default.pgo.rpi5)
 
 rpi-4-arm64: validate-rpi-sysroot x64-live-embed-assets
-	$(call build-rpi-binary,pi4,v8.0,cortex-a72,build/rpi4-live/IntuitionEngine-rpi4,default.pgo.rpi4)
+	$(call build-rpi-binary,pi4,v8.0,cortex-a72,build/rpi4-live/IntuitionEngine-rpi4,default.pgo.rpi400)
 
 rpi-400-arm64: validate-rpi-sysroot x64-live-embed-assets
 	$(call build-rpi-binary,pi400,v8.0,cortex-a72,build/rpi400-live/IntuitionEngine-rpi400,default.pgo.rpi400)
