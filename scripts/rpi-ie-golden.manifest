@@ -1,0 +1,9 @@
+# Maintained alongside the locally supplied rpi-ie-golden.img.  The image is
+# intentionally ignored because it is too large for the repository.
+sha256=509cd852a4a33974757ad0aeed7b11ae2d47649133bf6d09a57bf8f07661a8f3
+architecture=aarch64
+partition_table=dos
+os_release=Debian GNU/Linux 12 (bookworm)
+kernel=PREEMPT_RT
+kernel_image=kernel8_rt.img
+packages=jackd2,rtkit,cage,xwayland,xwayland-run,greetd,network-manager,fonts-dejavu-core,kbd,apparmor,apparmor-utils,polkitd,ufw,dosfstools,cloud-guest-utils

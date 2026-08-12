@@ -1,0 +1,13 @@
+[Unit]
+Description=Enforce Intuition Engine AppArmor profiles
+Requires=apparmor.service
+After=apparmor.service local-fs.target
+Before=greetd.service ie-host-helper.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/apparmor_parser -r -W /etc/apparmor.d/opt.ie.IntuitionEngine /etc/apparmor.d/usr.libexec.intuitionengine-host-helper
+RemainAfterExit=yes
+
+[Install]
+RequiredBy=greetd.service

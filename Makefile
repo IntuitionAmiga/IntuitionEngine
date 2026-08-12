@@ -114,6 +114,10 @@ else ifneq ($(wildcard /usr/aarch64-suse-linux/sys-root/usr),)
 else
     DEFAULT_CROSS_SYSROOT := ./sysroot-arm64
 endif
+# Capture a command-line Raspberry Pi sysroot before this general cross-build
+# default is assigned. Pi releases deliberately use the prepared Subtractor
+# sysroot rather than an incidental host cross sysroot.
+RPI_CROSS_SYSROOT := $(if $(filter command line,$(origin CROSS_SYSROOT)),$(CROSS_SYSROOT),../IntuitionSubtractor/sysroot-arm64)
 CROSS_SYSROOT ?= $(DEFAULT_CROSS_SYSROOT)
 HAS_SYSROOT := $(wildcard $(CROSS_SYSROOT)/usr)
 
@@ -211,9 +215,10 @@ override GOEXPERIMENT := simd
 export GOEXPERIMENT
 
 # Shared VM binary build recipes used by both direct binary checks and releases.
-# $(1) = GOARCH, $(2) = CC, $(3) = CXX, $(4) = extra env, $(5) = output path
+# $(1) = GOARCH, $(2) = CC, $(3) = CXX, $(4) = extra env, $(5) = output path,
+# $(6) = optional tags, $(7) = optional Go arguments.
 define build-linux-vm-binary
-CGO_ENABLED=1 CGO_JOBS=$(NCORES) CC=$(2) CXX=$(3) GOOS=linux GOARCH=$(1) $(4) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -tags "$(VM_EMBED_TAGS)" -o $(5) .
+CGO_ENABLED=1 CGO_JOBS=$(NCORES) CC=$(2) CXX=$(3) GOOS=linux GOARCH=$(1) $(4) $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) $(7) -tags "$(if $(6),$(6),$(VM_EMBED_TAGS))" -o $(5) .
 endef
 
 # $(1) = GOOS, $(2) = GOARCH, $(3) = output path
@@ -363,7 +368,7 @@ AB3D2_README := $(AB3D2_BUILD_DIR)/README.md
 AB3D2_ARCHIVE := $(AB3D2_BUILD_DIR)/IntuitionEngine-AB3D2-x64.zip
 
 # Main targets
-.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-wasm-crt-browser test-x86-jit-parity test-6502-jit-parity test-ie32-jit-parity test-ie32-jit-race test-z80-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos test vet tidy test-makefile test-cross test-cross-binaries test-cross-amd64-binaries test-ie64-toolchain ab3d2 ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-bench-baseline x86-bench-after x86-bench-compare z80-bench-baseline z80-bench-after z80-bench-compare ie32-bench-baseline ie32-bench-after ie32-bench-compare x86-iedoom-timedemo
+.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-wasm-crt-browser test-x86-jit-parity test-6502-jit-parity test-ie32-jit-parity test-ie32-jit-race test-z80-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos rpi-4-arm64 rpi-400-arm64 rpi-5-arm64 rpi-arm64-preflight rpi-host-helper-arm64 build-image-pi4 build-image-pi400 build-image-pi5 rpi4-live-payload-check rpi400-live-payload-check rpi5-live-payload-check rpi-live-images rpi4-live-qemu prepare-rpi-cross-overlay validate-rpi-sysroot validate-rpi-sysroot-preflight test vet tidy test-makefile test-cross test-cross-binaries test-cross-amd64-binaries test-ie64-toolchain ab3d2 ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-bench-baseline x86-bench-after x86-bench-compare z80-bench-baseline z80-bench-after z80-bench-compare ie32-bench-baseline ie32-bench-after ie32-bench-compare x86-iedoom-timedemo
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -593,6 +598,24 @@ ie32-bench-compare:
 test-makefile:
 	@bash ./scripts/test-makefile.sh
 
+.PHONY: test-rpi-live-image test-rpi-sysroot test-rpi-binary test-rpi-golden-prepare test-rpi-append-ieshare test-rpi4-live-qemu test-ieshare-payload test-verify-rpi-live-image
+test-rpi-live-image:
+	@bash ./scripts/test-rpi-live-image.sh
+test-rpi-sysroot:
+	@bash ./scripts/test-validate-rpi-sysroot.sh
+test-rpi-binary:
+	@bash ./scripts/test-validate-rpi-binary.sh
+test-rpi-golden-prepare:
+	@bash ./scripts/test-prepare-rpi-golden.sh
+test-rpi-append-ieshare:
+	@bash ./scripts/test-rpi-append-ieshare.sh
+test-rpi4-live-qemu:
+	@bash ./scripts/test-rpi4-live-qemu.sh
+test-ieshare-payload:
+	@bash ./scripts/test-stage-ieshare-payload.sh
+test-verify-rpi-live-image:
+	@bash ./scripts/test-verify-rpi-live-image.sh
+
 # Create necessary directories
 setup:
 	@echo "Creating build directories..."
@@ -649,6 +672,87 @@ x64-live-demos: x64-live-payload-check
 .PHONY: x64-live-payload-check
 x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer arosvision-live-tree x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-companion-pdfs intuitionos iedoom dist-host-sdk-linux-amd64
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --check-payload
+
+RPI_LIVE_DIR ?= build/rpi-live
+RPI_GOLDEN_IMAGE ?= rpi-ie-golden.img
+RPI_GOLDEN_MANIFEST ?= scripts/rpi-ie-golden.manifest
+RPI_TOOLCHAIN_SYSROOT ?= $(shell $(CROSS_CC) -print-sysroot)
+RPI_CROSS_OVERLAY ?= build/rpi-cross-overlay
+RPI_GO ?= env GOTOOLCHAIN=go1.26.4 $(GO)
+RPI_BINARY_TAGS := $(VM_EMBED_TAGS) jack
+RPI_PKG_CONFIG_LIBDIR := $(RPI_CROSS_OVERLAY)/pkgconfig
+
+# The x64 builder owns the architecture-neutral IESHARE implementation. Pi
+# staging runs it in each board work directory, never reading x64 staging.
+define stage-rpi-payload
+	@AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" scripts/stage_ieshare_payload.sh --destination "$(1)/work/ieshare-payload"
+	@scripts/test-rpi-payload-parity.sh "$(X64_LIVE_DIR)/work/ieshare-payload" "$(1)/work/ieshare-payload"
+endef
+
+prepare-rpi-cross-overlay:
+	@scripts/prepare_rpi_cross_overlay.sh "$(RPI_CROSS_SYSROOT)" "$(RPI_TOOLCHAIN_SYSROOT)" "$(RPI_CROSS_OVERLAY)"
+
+validate-rpi-sysroot: prepare-rpi-cross-overlay
+	@CROSS_SYSROOT="$(RPI_CROSS_SYSROOT)" CROSS_TOOLCHAIN_SYSROOT="$(RPI_TOOLCHAIN_SYSROOT)" CROSS_CC="$(CROSS_CC)" CROSS_PKG_CONFIG_LIBDIR="$(RPI_PKG_CONFIG_LIBDIR)" CROSS_PKG_CONFIG_OVERLAY_DIR="$(RPI_CROSS_OVERLAY)" CROSS_PKG_CONFIG_SYSROOT_DIR="" scripts/validate_rpi_sysroot.sh "$(RPI_GOLDEN_IMAGE)"
+
+validate-rpi-sysroot-preflight: prepare-rpi-cross-overlay
+	@CROSS_SYSROOT="$(RPI_CROSS_SYSROOT)" CROSS_TOOLCHAIN_SYSROOT="$(RPI_TOOLCHAIN_SYSROOT)" CROSS_CC="$(CROSS_CC)" CROSS_PKG_CONFIG_LIBDIR="$(RPI_PKG_CONFIG_LIBDIR)" CROSS_PKG_CONFIG_OVERLAY_DIR="$(RPI_CROSS_OVERLAY)" CROSS_PKG_CONFIG_SYSROOT_DIR="" scripts/validate_rpi_sysroot.sh --preflight
+
+define build-rpi-binary
+	@mkdir -p "$(dir $(4))"
+	@CROSS_SYSROOT="$(RPI_CROSS_SYSROOT)" CGO_ENABLED=1 CGO_JOBS=$(NCORES) CC=$(CROSS_CC) CXX=$(CROSS_CXX) GOOS=linux GOARCH=arm64 GOARM64=$(2) PKG_CONFIG_LIBDIR="$(abspath $(RPI_PKG_CONFIG_LIBDIR))" PKG_CONFIG_SYSROOT_DIR="" CGO_CFLAGS="--sysroot=$(RPI_TOOLCHAIN_SYSROOT) -mcpu=$(3) -I$(abspath $(RPI_CROSS_SYSROOT))/usr/include" CGO_CXXFLAGS="--sysroot=$(RPI_TOOLCHAIN_SYSROOT) -mcpu=$(3) -I$(abspath $(RPI_CROSS_SYSROOT))/usr/include" CGO_LDFLAGS="--sysroot=$(RPI_TOOLCHAIN_SYSROOT) -L$(abspath $(RPI_CROSS_OVERLAY))/lib -Wl,-rpath-link,$(abspath $(RPI_CROSS_SYSROOT))/usr/lib64" $(NICE) -$(NICE_LEVEL) $(RPI_GO) build $(GO_FLAGS) -pgo=$(if $(and $(wildcard $(5)),$(shell test -s $(5) && echo yes)),$(5),off) -tags "$(RPI_BINARY_TAGS)" -o $(4) .
+	@file "$(4)" | grep -Eq 'ELF.*(aarch64|ARM aarch64)' || { echo "expected ARM64 ELF: $(4)" >&2; exit 1; }
+	@scripts/validate_rpi_binary.sh "$(4)" "$(RPI_CROSS_SYSROOT)" "$(RPI_GOLDEN_IMAGE)"
+endef
+
+define build-rpi-binary-preflight
+	@mkdir -p "$(dir $(4))"
+	@CROSS_SYSROOT="$(RPI_CROSS_SYSROOT)" CGO_ENABLED=1 CGO_JOBS=$(NCORES) CC=$(CROSS_CC) CXX=$(CROSS_CXX) GOOS=linux GOARCH=arm64 GOARM64=$(2) PKG_CONFIG_LIBDIR="$(abspath $(RPI_PKG_CONFIG_LIBDIR))" PKG_CONFIG_SYSROOT_DIR="" CGO_CFLAGS="--sysroot=$(RPI_TOOLCHAIN_SYSROOT) -mcpu=$(3) -I$(abspath $(RPI_CROSS_SYSROOT))/usr/include" CGO_CXXFLAGS="--sysroot=$(RPI_TOOLCHAIN_SYSROOT) -mcpu=$(3) -I$(abspath $(RPI_CROSS_SYSROOT))/usr/include" CGO_LDFLAGS="--sysroot=$(RPI_TOOLCHAIN_SYSROOT) -L$(abspath $(RPI_CROSS_OVERLAY))/lib -Wl,-rpath-link,$(abspath $(RPI_CROSS_SYSROOT))/usr/lib64" $(NICE) -$(NICE_LEVEL) $(RPI_GO) build $(GO_FLAGS) -pgo=$(if $(and $(wildcard $(5)),$(shell test -s $(5) && echo yes)),$(5),off) -tags "$(RPI_BINARY_TAGS)" -o $(4) .
+	@file "$(4)" | grep -Eq 'ELF.*(aarch64|ARM aarch64)' || { echo "expected ARM64 ELF: $(4)" >&2; exit 1; }
+	@readelf -dW "$(4)" | grep -Fq 'Shared library: [libjack.so.0]' || { echo "expected libjack.so.0 dependency: $(4)" >&2; exit 1; }
+endef
+
+rpi-arm64-preflight: validate-rpi-sysroot-preflight
+	$(call build-rpi-binary-preflight,pi4,v8.0,cortex-a72,build/rpi-preflight/IntuitionEngine-rpi4,default.pgo.rpi4)
+	$(call build-rpi-binary-preflight,pi400,v8.0,cortex-a72,build/rpi-preflight/IntuitionEngine-rpi400,default.pgo.rpi400)
+	$(call build-rpi-binary-preflight,pi5,v8.2,cortex-a76,build/rpi-preflight/IntuitionEngine-rpi5,default.pgo.rpi5)
+
+rpi-4-arm64: validate-rpi-sysroot x64-live-embed-assets
+	$(call build-rpi-binary,pi4,v8.0,cortex-a72,build/rpi4-live/IntuitionEngine-rpi4,default.pgo.rpi4)
+
+rpi-400-arm64: validate-rpi-sysroot x64-live-embed-assets
+	$(call build-rpi-binary,pi400,v8.0,cortex-a72,build/rpi400-live/IntuitionEngine-rpi400,default.pgo.rpi400)
+
+rpi-5-arm64: validate-rpi-sysroot x64-live-embed-assets
+	$(call build-rpi-binary,pi5,v8.2,cortex-a76,build/rpi5-live/IntuitionEngine-rpi5,default.pgo.rpi5)
+
+rpi-host-helper-arm64:
+	@mkdir -p build/rpi-live
+	@CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) build -trimpath -pgo=off -ldflags "-s -w" -o build/rpi-live/intuitionengine-host-helper ./cmd/host-helper
+	@file build/rpi-live/intuitionengine-host-helper | grep -Eq 'ELF.*(aarch64|ARM aarch64)' || { echo "expected ARM64 host helper" >&2; exit 1; }
+
+rpi4-live-payload-check: rpi-4-arm64 rpi-host-helper-arm64 x64-live-payload-check
+	$(call stage-rpi-payload,build/rpi4-live)
+	@scripts/build_rpi_live_image.sh --board pi4 --binary build/rpi4-live/IntuitionEngine-rpi4 --payload build/rpi4-live/work/ieshare-payload --check-payload
+
+rpi400-live-payload-check: rpi-400-arm64 rpi-host-helper-arm64 x64-live-payload-check
+	$(call stage-rpi-payload,build/rpi400-live)
+	@scripts/build_rpi_live_image.sh --board pi400 --binary build/rpi400-live/IntuitionEngine-rpi400 --payload build/rpi400-live/work/ieshare-payload --check-payload
+
+rpi5-live-payload-check: rpi-5-arm64 rpi-host-helper-arm64 x64-live-payload-check
+	$(call stage-rpi-payload,build/rpi5-live)
+	@scripts/build_rpi_live_image.sh --board pi5 --binary build/rpi5-live/IntuitionEngine-rpi5 --payload build/rpi5-live/work/ieshare-payload --check-payload
+
+build-image-pi4: rpi4-live-payload-check
+	@scripts/build_rpi_live_image.sh --board pi4 --binary build/rpi4-live/IntuitionEngine-rpi4 --output build/rpi4-live/intuition-engine-rpi4.img --golden "$(RPI_GOLDEN_IMAGE)" --manifest "$(RPI_GOLDEN_MANIFEST)" --payload build/rpi4-live/work/ieshare-payload
+build-image-pi400: rpi400-live-payload-check
+	@scripts/build_rpi_live_image.sh --board pi400 --binary build/rpi400-live/IntuitionEngine-rpi400 --output build/rpi400-live/intuition-engine-rpi400.img --golden "$(RPI_GOLDEN_IMAGE)" --manifest "$(RPI_GOLDEN_MANIFEST)" --payload build/rpi400-live/work/ieshare-payload
+build-image-pi5: rpi5-live-payload-check
+	@scripts/build_rpi_live_image.sh --board pi5 --binary build/rpi5-live/IntuitionEngine-rpi5 --output build/rpi5-live/intuition-engine-rpi5.img --golden "$(RPI_GOLDEN_IMAGE)" --manifest "$(RPI_GOLDEN_MANIFEST)" --payload build/rpi5-live/work/ieshare-payload
+rpi-live-images: build-image-pi4 build-image-pi400 build-image-pi5
+
+rpi4-live-qemu:
+	@scripts/rpi4_live_qemu.sh build/rpi4-live/intuition-engine-rpi4.img
 
 .PHONY: x64-live-refman-pdfs
 x64-live-refman-pdfs:

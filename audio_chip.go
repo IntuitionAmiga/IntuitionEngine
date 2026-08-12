@@ -1306,13 +1306,6 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 		chip.initSNVoice(&chip.snVoices[i], i)
 	}
 
-	// Initialise audio output
-	output, err := NewAudioOutput(backend, SAMPLE_RATE, chip)
-	if err != nil {
-		return nil, err
-	}
-	chip.output = output
-
 	// Initialise comb filters
 	var combDelays = []int{COMB_DELAY_1, COMB_DELAY_2, COMB_DELAY_3, COMB_DELAY_4}
 	var combDecays = []float32{COMB_DECAY_1, COMB_DECAY_2, COMB_DECAY_3, COMB_DECAY_4}
@@ -1329,6 +1322,15 @@ func NewSoundChip(backend int) (*SoundChip, error) {
 	for i := range chip.allpassBuf {
 		chip.allpassBuf[i] = make([]float32, allpassDelays[i])
 	}
+
+	// Audio output comes last. JACK construction must not render while external
+	// engines are still being attached by the caller, and every SoundChip-owned
+	// buffer must already exist before its renderer can start.
+	output, err := NewAudioOutput(backend, SAMPLE_RATE, chip)
+	if err != nil {
+		return nil, err
+	}
+	chip.output = output
 
 	return chip, nil
 }
@@ -4554,17 +4556,14 @@ func (chip *SoundChip) Stop() {
 	chip.sealAudioEventRing()
 	chip.flushPendingAudioBlock()
 	chip.mu.Lock()
-	if !chip.enabled.Load() {
-		chip.mu.Unlock()
-		return
-	}
-
-	chip.enabled.Store(false)
+	wasEnabled := chip.enabled.Swap(false)
 	output := chip.output
 	chip.mu.Unlock()
 
 	if output != nil {
-		output.Stop()
+		if wasEnabled {
+			output.Stop()
+		}
 		output.Close()
 	}
 }

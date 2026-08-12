@@ -32,3 +32,5 @@ golang.org/x/term v0.45.0 h1:NwWyBmoJCbfTHpxrWoZ9C6/VxOf7ic219I8xZZFdrf0=
 golang.org/x/term v0.45.0/go.mod h1:9aqxs0blBcrm/n0L9QW0aRVD+ktan8ssZromtqJC43w=
 golang.org/x/text v0.40.0 h1:Ub2Z6/xjgF1WrYQz2nuITOEegKFtiIy+rieRJ5lHZKs=
 golang.org/x/text v0.40.0/go.mod h1:hpnzDAfGV753zIKo+wk3u1bVKCGPbrnF7+7LBF/UHVY=
+github.com/xthexder/go-jack v0.0.0-20220805234212-bc8604043aba h1:QighQ8fJJOqipXXurg9WghoImtvl7CHTpe21GDYdIkk=
+github.com/xthexder/go-jack v0.0.0-20220805234212-bc8604043aba/go.mod h1:T6DswVPJzBW/Xg64l/gohXVgSW81GwXyMws1fkqxlUg=

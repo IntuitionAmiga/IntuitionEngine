@@ -1,0 +1,6 @@
+[terminal]
+vt = 1
+
+[default_session]
+command = "/opt/ie/ie-session.sh"
+user = "ie"

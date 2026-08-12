@@ -1,0 +1,12 @@
+[Unit]
+Description=Intuition Engine HOST helper broker
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/intuitionengine-host-helper serve
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

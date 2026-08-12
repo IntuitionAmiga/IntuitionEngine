@@ -63,3 +63,13 @@ func TestCPUProfile_EmptyPathIsNoOp(t *testing.T) {
 	}
 	stopCPUProfile()
 }
+
+func TestRuntimeAudioCleanupRunsOnce(t *testing.T) {
+	var calls int
+	registerRuntimeAudioCleanup(func() { calls++ })
+	runRuntimeAudioCleanup()
+	runRuntimeAudioCleanup()
+	if calls != 1 {
+		t.Fatalf("audio cleanup calls = %d, want 1", calls)
+	}
+}

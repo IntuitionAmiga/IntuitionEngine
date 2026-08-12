@@ -1,0 +1,11 @@
+#include <abstractions/base>
+
+profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-host-helper flags=(attach_disconnected) {
+  #include <abstractions/base>
+  /usr/libexec/intuitionengine-host-helper mr,
+  /run/intuitionengine-host-helper.sock rw,
+  /usr/bin/nmcli ixr,
+  /usr/bin/apt-get ixr,
+  /usr/lib/aarch64-linux-gnu/** mr,
+  /lib/aarch64-linux-gnu/** mr,
+}

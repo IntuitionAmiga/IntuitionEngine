@@ -6,7 +6,52 @@ import (
 	"testing"
 )
 
+func TestRuntimeAudioCleanupIsIdempotent(t *testing.T) {
+	defer runRuntimeAudioCleanup()
+	var calls int
+	registerRuntimeAudioCleanup(func() { calls++ })
+	runRuntimeAudioCleanup()
+	runRuntimeAudioCleanup()
+	if calls != 1 {
+		t.Fatalf("runtime audio cleanup calls = %d, want 1", calls)
+	}
+}
+
+func TestNewRuntimeSoundChipSelectsConfiguredBackendOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		want        []int
+	}{
+		{"default", "", []int{AUDIO_BACKEND_OTO}},
+		{"oto fallback", "oto", []int{AUDIO_BACKEND_OTO}},
+		{"jack", "jack", []int{AUDIO_BACKEND_JACK}},
+		{"null", "null", []int{AUDIO_BACKEND_NULL}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("IE_AUDIO_BACKEND", tc.value)
+			var got []int
+			_, err := newRuntimeSoundChip(func(backend int) (*SoundChip, error) { got = append(got, backend); return &SoundChip{}, nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("attempts = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNewRuntimeSoundChipRejectsUnknownConfiguredBackend(t *testing.T) {
+	t.Setenv("IE_AUDIO_BACKEND", "alsa")
+	called := false
+	_, err := newRuntimeSoundChip(func(int) (*SoundChip, error) { called = true; return nil, nil })
+	if err == nil || called {
+		t.Fatalf("unknown backend err=%v called=%v", err, called)
+	}
+}
+
 func TestRuntimeSoundChipFallsBackToSilentAudio(t *testing.T) {
+	t.Setenv("IE_AUDIO_BACKEND", "")
 	var calls []int
 
 	chip, err := newRuntimeSoundChip(func(backend int) (*SoundChip, error) {
@@ -34,6 +79,7 @@ func TestRuntimeSoundChipFallsBackToSilentAudio(t *testing.T) {
 }
 
 func TestRuntimeSoundChipReturnsPrimaryAudio(t *testing.T) {
+	t.Setenv("IE_AUDIO_BACKEND", "")
 	wantChip := &SoundChip{}
 	var calls []int
 
@@ -77,5 +123,12 @@ func TestNullAudioOutputLifecycle(t *testing.T) {
 	out.Close()
 	if out.IsStarted() {
 		t.Fatal("null audio output remained started after Close")
+	}
+}
+
+func TestJACKAudioOutputFailsClearlyWhenNotCompiled(t *testing.T) {
+	_, err := NewAudioOutput(AUDIO_BACKEND_JACK, SAMPLE_RATE, nil)
+	if err == nil {
+		t.Fatal("JACK constructor succeeded without the jack build tag")
 	}
 }

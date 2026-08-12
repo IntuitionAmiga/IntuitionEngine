@@ -57,6 +57,7 @@ __pycache__/
 /intuition-engine-x64.img
 /intuition-engine-x64.img.zst
 /intuition-engine-x64.zip
+/rpi-ie-golden.img
 
 # Release artifacts
 /dist/

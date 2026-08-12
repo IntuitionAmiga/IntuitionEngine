@@ -1,0 +1,17 @@
+[Unit]
+Description=Intuition Engine appliance firewall
+DefaultDependencies=no
+Before=network-pre.target network.target greetd.service shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/ufw --force reset
+ExecStart=/usr/sbin/ufw default deny incoming
+ExecStart=/usr/sbin/ufw default allow outgoing
+ExecStart=/usr/sbin/ufw --force enable
+RemainAfterExit=yes
+
+[Install]
+WantedBy=network-pre.target

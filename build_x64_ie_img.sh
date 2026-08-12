@@ -30,7 +30,7 @@ EXPANDED_IMG="${WORK_DIR}/ubuntu-26.04-ie-expanded.img"
 GOLDEN_IMG="ubuntu-26.04-lowlatency-cage-golden.img"
 GOLDEN_IMG_PATH="${WORK_DIR}/${GOLDEN_IMG}"
 GOLDEN_IMG_MAX_AGE_DAYS=30
-GOLDEN_STAMP_VERSION="x64-live-golden-v43-oto-alsa-route"
+GOLDEN_STAMP_VERSION="x64-live-golden-v44-shared-plymouth-assets"
 GOLDEN_STAMP_PATH="${GOLDEN_IMG_PATH}.stamp"
 KERNEL_PKG="linux-lowlatency"
 COMPOSITOR_PKGS="cage,seatd,greetd,xwayland,xwayland-run,libgl1,libegl1,libgles2,libwayland-client0,libxkbcommon0,fonts-dejavu-core,kbd"
@@ -48,6 +48,8 @@ IE_INSTALL_NAME="IntuitionEngine"
 HOST_HELPER_BINARY="${WORK_DIR}/intuitionengine-host-helper"
 ROOT_PART_IMG="${WORK_DIR}/root-partition.ext4"
 PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"
+PLYMOUTH_THEME_DESCRIPTOR="${SCRIPT_DIR}/scripts/plymouth/intuition-engine.plymouth"
+PLYMOUTH_THEME_SCRIPT="${SCRIPT_DIR}/scripts/plymouth/intuition-engine.script"
 REFMAN_PDF_DIR="${SCRIPT_DIR}/sdk/docs/refman.publish/pdf"
 HOST_SDK_NAME="intuition-engine-host-sdk-linux-amd64"
 HOST_SDK_ARCHIVE="${SCRIPT_DIR}/dist/${HOST_SDK_NAME}.tar.xz"
@@ -968,31 +970,8 @@ network:
   renderer: NetworkManager
 EOF
 
-    cat > "${WORK_DIR}/intuition-engine.plymouth" <<'EOF'
-[Plymouth Theme]
-Name=Intuition Engine
-Description=Intuition Engine live boot splash
-ModuleName=script
-
-[script]
-ImageDir=/usr/share/plymouth/themes/intuition-engine
-ScriptFile=/usr/share/plymouth/themes/intuition-engine/intuition-engine.script
-EOF
-
-    cat > "${WORK_DIR}/intuition-engine.script" <<'EOF'
-Window.SetBackgroundTopColor(0, 0, 0);
-Window.SetBackgroundBottomColor(0, 0, 0);
-
-logo = Image("splash.png");
-logo_sprite = Sprite(logo);
-
-fun refresh_callback() {
-    logo_sprite.SetX(Window.GetWidth() / 2 - logo.GetWidth() / 2);
-    logo_sprite.SetY(Window.GetHeight() / 2 - logo.GetHeight() / 2);
-}
-
-Plymouth.SetRefreshFunction(refresh_callback);
-EOF
+    cp "$PLYMOUTH_THEME_DESCRIPTOR" "${WORK_DIR}/intuition-engine.plymouth"
+    cp "$PLYMOUTH_THEME_SCRIPT" "${WORK_DIR}/intuition-engine.script"
 
     cat > "${WORK_DIR}/zz-intuition-engine-grub.cfg" <<'EOF'
 GRUB_CMDLINE_LINUX_DEFAULT="quiet splash loglevel=0 vt.global_cursor_default=0 fbcon=nodefer video=1920x1080 rd.driver.export=0 mitigations=off"
@@ -1426,9 +1405,13 @@ check_golden_image() {
 }
 
 expected_golden_stamp() {
-    local plymouth_splash_sha256
+    local plymouth_splash_sha256 plymouth_descriptor_sha256 plymouth_script_sha256
     plymouth_splash_sha256="$(sha256sum "$PLYMOUTH_SPLASH")"
     plymouth_splash_sha256="${plymouth_splash_sha256%% *}"
+    plymouth_descriptor_sha256="$(sha256sum "$PLYMOUTH_THEME_DESCRIPTOR")"
+    plymouth_descriptor_sha256="${plymouth_descriptor_sha256%% *}"
+    plymouth_script_sha256="$(sha256sum "$PLYMOUTH_THEME_SCRIPT")"
+    plymouth_script_sha256="${plymouth_script_sha256%% *}"
 
     cat <<EOF
 version=${GOLDEN_STAMP_VERSION}
@@ -1446,6 +1429,8 @@ media=${MEDIA_PKGS}
 plymouth=${PLYMOUTH_PKGS}
 plymouth_splash=splash.png
 plymouth_splash_sha256=${plymouth_splash_sha256}
+plymouth_descriptor_sha256=${plymouth_descriptor_sha256}
+plymouth_script_sha256=${plymouth_script_sha256}
 host_helper=${HOST_HELPER_PKGS}
 EOF
 }
@@ -1988,4 +1973,9 @@ main() {
     log_success "x64 live image complete: ${OUTPUT_IMG%.img}.zip"
 }
 
+# stage_ieshare_payload.sh sources this file to use the one payload producer
+# for Raspberry Pi work directories. Normal x64 invocation remains unchanged.
+if [[ "${IE_PAYLOAD_LIBRARY_ONLY:-0}" == "1" ]]; then
+    return 0
+fi
 main "$@"

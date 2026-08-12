@@ -1,0 +1,30 @@
+#include <abstractions/base>
+
+profile opt.ie.IntuitionEngine /opt/ie/IntuitionEngine flags=(attach_disconnected) {
+  #include <abstractions/base>
+  /opt/ie/IntuitionEngine mr,
+  /var/ie/share/** r,
+  /var/ie/state/** rw,
+  /usr/bin/jackd Px -> ie-jackd,
+  /usr/libexec/intuitionengine-host-helper Px,
+  /var/ie/runtime/asound.conf rw,
+  /run/user/1000/** rw,
+  /dev/snd/** rw,
+  /usr/lib/aarch64-linux-gnu/** mr,
+  /lib/aarch64-linux-gnu/** mr,
+  signal (send) peer=ie-jackd,
+}
+
+
+profile ie-jackd /usr/bin/jackd flags=(attach_disconnected) {
+  #include <abstractions/base>
+  /usr/bin/jackd mr,
+  /dev/snd/** rw,
+  /run/user/1000/** rw,
+  /dev/shm/** rw,
+  /var/ie/runtime/asound.conf r,
+  /usr/lib/aarch64-linux-gnu/** mr,
+  /lib/aarch64-linux-gnu/** mr,
+  capability sys_nice,
+  capability ipc_lock,
+}

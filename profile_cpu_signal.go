@@ -30,6 +30,7 @@ func installCPUProfileSignalStop() {
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-ch
+		runRuntimeAudioCleanup()
 		stopCPUProfile()
 		// This handler owns the interrupt when profiling is active, so it also
 		// flushes the subsystem perf report (a no-op unless IE_PERF_ACCT=1).

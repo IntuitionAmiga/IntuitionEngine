@@ -29,6 +29,7 @@ func installPerfReportExit() {
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		sig := <-ch
+		runRuntimeAudioCleanup()
 		dumpSubsysPerfReport()
 		signal.Stop(ch)
 		signal.Reset(os.Interrupt, syscall.SIGTERM)

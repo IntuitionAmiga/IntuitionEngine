@@ -696,6 +696,8 @@ func main() {
 		fmt.Printf("Failed to initialize sound: %v\n", err)
 		exitProfiled(1)
 	}
+	registerRuntimeAudioCleanup(soundChip.Stop)
+	installRuntimeAudioSignalCleanup()
 
 	psgEngine := NewPSGEngine(soundChip, SAMPLE_RATE)
 	psgPlayer := NewPSGPlayer(psgEngine)
@@ -2781,7 +2783,8 @@ func main() {
 		anticEngine.StopRenderLoop()
 	}
 	// Normal (window-close) shutdown returns from main rather than through
-	// exitProfiled, so dump the subsystem perf report here too.
+	// exitProfiled, so perform the same process-level cleanup here too.
+	runRuntimeAudioCleanup()
 	dumpSubsysPerfReport()
 	stopCPUProfile()
 }

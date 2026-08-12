@@ -1,0 +1,10 @@
+[Unit]
+Description=Disable virtual-terminal switching in appliance session
+Before=greetd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/loadkeys /usr/local/share/kbd/keymaps/ie-no-vt-switch.map
+
+[Install]
+WantedBy=multi-user.target

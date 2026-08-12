@@ -22,9 +22,29 @@ import (
 const cpuProfileEnvVar = "IE_CPUPROFILE"
 
 var (
-	cpuProfileMu   sync.Mutex
-	cpuProfileFile *os.File
+	cpuProfileMu        sync.Mutex
+	cpuProfileFile      *os.File
+	runtimeCleanupMu    sync.Mutex
+	runtimeAudioCleanup func()
 )
+
+// registerRuntimeAudioCleanup installs the process-level cleanup hook used by
+// exitProfiled. This covers a JACK output constructed before SoundChip.Start.
+func registerRuntimeAudioCleanup(cleanup func()) {
+	runtimeCleanupMu.Lock()
+	runtimeAudioCleanup = cleanup
+	runtimeCleanupMu.Unlock()
+}
+
+func runRuntimeAudioCleanup() {
+	runtimeCleanupMu.Lock()
+	cleanup := runtimeAudioCleanup
+	runtimeAudioCleanup = nil
+	runtimeCleanupMu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
+}
 
 // startCPUProfile begins writing a CPU profile to path. It is a no-op when
 // path is empty. A profile already in progress is left untouched.
@@ -71,6 +91,7 @@ func stopCPUProfile() {
 // process. os.Exit skips deferred cleanup, so every exit in main.go goes
 // through here; without a profile running it is exactly os.Exit.
 func exitProfiled(code int) {
+	runRuntimeAudioCleanup()
 	dumpSubsysPerfReport()
 	stopCPUProfile()
 	os.Exit(code)
