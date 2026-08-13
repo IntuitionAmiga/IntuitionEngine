@@ -6,16 +6,38 @@ set -euo pipefail
 readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly project_dir="$(cd "${script_dir}/.." && pwd)"
 readonly appliance_assets="${script_dir}/rpi-live"
-readonly guestfish_bin="${RPI_GUESTFISH:-guestfish}"
-readonly sfdisk_bin="${RPI_SFDISK:-sfdisk}"
 
 fail() { echo "rpi-live-image: $*" >&2; exit 1; }
+resolve_host_tool() {
+    local requested="$1" candidate directory
+    if [[ "$requested" == */* ]]; then
+        [[ -x "$requested" ]] || return 1
+        printf '%s\n' "$requested"
+        return 0
+    fi
+    if candidate="$(command -v -- "$requested" 2>/dev/null)"; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    IFS=: read -r -a directories <<<"${RPI_SYSTEM_TOOL_DIRS:-/usr/sbin:/sbin}"
+    for directory in "${directories[@]}"; do
+        candidate="${directory%/}/$requested"
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+readonly guestfish_bin="$(resolve_host_tool "${RPI_GUESTFISH:-guestfish}")" || fail "required tool not found: ${RPI_GUESTFISH:-guestfish}"
+readonly sfdisk_bin="$(resolve_host_tool "${RPI_SFDISK:-sfdisk}")" || fail "required tool not found: ${RPI_SFDISK:-sfdisk}"
 need() { command -v "$1" >/dev/null 2>&1 || fail "required tool not found: $1"; }
 guestfish() { "$guestfish_bin" "$@"; }
 
 board=""
 binary=""
 output=""
+source_image=""
 golden="${project_dir}/rpi-ie-golden.img"
 manifest="${project_dir}/scripts/rpi-ie-golden.manifest"
 payload=""
@@ -28,18 +50,19 @@ create_share=true
 usage() {
     cat >&2 <<'EOF'
 Usage: build_rpi_live_image.sh --board pi4|pi400|pi5 --binary FILE --output FILE [options]
-Options: --golden FILE --manifest FILE --payload DIR --work-dir DIR
+Options: --golden FILE --manifest FILE --source-image FILE --payload DIR --work-dir DIR
          --check-payload --no-share
 EOF
 }
 
 while (($#)); do
     case "$1" in
-        --board|--binary|--output|--golden|--manifest|--assets|--payload|--work-dir)
+        --board|--binary|--output|--golden|--manifest|--source-image|--assets|--payload|--work-dir)
             (($# >= 2)) || fail "missing value for $1"
             case "$1" in
                 --board) board="$2" ;; --binary) binary="$2" ;; --output) output="$2" ;;
                 --golden) golden="$2" ;; --manifest) manifest="$2" ;; --assets) legacy_assets="$2" ;;
+                --source-image) source_image="$2" ;;
                 --payload) payload="$2" ;; --work-dir) work_dir="$2" ;;
             esac
             shift 2 ;;
@@ -51,6 +74,9 @@ while (($#)); do
 done
 
 case "$board" in pi4|pi400|pi5) ;; *) fail "board must be pi4, pi400 or pi5" ;; esac
+if [[ -n "$source_image" ]] && ! "$create_share"; then
+    fail "--source-image cannot be combined with --no-share"
+fi
 [[ -n "$binary" && -f "$binary" ]] || fail "missing ARM64 binary"
 [[ -n "$payload" && -d "$payload" ]] || fail "missing payload directory"
 for required in ie-session.sh ie-launch.sh ie-grow-share.sh ie-grow-share.service greetd-config.toml opt.ie.IntuitionEngine usr.libexec.intuitionengine-host-helper ie-apparmor.service ie-host-helper.service ie-firewall.service ie-no-vt-switch.service ie-no-vt-switch.map; do
@@ -131,6 +157,43 @@ validate_golden_image() {
     fi
 }
 
+finalise_output() {
+    local -a verify_args
+    verify_args=(--board "$board" --image "$output" --binary "$binary")
+    if "$create_share"; then
+        verify_args+=(--share)
+    fi
+    "${script_dir}/verify_rpi_live_image.sh" "${verify_args[@]}"
+    sha256sum "$output" >"${output}.sha256"
+
+    local archive_root
+    archive_root="${work_dir}/archive-${board}"
+    rm -rf "$archive_root"
+    mkdir -p "$archive_root/Docs/IEProgRefMan"
+    cp "$output" "$archive_root/$(basename "$output")"
+    find "$payload/Docs" -maxdepth 1 -type f -name '*.pdf' -exec cp -f {} "$archive_root/Docs/" \;
+    cp -a "$payload/Docs/IEProgRefGuide/." "$archive_root/Docs/IEProgRefMan/"
+    python3 - "${output%.img}.zip" "$archive_root" "$(basename "$output")" Docs <<'PY'
+import os
+import sys
+import zipfile
+
+archive_path, archive_root, image_name, docs_name = sys.argv[1:]
+with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as archive:
+    for entry in (image_name, docs_name):
+        entry_path = os.path.join(archive_root, entry)
+        if os.path.isdir(entry_path):
+            for directory, directories, filenames in os.walk(entry_path):
+                directories.sort()
+                for filename in sorted(filenames):
+                    path = os.path.join(directory, filename)
+                    archive.write(path, os.path.relpath(path, archive_root))
+        else:
+            archive.write(entry_path, entry)
+PY
+    sha256sum "${output%.img}.zip" >"${output%.img}.zip.sha256"
+}
+
 # The check is deliberately content-oriented: normal build mode has stronger
 # libguestfs checks, while this mode lets Make prove payload inputs without an image write.
 [[ -d "$payload/Systems" ]] || fail "payload lacks Systems directory"
@@ -141,12 +204,30 @@ if "$check_payload"; then
 fi
 
 [[ -n "$output" ]] || fail "missing output path"
+[[ -n "$work_dir" ]] || work_dir="$(dirname "$output")/work"
+output_canonical="$(realpath -m "$output")"
+
+if [[ -n "$source_image" ]]; then
+    [[ -f "$source_image" ]] || fail "missing source appliance image: $source_image"
+    source_canonical="$(readlink -f "$source_image")"
+    [[ "$output_canonical" != "$source_canonical" ]] || fail "output path aliases source appliance image"
+    for tool in "$guestfish_bin" python3; do need "$tool"; done
+    mkdir -p "$work_dir" "$(dirname "$output")"
+    source_sha="$(sha256sum "$source_image" | awk '{print $1}')"
+    tmp_output="${work_dir}/$(basename "$output").new"
+    rm -f "$tmp_output"
+    cp --reflink=auto --sparse=always "$source_image" "$tmp_output"
+    [[ "$(sha256sum "$source_image" | awk '{print $1}')" == "$source_sha" ]] || fail "source appliance image changed while copying"
+    guestfish --rw -a "$tmp_output" run : mount /dev/sda2 / : rm /opt/ie/IntuitionEngine : copy-in "$binary" /opt/ie/ : mv "/opt/ie/$(basename "$binary")" /opt/ie/IntuitionEngine : chmod 0755 /opt/ie/IntuitionEngine
+    mv "$tmp_output" "$output"
+    finalise_output
+    exit 0
+fi
+
 [[ -f "$golden" ]] || fail "missing golden image: $golden"
 [[ -f "$manifest" ]] || fail "missing golden manifest: $manifest"
 golden_canonical="$(readlink -f "$golden")"
-output_canonical="$(realpath -m "$output")"
 [[ "$output_canonical" != "$golden_canonical" ]] || fail "output path aliases golden image"
-[[ -n "$work_dir" ]] || work_dir="$(dirname "$output")/work"
 expected_sha="$(sed -n 's/^sha256=//p' "$manifest" | head -n 1)"
 [[ "$expected_sha" =~ ^[[:xdigit:]]{64}$ ]] || fail "golden manifest has no sha256= entry"
 actual_sha="$(sha256sum "$golden" | awk '{print $1}')"
@@ -188,35 +269,4 @@ if "$create_share"; then
         write-append /etc/fstab "LABEL=IESHARE /var/ie/share vfat defaults,nofail,x-systemd.device-timeout=10 0 0\n"
 fi
 mv "$tmp_output" "$output"
-verify_args=(--board "$board" --image "$output" --binary "$binary")
-if "$create_share"; then
-    verify_args+=(--share)
-fi
-"${script_dir}/verify_rpi_live_image.sh" "${verify_args[@]}"
-sha256sum "$output" >"${output}.sha256"
-archive_root="${work_dir}/archive-${board}"
-archive_name="$(basename "${output%.img}.zip")"
-rm -rf "$archive_root"
-mkdir -p "$archive_root/Docs/IEProgRefMan"
-cp "$output" "$archive_root/$(basename "$output")"
-find "$payload/Docs" -maxdepth 1 -type f -name '*.pdf' -exec cp -f {} "$archive_root/Docs/" \;
-cp -a "$payload/Docs/IEProgRefGuide/." "$archive_root/Docs/IEProgRefMan/"
-python3 - "${output%.img}.zip" "$archive_root" "$(basename "$output")" Docs <<'PY'
-import os
-import sys
-import zipfile
-
-archive_path, archive_root, image_name, docs_name = sys.argv[1:]
-with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True) as archive:
-    for entry in (image_name, docs_name):
-        entry_path = os.path.join(archive_root, entry)
-        if os.path.isdir(entry_path):
-            for directory, directories, filenames in os.walk(entry_path):
-                directories.sort()
-                for filename in sorted(filenames):
-                    path = os.path.join(directory, filename)
-                    archive.write(path, os.path.relpath(path, archive_root))
-        else:
-            archive.write(entry_path, entry)
-PY
-sha256sum "${output%.img}.zip" >"${output%.img}.zip.sha256"
+finalise_output

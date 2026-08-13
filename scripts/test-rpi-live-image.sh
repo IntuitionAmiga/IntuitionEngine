@@ -41,6 +41,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/tools" "$tmp/work" "$tmp/payload/Systems" "$tmp/payload/Docs/IEProgRefGuide"
 printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\267\000\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' >"$tmp/ie-arm64"
+cp "$tmp/ie-arm64" "$tmp/ie-arm64-pi5"
+printf 'pi5' >>"$tmp/ie-arm64-pi5"
 cp "$tmp/ie-arm64" "$tmp/host-helper"
 printf 'payload\n' >"$tmp/payload/Systems/example"
 printf 'manual\n' >"$tmp/payload/Docs/IE64_ISA.pdf"
@@ -65,6 +67,17 @@ exit 0
 EOF
     chmod +x "$tmp/tools/$tool"
 done
+
+# Administrative tools are commonly installed outside an unprivileged user's
+# PATH. The builder must find sfdisk in its standard system-tool directories.
+mkdir -p "$tmp/admin-tools" "$tmp/path-without-sfdisk"
+cp "$tmp/tools/sfdisk" "$tmp/admin-tools/sfdisk"
+for tool in bash cat dirname readlink; do
+    path="$(command -v "$tool")"
+    ln -s "$path" "$tmp/path-without-sfdisk/$tool"
+done
+env PATH="$tmp/path-without-sfdisk" RPI_SYSTEM_TOOL_DIRS="$tmp/admin-tools" /bin/bash "$builder" --help >/dev/null
+
 cat >"$tmp/tools/guestfish" <<'EOF'
 #!/usr/bin/env bash
 [[ -z "${GUESTFISH_LOG:-}" ]] || printf '%s\n' "$*" >>"$GUESTFISH_LOG"
@@ -80,6 +93,8 @@ elif [[ "$*" == *'is-file '* ]]; then
     fi
 elif [[ "$*" == *'is-symlink '* ]]; then
     echo true
+elif [[ "$*" == *list-partitions* && "${FAKE_SHARE:-0}" == "1" ]]; then
+    echo /dev/sda3
 elif [[ "$*" == *'download '* ]]; then
     if [[ -n "${FAKE_BINARY:-}" ]]; then cp "$FAKE_BINARY" "${!#}"; else touch "${!#}"; fi
 fi
@@ -103,6 +118,10 @@ expect_fail env PATH="$tmp/tools:$PATH" "$builder" --board pi4 --binary "$tmp/ie
 printf 'golden\n' >"$tmp/golden.img"
 printf 'not an arm64 executable\n' >"$tmp/bad-binary"
 expect_fail env PATH="$tmp/tools:$PATH" "$builder" --board pi4 --binary "$tmp/bad-binary" --output "$tmp/out.img" --golden "$tmp/golden.img" --manifest "$tmp/golden.manifest" --payload "$tmp/payload" --check-payload
+if env PATH="$tmp/tools:$PATH" "$builder" --board pi5 --binary "$tmp/ie-arm64-pi5" --source-image "$tmp/golden.img" --output "$tmp/derived-no-share.img" --payload "$tmp/payload" --no-share 2>"$tmp/derived-no-share.err"; then
+    fail "derived builder accepted --source-image with --no-share"
+fi
+rg -q -- '--source-image cannot be combined with --no-share' "$tmp/derived-no-share.err" || fail "derived builder did not explain rejected --no-share combination"
 
 printf '\177ELF\002\001\001\000\000\000\000\000\000\000\000\000\002\000\267\000\001\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000\000' >"$tmp/ie-arm64"
 env PATH="$tmp/tools:$PATH" "$builder" --board pi4 --binary "$tmp/ie-arm64" --output "$tmp/out.img" --golden "$tmp/golden.img" --manifest "$tmp/golden.manifest" --payload "$tmp/payload" --work-dir "$tmp/work" --check-payload
@@ -133,7 +152,21 @@ if rg -q 'LABEL=IESHARE' "$guestfish_log"; then
 fi
 [[ "$(sha256sum "$tmp/golden.img" | awk '{print $1}')" == "$golden_sum" ]] || fail "normal builder modified its source golden image"
 
-env PATH="$tmp/tools:$PATH" RPI_GUESTFISH="$tmp/tools/guestfish" FAKE_BINARY="$tmp/ie-arm64" RPI_HOST_HELPER="$tmp/host-helper" "$builder" --board pi4 --binary "$tmp/ie-arm64" --output "$tmp/archive-layout.img" --golden "$tmp/golden.img" --manifest "$tmp/golden.manifest" --payload "$tmp/payload" --work-dir "$tmp/work" --no-share
+# A derived image must clone the completed Pi 4/Pi 400 appliance, preserve its
+# source image and replace only the board-specific Intuition Engine binary.
+derived_source_sum="$(sha256sum "$tmp/board-output.img" | awk '{print $1}')"
+derived_log="$tmp/derived-guestfish.log"
+env PATH="$tmp/tools:$PATH" RPI_GUESTFISH="$tmp/tools/guestfish" GUESTFISH_LOG="$derived_log" FAKE_BINARY="$tmp/ie-arm64-pi5" FAKE_SHARE=1 "$builder" --board pi5 --binary "$tmp/ie-arm64-pi5" --source-image "$tmp/board-output.img" --output "$tmp/derived-output.img" --payload "$tmp/payload" --work-dir "$tmp/derived-work"
+[[ -f "$tmp/derived-output.img" && -f "$tmp/derived-output.zip" ]] || fail "derived builder did not produce Pi 5 image and ZIP"
+[[ "$(sha256sum "$tmp/board-output.img" | awk '{print $1}')" == "$derived_source_sum" ]] || fail "derived builder modified its source appliance image"
+rg -q 'rm /opt/ie/IntuitionEngine.*copy-in .*ie-arm64-pi5.*mv /opt/ie/ie-arm64-pi5 /opt/ie/IntuitionEngine' "$derived_log" || fail "derived builder does not replace the board binary"
+if rg -q 'copy-in .*ie-session\.sh|copy-in .*greetd-config\.toml|write-append /etc/fstab' "$derived_log"; then
+    fail "derived builder rebuilt common appliance or IESHARE content"
+fi
+
+# Leave RPI_GUESTFISH unset so the production PATH lookup cannot recurse into
+# the shell wrapper with the same name.
+env PATH="$tmp/tools:$PATH" FAKE_BINARY="$tmp/ie-arm64" RPI_HOST_HELPER="$tmp/host-helper" "$builder" --board pi4 --binary "$tmp/ie-arm64" --output "$tmp/archive-layout.img" --golden "$tmp/golden.img" --manifest "$tmp/golden.manifest" --payload "$tmp/payload" --work-dir "$tmp/work" --no-share
 python3 - "$tmp/archive-layout.zip" <<'PY' || fail "ZIP layout differs from x64 release layout"
 import sys
 import zipfile

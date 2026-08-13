@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-08-11*
+*Last modified: 2026-08-13*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -923,6 +923,8 @@ build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
 | `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
 | `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
 | Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE32, IE64, M68K, 6502, x86, and Z80 use WebAssembly JIT backends. IE32 lowers its eligible direct-RAM subset and resumes through the interpreter at observation boundaries. Z80 emits every non-observation opcode-manifest row from a source-stamped cache; port and block I/O use frozen canonical helpers, and its shared frontend eagerly forms bounded four-block static chains. The 6502 backend lowers documented NMOS instructions in eligible direct RAM and uses interpreter resume at mapping and observation boundaries. `IE64_WASM_JIT=0`, `M68K_WASM_JIT=0`, `P65_WASM_JIT=0`, `X86_WASM_JIT=0`, and `Z80_WASM_JIT=0` disable the corresponding browser backend; x86 also requires WebAssembly SIMD. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
+| Raspberry Pi 4 / Pi 400 live image | Linux ARM64, cgo, embedded system images, `jack` tag, `GOARM64=v8.0`, `-mcpu=cortex-a72` | Appliance image with JACK output, a PREEMPT_RT kernel, and the shared IESHARE payload. Pi 4 and Pi 400 use one ARMv8.0 Cortex-A72 binary and `default.pgo.rpi400` when that profile exists; otherwise PGO is disabled. |
+| Raspberry Pi 5 live image | Linux ARM64, cgo, embedded system images, `jack` tag, `GOARM64=v8.2`, `-mcpu=cortex-a76` | Appliance image with the same guest-facing payload and audio contract. Pi 5 uses ARMv8.2 Cortex-A76 settings and `default.pgo.rpi5` when that profile exists; otherwise PGO is disabled. The Pi 5 image is derived from that completed image by copying it and replacing only the Intuition Engine binary before independent verification and packaging. |
 
 Headless stubs should be treated as backend substitutes, not as a different
 machine model. A test can still write video or audio MMIO and inspect guest
@@ -935,6 +937,17 @@ AppArmor profile grants the standard audio abstraction and read access to the
 PipeWire configuration required by this route. This is a live-image host
 backend choice; it does not change the guest audio devices or their MMIO
 contracts.
+
+The Raspberry Pi live targets build two ARM64 binaries and validate each binary
+and its shared-library requirements against the selected cross sysroot and
+immutable appliance image. Pi 4 and Pi 400 share one Cortex-A72 binary and PGO
+profile. Pi 5 uses the Cortex-A76 baseline and its own profile. Both Raspberry
+Pi live binaries include the `jack` tag. The architecture-neutral IESHARE
+contents, including the SDK companion manuals, are staged once and appended as
+a separate FAT32 partition without modifying the golden image. The completed
+Pi 4 and Pi 400 appliance is copied for Pi 5, then only the Intuition Engine
+binary is replaced. The x64 payload check stages one canonical IESHARE tree,
+and both Raspberry Pi image builds consume that same tree.
 
 The Linux x86-64 Host SDK packages `ie32asm`, `ie32to64`, `ie64asm`,
 `ie64dis`, `ie64-cproc`, `ie64ld`, `ie64-ar`, `ie64-ranlib`, QBE, cproc-qbe,
@@ -1019,6 +1032,15 @@ wasm yields zero samples; a profile that also covers the wasm JIT paths must
 come from a browser or Node CPU capture converted to pprof, at which point
 `WASM_PGO=default.wasm.pgo` selects it. Each is a Makefile variable, so any
 target can be pointed at a target-specific profile.
+
+The Raspberry Pi release recipes make their profile choice independently of
+`PGO_PROFILE`. The shared Pi 4 and Pi 400 binary selects
+`default.pgo.rpi400`; Pi 5 selects `default.pgo.rpi5`. A missing or empty
+board profile selects `-pgo=off` rather than silently substituting the root
+profile. The Pi 4 and Pi 400 image is built once with one IESHARE payload; the
+Pi 5 image is copied from it and receives only the Pi 5 binary before
+independent verification and packaging. The copy uses a reflink where the host
+filesystem supports one and preserves sparse extents otherwise.
 
 ### Programme Benchmark Inventory
 
@@ -1639,16 +1661,46 @@ graph LR
     DAC_IN --> MIX
     MIX --> FLT --> OVR --> REV --> LIM
 
-    OTO["OTO Backend<br/>44.1kHz float32"]
+    SELECT["Runtime backend selector<br/>IE_AUDIO_BACKEND"]
+    OTO["Oto Backend<br/>44.1kHz float32"]
+    JACK["JACK Backend<br/>44.1kHz / 64 frames"]
+    NULL["Silent Backend"]
     SPK["Speakers"]
 
-    LIM --> OTO --> SPK
+    LIM --> SELECT
+    SELECT --> OTO --> SPK
+    SELECT --> JACK --> SPK
+    SELECT --> NULL
 
     classDef audio fill:#FF8C00,stroke:#333,color:#fff
     classDef out fill:#B8860B,stroke:#333,color:#fff
     class CH,OSC,ENV,SWP,SYNC,DAC_IN,MIX,FLT,OVR,REV,LIM audio
-    class OTO,SPK out
+    class SELECT,OTO,JACK,NULL,SPK out
 ```
+
+### Runtime Audio Backends
+
+`IE_AUDIO_BACKEND` selects `oto`, `jack`, or `null`. The default and `oto`
+paths try Oto and then silent output. The `jack` path tries JACK, Oto, and
+silent output in that order. The `null` path selects silent output directly.
+Any other value is rejected before a SoundChip is returned.
+
+Linux cgo builds compiled with the `jack` tag provide the JACK backend. It
+requires the server to run at 44.1 kHz and 64-frame periods. The renderer fills
+a preallocated three-period mono ring from an ordinary Go goroutine; the JACK
+process callback only copies ready samples to the left and right physical
+playback ports and emits silence on underrun. If no server is available, the
+backend starts its own fixed-configuration `jackd` process. Construction fails
+if no physical playback port exists or the server rate or period differs from
+the required values, allowing runtime selection to continue to Oto and then
+silent output.
+
+After startup, a JACK shutdown, sample-rate change, or period-size change marks
+the backend failed and terminates through the common process cleanup path.
+SoundChip shutdown is idempotent, and clean shutdown, script exit, CPU-profile
+exit, performance-accounting exit, and terminal-signal shutdown closes the
+selected audio output. This also covers an output constructed before
+`SoundChip.Start` has been called.
 
 ### SoundChip Dual-Interface Architecture
 
@@ -1696,7 +1748,7 @@ The SoundChip's global resonant filter (`0xF0820-0xF0830`) supports low-pass, ba
 
 `ReadSample` advances registered sample tickers before mixing the same sample. `GenerateSample` then takes `chip.mu` only for channel-state mutation, channel mixing, register-visible smoothing state, and a post-processing configuration snapshot. SID mixer options, overdrive, the global filter, reverb, and the master normaliser run after `chip.mu` is released. Their mutable DSP state is protected by `postFXMu`, which is also used by reset, debug snapshot, and restore.
 
-`ReadSamples(dst)` is the block-rendering API used by the OTO backend. It is single-consumer: one pending-block state and one mixer-capture scratch are shared across calls, so two concurrent pulls would corrupt each other. Concurrent register writes from other goroutines are supported and expected; concurrent pulls are not. It installs a pending audio-block state for the duration of the pull. ReadSamples uses safe block ticking only when every active sample ticker implements `ReadSamplesBlockTicker`, SFX allows block ticking, and no sample mixers are registered. `IE_AUDIO_BLOCK=0` forces the per-sample path instead, which is retained as the oracle the block path is tested against. Otherwise it records each sample's ticker output and mixer contribution in order. Either way it flushes pending segments of up to 64 samples under one channel-mix lock. Any register write or SoundChip setter reached from a ticker first flushes the pending segment, so single-threaded `ReadSamples` output matches the `ReadSample` loop. Concurrent CPU writes remain bounded by the segment size and are allowed to apply earlier than a sample-at-a-time interleaving.
+`ReadSamples(dst)` is the block-rendering API used by the Oto and JACK backends. It is single-consumer: one pending-block state and one mixer-capture scratch are shared across calls, so two concurrent pulls would corrupt each other. Concurrent register writes from other goroutines are supported and expected; concurrent pulls are not. It installs a pending audio-block state for the duration of the pull. ReadSamples uses safe block ticking only when every active sample ticker implements `ReadSamplesBlockTicker`, SFX allows block ticking, and no sample mixers are registered. `IE_AUDIO_BLOCK=0` forces the per-sample path instead, which is retained as the oracle the block path is tested against. Otherwise it records each sample's ticker output and mixer contribution in order. Either way it flushes pending segments of up to 64 samples under one channel-mix lock. Any register write or SoundChip setter reached from a ticker first flushes the pending segment, so single-threaded `ReadSamples` output matches the `ReadSample` loop. Concurrent CPU writes remain bounded by the segment size and are allowed to apply earlier than a sample-at-a-time interleaving.
 
 Block length is bounded by the quiet span the tickers report. An engine that mutates SoundChip state at sample positions it knows in advance implements `QuietSpanTicker`, and `QuietSamples` returns how many samples may pass before its next such write: the gap to the next register event for the event-driven engines, the gap to the next replay tick for AHX, the gap to the next envelope step for the PSG, and the gap to the end of the song for all of them. ReadSamples advances by the smallest span any registered ticker reports, so no register write ever falls inside a block and a block is exactly the sequence of single ticks it replaces. An engine that writes on every sample, which is the case for MOD, WAV and the AROS DMA shim, reports zero and renders in blocks of one sample; that is still the block path, so the per-sample fallback is reached only when a sample mixer is registered or SFX is sounding.
 
@@ -2148,17 +2200,17 @@ graph LR
     BW["Bus Write<br/>Audio MMIO"]
     ET["Engine Translate<br/>PSG/SN/SID/POKEY/TED/AHX/MOD/WAV/MIDI"]
     SC["SoundChip Params<br/>Updated"]
-    OTO["OTO Callback<br/>ReadSample()"]
+    OUT["Selected Audio Backend<br/>Oto pull or JACK renderer"]
     TS["TickSample()<br/>All engines"]
     GS["GenerateSample()<br/>Per channel"]
     MIX["Channel Mix<br/>Filter - Overdrive<br/>Reverb - Limiter"]
-    DAC["Float32 - OTO<br/>DAC - Speakers<br/>@ 44.1kHz"]
+    DAC["Float32 output<br/>DAC - Speakers<br/>@ 44.1kHz"]
 
     EX --> BW --> ET --> SC
-    OTO --> TS --> GS --> MIX --> DAC
+    OUT --> TS --> GS --> MIX --> DAC
 
     classDef flow fill:#FF8C00,stroke:#333,color:#fff
-    class EX,BW,ET,SC,OTO,TS,GS,MIX,DAC flow
+    class EX,BW,ET,SC,OUT,TS,GS,MIX,DAC flow
 ```
 
 ### CPU Mode Switching
@@ -2276,7 +2328,9 @@ epochs separately rather than as part of the tracking mechanism.
 | TED render | `time.NewTicker` | 60Hz | Same triple-buffer pattern |
 | ANTIC render | `time.NewTicker` | 60Hz | Same triple-buffer pattern |
 | Compositor | `time.NewTicker` | 60Hz | Calls `GetFrame()` (atomic swap) on each source, blends, sends to display |
-| OTO audio thread | Host audio hardware callback | 44.1kHz | Calls `SoundChip.ReadSample()` -> `GenerateSample()` directly |
+| Oto audio thread | Host audio pull | 44.1kHz | Pulls blocks from `SoundChip.ReadSamples()` through the Oto player |
+| JACK renderer | Ring-buffer producer | 44.1kHz in 64-frame blocks | Calls `SoundChip.ReadSamples()` and publishes mono blocks to the JACK callback |
+| JACK process callback | JACK server callback | 44.1kHz in 64-frame periods | Copies pre-rendered samples to stereo physical playback ports without rendering or locking |
 | Terminal output | `time.NewTicker` | 100Hz | Flushes output buffer to host terminal |
 | Coprocessor workers | On-demand | Varies | Independent CPUs with mailbox ring buffers |
 | Script engine | Event-driven | Varies | Lua goroutine with frame-sync channel |
@@ -2286,7 +2340,7 @@ epochs separately rather than as part of the tracking mechanism.
 ```text
 CPU:   Free-running (no fixed clock -- instruction throughput varies with host speed)
 Video: 6 video sources plus compositor tick at 60Hz; non-VideoChip sources use lock-free triple-buffer handoff
-Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned goroutine
+Audio: Oto pulls samples at 44.1kHz; JACK uses an IE-owned renderer and a 64-frame server callback
 ```
 
 ### Synchronisation Model
@@ -2305,7 +2359,7 @@ Audio: OTO hardware callback drives sample generation at 44.1kHz -- no IE-owned 
 
 **CPU-to-Audio**:
 - CPU writes to audio MMIO update channel parameters under `chip.mu`
-- OTO callback reads parameters atomically or under `chip.mu` for `GenerateSample()`
+- Oto and JACK rendering read parameters atomically or under `chip.mu` through `ReadSamples()`
 
 **No CPU-video vsync coupling**:
 - CPU runs ahead freely - no wait-for-vblank blocking

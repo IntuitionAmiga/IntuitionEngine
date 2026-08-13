@@ -111,7 +111,7 @@ var sdkAuditLastModifiedDates = map[string]string{
 	"sdk/docs/IE32_ISA.md":     "2026-08-08",
 	"sdk/docs/iemon.md":        "2026-08-08",
 	"sdk/docs/iescript.md":     "2026-08-11",
-	"sdk/docs/architecture.md": "2026-08-11",
+	"sdk/docs/architecture.md": "2026-08-13",
 }
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
@@ -3711,6 +3711,25 @@ func TestSDKCompanionDocs_ArchitecturePerformanceRoadmapClaimsMatchSource(t *tes
 		}
 		if !normalizedContains(sourceInventory, required) {
 			t.Fatalf("SDK_ARCH_SOURCE_AUDIT.md missing performance-roadmap source-backed claim: %s", required)
+		}
+	}
+}
+
+func TestSDKCompanionDocs_ArchitectureRuntimeAudioAndRaspberryPiProfilesMatchSource(t *testing.T) {
+	doc := readDoc(t, "sdk/docs/architecture.md")
+	for _, want := range []string{
+		"IE_AUDIO_BACKEND selects `oto`, `jack`, or `null`.",
+		"The default and `oto` paths try Oto and then silent output.",
+		"The `jack` path tries JACK, Oto, and silent output in that order.",
+		"Linux cgo builds compiled with the `jack` tag",
+		"44.1 kHz and 64-frame periods",
+		"Pi 4 and Pi 400 use one ARMv8.0 Cortex-A72 binary and `default.pgo.rpi400`",
+		"Pi 5 uses ARMv8.2 Cortex-A76 settings and `default.pgo.rpi5`",
+		"The Pi 5 image is derived from that completed image",
+		"terminal-signal shutdown closes the selected audio output",
+	} {
+		if !normalizedContains(doc, want) {
+			t.Errorf("architecture.md does not document source-backed runtime contract %q", want)
 		}
 	}
 }

@@ -3,7 +3,28 @@ set -euo pipefail
 image="$1"
 payload="$2"
 guestfish_bin="${RPI_GUESTFISH:-guestfish}"
-sfdisk_bin="${RPI_SFDISK:-sfdisk}"
+resolve_host_tool() {
+    local requested="$1" candidate directory
+    if [[ "$requested" == */* ]]; then
+        [[ -x "$requested" ]] || return 1
+        printf '%s\n' "$requested"
+        return 0
+    fi
+    if candidate="$(command -v -- "$requested" 2>/dev/null)"; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    IFS=: read -r -a directories <<<"${RPI_SYSTEM_TOOL_DIRS:-/usr/sbin:/sbin}"
+    for directory in "${directories[@]}"; do
+        candidate="${directory%/}/$requested"
+        if [[ -x "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+sfdisk_bin="$(resolve_host_tool "${RPI_SFDISK:-sfdisk}")" || { echo 'sfdisk is required' >&2; exit 1; }
 "$guestfish_bin" --version >/dev/null 2>&1 || { echo 'guestfish is required' >&2; exit 1; }
 # Create a FAT32 filesystem only in a new third partition. The partition table
 # must be exactly the expected boot and root pair, so a changed golden layout

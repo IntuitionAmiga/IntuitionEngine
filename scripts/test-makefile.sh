@@ -277,25 +277,31 @@ for target in \
   assert_target_exists "$target"
 done
 
-# Raspberry Pi appliance targets keep independent public artefact names even
-# where Pi 4 and Pi 400 currently share the Cortex-A72 tuning baseline.
-for target in rpi-4-arm64 rpi-400-arm64 rpi-5-arm64 rpi-arm64-preflight rpi-host-helper-arm64 build-image-pi4 build-image-pi400 build-image-pi5 rpi4-live-payload-check rpi400-live-payload-check rpi5-live-payload-check rpi-live-images rpi4-live-qemu prepare-rpi-cross-overlay validate-rpi-sysroot validate-rpi-sysroot-preflight test-rpi-live-image test-rpi-sysroot test-rpi-binary test-rpi-golden-prepare test-rpi-append-ieshare test-rpi4-live-qemu test-ieshare-payload test-verify-rpi-live-image; do
+# Pi 4 and Pi 400 share one Cortex-A72 binary and release image. Pi 5 derives
+# its image from that completed appliance, replacing only the VM binary.
+for target in rpi-4-arm64 rpi-400-arm64 rpi-5-arm64 rpi-arm64-preflight rpi-host-helper-arm64 build-image-pi4 build-image-pi400 build-image-pi5 rpi-live-payload-check rpi4-live-payload-check rpi400-live-payload-check rpi5-live-payload-check rpi-live-images rpi4-live-qemu prepare-rpi-cross-overlay validate-rpi-sysroot validate-rpi-sysroot-preflight test-rpi-live-image test-rpi-sysroot test-rpi-binary test-rpi-golden-prepare test-rpi-append-ieshare test-rpi4-live-qemu test-ieshare-payload test-verify-rpi-live-image; do
   assert_phony "$target"
   assert_target_exists "$target"
 done
 assert_recipe_contains rpi-4-arm64 'GOARM64=v8\.0' -o x64-live-embed-assets
-assert_recipe_contains rpi-400-arm64 'GOARM64=v8\.0' -o x64-live-embed-assets
 assert_recipe_contains rpi-5-arm64 'GOARM64=v8\.2' -o x64-live-embed-assets
 assert_recipe_contains rpi-4-arm64 'mcpu=cortex-a72' -o x64-live-embed-assets
-assert_recipe_contains rpi-400-arm64 'mcpu=cortex-a72' -o x64-live-embed-assets
 assert_recipe_contains rpi-5-arm64 'mcpu=cortex-a76' -o x64-live-embed-assets
-assert_makefile_contains '^rpi-live-images: build-image-pi4 build-image-pi400 build-image-pi5'
-assert_makefile_contains '^rpi4-live-payload-check:.*rpi-4-arm64'
-assert_makefile_contains '^rpi400-live-payload-check:.*rpi-400-arm64'
-assert_makefile_contains '^rpi5-live-payload-check:.*rpi-5-arm64'
+assert_makefile_contains '^rpi-400-arm64: rpi-4-arm64'
+assert_recipe_not_contains rpi-400-arm64 'go build' -o rpi-4-arm64
+assert_makefile_contains '^rpi-live-images: build-image-pi4 build-image-pi5'
+assert_makefile_contains '^build-image-pi400: build-image-pi4'
+assert_recipe_not_contains build-image-pi400 'build_rpi_live_image\.sh' -o build-image-pi4
+assert_makefile_contains '^rpi-live-payload-check:.*rpi-4-arm64.*rpi-5-arm64'
+assert_recipe_not_contains rpi-live-payload-check 'stage_ieshare_payload\.sh' -o rpi-4-arm64 -o rpi-5-arm64 -o rpi-host-helper-arm64 -o x64-live-payload-check
+assert_recipe_contains rpi-live-payload-check 'payload build/x64-live/work/ieshare-payload' -o rpi-4-arm64 -o rpi-5-arm64 -o rpi-host-helper-arm64 -o x64-live-payload-check
+assert_recipe_contains build-image-pi4 'build_rpi_live_image\.sh --board pi4 --binary build/rpi4-live/IntuitionEngine-rpi4' -o rpi-live-payload-check
+assert_recipe_contains build-image-pi4 'payload build/x64-live/work/ieshare-payload' -o rpi-live-payload-check
+assert_recipe_contains build-image-pi5 'source-image build/rpi4-live/intuition-engine-rpi4\.img' -o build-image-pi4 -o rpi-live-payload-check
+assert_recipe_contains build-image-pi5 'binary build/rpi5-live/IntuitionEngine-rpi5' -o build-image-pi4 -o rpi-live-payload-check
+assert_recipe_contains build-image-pi5 'payload build/x64-live/work/ieshare-payload' -o build-image-pi4 -o rpi-live-payload-check
 assert_makefile_not_contains '^rpi4-live-payload-check:.*wasm'
 assert_makefile_contains '^rpi-4-arm64:.*validate-rpi-sysroot'
-assert_makefile_contains '^rpi-400-arm64:.*validate-rpi-sysroot'
 assert_makefile_contains '^rpi-5-arm64:.*validate-rpi-sysroot'
 assert_recipe_contains rpi-host-helper-arm64 'CGO_ENABLED=0 GOOS=linux GOARCH=arm64'
 assert_makefile_contains 'RPI_CROSS_SYSROOT.*IntuitionSubtractor/sysroot-arm64'
@@ -308,7 +314,6 @@ assert_recipe_contains rpi-4-arm64 'CROSS_SYSROOT=' -o x64-live-embed-assets
 assert_makefile_contains '^define build-rpi-binary'
 assert_makefile_contains 'build-linux-vm-binary,arm64'
 assert_makefile_contains 'validate_rpi_binary\.sh "\$\(4\)"'
-assert_recipe_contains rpi4-live-payload-check 'stage_ieshare_payload\.sh --destination "build/rpi4-live/work/ieshare-payload"' -o rpi-4-arm64 -o rpi-host-helper-arm64 -o x64-live-payload-check
 
 assert_set_e_loop release-windows
 assert_recipe_contains release-src 'pipefail'

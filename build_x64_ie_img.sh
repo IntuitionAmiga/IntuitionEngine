@@ -273,6 +273,8 @@ check_live_payload_inputs() {
         exit 1
     fi
     payload_require_file "$PLYMOUTH_SPLASH" "restore splash.png" "Plymouth splash image"
+    payload_require_file "$PLYMOUTH_THEME_DESCRIPTOR" "restore scripts/plymouth/intuition-engine.plymouth" "Plymouth theme descriptor"
+    payload_require_file "$PLYMOUTH_THEME_SCRIPT" "restore scripts/plymouth/intuition-engine.script" "Plymouth theme script"
 
     local ab3d2_name
     for ab3d2_name in "${AB3D2_IE68_NAMES[@]}"; do
@@ -441,7 +443,7 @@ verify_staged_share_payload() {
         log_error "Expected: coprocessor examples, bare-metal AROS duplicate demos, and smoke tests stay out of IESHARE"
         exit 1
     fi
-    if find "${payload_root}/_build" -maxdepth 1 -type f \( -name '*.o' -o -name '*.map' -o -name 'diag_symbols_*.lua' \) | grep -q .; then
+    if [[ -d "${payload_root}/_build" ]] && find "${payload_root}/_build" -maxdepth 1 -type f \( -name '*.o' -o -name '*.map' -o -name 'diag_symbols_*.lua' \) | grep -q .; then
         log_error "Forbidden live payload content: AB3D2 build intermediates staged in runtime asset root"
         log_error "Producer: build_x64_ie_img.sh stage_share_payload"
         exit 1

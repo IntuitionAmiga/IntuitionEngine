@@ -63,12 +63,12 @@ func TestJACKRingPreservesOrderingAcrossWraparound(t *testing.T) {
 func TestJACKRingUnderrunSilencesRemainderAndCountsIt(t *testing.T) {
 	ring := newJACKSampleRing(4)
 	left, right := make([]float32, 4), make([]float32, 4)
+	ring.enablePlayback()
 	ring.readStereo(left, right)
 	ring.readStereo(left, right)
 	if !ring.write([]float32{0.25, -0.5}) {
 		t.Fatal("write unexpectedly failed")
 	}
-	ring.enablePlayback()
 	ring.readStereo(left, right)
 	if want := []float32{0.25, -0.5, 0, 0}; !reflect.DeepEqual(left, want) {
 		t.Fatalf("left output = %v, want %v", left, want)

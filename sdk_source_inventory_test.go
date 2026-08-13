@@ -527,6 +527,42 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 	if !strings.Contains(makefile, "GOEXPERIMENT=simd") {
 		t.Fatal("Makefile no longer enables the documented SIMD experiment")
 	}
+	for _, needle := range []string{
+		"RPI_BINARY_TAGS := $(VM_EMBED_TAGS) jack",
+		"build-rpi-binary,pi4,v8.0,cortex-a72,build/rpi4-live/IntuitionEngine-rpi4,default.pgo.rpi400",
+		"rpi-400-arm64: rpi-4-arm64",
+		"build-rpi-binary,pi5,v8.2,cortex-a76,build/rpi5-live/IntuitionEngine-rpi5,default.pgo.rpi5",
+		"--source-image build/rpi4-live/intuition-engine-rpi4.img",
+		"--payload $(X64_LIVE_DIR)/work/ieshare-payload",
+	} {
+		if !strings.Contains(makefile, needle) {
+			t.Fatalf("Raspberry Pi build-profile contract changed; review architecture.md: %s", needle)
+		}
+	}
+	runtimeAudio := readAuditFile(t, "runtime_audio.go")
+	for _, needle := range []string{
+		`case "", "oto":`,
+		"attempts = []int{AUDIO_BACKEND_OTO, AUDIO_BACKEND_NULL}",
+		`case "jack":`,
+		"attempts = []int{AUDIO_BACKEND_JACK, AUDIO_BACKEND_OTO, AUDIO_BACKEND_NULL}",
+		`case "null":`,
+		"attempts = []int{AUDIO_BACKEND_NULL}",
+	} {
+		if !strings.Contains(runtimeAudio, needle) {
+			t.Fatalf("runtime audio-selection contract changed; review architecture.md: %s", needle)
+		}
+	}
+	jackAudio := readAuditFile(t, "audio_backend_jack.go")
+	for _, needle := range []string{
+		"//go:build linux && cgo && jack",
+		"int(client.GetSampleRate()) != jackSampleRate",
+		"int(client.GetBufferSize()) != jackPeriodSize",
+		"requestJACKTermination()",
+	} {
+		if !strings.Contains(jackAudio, needle) {
+			t.Fatalf("JACK audio contract changed; review architecture.md: %s", needle)
+		}
+	}
 	for category, files := range categoryEvidence {
 		if len(files) == 0 {
 			t.Fatalf("architecture category %q has no source evidence", category)
@@ -685,6 +721,20 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		name     string
 		evidence string
 	}{
+		{"IE_AUDIO_BACKEND selects oto, jack, or null.", "`runtime_audio.go` `newRuntimeSoundChip` backend switch"},
+		{"The default and oto paths try Oto and then silent output.", "`runtime_audio.go` `newRuntimeSoundChip` default attempt list"},
+		{"The jack path tries JACK, Oto, and silent output in that order.", "`runtime_audio.go` `newRuntimeSoundChip` JACK attempt list"},
+		{"The null path selects silent output directly.", "`runtime_audio.go` `newRuntimeSoundChip` null attempt list"},
+		{"Linux cgo builds compiled with the jack tag provide the JACK backend.", "`audio_backend_jack.go` build constraint"},
+		{"It requires the server to run at 44.1 kHz and 64-frame periods.", "`audio_backend_jack.go` constructor validation and `audio_jack_launcher.go` fixed server arguments"},
+		{"After startup, a JACK shutdown, sample-rate change, or period-size change marks the backend failed and terminates through the common process cleanup path.", "`audio_backend_jack.go` callbacks and failure supervisor"},
+		{"Clean shutdown, script exit, CPU-profile exit, performance-accounting exit, and terminal-signal shutdown closes the selected audio output.", "`main.go` cleanup registration, `profile_cpu.go` process cleanup hook, `runtime_audio_signal.go`, `perf_report_exit_signal.go`, and `profile_cpu_signal.go`"},
+		{"This also covers an output constructed before SoundChip.Start has been called.", "`main.go` cleanup registration and `audio_chip.go` `Stop`"},
+		{"Pi 4 and Pi 400 use one ARMv8.0 Cortex-A72 binary and default.pgo.rpi400 when that profile exists; otherwise PGO is disabled.", "`Makefile` Pi 4 `build-rpi-binary` call and Pi 400 compatibility alias"},
+		{"Pi 5 uses ARMv8.2 Cortex-A76 settings and default.pgo.rpi5 when that profile exists; otherwise PGO is disabled.", "`Makefile` Pi 5 `build-rpi-binary` call"},
+		{"Both Raspberry Pi live binaries include the jack tag.", "`Makefile` `RPI_BINARY_TAGS` and board targets"},
+		{"The Pi 4 and Pi 400 image is built once with one IESHARE payload; the Pi 5 image is copied from it and receives only the Pi 5 binary before independent verification and packaging.", "`Makefile` image graph and `scripts/build_rpi_live_image.sh` source-image path"},
+		{"The x64 payload check stages one canonical IESHARE tree, and both Raspberry Pi image builds consume that same tree.", "`Makefile` `x64-live-payload-check` and Raspberry Pi image recipes"},
 		{"Bare .ie68 uses the active-visible RAM ceiling; EmuTOS and AROS M68K loader modes use profile bounds.", "`boot_guest_ram.go` `resolveModeCaps`/`resolveActiveVisibleCeiling` cases for `modeM68KBare`, `modeEmuTOS`, and `modeAros`"},
 		{"Darwin RAM sizing uses a page-aligned conservative half of hw.memsize as the detected base before applying the per-platform reserve.", "`memory_sizing_usable_darwin.go` `unix.SysctlUint64(\"hw.memsize\")`, `pageAlignDown(total / 2)`, and `memory_sizing.go` `ReserveFor`"},
 		{"ADOS_CMD_EXAMINE_ALL accelerates ACTION_EXAMINE_ALL through a 20-byte big-endian request descriptor, guest span validation, direct ExAllData packing, eac_LastKey continuation, and ERROR_ACTION_NOT_KNOWN fallback for match strings or hooks.", "`aros_dos_constants.go` `ADOS_CMD_EXAMINE_ALL`/`ADOS_EXALL_REQ_*`, `aros_dos_intercept.go` `cmdExamineAll`"},

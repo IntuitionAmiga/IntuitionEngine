@@ -3825,6 +3825,125 @@ protected `sdk/docs/refman/` and `sdk/docs/refman.publish/` trees were not
 edited.
 Disposition: KEEP.
 
+ID: SDK-DOC-0106
+Status: FIXED
+Document: `sdk/docs/architecture.md`, the Architecture empirical inventory,
+and companion gates.
+Section: Build profiles, runtime audio backends, audio data flow, and process
+shutdown.
+Claim: Commits `b5ceb690` and `a43c0770` add a Linux cgo JACK backend,
+runtime selection through `IE_AUDIO_BACKEND`, process-level audio cleanup, and
+Pi 4, Pi 400, and Pi 5 live-image profiles. The Architecture manual must
+describe the observable backend selection and fallback order, JACK rate and
+period contract, rendering and callback split, failure and shutdown behaviour,
+and board-specific ARM and PGO choices. Its diagrams and timing tables must not
+continue to present Oto as the only hardware output path.
+Purpose judgement: These are whole-machine host-backend and shipped
+build-profile contracts. They belong in Architecture, not the physical IE64 or
+IE32 processor manuals, IEMon command reference, or IE Script API reference.
+Canonical sources checked: every changed path and semantic diff in
+`11432c3f..a43c0770`; the initially clean tracked tree; `runtime_audio.go`,
+`audio_interface.go`, `audio_backend_jack.go`, `audio_backend_jack_ring.go`,
+`audio_jack_launcher.go`, `audio_chip.go`, `main.go`, process exit and signal
+cleanup paths, the Raspberry Pi Make targets, appliance launch scripts, image
+builder, payload staging, and their focused tests.
+Runnable verification: Red-to-green Architecture runtime-audio and Raspberry
+Pi profile gate; generated Architecture source inventory comparison; manual
+coverage comparison; focused runtime audio and JACK tests; all five companion
+inventory, ledger, and manual gates; `make check-docs`; PDF render-manifest
+verification; and final five-PDF inspection.
+Observed result: Added source-derived inventory facts for backend selection,
+JACK availability and server constraints, cleanup lifetime, and Raspberry Pi
+processor/PGO choices. Updated the Architecture build-profile table, audio
+backend reference, synthesis and data-flow diagrams, goroutine inventory,
+clock model, and shutdown semantics. Regenerated the Architecture inventory,
+which also now includes the new JACK files in its source-derived Audio
+Subsystem category. Repaired the JACK underrun test so it enables playback
+before consuming the deliberate startup prefill, matching the ring's
+non-consuming pre-start silence contract. No source-backed contract changed in
+the other four manuals.
+Action: Regenerate all five PDFs and the render manifest after all pre-render
+gates pass.
+Notes: The Pi 4 and Pi 400 targets both use `default.pgo.rpi400`; Pi 5 uses
+`default.pgo.rpi5`; a missing or empty board profile selects `-pgo=off`.
+`sdk/docs/refman/` and `sdk/docs/refman.publish/` remain protected and were not
+edited.
+Disposition: KEEP.
+
+ID: SDK-DOC-0107
+Status: FIXED
+Document: `sdk/docs/architecture.md`, the Architecture empirical inventory,
+and companion gates.
+Section: Raspberry Pi live-image build and packaging topology.
+Claim: The tracked release changes after the initial `SDK-DOC-0106` pass make
+Pi 4 and Pi 400 share one Cortex-A72 binary and appliance image, stage one
+canonical IESHARE payload through the x64 payload check, and derive the Pi 5
+image by copying the completed Pi 4 image and replacing only the Intuition
+Engine binary. Architecture and its inventory must describe that topology
+instead of the earlier three-independent-image workflow.
+Purpose judgement: This is observable shipped build-profile and release-image
+architecture. It belongs in Architecture and does not change the IE64 or IE32
+processor contracts, IEMon commands, or IE Script API.
+Canonical sources checked: the current tracked diffs in `Makefile`,
+`scripts/build_rpi_live_image.sh`, `scripts/test-makefile.sh`,
+`scripts/test-rpi-live-image.sh`, and `build_x64_ie_img.sh`; Make prerequisite
+and recipe expansion; source-image cloning, binary replacement, independent
+verification and archive paths; and the Architecture source inventory.
+Runnable verification: `scripts/test-makefile.sh`,
+`scripts/test-rpi-live-image.sh`, the generated Architecture inventory and
+manual-coverage gates, all five companion and ledger gates, `make check-docs`,
+render-manifest verification, and final PDF inspection.
+Observed result: Architecture now states that Pi 4 and Pi 400 share one
+ARMv8.0 Cortex-A72 binary and image, Pi 5 retains its ARMv8.2 Cortex-A76 binary
+and derives its appliance from the completed Pi 4 image, and both image builds
+consume the one x64-staged IESHARE tree. The inventory and companion gate pin
+the shared target aliases, source-image argument, common payload path, and
+board-specific PGO choices. No source-backed contract changed in the other
+four manuals.
+Action: Regenerate all five PDFs and the render manifest after all pre-render
+gates pass.
+Notes: Existing modifications under `sdk/docs/refman.publish/pdf/` predate this
+pass and are preserved without modification. The companion renderer reads only
+the published preface Markdown and writes only the five companion PDFs.
+Disposition: KEEP.
+
+ID: SDK-DOC-0108
+Status: FIXED
+Document: `sdk/docs/architecture.md`, the Architecture empirical inventory,
+and companion gates.
+Section: Post-commit and tracked-worktree re-audit.
+Claim: The five manuals must be rechecked after commits `b5ceb690` and
+`a43c0770` and after the tracked Raspberry Pi image-builder changes. The
+commits add the JACK runtime backend and Raspberry Pi live-image profiles;
+the later tracked changes preserve that public topology while making the Pi 5
+image derive from the completed Pi 4 image, resolving administrative tools
+outside the user PATH, and packaging the companion PDFs with each image.
+Purpose judgement: JACK selection, audio lifetime, and shipped Raspberry Pi
+profiles are whole-machine Architecture contracts. Tool lookup and archive
+implementation details do not add processor, monitor, or scripting contracts.
+Canonical sources checked: every changed path in
+`11432c3f..a43c0770`; all current tracked diffs; runtime audio selection,
+JACK callback and renderer paths, process cleanup, Raspberry Pi Make targets,
+image construction, payload staging, verification, and focused tests.
+Runnable verification: source-derived inventory and manual-coverage tests;
+all companion and ledger gates; focused runtime-audio tests; Raspberry Pi
+image-builder, append, staging, and verifier contract tests; Makefile contract
+tests; `make check-docs`; protected-refman checksum comparison; final PDF
+render, manifest verification, and PDF inspection.
+Observed result: The existing Architecture edits accurately describe backend
+fallback order, JACK constraints and lifecycle, Pi processor and PGO choices,
+the shared IESHARE payload, and Pi 5 image derivation. No source-backed change
+was found for IE64, IE32, IEMon, or IE Script, so those Markdown files remain
+untouched. The Architecture page-one date records this completed re-audit.
+Action: Regenerate all five PDFs and the render manifest after all pre-render
+gates pass.
+Notes: The local host lacks the unversioned `libjack.so` development linker
+name, so the native `headless jack` test binary cannot link. The committed
+JACK tests, source checks, cross-sysroot validation, and successfully built
+Raspberry Pi binaries remain the executable evidence. Existing refman source
+and publish-tree changes are preserved and excluded from this pass.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -3864,7 +3983,8 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
 `SDK-DOC-0100`, `SDK-DOC-0101`, `SDK-DOC-0102`, `SDK-DOC-0103`, and
-`SDK-DOC-0104`, and `SDK-DOC-0105`
+`SDK-DOC-0104`, `SDK-DOC-0105`, `SDK-DOC-0106`, `SDK-DOC-0107`, and
+`SDK-DOC-0108`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -3946,7 +4066,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0105` and
+Open claim-group backlog: none for this run after `SDK-DOC-0108` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate
