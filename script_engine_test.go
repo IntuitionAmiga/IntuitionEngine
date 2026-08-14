@@ -107,6 +107,7 @@ func TestScriptEngine_ShowreelDiagnosisScriptsParse(t *testing.T) {
 	paths := []string{
 		filepath.Join("sdk", "scripts", "showreel_diag.lua"),
 		filepath.Join("sdk", "scripts", "diag_rotozoomer_68k.ies"),
+		filepath.Join("sdk", "scripts", "diag_rotozoomer_nocpu.ies"),
 		filepath.Join("sdk", "scripts", "diag_robocop_intro_68k.ies"),
 		filepath.Join("sdk", "scripts", "diag_ted_121_colors_68k.ies"),
 		filepath.Join("sdk", "scripts", "diag_rotating_cube_copper_68k.ies"),

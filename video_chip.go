@@ -568,6 +568,8 @@ type VideoChip struct {
 	copperRasterY                uint16
 	copperIOBase                 uint32 // Base address for MOVE operations (default VIDEO_REG_BASE)
 	copperManagedByCompositor    bool   // true when compositor handles copper per-scanline
+	copperFrameClockOwners       atomic.Int32
+	copperFrameStarts            uint64
 
 	// Blitter state
 	bltIrqEnabled       bool
@@ -1373,9 +1375,6 @@ func (chip *VideoChip) refreshLoop() {
 	vblankStartDelay := REFRESH_INTERVAL / 2 // VBlank starts after 50% of frame
 	_ = vblankStartDelay                     // Reserved for future use
 
-	// Frame counter for VBlank race prevention
-	var currentFrame uint64
-
 	// Initialize lastFrameStart so M68K polling works before first ticker fires
 	chip.lastFrameStart.Store(time.Now().UnixNano())
 
@@ -1384,25 +1383,27 @@ func (chip *VideoChip) refreshLoop() {
 		case <-chip.done:
 			return
 		case <-ticker.C:
-			// Start of new frame - record start time for VBlank calculation
-			currentFrame++
-			chip.lastFrameStart.Store(time.Now().UnixNano())
-			chip.setVBlank(false) // Legacy support
-
-			if !chip.enabled.Load() {
-				continue
-			}
-
-			chip.mu.Lock()
-			mode := VideoModes[chip.currentMode]
-			if !chip.copperManagedByCompositor {
-				chip.advanceCopperFrameLocked(mode)
-			}
-			chip.runBlitterLocked(mode)
-			chip.frameCounter += FRAME_INCREMENT
-			chip.mu.Unlock()
+			chip.runPrivateRefreshTick()
 		}
 	}
+}
+
+func (chip *VideoChip) runPrivateRefreshTick() {
+	chip.lastFrameStart.Store(time.Now().UnixNano())
+	chip.setVBlank(false)
+
+	if !chip.enabled.Load() {
+		return
+	}
+
+	chip.mu.Lock()
+	mode := VideoModes[chip.currentMode]
+	if chip.copperFrameClockOwners.Load() == 0 && !chip.copperManagedByCompositor {
+		chip.advanceCopperFrameLocked(mode)
+	}
+	chip.runBlitterLocked(mode)
+	chip.frameCounter += FRAME_INCREMENT
+	chip.mu.Unlock()
 }
 
 func (chip *VideoChip) runBlitterLocked(mode VideoMode) {
@@ -3053,6 +3054,7 @@ func (chip *VideoChip) advanceCopperFrameLocked(mode VideoMode) {
 }
 
 func (chip *VideoChip) copperStartFrameLocked() {
+	chip.copperFrameStarts++
 	chip.copperPC = chip.copperPtr
 	chip.copperWaiting = false
 	chip.copperHalted = false
@@ -4602,6 +4604,23 @@ func (chip *VideoChip) NeedsScanlineCompositing() bool {
 	chip.mu.Lock()
 	defer chip.mu.Unlock()
 	return chip.copperEnabled && chip.bus != nil
+}
+
+func (chip *VideoChip) acquireCompositorFrameClock() {
+	chip.copperFrameClockOwners.Add(1)
+	// Wait for a private tick which passed the ownership check before the
+	// claim. No private Copper frame can still be running when this returns.
+	chip.mu.Lock()
+	chip.mu.Unlock()
+}
+
+func (chip *VideoChip) releaseCompositorFrameClock() {
+	for {
+		owners := chip.copperFrameClockOwners.Load()
+		if owners == 0 || chip.copperFrameClockOwners.CompareAndSwap(owners, owners-1) {
+			return
+		}
+	}
 }
 
 // -----------------------------------------------------------------------------

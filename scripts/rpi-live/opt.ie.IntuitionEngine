@@ -1,7 +1,8 @@
-#include <abstractions/base>
+#include <tunables/global>
 
 profile opt.ie.IntuitionEngine /opt/ie/IntuitionEngine flags=(attach_disconnected) {
   #include <abstractions/base>
+  network unix stream,
   /opt/ie/IntuitionEngine mr,
   /var/ie/share/** r,
   /var/ie/state/** rw,
@@ -9,6 +10,8 @@ profile opt.ie.IntuitionEngine /opt/ie/IntuitionEngine flags=(attach_disconnecte
   /usr/libexec/intuitionengine-host-helper Px,
   /var/ie/runtime/asound.conf rw,
   /run/user/1000/** rw,
+  /tmp/.X11-unix/** rw,
+  /tmp/.X[0-9]*-lock r,
   /dev/snd/** rw,
   /usr/lib/aarch64-linux-gnu/** mr,
   /lib/aarch64-linux-gnu/** mr,

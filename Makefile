@@ -272,7 +272,8 @@ ROTOZOOM_VARIANT_TEXTURES := \
 	./sdk/examples/assets/rotozoomtexture_hw_c.raw \
 	./sdk/examples/assets/rotozoomtexture_6502.raw \
 	./sdk/examples/assets/rotozoomtexture_z80.raw \
-	./sdk/examples/assets/rotozoomtexture_x86.raw
+	./sdk/examples/assets/rotozoomtexture_x86.raw \
+	./sdk/examples/assets/rotozoomtexture_nocpu.raw
 SHOWREEL_ROBOCOP_PNG := ./sdk/examples/assets/robocop.png
 SHOWREEL_FONT_RGBA := ./sdk/examples/assets/font_rgba.bin
 SHOWREEL_FONT_SOURCES := ./tools/font2rgba/main.go ./tools/font2rgba/font.go
@@ -313,6 +314,7 @@ SHOWREEL_IE32_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/robocop_intro.iex
 SHOWREEL_IE64_ARTIFACTS := \
 	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_ie64.ie64 \
+	$(SHOWREEL_PREBUILT_DIR)/rotozoomer_nocpu.ie64 \
 	$(SHOWREEL_PREBUILT_DIR)/mandelbrot_ie64.ie64 \
 	$(SHOWREEL_PREBUILT_DIR)/ula_boing_ie64.ie64
 SHOWREEL_M68K_ARTIFACTS := \
@@ -368,11 +370,11 @@ AB3D2_README := $(AB3D2_BUILD_DIR)/README.md
 AB3D2_ARCHIVE := $(AB3D2_BUILD_DIR)/IntuitionEngine-AB3D2-x64.zip
 
 # Main targets
-.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-wasm-crt-browser test-x86-jit-parity test-6502-jit-parity test-ie32-jit-parity test-ie32-jit-race test-z80-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos rpi-4-arm64 rpi-400-arm64 rpi-5-arm64 rpi-arm64-preflight rpi-host-helper-arm64 build-image-pi4 build-image-pi400 build-image-pi5 rpi-live-payload-check rpi4-live-payload-check rpi400-live-payload-check rpi5-live-payload-check rpi-live-images rpi4-live-qemu prepare-rpi-cross-overlay validate-rpi-sysroot validate-rpi-sysroot-preflight test vet tidy test-makefile test-cross test-cross-binaries test-cross-amd64-binaries test-ie64-toolchain ab3d2 ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-bench-baseline x86-bench-after x86-bench-compare z80-bench-baseline z80-bench-after z80-bench-compare ie32-bench-baseline ie32-bench-after ie32-bench-compare x86-iedoom-timedemo
+.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-wasm-crt-browser test-x86-jit-parity test-6502-jit-parity test-ie32-jit-parity test-ie32-jit-race test-z80-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos rpi-4-arm64 rpi-400-arm64 rpi-5-arm64 rpi-arm64-preflight rpi-host-helper-arm64 build-image-pi4 build-image-pi400 build-image-pi5 rpi-live-payload-check rpi4-live-payload-check rpi400-live-payload-check rpi5-live-payload-check rpi-live-images rpi4-live-qemu rpi4-live-hardware-qemu prepare-rpi-cross-overlay validate-rpi-sysroot validate-rpi-sysroot-preflight test vet tidy test-makefile test-cross test-cross-binaries test-cross-amd64-binaries test-ie64-toolchain ab3d2 ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-bench-baseline x86-bench-after x86-bench-compare z80-bench-baseline z80-bench-after z80-bench-compare ie32-bench-baseline ie32-bench-after ie32-bench-compare x86-iedoom-timedemo
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
-.PHONY: ie32asm ie64asm ie64dis ie64ld ie64-cproc ie64-ar ie64-ranlib ie32to64 m68kto64 test-m68kto64 rotozoom-textures ula-boing-ie64 gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets aros-iewarp-library iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos cputest-musashi dist-ie64-toolchain-linux-amd64
+.PHONY: ie32asm ie64asm ie64dis ie64ld ie64-cproc ie64-ar ie64-ranlib ie32to64 m68kto64 test-m68kto64 rotozoom-textures nocpu-rotozoomer ula-boing-ie64 gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets aros-iewarp-library iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-probe emutos-release-rom iedoom iedoom-ie86 iedoom-ie68 basic basic-emutos cputest-musashi dist-ie64-toolchain-linux-amd64
 
 # Default target builds everything
 all: setup intuition-engine ie32asm ie64asm ie32to64 m68kto64 ie64dis ie64ld ie64-cproc ie64-ar ie64-ranlib
@@ -741,6 +743,9 @@ build-image-pi5: build-image-pi4
 rpi-live-images: build-image-pi4 build-image-pi5
 
 rpi4-live-qemu:
+	@scripts/rpi4_virt_qemu.sh build/rpi4-live/intuition-engine-rpi4.img
+
+rpi4-live-hardware-qemu:
 	@scripts/rpi4_live_qemu.sh build/rpi4-live/intuition-engine-rpi4.img
 
 .PHONY: x64-live-refman-pdfs
@@ -2094,7 +2099,7 @@ showreel-ie32: ie32asm robocop-32 rotozoom-textures
 		mv sdk/examples/asm/$$out $(SHOWREEL_PREBUILT_DIR)/; \
 	done
 
-showreel-ie64: ie64asm rotozoom-textures ula-boing-ie64
+showreel-ie64: ie64asm rotozoom-textures nocpu-rotozoomer ula-boing-ie64
 	@echo "Building showreel IE64 artifacts..."
 	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
 	@set -e; \
@@ -2343,6 +2348,13 @@ $(ROTOZOOM_VARIANT_TEXTURES): .rotozoom-textures.stamp
 	@echo "Generating per-CPU rotozoomer textures..."
 	@go run ./tools/gen_roto_textures.go
 	@touch $@
+
+nocpu-rotozoomer: ie64asm ./sdk/examples/asm/rotozoomer_nocpu.asm ./sdk/examples/assets/rotozoomtexture_nocpu.raw ./sdk/examples/assets/music/yourlove.mid
+	@echo "Building no-CPU IE64 bootstrap..."
+	@$(MKDIR) -p $(SHOWREEL_PREBUILT_DIR)
+	@$(SDK_BIN_DIR)/ie64asm -I sdk/include sdk/examples/asm/rotozoomer_nocpu.asm
+	@mv sdk/examples/asm/rotozoomer_nocpu.ie64 $(SHOWREEL_PREBUILT_DIR)/
+	@echo "Output: $(SHOWREEL_PREBUILT_DIR)/rotozoomer_nocpu.ie64"
 
 # Build the Robocop IE32 demo (requires ImageMagick for asset conversion)
 .PHONY: robocop-32

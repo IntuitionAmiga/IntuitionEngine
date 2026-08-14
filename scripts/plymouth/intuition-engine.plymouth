@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Intuition Engine
+Description=Intuition Engine live boot splash
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/intuition-engine
+ScriptFile=/usr/share/plymouth/themes/intuition-engine/intuition-engine.script

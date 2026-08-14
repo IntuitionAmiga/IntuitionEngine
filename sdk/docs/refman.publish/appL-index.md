@@ -66,6 +66,8 @@ symbols, and Appendix J gives the full memory map.
 | Compiled BASIC | Chapter 1, Chapter 2, Chapter 25, Chapter 35 |
 | Compositor | Chapter 3, Appendix K |
 | Copper | Chapter 4, Chapter 54 |
+| Copper-driven blitter | Chapter 51, Chapter 54 |
+| Copper frame execution | Chapter 4, Chapter 51, Chapter 54 |
 | Coprocessor | Chapter 32, Chapter 40, Chapter 43, Chapter 57, Chapter 61, Appendix I |
 | Coprocessor instance discovery | Chapter 32, Appendix D, Appendix H |
 | Coprocessor mailbox | Chapter 32, Chapter 43, Appendix D, Appendix J |
@@ -153,6 +155,8 @@ symbols, and Appendix J gives the full memory map.
 
 | Term | See |
 |------|-----|
+| HALT after bootstrap | Chapter 51, Chapter 54 |
+| Halted-CPU effect | Chapter 51, Chapter 54 |
 | HOST command | Chapter 36, Appendix I |
 | HOST_SOCKET_CMD | Chapter 39, Appendix D, Appendix H |
 | HOST_SOCKET_ERRNO | Chapter 39, Appendix D, Appendix I |

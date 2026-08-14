@@ -98,7 +98,7 @@ when another display source is doing much of the visible work.
 
 Foreground polish is usually ordinary blitter work:
 
-```basic
+```text
 BLIT FILL BB+Y*ST+64*4,8,V0,&H00A87058,ST
 BLIT FILL BB+Y*ST+80*4,8,V1,&H00708088,ST
 BLIT COPY SB+SO,BB+420*ST,640,32,SS,ST
@@ -111,7 +111,36 @@ The exact addresses depend on the demo, but the idea is stable:
   offset.
 - A foreground bar is a `BLIT FILL` timed by music or frame phase.
 
-## 54.6 Limits
+## 54.6 A Custom-Chip Steady State
+
+A CPU does not have to remain in the frame loop after it has prepared
+the whole job. Chapter 51's seventh rotozoomer uses IE64 for a finite
+bootstrap, then leaves the repeating work to Copper and the blitter.
+
+The reusable sequence is:
+
+1. Build every table and working buffer before stopping the CPU.
+2. Put the complete Copper list in bus-visible memory.
+3. Give each changing register one owner during a frame.
+4. Order blitter commands so that a result is complete before a later
+   Copper move consumes it.
+5. Hold the preceding completed picture while the next picture is being
+   calculated.
+6. End the list so Copper restarts cleanly on the next presented frame.
+
+Copper may start blitter operations and the blitter may write data words
+which later Copper instructions will read. That permits table selection,
+phase arithmetic, and command construction without another CPU
+instruction. It does not remove the setup requirement. A CPU must still
+prepare the list, tables, addresses, initial state, and independent audio
+player before it halts.
+
+One presented VideoChip frame begins one Copper pass. This ordering rule
+is what makes a custom-chip steady state predictable: the list cannot be
+started a second time by another VideoChip refresh while the same frame is
+being presented.
+
+## 54.7 Limits
 
 - `COPPER WAIT` in BASIC waits on scanline with X position `0`.
 - A copper list must end with `COPPER END`.

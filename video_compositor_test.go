@@ -671,6 +671,173 @@ func TestCompositor_Unregister_RemovesSource(t *testing.T) {
 	}
 }
 
+type mockFrameClockSource struct {
+	mockOpaqueSource
+	clockOwned atomic.Bool
+	owners     atomic.Int32
+	claims     atomic.Int32
+	releases   atomic.Int32
+}
+
+func (m *mockFrameClockSource) acquireCompositorFrameClock() {
+	m.clockOwned.Store(m.owners.Add(1) > 0)
+	m.claims.Add(1)
+}
+
+func (m *mockFrameClockSource) releaseCompositorFrameClock() {
+	m.clockOwned.Store(m.owners.Add(-1) > 0)
+	m.releases.Add(1)
+}
+
+func TestCompositor_FrameClockOwnershipFollowsLifecycle(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	source := &mockFrameClockSource{}
+	source.enabled.Store(true)
+	source.w, source.h = 1, 1
+	source.frame = solidTestFrame(1, 1, 1, 2, 3, 0xFF)
+	id := comp.RegisterSourceWithID(source)
+	if source.clockOwned.Load() {
+		t.Fatal("stopped compositor claimed frame-clock ownership")
+	}
+
+	if err := comp.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !source.clockOwned.Load() {
+		t.Fatal("running compositor did not claim frame-clock ownership")
+	}
+	comp.Stop()
+	if source.clockOwned.Load() {
+		t.Fatal("stopped compositor retained frame-clock ownership")
+	}
+
+	if err := comp.Start(); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if !source.clockOwned.Load() {
+		t.Fatal("restarted compositor did not reclaim frame-clock ownership")
+	}
+	if !comp.UnregisterSource(id) {
+		t.Fatal("failed to unregister frame-clock source")
+	}
+	if source.clockOwned.Load() {
+		t.Fatal("unregistered source retained frame-clock ownership")
+	}
+	comp.Stop()
+	if got := source.claims.Load(); got != 2 {
+		t.Fatalf("ownership claims = %d, want 2", got)
+	}
+	if got := source.releases.Load(); got != 2 {
+		t.Fatalf("ownership releases = %d, want 2", got)
+	}
+}
+
+func TestCompositor_RegisterWhileRunningClaimsFrameClock(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	if err := comp.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer comp.Stop()
+
+	source := &mockFrameClockSource{}
+	source.enabled.Store(true)
+	source.w, source.h = 1, 1
+	source.frame = solidTestFrame(1, 1, 1, 2, 3, 0xFF)
+	comp.RegisterSource(source)
+	if !source.clockOwned.Load() {
+		t.Fatal("source registered with running compositor did not gain frame-clock ownership")
+	}
+}
+
+func TestCompositor_CloseReleasesFrameClockOwnership(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	source := &mockFrameClockSource{}
+	source.enabled.Store(true)
+	source.w, source.h = 1, 1
+	source.frame = solidTestFrame(1, 1, 1, 2, 3, 0xFF)
+	comp.RegisterSource(source)
+	if err := comp.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := comp.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if source.clockOwned.Load() {
+		t.Fatal("closed compositor retained frame-clock ownership")
+	}
+	if got := source.releases.Load(); got != 1 {
+		t.Fatalf("ownership releases = %d, want 1", got)
+	}
+}
+
+func TestCompositor_DuplicateFrameClockSourceKeepsOwnershipUntilLastRelease(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	source := &mockFrameClockSource{}
+	source.enabled.Store(true)
+	source.w, source.h = 1, 1
+	source.frame = solidTestFrame(1, 1, 1, 2, 3, 0xFF)
+	first := comp.RegisterSourceWithID(source)
+	second := comp.RegisterSourceWithID(source)
+	if err := comp.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer comp.Stop()
+
+	if !comp.UnregisterSource(first) {
+		t.Fatal("failed to unregister first source registration")
+	}
+	if !source.clockOwned.Load() {
+		t.Fatal("first release dropped ownership held by second registration")
+	}
+	if !comp.UnregisterSource(second) {
+		t.Fatal("failed to unregister second source registration")
+	}
+	if source.clockOwned.Load() {
+		t.Fatal("last release retained frame-clock ownership")
+	}
+}
+
+func TestCompositor_SourceRegisteredDuringStopIsNotReleasedWithoutClaim(t *testing.T) {
+	comp := NewVideoCompositor(nil)
+	if err := comp.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	comp.scheduler.mu.Lock()
+	stopDone := make(chan struct{})
+	go func() {
+		comp.Stop()
+		close(stopDone)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		comp.mu.Lock()
+		stopping := comp.state == compositorStopping
+		comp.mu.Unlock()
+		if stopping {
+			break
+		}
+		if time.Now().After(deadline) {
+			comp.scheduler.mu.Unlock()
+			t.Fatal("compositor did not enter stopping state")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	source := &mockFrameClockSource{}
+	source.enabled.Store(true)
+	source.w, source.h = 1, 1
+	source.frame = solidTestFrame(1, 1, 1, 2, 3, 0xFF)
+	comp.RegisterSource(source)
+	comp.scheduler.mu.Unlock()
+	<-stopDone
+	if got := source.claims.Load(); got != 0 {
+		t.Fatalf("ownership claims = %d, want 0", got)
+	}
+	if got := source.releases.Load(); got != 0 {
+		t.Fatalf("ownership releases = %d, want 0", got)
+	}
+}
+
 func TestCompositor_RegisterSource_StableOrder(t *testing.T) {
 	comp := NewVideoCompositor(nil)
 	a := &mockOpaqueSource{layer: 20}

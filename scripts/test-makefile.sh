@@ -268,7 +268,7 @@ assert_makefile_contains 'Drivers/Makefile\.in" 2>/dev/null \|\| true'
 
 for target in \
   all setup intuition-engine ie32asm ie64asm ie64dis ie32to64 clean clean-sdk distclean \
-  rotozoom-textures gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets emutos-probe \
+  rotozoom-textures nocpu-rotozoomer gem-rotozoomer emutos-rom aros-rom aros-ie-live-assets aros-ie-live-inputs aros-ie-toolchain-assets aros-release-assets emutos-probe \
   iewarp-service-worker iewarp-runtime-local-assets iewarp-runtime-assets \
   arosvision-probe-tree arosvision-live-base arosvision-live-components arosvision-live-overlays arosvision-live-tree arosvision-probe-run emutos-release-rom basic basic-emutos cputest-musashi sdk sdk-build test vet tidy \
   test-makefile test-cross test-cross-binaries test-x86-jit-parity test-ie32-jit-parity test-ie32-jit-race ab3d2 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs testdata-harte testdata-x86 test-harte test-harte-short \
@@ -277,12 +277,18 @@ for target in \
   assert_target_exists "$target"
 done
 
+assert_recipe_contains nocpu-rotozoomer 'rotozoomer_nocpu\.asm'
+assert_makefile_not_contains 'gen_nocpu_roto|rotozoomer_nocpu_(copper|state|targets)\.bin|rotozoomer_nocpu\.inc'
+assert_makefile_contains 'showreel-ie64:.*nocpu-rotozoomer'
+
 # Pi 4 and Pi 400 share one Cortex-A72 binary and release image. Pi 5 derives
 # its image from that completed appliance, replacing only the VM binary.
-for target in rpi-4-arm64 rpi-400-arm64 rpi-5-arm64 rpi-arm64-preflight rpi-host-helper-arm64 build-image-pi4 build-image-pi400 build-image-pi5 rpi-live-payload-check rpi4-live-payload-check rpi400-live-payload-check rpi5-live-payload-check rpi-live-images rpi4-live-qemu prepare-rpi-cross-overlay validate-rpi-sysroot validate-rpi-sysroot-preflight test-rpi-live-image test-rpi-sysroot test-rpi-binary test-rpi-golden-prepare test-rpi-append-ieshare test-rpi4-live-qemu test-ieshare-payload test-verify-rpi-live-image; do
+for target in rpi-4-arm64 rpi-400-arm64 rpi-5-arm64 rpi-arm64-preflight rpi-host-helper-arm64 build-image-pi4 build-image-pi400 build-image-pi5 rpi-live-payload-check rpi4-live-payload-check rpi400-live-payload-check rpi5-live-payload-check rpi-live-images rpi4-live-qemu rpi4-live-hardware-qemu prepare-rpi-cross-overlay validate-rpi-sysroot validate-rpi-sysroot-preflight test-rpi-live-image test-rpi-sysroot test-rpi-binary test-rpi-golden-prepare test-rpi-append-ieshare test-rpi4-live-qemu test-ieshare-payload test-verify-rpi-live-image; do
   assert_phony "$target"
   assert_target_exists "$target"
 done
+assert_recipe_contains rpi4-live-qemu 'rpi4_virt_qemu\.sh'
+assert_recipe_contains rpi4-live-hardware-qemu 'rpi4_live_qemu\.sh'
 assert_recipe_contains rpi-4-arm64 'GOARM64=v8\.0' -o x64-live-embed-assets
 assert_recipe_contains rpi-5-arm64 'GOARM64=v8\.2' -o x64-live-embed-assets
 assert_recipe_contains rpi-4-arm64 'mcpu=cortex-a72' -o x64-live-embed-assets

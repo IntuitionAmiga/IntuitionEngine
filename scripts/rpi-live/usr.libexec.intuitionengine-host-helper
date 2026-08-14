@@ -1,11 +1,70 @@
-#include <abstractions/base>
+#include <tunables/global>
 
 profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-host-helper flags=(attach_disconnected) {
   #include <abstractions/base>
+  network unix stream,
+  dbus send bus=system,
+
   /usr/libexec/intuitionengine-host-helper mr,
   /run/intuitionengine-host-helper.sock rw,
+  /run/dbus/system_bus_socket rw,
+  /run/systemd/private rw,
   /usr/bin/nmcli ixr,
-  /usr/bin/apt-get ixr,
+  /usr/bin/systemctl ixr,
+  /usr/bin/apt-get Cx -> apt,
   /usr/lib/aarch64-linux-gnu/** mr,
   /lib/aarch64-linux-gnu/** mr,
+
+  profile apt flags=(attach_disconnected) {
+    #include <abstractions/base>
+    capability chown,
+    capability dac_override,
+    capability dac_read_search,
+    capability fowner,
+    capability fsetid,
+    capability mknod,
+    capability setgid,
+    capability setuid,
+    capability sys_admin,
+    capability sys_chroot,
+    capability sys_resource,
+    network inet stream,
+    network inet6 stream,
+    network unix stream,
+    dbus send bus=system,
+
+    /usr/bin/apt-get mr,
+    /usr/bin/dpkg ixr,
+    /usr/bin/gpg ixr,
+    /usr/bin/gpgv ixr,
+    /bin/dash ixr,
+    /bin/sh ixr,
+    /usr/lib/apt/methods/* ixr,
+    /bin/gunzip ixr,
+    /usr/bin/lzma ixr,
+    /usr/bin/xz ixr,
+    /usr/bin/zstd ixr,
+    /bin/** mixr,
+    /sbin/** mixr,
+    /usr/bin/** mixr,
+    /usr/sbin/** mixr,
+    /usr/lib/** mixr,
+    /var/lib/dpkg/info/* ixr,
+
+    /etc/** rwkl,
+    /usr/** rwkl,
+    /lib/** rwkl,
+    /boot/** rwkl,
+    /var/lib/apt/** rwkl,
+    /var/cache/apt/** rwkl,
+    /var/lib/dpkg/** rwkl,
+    /var/cache/debconf/** rwkl,
+    /var/log/apt/** rw,
+    /var/log/dpkg.log rw,
+    /var/tmp/** rwkl,
+    /tmp/** rwkl,
+    /run/** rwkl,
+    /proc/** r,
+    /sys/** r,
+  }
 }

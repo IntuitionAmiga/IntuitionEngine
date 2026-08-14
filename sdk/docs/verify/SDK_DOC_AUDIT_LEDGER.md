@@ -3944,6 +3944,46 @@ Raspberry Pi binaries remain the executable evidence. Existing refman source
 and publish-tree changes are preserved and excluded from this pass.
 Disposition: KEEP.
 
+ID: SDK-DOC-0109
+Status: FIXED
+Document: `sdk/docs/architecture.md`, the Architecture empirical inventory,
+and companion gates.
+Section: Post-checkpoint tracked-worktree architecture re-audit.
+Claim: The five manuals must be rechecked against all canonical source changes
+after the last completed five-book checkpoint at `9ab42313`, including the
+current tracked worktree. The relevant changes add counted compositor ownership
+of the VideoChip Copper frame clock and replace the Raspberry Pi appliance base
+and session path with Debian 13 Trixie, greetd, Cage, and integrated Xwayland.
+Purpose judgement: Copper frame-clock ownership is observable whole-machine
+video scheduling and belongs in Architecture. The operating-system base and
+automatic graphical session are shipped Raspberry Pi profile facts. Exact
+operation counts, lookup layouts, asset names, and build dependencies for one
+demo belong with that demo, not in the system architecture manual.
+Canonical sources checked: every tracked change relative to `9ab42313`; current
+tracked and relevant untracked video/compositor/Copper tests and demo sources;
+`video_chip.go`, `video_compositor.go`, `video_interface.go`; Raspberry Pi
+manifests, image builders, session scripts, QEMU/preparation scripts, Makefile
+targets, and their contract tests. No CPU instruction, monitor command, or IE
+Script API change requiring edits to the other four manuals was found.
+Runnable verification: focused compositor/Copper runtime tests; Architecture
+source-inventory golden and manual-coverage gates; Raspberry Pi image-builder,
+QEMU, and golden-preparation contract tests; all companion and ledger gates;
+`make check-docs`; protected-refman checksum comparison; final isolated five-PDF
+render, render-manifest verification, and PDF title/page inspection.
+Observed result: Architecture now records counted compositor ownership and its
+release lifecycle, plus the current Raspberry Pi Trixie and graphical-session
+contract. Demo-specific implementation prose was removed. Source-derived facts
+and companion gates now fail if either contract drifts or the demo detail
+returns. IE64, IE32, IEMon, and IE Script Markdown remain untouched because the
+review found no source-backed contract change for them.
+Action: Regenerate all five PDFs and the render manifest after all pre-render
+gates pass.
+Notes: Existing changes under `sdk/docs/refman/` and
+`sdk/docs/refman.publish/` predate this pass and are checksum-protected. The
+companion renderer uses only the published preface as read-only input and writes
+only the five root companion PDFs.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -3982,9 +4022,8 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0089`, `SDK-DOC-0090`, `SDK-DOC-0091`,
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
-`SDK-DOC-0100`, `SDK-DOC-0101`, `SDK-DOC-0102`, `SDK-DOC-0103`, and
 `SDK-DOC-0104`, `SDK-DOC-0105`, `SDK-DOC-0106`, `SDK-DOC-0107`, and
-`SDK-DOC-0108`
+`SDK-DOC-0108`, and `SDK-DOC-0109`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -4066,7 +4105,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0108` and
+Open claim-group backlog: none for this run after `SDK-DOC-0109` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate

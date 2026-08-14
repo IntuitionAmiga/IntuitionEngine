@@ -71,6 +71,11 @@ guestfish --ro -a "$image" run : mount-ro /dev/sda2 / : is-symlink /etc/systemd/
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
+greetd_config="$tmp/greetd-config.toml"
+guestfish --ro -a "$image" run : mount-ro /dev/sda2 / : download /etc/greetd/config.toml "$greetd_config"
+grep -Fxq '[initial_session]' "$greetd_config" || fail 'greetd config lacks automatic initial appliance session'
+grep -Fxq 'command = "/opt/ie/ie-session.sh"' "$greetd_config" || fail 'greetd initial session does not launch the appliance'
+grep -Fxq 'command = "/usr/sbin/agreety --cmd /opt/ie/ie-session.sh"' "$greetd_config" || fail 'greetd fallback is not a protocol-speaking greeter'
 installed="$tmp/IntuitionEngine"
 guestfish --ro -a "$image" run : mount-ro /dev/sda2 / : download /opt/ie/IntuitionEngine "$installed"
 cmp -s "$binary" "$installed" || fail "installed binary differs from requested board binary"

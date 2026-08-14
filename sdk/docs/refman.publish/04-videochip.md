@@ -982,7 +982,9 @@ it is easy to type and can target VideoChip or other MMIO blocks.
 Enabling the copper latches `COPPER_PTR` into `COPPER_PC` and clears
 waiting/halted state. At the start of every frame, the copper starts
 again from `COPPER_PTR`, clears waiting/halted state, and resets its
-MMIO base to `$000F0000`.
+MMIO base to `$000F0000`. One presented VideoChip frame begins one
+copper pass. An independent refresh path does not begin a second pass
+for the same presented frame.
 
 `COPPER_STATUS` has three read-only bits:
 

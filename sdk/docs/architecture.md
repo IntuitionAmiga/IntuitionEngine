@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-08-13*
+*Last modified: 2026-08-14*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -923,8 +923,8 @@ build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
 | `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
 | `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
 | Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE32, IE64, M68K, 6502, x86, and Z80 use WebAssembly JIT backends. IE32 lowers its eligible direct-RAM subset and resumes through the interpreter at observation boundaries. Z80 emits every non-observation opcode-manifest row from a source-stamped cache; port and block I/O use frozen canonical helpers, and its shared frontend eagerly forms bounded four-block static chains. The 6502 backend lowers documented NMOS instructions in eligible direct RAM and uses interpreter resume at mapping and observation boundaries. `IE64_WASM_JIT=0`, `M68K_WASM_JIT=0`, `P65_WASM_JIT=0`, `X86_WASM_JIT=0`, and `Z80_WASM_JIT=0` disable the corresponding browser backend; x86 also requires WebAssembly SIMD. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
-| Raspberry Pi 4 / Pi 400 live image | Linux ARM64, cgo, embedded system images, `jack` tag, `GOARM64=v8.0`, `-mcpu=cortex-a72` | Appliance image with JACK output, a PREEMPT_RT kernel, and the shared IESHARE payload. Pi 4 and Pi 400 use one ARMv8.0 Cortex-A72 binary and `default.pgo.rpi400` when that profile exists; otherwise PGO is disabled. |
-| Raspberry Pi 5 live image | Linux ARM64, cgo, embedded system images, `jack` tag, `GOARM64=v8.2`, `-mcpu=cortex-a76` | Appliance image with the same guest-facing payload and audio contract. Pi 5 uses ARMv8.2 Cortex-A76 settings and `default.pgo.rpi5` when that profile exists; otherwise PGO is disabled. The Pi 5 image is derived from that completed image by copying it and replacing only the Intuition Engine binary before independent verification and packaging. |
+| Raspberry Pi 4 / Pi 400 live image | Linux ARM64, cgo, embedded system images, `jack` tag, `GOARM64=v8.0`, `-mcpu=cortex-a72` | Debian 13 (Trixie) appliance image with JACK output, a PREEMPT_RT kernel, and the shared IESHARE payload. The automatic appliance session runs through greetd, Cage, and integrated Xwayland. Pi 4 and Pi 400 use one ARMv8.0 Cortex-A72 binary and `default.pgo.rpi400` when that profile exists; otherwise PGO is disabled. |
+| Raspberry Pi 5 live image | Linux ARM64, cgo, embedded system images, `jack` tag, `GOARM64=v8.2`, `-mcpu=cortex-a76` | Debian 13 (Trixie) appliance image with the same session, guest-facing payload, and audio contract. Pi 5 uses ARMv8.2 Cortex-A76 settings and `default.pgo.rpi5` when that profile exists; otherwise PGO is disabled. The Pi 5 image is derived from that completed image by copying it and replacing only the Intuition Engine binary before independent verification and packaging. |
 
 Headless stubs should be treated as backend substitutes, not as a different
 machine model. A test can still write video or audio MMIO and inspect guest
@@ -1487,6 +1487,17 @@ The copper coprocessor is internal to VideoChip but can write to any MMIO-mapped
 - This enables per-scanline palette changes, mode switches, and register manipulation on any video chip
 - `copperIOBase` resets to `VIDEO_REG_BASE` at the start of each frame
 - The compositor's `ScanlineAware` interface orchestrates this: `StartFrame()` -> `ProcessScanline(y)` -> `FinishFrame()`
+
+While a VideoChip is registered with a running compositor, the compositor owns
+its Copper frame clock for the complete registration lifecycle. The private
+VideoChip refresh ticker continues its other timing work but does not start a
+second Copper frame. Acquisition waits for any private Copper frame which was
+already in progress, so the first compositor frame cannot overlap it. Ownership
+claims are counted, which keeps duplicate registrations and more than one
+compositor balanced. Stopping or closing the compositor, or unregistering the
+source, releases the corresponding claim and restores standalone Copper
+advancement after the last release. This is host scheduling behaviour only. It
+does not add guest MMIO, an instruction, an SDK constant or a language feature.
 
 ### Extended Blitter: BPP Modes, Draw Modes, Colour Expansion, and Scale
 

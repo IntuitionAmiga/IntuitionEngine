@@ -2466,6 +2466,58 @@ Execute this pass in ascending reader order:
 
 ## Uniform Chapter Taxonomy
 
+## Copper-Owned Frame And Halted-CPU Effect Pass
+
+This is a focused VideoChip and demo-programming pass. It documents the
+reader-visible result of the current Copper frame contract and the advanced
+rotozoomer which continues after its bootstrap CPU halts. It must not expose
+the compositor implementation, repository layout, build machinery, tests,
+diagnostic scripts, or author-only asset preparation.
+
+Document only these source-backed programming contracts:
+
+- A VideoChip Copper list begins once for each presented VideoChip frame. An
+  independent refresh path does not begin a second Copper pass for the same
+  presented frame.
+- IE64 can initialise memory, prepare Copper and blitter state, start an audio
+  player, enable Copper, and then execute `HALT`.
+- After that bootstrap has halted, Copper can select affine records, patch
+  later Copper operands, submit ordered blitter operations, advance bit-sliced
+  phase state, and render successive Mode 7 frames. The MIDI player advances
+  independently.
+- Presentation hold retains the preceding completed picture while the next
+  frame is calculated, then releases after the Mode 7 result is complete.
+- The effect is not a machine which starts without a CPU. It is a programme
+  with a finite IE64 bootstrap followed by a custom-chip steady state.
+
+Keep the reader path self-contained. A supplied machine image may be named as
+an object the reader can run, but reader-facing prose must not name its SDK
+source file, repository directory, host build command, test, diagnostic
+script, generated asset, or author-verification mechanism. Explain selected,
+commented assembly and Copper operations in the chapter instead. Do not call
+the example the fourteenth version unless thirteen preceding versions are
+identified and verified in the reader-facing comparison.
+
+Execute this pass in ascending reader order:
+
+1. Chapter 4: state the one-Copper-pass-per-presented-frame guarantee without
+   describing host scheduling or compositor ownership internals.
+2. Chapter 51: replace the current repository-facing addition with an
+   advanced, explained account of bootstrap and steady-state work; use a
+   supported title; include selected commented operations, a responsibility
+   table, status/result checks, and the supplied image's visible result.
+3. Chapter 54: add a concise custom-chip steady-state section which explains
+   ordering, register ownership, presentation hold, and the limit that initial
+   setup still requires a CPU.
+4. Appendix L: index the halted-CPU and Copper-driven effect under useful
+   reader terms.
+5. Claim ledger: record canonical source and test evidence separately from the
+   IE-native reader workflow and expected result.
+6. Run focused Copper, compositor, bootstrap, affine-selection, presentation,
+   and source-boundary checks; run the affected PRG harnesses, forbidden-term
+   and dash scans, strict publication, documentation checks, and PDF generation
+   in that order. PDFs remain the final generated artefact.
+
 Name hardware chapters after the hardware block, not after every file
 format, player, or helper layered on top of it. A chapter about POKEY is
 `POKEY`; SAP playback is a section inside that chapter. A chapter about

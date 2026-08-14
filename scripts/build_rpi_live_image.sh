@@ -112,7 +112,7 @@ manifest_value() {
 
 validate_golden_image() {
     need "$guestfish_bin"
-    local expected_architecture expected_partition_table expected_os_release expected_kernel expected_kernel_image expected_packages guestfish_partition_table actual_partition_table os_release
+    local expected_architecture expected_partition_table expected_os_release expected_kernel expected_kernel_image expected_packages guestfish_partition_table actual_partition_table os_release package package_status passwd_file group_file boot_config ie_entry
     expected_architecture="$(manifest_value architecture)"
     expected_partition_table="$(manifest_value partition_table)"
     expected_os_release="$(manifest_value os_release)"
@@ -136,25 +136,43 @@ validate_golden_image() {
     [[ "$actual_partition_table" == "$expected_partition_table" ]] || fail "golden image partition table is not $expected_partition_table"
     os_release="$(guestfish --ro -a "$golden" run : mount-ro /dev/sda2 / : cat /etc/os-release)"
     grep -Fxq "PRETTY_NAME=\"$expected_os_release\"" <<<"$os_release" || fail "golden image operating-system release differs from manifest"
+    package_status="$(guestfish --ro -a "$golden" run : mount-ro /dev/sda2 / : cat /var/lib/dpkg/status)"
+    for package in ${expected_packages//,/ }; do
+        awk -v package="$package" 'BEGIN { RS=""; FS="\n" }
+            $0 ~ "(^|\\n)Package: " package "(\\n|$)" &&
+            $0 ~ "(^|\\n)Status: install ok installed(\\n|$)" { found=1 }
+            END { exit !found }' <<<"$package_status" ||
+            fail "golden image lacks required installed package: $package"
+    done
+    passwd_file="$(guestfish --ro -a "$golden" run : mount-ro /dev/sda2 / : cat /etc/passwd)"
+    group_file="$(guestfish --ro -a "$golden" run : mount-ro /dev/sda2 / : cat /etc/group)"
+    ie_entry="$(awk -F: '$1 == "ie" { print; exit }' <<<"$passwd_file")"
+    IFS=: read -r _ _ ie_uid ie_gid _ ie_home ie_shell <<<"$ie_entry"
+    [[ "$ie_uid" =~ ^[1-9][0-9]*$ && "$ie_gid" =~ ^[1-9][0-9]*$ && "$ie_home" == /home/ie && "$ie_shell" == /bin/sh ]] || \
+        fail 'golden image lacks a login-capable IE appliance user'
+    awk -F: -v gid="$ie_gid" '$1 == "ie" && $3 == gid { found=1 } END { exit !found }' <<<"$group_file" || \
+        fail 'golden image lacks the IE appliance primary group'
     # The immutable golden supplies the Raspberry Pi firmware, RT kernel and
     # audio runtime.  The normal builder is rootless and offline: it injects
     # the appliance session, services and policies but never executes an ARM64
     # package manager inside the image.
     for path in \
         /lib/ld-linux-aarch64.so.1 \
-        /usr/bin/jackd; do
+        /usr/bin/jackd \
+        /usr/bin/cage \
+        /usr/bin/Xwayland \
+        /usr/sbin/greetd \
+        /usr/lib/systemd/system/greetd.service; do
         golden_has_file "$path" || fail "golden image lacks required file: $path"
     done
     for path in /config.txt /cmdline.txt "/$expected_kernel_image"; do
         golden_boot_has_file "$path" || fail "golden boot partition lacks required file: $path"
     done
+    boot_config="$(guestfish --ro -a "$golden" run : mount-ro /dev/sda1 / : cat /config.txt)"
+    grep -Fxq 'kernel=kernel8_rt.img' <<<"$boot_config" || fail 'golden boot configuration does not select kernel8_rt.img'
+    grep -Fxq 'initramfs initramfs8_rt followkernel' <<<"$boot_config" || fail 'golden boot configuration does not select initramfs8_rt'
     golden_has_any_file /usr/libexec/rtkit-daemon /usr/bin/rtkit-daemon || \
         fail "golden image lacks rtkit-daemon"
-    # The copied image is appliance-only. Any residual Subsynth executable,
-    # service or private tree is a release blocker, not a cosmetic warning.
-    if guestfish --ro -a "$golden" run : mount-ro /dev/sda2 / : find / 2>/dev/null | grep -Eqi '(^|/)(subsynth|intuition[ -]?subsynth)'; then
-        fail "golden image contains forbidden Subsynth residue"
-    fi
 }
 
 finalise_output() {
@@ -243,17 +261,38 @@ rm -f "$tmp_output"
 cp --reflink=auto "$golden" "$tmp_output"
 [[ "$(sha256sum "$golden" | awk '{print $1}')" == "$actual_sha" ]] || fail "golden image changed while copying"
 
+# AppArmor must be selected at kernel initialisation time. Installing profiles
+# and enabling their loader service is insufficient when the Pi kernel starts
+# with only the capability LSM active.
+boot_cmdline="$work_dir/cmdline.txt"
+guestfish --ro -a "$tmp_output" run : mount-ro /dev/sda1 / : cat /cmdline.txt >"$boot_cmdline"
+read -r boot_args <"$boot_cmdline" || true
+for required_arg in \
+    apparmor=1 \
+    security=apparmor \
+    lsm=landlock,lockdown,yama,integrity,apparmor,bpf; do
+    case " $boot_args " in
+        *" $required_arg "*) ;;
+        *) boot_args="${boot_args:+$boot_args }$required_arg" ;;
+    esac
+done
+printf '%s\n' "$boot_args" >"$boot_cmdline"
+guestfish --rw -a "$tmp_output" run : mount /dev/sda1 / : upload "$boot_cmdline" /cmdline.txt
+
 # Image population is intentionally offline.  guestfish obtains no ARM64 execution path.
 guestfish --rw -a "$tmp_output" run : mount /dev/sda2 / : mkdir-p /opt/ie : mkdir-p /var/ie/share : mkdir-p /var/ie/state : mkdir-p /var/ie/runtime : mkdir-p /usr/libexec : \
     copy-in "$binary" /opt/ie/ : \
-    copy-in "$host_helper" /usr/libexec/ : mv "/opt/ie/$(basename "$binary")" /opt/ie/IntuitionEngine : chmod 0755 /opt/ie/IntuitionEngine : chmod 0755 /usr/libexec/intuitionengine-host-helper : chown 1000 1000 /var/ie : chown 1000 1000 /var/ie/share : chown 1000 1000 /var/ie/state : chown 1000 1000 /var/ie/runtime
-guestfish --rw -a "$tmp_output" run : mount /dev/sda2 / : mkdir-p /etc/greetd : mkdir-p /etc/apparmor.d : mkdir-p /usr/local/sbin : mkdir-p /usr/local/share/kbd/keymaps : mkdir-p /etc/systemd/system : mkdir-p /etc/systemd/system/greetd.service.requires : mkdir-p /etc/systemd/system/ie-host-helper.service.requires : mkdir-p /etc/systemd/system/multi-user.target.wants : mkdir-p /etc/systemd/system/network-pre.target.wants : \
+    copy-in "$host_helper" /usr/libexec/ : mv "/opt/ie/$(basename "$binary")" /opt/ie/IntuitionEngine : chmod 0755 /opt/ie/IntuitionEngine : chmod 0755 /usr/libexec/intuitionengine-host-helper : chown "$ie_uid" "$ie_gid" /var/ie : chown "$ie_uid" "$ie_gid" /var/ie/share : chown "$ie_uid" "$ie_gid" /var/ie/state : chown "$ie_uid" "$ie_gid" /var/ie/runtime
+guestfish --rw -a "$tmp_output" run : mount /dev/sda2 / : mkdir-p /etc/greetd : mkdir-p /etc/apparmor.d : mkdir-p /usr/local/sbin : mkdir-p /usr/local/share/kbd/keymaps : mkdir-p /etc/systemd/system : mkdir-p /etc/systemd/system/greetd.service.requires : mkdir-p /etc/systemd/system/ie-host-helper.service.requires : mkdir-p /etc/systemd/system/graphical.target.wants : mkdir-p /etc/systemd/system/multi-user.target.wants : mkdir-p /etc/systemd/system/network-pre.target.wants : \
     copy-in "$appliance_assets/ie-session.sh" /opt/ie/ : copy-in "$appliance_assets/ie-launch.sh" /opt/ie/ : copy-in "$appliance_assets/ie-grow-share.sh" /usr/local/sbin/ : \
     copy-in "$appliance_assets/ie-grow-share.service" /etc/systemd/system/ : copy-in "$appliance_assets/greetd-config.toml" /etc/greetd/ : mv /etc/greetd/greetd-config.toml /etc/greetd/config.toml : \
     copy-in "$appliance_assets/opt.ie.IntuitionEngine" /etc/apparmor.d/ : copy-in "$appliance_assets/usr.libexec.intuitionengine-host-helper" /etc/apparmor.d/ : copy-in "$appliance_assets/ie-apparmor.service" /etc/systemd/system/ : copy-in "$appliance_assets/ie-host-helper.service" /etc/systemd/system/ : \
     copy-in "$appliance_assets/ie-firewall.service" /etc/systemd/system/ : copy-in "$appliance_assets/ie-no-vt-switch.service" /etc/systemd/system/ : \
     copy-in "$appliance_assets/ie-no-vt-switch.map" /usr/local/share/kbd/keymaps/ : chmod 0755 /opt/ie/ie-session.sh : chmod 0755 /opt/ie/ie-launch.sh : chmod 0755 /usr/local/sbin/ie-grow-share.sh : \
     ln-s /etc/systemd/system/ie-apparmor.service /etc/systemd/system/greetd.service.requires/ie-apparmor.service : \
+    ln-s /usr/lib/systemd/system/greetd.service /etc/systemd/system/graphical.target.wants/greetd.service : \
+    rm-f /etc/systemd/system/default.target : ln-s /usr/lib/systemd/system/graphical.target /etc/systemd/system/default.target : \
+    rm-f /etc/systemd/system/getty.target.wants/getty@tty1.service : ln-s /dev/null /etc/systemd/system/getty@tty1.service : \
     ln-s /etc/systemd/system/ie-apparmor.service /etc/systemd/system/ie-host-helper.service.requires/ie-apparmor.service : \
     ln-s /etc/systemd/system/ie-host-helper.service /etc/systemd/system/multi-user.target.wants/ie-host-helper.service : \
     ln-s /etc/systemd/system/ie-firewall.service /etc/systemd/system/network-pre.target.wants/ie-firewall.service : \
@@ -266,7 +305,7 @@ if "$create_share"; then
     RPI_SFDISK="$sfdisk_bin" RPI_GUESTFISH="$guestfish_bin" "${script_dir}/rpi_append_ieshare.sh" "$tmp_output" "$payload"
     guestfish --rw -a "$tmp_output" run : mount /dev/sda2 / : mkdir-p /etc/systemd/system/multi-user.target.wants : \
         ln-s /etc/systemd/system/ie-grow-share.service /etc/systemd/system/multi-user.target.wants/ie-grow-share.service : \
-        write-append /etc/fstab "LABEL=IESHARE /var/ie/share vfat defaults,nofail,x-systemd.device-timeout=10 0 0\n"
+        write-append /etc/fstab $'LABEL=IESHARE /var/ie/share vfat defaults,nofail,x-systemd.device-timeout=10 0 0\n'
 fi
 mv "$tmp_output" "$output"
 finalise_output

@@ -36,6 +36,7 @@ var rotoVariants = []rotoVariant{
 	{label: "6502", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_6502.raw", pngPath: "sdk/examples/assets/rotozoomtexture_6502.png"},
 	{label: "Z80", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_z80.raw", pngPath: "sdk/examples/assets/rotozoomtexture_z80.png"},
 	{label: "X86", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_x86.raw", pngPath: "sdk/examples/assets/rotozoomtexture_x86.png"},
+	{label: "NO CPU", base: "rotozoomtexture", rawPath: "sdk/examples/assets/rotozoomtexture_nocpu.raw", pngPath: "sdk/examples/assets/rotozoomtexture_nocpu.png"},
 }
 
 var glyphs = map[rune][]string{
@@ -181,6 +182,15 @@ var glyphs = map[rune][]string{
 		"#   #",
 		"#   #",
 		"#   #",
+		"#   #",
+	},
+	'N': {
+		"#   #",
+		"##  #",
+		"##  #",
+		"# # #",
+		"#  ##",
+		"#  ##",
 		"#   #",
 	},
 	'O': {

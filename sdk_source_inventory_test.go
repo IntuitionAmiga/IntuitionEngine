@@ -468,6 +468,41 @@ func sdkIEScriptFactsFromSource(t *testing.T) []sdkSourceFact {
 
 func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 	t.Helper()
+	piManifest := readAuditFile(t, "scripts/rpi-ie-golden.manifest")
+	piSession := readAuditFile(t, "scripts/rpi-live/ie-session.sh")
+	piGreetd := readAuditFile(t, "scripts/rpi-live/greetd-config.toml")
+	for _, check := range []struct {
+		path   string
+		text   string
+		needle string
+	}{
+		{"scripts/rpi-ie-golden.manifest", piManifest, "os_release=Debian GNU/Linux 13 (trixie)"},
+		{"scripts/rpi-live/ie-session.sh", piSession, `exec cage -s -- /opt/ie/ie-launch.sh`},
+		{"scripts/rpi-live/ie-launch.sh", readAuditFile(t, "scripts/rpi-live/ie-launch.sh"), "xwayland-run"},
+		{"scripts/rpi-live/greetd-config.toml", piGreetd, "[initial_session]"},
+		{"scripts/rpi-live/greetd-config.toml", piGreetd, `command = "/opt/ie/ie-session.sh"`},
+	} {
+		if !strings.Contains(check.text, check.needle) {
+			t.Fatalf("%s Raspberry Pi appliance contract changed; review architecture.md: %s", check.path, check.needle)
+		}
+	}
+	videoChip := readAuditFile(t, "video_chip.go")
+	videoCompositor := readAuditFile(t, "video_compositor.go")
+	for _, check := range []struct {
+		path   string
+		text   string
+		needle string
+	}{
+		{"video_chip.go", videoChip, "chip.copperFrameClockOwners.Load() == 0 && !chip.copperManagedByCompositor"},
+		{"video_chip.go", videoChip, "func (chip *VideoChip) acquireCompositorFrameClock()"},
+		{"video_chip.go", videoChip, "func (chip *VideoChip) releaseCompositorFrameClock()"},
+		{"video_compositor.go", videoCompositor, "acquireCompositorFrameClock(&c.sources[len(c.sources)-1])"},
+		{"video_compositor.go", videoCompositor, "releaseCompositorFrameClock(&c.sources[i])"},
+	} {
+		if !strings.Contains(check.text, check.needle) {
+			t.Fatalf("%s Copper frame-clock ownership changed; review architecture.md: %s", check.path, check.needle)
+		}
+	}
 	z80Source := readAuditFile(t, "cpu_z80_runner.go")
 	for _, needle := range []string{
 		"translated >= VGA_TEXT_WINDOW && translated < VGA_TEXT_WINDOW+VGA_TEXT_SIZE",
@@ -733,6 +768,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"Pi 4 and Pi 400 use one ARMv8.0 Cortex-A72 binary and default.pgo.rpi400 when that profile exists; otherwise PGO is disabled.", "`Makefile` Pi 4 `build-rpi-binary` call and Pi 400 compatibility alias"},
 		{"Pi 5 uses ARMv8.2 Cortex-A76 settings and default.pgo.rpi5 when that profile exists; otherwise PGO is disabled.", "`Makefile` Pi 5 `build-rpi-binary` call"},
 		{"Both Raspberry Pi live binaries include the jack tag.", "`Makefile` `RPI_BINARY_TAGS` and board targets"},
+		{"The Raspberry Pi appliance is based on Debian 13 (Trixie), and its automatic session runs through greetd, Cage, and integrated Xwayland.", "`scripts/rpi-ie-golden.manifest`, `scripts/rpi-live/greetd-config.toml`, `scripts/rpi-live/ie-session.sh`, and `scripts/rpi-live/ie-launch.sh`"},
 		{"The Pi 4 and Pi 400 image is built once with one IESHARE payload; the Pi 5 image is copied from it and receives only the Pi 5 binary before independent verification and packaging.", "`Makefile` image graph and `scripts/build_rpi_live_image.sh` source-image path"},
 		{"The x64 payload check stages one canonical IESHARE tree, and both Raspberry Pi image builds consume that same tree.", "`Makefile` `x64-live-payload-check` and Raspberry Pi image recipes"},
 		{"Bare .ie68 uses the active-visible RAM ceiling; EmuTOS and AROS M68K loader modes use profile bounds.", "`boot_guest_ram.go` `resolveModeCaps`/`resolveActiveVisibleCeiling` cases for `modeM68KBare`, `modeEmuTOS`, and `modeAros`"},
@@ -771,6 +807,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"FrameGenerationSource lets the compositor skip collect/copy/blend/upload work only after source TickFrame hooks run and only when every enabled source generation is unchanged.", "`video_interface.go` `FrameGenerationSource`, `video_compositor.go` `canSkipUnchangedCompositeLocked`"},
 		{"The unchanged-frame composite skip is enabled by default and can be disabled with IE_VIDEO_COMPOSITE_SKIP=0; logical frame timing still advances on skipped ticks.", "`video_compositor.go` `videoCompositeSkipEnabled`/timing callback path, `script_engine.go` `onFrameTiming`, and `video_compositor_skip_test.go`"},
 		{"VIDEO_CTRL bit 1 is a presentation hold. It retains the last completed VideoChip frame while guest updates continue; clearing it presents the completed framebuffer to compositor and direct frame readers.", "`video_chip.go` `setPresentationHoldLocked`/`presentationFrameLocked`, `video_chip_regressions_test.go`"},
+		{"While a VideoChip is registered with a running compositor, the compositor owns its Copper frame clock; counted ownership prevents private refresh ticks from starting overlapping Copper frames and is released on stop, close, or unregister.", "`video_chip.go` `acquireCompositorFrameClock`/`releaseCompositorFrameClock`/`runPrivateRefreshTick`, `video_compositor.go` registration and lifecycle ownership, and compositor Copper ownership tests"},
 		{"IE32 JIT backends are available on Linux amd64, Linux arm64, and js/wasm. --nojit also selects interpreter execution for IE32 coprocessor workers created by that launch.", "`jit_ie32_available_linux.go`, `jit_ie32_available_wasm.go`, `main.go` `SetIE32JITDisabled`, `coprocessor_manager.go` `createWorker`"},
 		{"The BLT_CTRL start edge samples the register shadow from the shared bus image in little-endian register order; VideoChip big-endian mode affects guest-facing register and pixel access, not the internal bus-shadow hydration order.", "`video_chip.go` `handleBlitterWriteLocked`/`hydrateBlitterStagedFromShadowLocked`/`readBlitterShadowU32Locked`, and `video_blitter_test.go` big-endian shadow hydration coverage"},
 		{"VideoChip Mode7 honours the BLT_FLAGS BPP field: RGBA32 samples and writes 4-byte pixels, while CLUT8 samples and writes 1-byte palette indices with BPP-aware default strides.", "`video_chip.go` `blitMode7Locked`, `bppFromFlags`, `defaultStrideBPP`, and `video_blitter_test.go` Mode7 CLUT8 coverage"},

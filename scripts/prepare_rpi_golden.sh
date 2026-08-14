@@ -5,18 +5,30 @@ set -euo pipefail
 fail() { echo "prepare-rpi-golden: $*" >&2; exit 1; }
 [[ "$(uname -m)" == aarch64 ]] || fail "must run natively on Raspberry Pi OS ARM64"
 [[ $EUID -eq 0 ]] || fail "must run as root on the copied golden image"
+. /etc/os-release
+[[ "${VERSION_CODENAME:-}" == trixie ]] || fail "requires Raspberry Pi OS based on Debian Trixie"
 
 kernel_before="$(uname -r)"
 [[ "$kernel_before" == *rt* ]] || fail "running kernel is not PREEMPT_RT: $kernel_before"
+dpkg-query -W linux-image-rpi-v8-rt >/dev/null 2>&1 || fail "required RT kernel package is not installed: linux-image-rpi-v8-rt"
 boot_stack_before="$(sha256sum /boot/firmware/config.txt /boot/firmware/cmdline.txt /boot/firmware/kernel8_rt.img)"
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y jackd2 rtkit cage xwayland xwayland-run greetd network-manager fonts-dejavu-core kbd apparmor apparmor-utils polkitd ufw dosfstools cloud-guest-utils
-DEBIAN_FRONTEND=noninteractive apt-get purge -y 'subsynth*' || true
-rm -rf /opt/subsynth /var/lib/subsynth /etc/subsynth
-getent group ie >/dev/null || groupadd -g 1000 ie
-if ! id ie >/dev/null 2>&1; then
-    useradd -m -u 1000 -g ie -G audio,video,input,render,seat -s /bin/sh ie
+DEBIAN_FRONTEND=noninteractive apt-get purge -y openbox obconf || true
+if id ie >/dev/null 2>&1; then
+    :
+else
+    getent group ie >/dev/null || groupadd ie
+    useradd -m -g ie -s /bin/sh ie
 fi
+supplementary_groups=""
+for group in audio video input render seat; do
+    if getent group "$group" >/dev/null; then
+        supplementary_groups="${supplementary_groups:+$supplementary_groups,}$group"
+    fi
+done
+[[ -z $supplementary_groups ]] || usermod -a -G "$supplementary_groups" ie
+usermod -s /bin/sh ie
 [[ "$(uname -r)" == "$kernel_before" ]] || fail "native preparation changed the running RT kernel"
 [[ "$(sha256sum /boot/firmware/config.txt /boot/firmware/cmdline.txt /boot/firmware/kernel8_rt.img)" == "$boot_stack_before" ]] || \
     fail "native preparation changed the Raspberry Pi boot stack"

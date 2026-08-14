@@ -933,8 +933,8 @@ GATE 0, ON : REM play the note</code></pre>
 
         <article class="card" style="margin-bottom: 1rem">
           <span class="kicker">One effect, every way in</span>
-          <h3>Thirteen implementations of one effect</h3>
-          <p>Thirteen versions produce the same picture through different CPUs, languages and guest operating systems. Six CPUs perform the same calculations and write the same VideoChip registers. IE64 BASIC and IEScript reach those registers through their own interfaces, while EmuTOS and AROS use guest drivers and applications. The IE64 version plays a stereo SAP tune through two Atari POKEY chips.</p>
+          <h3>Fourteen implementations of one effect</h3>
+          <p>Fourteen versions produce the same picture through different CPUs, languages and guest operating systems. Six CPUs perform the same calculations and write the same VideoChip registers. IE64 BASIC and IEScript reach those registers through their own interfaces, while EmuTOS and AROS use guest drivers and applications. The fourteenth version halts IE64 after setup, then Copper and the blitter calculate and render every later frame. The IE64 version plays a stereo SAP tune through two Atari POKEY chips.</p>
           <div class="yt-lite pending" data-asset="AL-DEMO-ROTO" data-id="P52ripOFWJQ"><button type="button" class="lty-playbtn" aria-label="Play rotozoomer comparison demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
           <div class="tag-row" style="margin-top: 0.8rem">
             <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_ie64.asm">IE64 &middot; rotozoomer_ie64.asm</a>
@@ -950,6 +950,7 @@ GATE 0, ON : REM play the note</code></pre>
             <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_aros_hw.asm">AROS asm &middot; rotozoomer_aros_hw.asm</a>
             <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/c/rotozoomer_aros_api.c">AROS C &middot; rotozoomer_aros_api.c</a>
             <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/c/rotozoomer_aros_hw.c">AROS C &middot; rotozoomer_aros_hw.c</a>
+            <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_nocpu.asm">No CPU after setup &middot; rotozoomer_nocpu.asm</a>
           </div>
         </article>
 
@@ -979,7 +980,7 @@ GATE 0, ON : REM play the note</code></pre>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-asset="AL-D024-SHOT" data-id="hyE5hgejIx4"><button type="button" class="lty-playbtn" aria-label="Play ula_boing_ie64.ie64 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
-            <div class="thumb-body"><code>ula_boing_ie64.ie64</code><div class="runtime">IE64</div><p>A 64-bit IE64 RISC CPU uses its FPU to render a red-and-white chequered Boing ball through ZX Spectrum ULA video, with synthesised SFX, reverb and realtime MIDI music.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/c/ula_boing_ie64.c">Source</a></p></div>
+            <div class="thumb-body"><code>ula_boing_ie64.ie64</code><div class="runtime">IE64</div><p>A 64-bit IE64 RISC CPU uses its FPU to render a red-and-white chequered Boing ball through ZX Spectrum ULA video, with synthesised SFX, reverb and real-time MIDI music.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/c/ula_boing_ie64.c">Source</a></p></div>
           </article>
           <article class="thumb">
             <div class="yt-lite pending" data-asset="AL-D027-SHOT" data-id="No4LqAZhU34"><button type="button" class="lty-playbtn" aria-label="Play antic_plasma_x86.ie86 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
@@ -1108,7 +1109,7 @@ GATE 0, ON : REM play the note</code></pre>
           <article class="card">
             <span class="kicker">Effects</span>
             <h3>Copper, blitter and Voodoo</h3>
-            <p>A copper that rewrites registers in step with the beam, and can point itself at any chip on the bus, not just the video registers; a blitter with copy, fill, line, masked and alpha copy, colour expand, scale, Mode 7 and raw memory copy; and the Voodoo for textured 3D. Mix a CPU, a video chip and a sound chip that never shared a board. <a href="#demos">Watch the same rotozoomer written thirteen ways</a>, then write the fourteenth.</p>
+            <p>A copper that rewrites registers in step with the beam, and can point itself at any chip on the bus, not just the video registers; a blitter with copy, fill, line, masked and alpha copy, colour expand, scale, Mode 7 and raw memory copy; and the Voodoo for textured 3D. Mix a CPU, a video chip and a sound chip that never shared a board. <a href="#demos">Watch the same rotozoomer written fourteen ways</a>, including one which halts its CPU after setup.</p>
           </article>
           <article class="card">
             <span class="kicker">Chip music</span>
@@ -1499,7 +1500,7 @@ Mode: 960 x 540 RGBA32, stride 3840</code></pre>
           <article class="card">
             <span class="kicker">Driver-level demos</span>
             <h3>AROS rotozoomer demos</h3>
-            <p>The preview image includes EmuTOS <code>rotozoomer_gem.prg</code> plus AROS <code>RotoAPI</code>, <code>RotoHW</code>, <code>RotoAPIc</code>, and <code>RotoHWc</code>. The AROS pairs separate API drawing from direct-hardware access in assembly and C.</p>
+            <p>The live image includes EmuTOS <code>rotozoomer_gem.prg</code> plus AROS <code>RotoAPI</code>, <code>RotoHW</code>, <code>RotoAPIc</code>, and <code>RotoHWc</code>. The AROS pairs separate API drawing from direct-hardware access in assembly and C.</p>
             <p><a href="#demos">Demo gallery</a></p>
           </article>
         </div>
@@ -1848,7 +1849,7 @@ video.blit_wait()</code></pre>
           <article class="card">
             <span class="kicker">Debugger API</span>
             <h3>Monitor API</h3>
-            <p>With <code>dbg</code>, scripts open the monitor, step or continue, set breakpoints and watchpoints, add page guards, intercept faults, read registers and memory, disassemble and trace, inspect I/O views, snapshot devices, save and load CPU-local snapshots, and switch between CPUs. Raw RAM access requires an explicit freeze; MMIO access does not.</p>
+            <p>With <code>dbg</code>, scripts open the monitor, step or continue, set breakpoints and watchpoints, add page guards, intercept faults, read registers and memory, disassemble and trace, inspect I/O views, snapshot devices, save and load CPU-local snapshots, and switch between CPUs. Raw RAM access requires an explicit freeze; MMIO access does not. <code>cpu.jit_stats()</code> exposes backend-specific JIT statistics for the selected CPU across all six CPU types, including native execution, fallbacks, invalidations and cache activity where recorded.</p>
             <pre class="code-panel"><code>dbg.open()
 dbg.set_bp(0x2000)
 dbg.step()

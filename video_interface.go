@@ -298,6 +298,14 @@ type CompositorManageable interface {
 	WaitRenderIdle()
 }
 
+// compositorFrameClockSource is implemented by sources whose private frame
+// clock must yield while an active compositor owns presentation timing.
+// Ownership lasts for the compositor lifecycle rather than one frame.
+type compositorFrameClockSource interface {
+	acquireCompositorFrameClock()
+	releaseCompositorFrameClock()
+}
+
 // HardResettable is implemented by video outputs that support F10 hard reset.
 type HardResettable interface {
 	SetHardResetHandler(func())

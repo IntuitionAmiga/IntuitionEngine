@@ -1,0 +1,12 @@
+Window.SetBackgroundTopColor(0, 0, 0);
+Window.SetBackgroundBottomColor(0, 0, 0);
+
+logo = Image("splash.png");
+logo_sprite = Sprite(logo);
+
+fun refresh_callback() {
+    logo_sprite.SetX(Window.GetWidth() / 2 - logo.GetWidth() / 2);
+    logo_sprite.SetY(Window.GetHeight() / 2 - logo.GetHeight() / 2);
+}
+
+Plymouth.SetRefreshFunction(refresh_callback);

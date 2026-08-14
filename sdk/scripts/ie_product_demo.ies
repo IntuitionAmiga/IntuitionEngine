@@ -41,6 +41,7 @@ local SHOWREEL_GAIN_DB = {
     [P.."rotozoomer_65.ie65"]       = -2.5,
     [P.."rotozoomer_z80.ie80"]      = -2.5,
     [P.."rotozoomer_x86.ie86"]      = -2.5,
+    [P.."rotozoomer_nocpu.ie64"]    = -2.5,
     [P.."voodoo_mega_demo.iex"]     = -4.0,
     [P.."robocop_intro.iex"]        = -2.0,
     [P.."robocop_intro_68k.ie68"]   = -2.0,
@@ -347,7 +348,7 @@ for _, e in ipairs(music_groups_e) do
 end
 
 -- ============================================================================
--- Section 4: Rotozoomer x 6 CPUs (72s)
+-- Section 4: Rotozoomer x 6 CPUs plus the custom-chip version
 -- ============================================================================
 
 local rotoZoomers = {
@@ -357,11 +358,12 @@ local rotoZoomers = {
     {P.."rotozoomer_65.ie65",    "6502 - MOS Technology",  "CPU: MOS 6502 (8-bit, 64KB address)", "Video: VideoChip 640x480 32-bit RGBA"},
     {P.."rotozoomer_z80.ie80",   "Z80 - Zilog",            "CPU: Zilog Z80 (8-bit, 64KB address)","Video: VideoChip 640x480 32-bit RGBA"},
     {P.."rotozoomer_x86.ie86",   "x86 - Intel 386",        "CPU: Intel 386 flat model (32-bit)",  "Video: VideoChip 640x480 32-bit RGBA"},
+    {P.."rotozoomer_nocpu.ie64", "No CPU after setup",      "CPU: IE64 halted after bootstrap",    "Video: Copper and blitter calculate every frame"},
 }
 
 for i, rz in ipairs(rotoZoomers) do
     title_card({
-        string.format("Rotozoomer [%d/6]: %s", i, rz[2]),
+        string.format("Rotozoomer [%d/%d]: %s", i, #rotoZoomers, rz[2]),
         rz[3], rz[4],
     }, 3)
     run_demo(rz[1], 5)

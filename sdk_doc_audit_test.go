@@ -111,7 +111,7 @@ var sdkAuditLastModifiedDates = map[string]string{
 	"sdk/docs/IE32_ISA.md":     "2026-08-08",
 	"sdk/docs/iemon.md":        "2026-08-08",
 	"sdk/docs/iescript.md":     "2026-08-11",
-	"sdk/docs/architecture.md": "2026-08-13",
+	"sdk/docs/architecture.md": "2026-08-14",
 }
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
@@ -3468,6 +3468,42 @@ func TestSDKCompanionDocs_ArchitectureCompositorScaleModeMatchesSource(t *testin
 	} {
 		if strings.Contains(section, forbidden) {
 			t.Fatalf("architecture.md still reverses compositor scale behavior: %s", forbidden)
+		}
+	}
+}
+
+func TestSDKCompanionDocs_ArchitectureCopperFrameClockOwnershipMatchesSource(t *testing.T) {
+	doc := readAuditFile(t, "sdk/docs/architecture.md")
+	section := markdownSection(t, doc, "### Copper Cross-Chip Bus Access", "### Extended Blitter")
+	for _, required := range []string{
+		"the compositor owns its Copper frame clock",
+		"does not start a second Copper frame",
+		"Ownership claims are counted",
+		"Stopping or closing the compositor, or unregistering the source, releases",
+	} {
+		if !strings.Contains(section, required) {
+			t.Fatalf("architecture.md omits compositor Copper frame-clock contract: %s", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"rotozoomer_nocpu.ie64",
+		"7,784 operations",
+		"rotozoomtexture_nocpu.raw",
+	} {
+		if strings.Contains(doc, forbidden) {
+			t.Fatalf("architecture.md contains demo implementation detail: %s", forbidden)
+		}
+	}
+}
+
+func TestSDKCompanionDocs_ArchitectureRaspberryPiApplianceProfileMatchesSource(t *testing.T) {
+	doc := readAuditFile(t, "sdk/docs/architecture.md")
+	for _, required := range []string{
+		"Debian 13 (Trixie) appliance image",
+		"automatic appliance session runs through greetd, Cage, and integrated Xwayland",
+	} {
+		if !strings.Contains(doc, required) {
+			t.Fatalf("architecture.md omits Raspberry Pi appliance contract: %s", required)
 		}
 	}
 }

@@ -1,6 +1,14 @@
 package main
 
-import "testing"
+import (
+	"encoding/binary"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 func newCopperTestRig(t *testing.T) (*VideoChip, *MachineBus) {
 	t.Helper()
@@ -10,6 +18,7 @@ func newCopperTestRig(t *testing.T) (*VideoChip, *MachineBus) {
 	if err != nil {
 		t.Fatalf("failed to create video chip: %v", err)
 	}
+	t.Cleanup(func() { _ = video.Stop() })
 	video.AttachBus(bus)
 	bus.MapIO(VIDEO_CTRL, COPPER_STATUS+3, video.HandleRead, video.HandleWrite)
 	return video, bus
@@ -29,6 +38,12 @@ func copperEndWord() uint32 {
 
 func copperSetBaseWord(addr uint32) uint32 {
 	return (uint32(copperOpcodeSetBase) << copperOpcodeShift) | ((addr >> 2) & copperSetBaseMask)
+}
+
+func copperFrameStartCountForTest(video *VideoChip) uint64 {
+	video.mu.Lock()
+	defer video.mu.Unlock()
+	return video.copperFrameStarts
 }
 
 func TestVideoChip_NeedsScanlineCompositingTracksCopper(t *testing.T) {
@@ -112,6 +127,339 @@ func TestCopperMoveWritesVideoReg(t *testing.T) {
 
 	if got := video.HandleRead(VIDEO_CTRL); got != 1 {
 		t.Fatalf("expected VIDEO_CTRL=1, got %d", got)
+	}
+}
+
+func TestVideoChipCompositorFrameClockSuppressesPrivateCopper(t *testing.T) {
+	video, bus := newCopperTestRig(t)
+	bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	listAddr := uint32(0x380)
+	words := []uint32{
+		copperMoveWord((BLT_CTRL - VIDEO_REG_BASE) / 4), bltCtrlStart,
+		copperEndWord(),
+	}
+	for i, word := range words {
+		bus.Write32(listAddr+uint32(i*4), word)
+	}
+	bus.Write32(VIDEO_CTRL, 1)
+	bus.Write32(COPPER_PTR, listAddr)
+	bus.Write32(COPPER_CTRL, copperCtrlEnable|copperCtrlReset)
+
+	video.runPrivateRefreshTick()
+	if got := video.BlitStartCount(); got != 1 {
+		t.Fatalf("standalone private tick started %d blits, want 1", got)
+	}
+
+	video.acquireCompositorFrameClock()
+	video.runPrivateRefreshTick()
+	if got := video.BlitStartCount(); got != 1 {
+		t.Fatalf("owned private tick started %d blits, want 1", got)
+	}
+
+	video.StartFrame()
+	video.ProcessScanlineRange(0, VideoModes[MODE_640x480].height)
+	video.FinishFrame()
+	if got := video.BlitStartCount(); got != 2 {
+		t.Fatalf("compositor frame started %d blits, want 2", got)
+	}
+
+	video.runPrivateRefreshTick()
+	if got := video.BlitStartCount(); got != 2 {
+		t.Fatalf("private tick between compositor frames started %d blits, want 2", got)
+	}
+
+	video.releaseCompositorFrameClock()
+	video.runPrivateRefreshTick()
+	if got := video.BlitStartCount(); got != 3 {
+		t.Fatalf("released private tick started %d blits, want 3", got)
+	}
+}
+
+type blockingCopperBus struct {
+	memory  []byte
+	entered chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *blockingCopperBus) Read8(uint32) uint8     { return 0 }
+func (b *blockingCopperBus) Write8(uint32, uint8)   {}
+func (b *blockingCopperBus) Read16(uint32) uint16   { return 0 }
+func (b *blockingCopperBus) Write16(uint32, uint16) {}
+func (b *blockingCopperBus) Read32(uint32) uint32   { return 0 }
+func (b *blockingCopperBus) Reset()                 {}
+func (b *blockingCopperBus) GetMemory() []byte      { return b.memory }
+func (b *blockingCopperBus) Write32(uint32, uint32) {
+	b.once.Do(func() { close(b.entered) })
+	<-b.release
+}
+
+func TestVideoChipFrameClockAcquisitionWaitsForPrivateCopper(t *testing.T) {
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	t.Cleanup(func() { _ = video.Stop() })
+	bus := &blockingCopperBus{
+		memory:  make([]byte, 0x2000),
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	binary.LittleEndian.PutUint32(bus.memory[0x1000:], copperSetBaseWord(VGA_BASE))
+	binary.LittleEndian.PutUint32(bus.memory[0x1004:], copperMoveWord(0))
+	binary.LittleEndian.PutUint32(bus.memory[0x1008:], 1)
+	binary.LittleEndian.PutUint32(bus.memory[0x100C:], copperEndWord())
+	video.AttachBus(bus)
+	video.enabled.Store(true)
+	video.mu.Lock()
+	video.copperEnabled = true
+	video.copperPtr = 0x1000
+	video.mu.Unlock()
+
+	privateDone := make(chan struct{})
+	go func() {
+		video.runPrivateRefreshTick()
+		close(privateDone)
+	}()
+	<-bus.entered
+	acquired := make(chan struct{})
+	go func() {
+		video.acquireCompositorFrameClock()
+		close(acquired)
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("frame-clock acquisition returned while private Copper was running")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(bus.release)
+	<-privateDone
+	<-acquired
+	video.releaseCompositorFrameClock()
+}
+
+func TestRotatingCopperCubeUsesOneCompositorOwnedCopperFrame(t *testing.T) {
+	bus := NewMachineBus()
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	t.Cleanup(func() { _ = video.Stop() })
+	video.AttachBus(bus)
+	video.SetBigEndianMode(true)
+	bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	bus.SetVideoStatusReader(video.HandleRead)
+
+	vga := NewVGAEngine(bus)
+	var dacWrites atomic.Int32
+	bus.MapIO(VGA_BASE, VGA_REG_END, vga.HandleRead, func(addr uint32, value uint32) {
+		if addr == VGA_DAC_WINDEX || addr == VGA_DAC_DATA {
+			dacWrites.Add(1)
+		}
+		vga.HandleWrite(addr, value)
+	})
+	bus.MapIO(VGA_VRAM_WINDOW, VGA_VRAM_WINDOW+VGA_VRAM_SIZE-1, vga.HandleVRAMRead, vga.HandleVRAMWrite)
+	bus.MapIO(VGA_TEXT_WINDOW, VGA_TEXT_WINDOW+VGA_TEXT_SIZE-1, vga.HandleTextRead, vga.HandleTextWrite)
+
+	bus.Write32(0, 0x00010000)
+	bus.Write32(4, M68K_ENTRY_POINT)
+	cpu := NewM68KCPU(bus)
+	cpu.m68kJitEnabled = false
+	cpu.PC = M68K_ENTRY_POINT
+	cpu.SR = M68K_SR_S
+	cpu.AddrRegs[7] = 0x00010000
+	programPath := filepath.Join("sdk", "examples", "prebuilt", "rotating_cube_copper_68k.ie68")
+	program, err := os.ReadFile(programPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", programPath, err)
+	}
+	cpu.LoadProgramBytes(program)
+	const maxBootstrapSteps = 20_000_000
+	steps := 0
+	for ; steps < maxBootstrapSteps; steps++ {
+		cpu.StepOne()
+		if steps&0xFFF == 0 {
+			video.mu.Lock()
+			ptr, enabled := video.copperPtr, video.copperEnabled
+			video.mu.Unlock()
+			if enabled && ptr != 0 &&
+				binary.BigEndian.Uint32(bus.memory[ptr+16:]) != 0 {
+				break
+			}
+		}
+	}
+	video.mu.Lock()
+	ptr, enabled := video.copperPtr, video.copperEnabled
+	video.mu.Unlock()
+	if !enabled || ptr == 0 {
+		t.Fatalf("rotating cube did not enable Copper in %d instructions: ptr=%#x enabled=%v pc=%#x", steps, ptr, enabled, cpu.PC)
+	}
+	if binary.BigEndian.Uint32(bus.memory[ptr+16:]) == 0 {
+		t.Fatalf("rotating cube did not update Copper colours in %d instructions: ptr=%#x pc=%#x", steps, ptr, cpu.PC)
+	}
+
+	comp := NewVideoCompositor(nil)
+	comp.scheduler = NewManualVideoScheduler()
+	comp.RegisterSource(video)
+	comp.RegisterSource(vga)
+	if err := comp.Start(); err != nil {
+		t.Fatalf("compositor Start: %v", err)
+	}
+	t.Cleanup(func() { _ = comp.Close() })
+	dacWrites.Store(0)
+	comp.scheduler.TickManual()
+	if got := dacWrites.Load(); got != 400 {
+		t.Fatalf("rotating cube compositor frame wrote VGA DAC %d times, want 400", got)
+	}
+
+	colours := make(map[uint32]bool)
+	for y := 0; y < VGA_MODE13H_HEIGHT; y += 2 {
+		offset := y * VGA_MODE13H_WIDTH * 4
+		colours[binary.LittleEndian.Uint32(vga.scanlineFrame[offset:])] = true
+	}
+	if len(colours) < 16 {
+		t.Fatalf("rotating cube Copper raster produced %d sampled colours, want at least 16", len(colours))
+	}
+
+	video.runPrivateRefreshTick()
+	if got := dacWrites.Load(); got != 400 {
+		t.Fatalf("private VideoChip tick increased rotating cube VGA DAC writes to %d", got)
+	}
+}
+
+func writeRawBlitterShadow(bus *MachineBus, addr, value uint32) {
+	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+}
+
+func writeBlitterCommandPacket(bus *MachineBus, packet uint32, values map[uint32]uint32) {
+	for addr, value := range values {
+		binary.LittleEndian.PutUint32(bus.memory[packet+addr-BLT_OP:], value)
+	}
+}
+
+func appendCopperShadowByte(words *[]uint32, addr uint32, value byte) {
+	*words = append(*words,
+		copperMoveWord((VIDEO_FB_BASE-VIDEO_REG_BASE)/4), addr,
+		copperMoveWord((VIDEO_RASTER_COLOR-VIDEO_REG_BASE)/4), uint32(value),
+		copperMoveWord((VIDEO_RASTER_CTRL-VIDEO_REG_BASE)/4), rasterCtrlStart,
+	)
+}
+
+func appendCopperBlitterShadow(words *[]uint32, fields map[uint32]uint32) {
+	for _, addr := range []uint32{
+		BLT_OP, BLT_SRC, BLT_DST, BLT_WIDTH, BLT_HEIGHT, BLT_SRC_STRIDE, BLT_DST_STRIDE,
+	} {
+		value := fields[addr]
+		for byteIndex := uint32(0); byteIndex < 4; byteIndex++ {
+			appendCopperShadowByte(words, addr+byteIndex, byte(value>>(byteIndex*8)))
+		}
+	}
+	value := fields[BLT_FLAGS]
+	for byteIndex := uint32(0); byteIndex < 4; byteIndex++ {
+		appendCopperShadowByte(words, BLT_FLAGS+byteIndex, byte(value>>(byteIndex*8)))
+	}
+}
+
+func TestCopperStartsCommandLoadedThroughSharedMemory(t *testing.T) {
+	video, bus := newCopperTestRig(t)
+	bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	listAddr := uint32(0x3000)
+	packetAddr := uint32(0x4000)
+	dstAddr := uint32(0x5000)
+	packetSize := uint32(BLT_FLAGS + 4 - BLT_OP)
+
+	writeBlitterCommandPacket(bus, packetAddr, map[uint32]uint32{
+		BLT_OP:         bltOpFill,
+		BLT_DST:        dstAddr,
+		BLT_WIDTH:      1,
+		BLT_HEIGHT:     1,
+		BLT_COLOR:      0xAABBCCDD,
+		BLT_FLAGS:      0,
+		BLT_SRC_STRIDE: 0,
+		BLT_DST_STRIDE: 0,
+	})
+	writeRawBlitterShadow(bus, BLT_OP, bltOpMemcopy)
+	writeRawBlitterShadow(bus, BLT_SRC, packetAddr)
+	writeRawBlitterShadow(bus, BLT_DST, BLT_OP)
+	writeRawBlitterShadow(bus, BLT_WIDTH, packetSize)
+	writeRawBlitterShadow(bus, BLT_HEIGHT, 1)
+
+	words := []uint32{
+		copperMoveWord((BLT_CTRL - VIDEO_REG_BASE) / 4), bltCtrlStart,
+		copperMoveWord((BLT_CTRL - VIDEO_REG_BASE) / 4), bltCtrlStart,
+		copperEndWord(),
+	}
+	for i, word := range words {
+		bus.Write32(listAddr+uint32(i*4), word)
+	}
+	bus.Write32(COPPER_PTR, listAddr)
+	bus.Write32(COPPER_CTRL, copperCtrlEnable|copperCtrlReset)
+
+	video.RunCopperFrameForTest()
+
+	if got := bus.Read32(dstAddr); got != 0xAABBCCDD {
+		t.Fatalf("loaded command result = %#x, want 0xAABBCCDD", got)
+	}
+	if got := video.bltStartCount; got != 2 {
+		t.Fatalf("blitter starts = %d, want 2", got)
+	}
+}
+
+func TestCopperRasterSequencerRunsDifferentBlitterCommands(t *testing.T) {
+	video, bus := newCopperTestRig(t)
+	bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
+	video.mu.Lock()
+	video.copperManagedByCompositor = true
+	video.mu.Unlock()
+
+	listAddr := uint32(0x9000)
+	fillDst := uint32(0x20000)
+	copySrc := uint32(0x20100)
+	copyDst := uint32(0x20200)
+	bus.Write32(copySrc, 0x12345678)
+
+	words := []uint32{
+		copperMoveWord((VIDEO_COLOR_MODE - VIDEO_REG_BASE) / 4), 1,
+		copperMoveWord((VIDEO_RASTER_Y - VIDEO_REG_BASE) / 4), 0,
+		copperMoveWord((VIDEO_RASTER_HEIGHT - VIDEO_REG_BASE) / 4), 1,
+	}
+	appendCopperBlitterShadow(&words, map[uint32]uint32{
+		BLT_OP: bltOpFill, BLT_DST: fillDst, BLT_WIDTH: 1, BLT_HEIGHT: 1,
+		BLT_COLOR: 0xAABBCCDD, BLT_FLAGS: 0,
+	})
+	// BLT_COLOR follows the core shadow fields and is needed by FILL.
+	for byteIndex := uint32(0); byteIndex < 4; byteIndex++ {
+		appendCopperShadowByte(&words, BLT_COLOR+byteIndex, byte(uint32(0xAABBCCDD)>>(byteIndex*8)))
+	}
+	words = append(words, copperMoveWord((BLT_CTRL-VIDEO_REG_BASE)/4), bltCtrlStart)
+	appendCopperBlitterShadow(&words, map[uint32]uint32{
+		BLT_OP: bltOpCopy, BLT_SRC: copySrc, BLT_DST: copyDst, BLT_WIDTH: 1, BLT_HEIGHT: 1,
+		BLT_FLAGS: 0,
+	})
+	words = append(words,
+		copperMoveWord((BLT_CTRL-VIDEO_REG_BASE)/4), bltCtrlStart,
+		copperMoveWord((VIDEO_COLOR_MODE-VIDEO_REG_BASE)/4), 0,
+		copperEndWord(),
+	)
+	for i, word := range words {
+		bus.Write32(listAddr+uint32(i*4), word)
+	}
+	bus.Write32(COPPER_PTR, listAddr)
+	bus.Write32(COPPER_CTRL, copperCtrlEnable|copperCtrlReset)
+
+	video.RunCopperFrameForTest()
+
+	if got := bus.Read32(fillDst); got != 0xAABBCCDD {
+		t.Fatalf("fill result = %#x, want 0xAABBCCDD; starts %d op %#x dst %#x width %#x height %#x colour %#x flags %#x", got, video.bltStartCount, bus.Read32(BLT_OP), bus.Read32(BLT_DST), bus.Read32(BLT_WIDTH), bus.Read32(BLT_HEIGHT), bus.Read32(BLT_COLOR), bus.Read32(BLT_FLAGS))
+	}
+	if got := bus.Read32(copyDst); got != 0x12345678 {
+		t.Fatalf("copy result = %#x, want 0x12345678", got)
+	}
+	if got := video.bltStartCount; got != 2 {
+		t.Fatalf("blitter starts = %d, want 2", got)
 	}
 }
 

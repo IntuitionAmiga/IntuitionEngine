@@ -1,0 +1,14 @@
+[Unit]
+Description=Prepare Intuition Engine Raspberry Pi golden image under QEMU
+Wants=NetworkManager-wait-online.service
+After=NetworkManager.service NetworkManager-wait-online.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ie-qemu-prepare-golden.sh
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=30min
+
+[Install]
+WantedBy=multi-user.target

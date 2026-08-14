@@ -7,6 +7,7 @@ Demos/ie32/vga_text_hello.iex
 Demos/ie32/voodoo_mega_demo.iex
 Demos/ie64/mandelbrot_ie64.ie64
 Demos/ie64/rotozoomer_ie64.ie64
+Demos/ie64/rotozoomer_nocpu.ie64
 Demos/ie64/ula_boing_ie64.ie64
 Demos/m6502/robocop_intro_65.ie65
 Demos/m6502/rotozoomer_65.ie65
@@ -56,6 +57,7 @@ sdk/examples/asm/rotozoomer_aros_api.asm
 sdk/examples/asm/rotozoomer_aros_hw.asm
 sdk/examples/asm/rotozoomer_gem.asm
 sdk/examples/asm/rotozoomer_ie64.asm
+sdk/examples/asm/rotozoomer_nocpu.asm
 sdk/examples/asm/rotozoomer_x86.asm
 sdk/examples/asm/rotozoomer_z80.asm
 sdk/examples/asm/ted_121_colors_68k.asm
@@ -156,6 +158,8 @@ sdk/examples/assets/rotozoomtexture_ies.png
 sdk/examples/assets/rotozoomtexture_ies.raw
 sdk/examples/assets/rotozoomtexture_m68k.png
 sdk/examples/assets/rotozoomtexture_m68k.raw
+sdk/examples/assets/rotozoomtexture_nocpu.png
+sdk/examples/assets/rotozoomtexture_nocpu.raw
 sdk/examples/assets/rotozoomtexture_x86.png
 sdk/examples/assets/rotozoomtexture_x86.raw
 sdk/examples/assets/rotozoomtexture_z80.png

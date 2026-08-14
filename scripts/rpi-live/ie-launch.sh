@@ -27,4 +27,9 @@ done
 if [ -f /var/ie/share/Systems/IntuitionOS/Boot/iexec.ie64 ]; then
     set -- "$@" -intuitionos-image /var/ie/share/Systems/IntuitionOS/Boot/iexec.ie64
 fi
-exec /opt/ie/IntuitionEngine "$@" >>/var/ie/state/intuition-engine.log 2>&1
+set +e
+/opt/ie/IntuitionEngine "$@" >>/var/ie/state/intuition-engine.log 2>&1
+status=$?
+set -e
+printf 'IntuitionEngine exited with status %s\n' "$status" >>/var/ie/state/intuition-engine.log
+exit "$status"

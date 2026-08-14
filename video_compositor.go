@@ -79,9 +79,10 @@ const (
 )
 
 type registeredSource struct {
-	id          uint64
-	source      VideoSource
-	lastEnabled bool
+	id              uint64
+	source          VideoSource
+	lastEnabled     bool
+	frameClockOwned bool
 }
 
 type videoScheduledTask struct {
@@ -446,6 +447,9 @@ func (c *VideoCompositor) registerSourceLocked(source VideoSource) uint64 {
 	c.nextSourceID++
 	id := c.nextSourceID
 	c.sources = append(c.sources, registeredSource{id: id, source: source, lastEnabled: source != nil && source.IsEnabled()})
+	if c.state == compositorRunning {
+		acquireCompositorFrameClock(&c.sources[len(c.sources)-1])
+	}
 	c.forceFullFrame = true
 	c.sortSourcesByLayerLocked()
 	return id
@@ -463,6 +467,7 @@ func (c *VideoCompositor) UnregisterSource(id uint64) bool {
 	defer c.mu.Unlock()
 	for i := range c.sources {
 		if c.sources[i].id == id {
+			releaseCompositorFrameClock(&c.sources[i])
 			copy(c.sources[i:], c.sources[i+1:])
 			c.sources[len(c.sources)-1] = registeredSource{}
 			c.sources = c.sources[:len(c.sources)-1]
@@ -571,6 +576,9 @@ func (c *VideoCompositor) Start() error {
 	c.loopDone = loopDone
 	c.compositorRunning.Store(true)
 	c.state = compositorRunning
+	for i := range c.sources {
+		acquireCompositorFrameClock(&c.sources[i])
+	}
 	c.schedulerTaskID = c.scheduler.Register(c.composite)
 	c.scheduler.Start()
 	go func() {
@@ -578,6 +586,9 @@ func (c *VideoCompositor) Start() error {
 			c.scheduler.Stop()
 			c.scheduler.Unregister(c.schedulerTaskID)
 			c.mu.Lock()
+			for i := range c.sources {
+				releaseCompositorFrameClock(&c.sources[i])
+			}
 			if c.state == compositorStopping {
 				c.state = compositorStopped
 			}
@@ -588,6 +599,34 @@ func (c *VideoCompositor) Start() error {
 		<-c.done
 	}()
 	return nil
+}
+
+func acquireCompositorFrameClock(registered *registeredSource) {
+	if registered.frameClockOwned {
+		return
+	}
+	clockSource, ok := registered.source.(compositorFrameClockSource)
+	if !ok {
+		return
+	}
+	if safeCall("acquireCompositorFrameClock", func() {
+		clockSource.acquireCompositorFrameClock()
+	}) {
+		registered.frameClockOwned = true
+	}
+}
+
+func releaseCompositorFrameClock(registered *registeredSource) {
+	if !registered.frameClockOwned {
+		return
+	}
+	clockSource, ok := registered.source.(compositorFrameClockSource)
+	if ok {
+		safeCall("releaseCompositorFrameClock", func() {
+			clockSource.releaseCompositorFrameClock()
+		})
+	}
+	registered.frameClockOwned = false
 }
 
 // Stop halts the compositor refresh loop and waits for it to exit.

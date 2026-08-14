@@ -859,8 +859,8 @@ func TestResonanceForcedTimeRunAOTMatchesInterpreterFrame(t *testing.T) {
 			text = strings.ReplaceAll(text, "560 IN=0.12:TI=INT(TM*100)", "560 TM="+tm+":IN=0.12:TI=INT(TM*100)")
 			text = strings.ReplaceAll(text, "970 GOTO 510", "970 END")
 
-			runFrame, runMode7 := runResonanceFrameForTest(t, text, false)
-			aotFrame, aotMode7 := runResonanceFrameForTest(t, text, true)
+			runFrame, runMode7, _ := runResonanceFrameForTest(t, text, false)
+			aotFrame, aotMode7, _ := runResonanceFrameForTest(t, text, true)
 			if len(runFrame) != len(aotFrame) {
 				t.Fatalf("frame lengths differ: RUN=%d RUN AOT=%d", len(runFrame), len(aotFrame))
 			}
@@ -881,7 +881,77 @@ func TestResonanceForcedTimeRunAOTMatchesInterpreterFrame(t *testing.T) {
 	}
 }
 
-func runResonanceFrameForTest(t *testing.T, text string, aot bool) ([]byte, [10]uint32) {
+func TestResonanceCopperUsesOneCompositorOwnedFrame(t *testing.T) {
+	program, err := os.ReadFile(resonanceDemoPath)
+	if err != nil {
+		t.Fatalf("read resonance.bas: %v", err)
+	}
+	text := strings.ReplaceAll(string(program), "940 VSYNC", "940 REM VSYNC")
+	text = strings.ReplaceAll(text, "560 IN=0.12:TI=INT(TM*100)", "560 TM=35:IN=0.12:TI=INT(TM*100)")
+	text = strings.ReplaceAll(text, "970 GOTO 510", "970 END")
+
+	for _, aot := range []bool{false, true} {
+		name := "interpreter"
+		if aot {
+			name = "aot"
+		}
+		t.Run(name, func(t *testing.T) {
+			_, _, video := runResonanceFrameForTest(t, text, aot)
+			video.mu.Lock()
+			ptr := video.copperPtr
+			enabled := video.copperEnabled
+			waits := make([]uint16, 0, 5)
+			moves := 0
+			for pc := ptr; pc < ptr+4096; {
+				word := video.busRead32Locked(pc)
+				switch word >> copperOpcodeShift {
+				case copperOpcodeWait:
+					waits = append(waits, uint16((word>>copperYShift)&copperCoordMask))
+					pc += 4
+				case copperOpcodeMove:
+					moves++
+					pc += 8
+				case copperOpcodeSetBase:
+					pc += 4
+				case copperOpcodeEnd:
+					pc = ptr + 4096
+				default:
+					video.mu.Unlock()
+					t.Fatalf("Resonance Copper list contains opcode %d at %#x", word>>copperOpcodeShift, pc)
+				}
+			}
+			video.mu.Unlock()
+			if !enabled {
+				t.Fatal("Resonance did not enable Copper")
+			}
+			if moves != 5 {
+				t.Fatalf("Resonance Copper list has %d moves, want 5", moves)
+			}
+			wantWaits := []uint16{0, 84, 184, 320, 440}
+			if !slices.Equal(waits, wantWaits) {
+				t.Fatalf("Resonance Copper waits = %v, want %v", waits, wantWaits)
+			}
+			comp := NewVideoCompositor(nil)
+			comp.scheduler = NewManualVideoScheduler()
+			comp.RegisterSource(video)
+			if err := comp.Start(); err != nil {
+				t.Fatalf("compositor Start: %v", err)
+			}
+			t.Cleanup(func() { _ = comp.Close() })
+			before := copperFrameStartCountForTest(video)
+			comp.scheduler.TickManual()
+			if got := copperFrameStartCountForTest(video); got != before+1 {
+				t.Fatalf("Resonance compositor advanced Copper %d times, want 1", got-before)
+			}
+			video.runPrivateRefreshTick()
+			if got := copperFrameStartCountForTest(video); got != before+1 {
+				t.Fatalf("private VideoChip tick increased Resonance Copper frames to %d", got-before)
+			}
+		})
+	}
+}
+
+func runResonanceFrameForTest(t *testing.T, text string, aot bool) ([]byte, [10]uint32, *VideoChip) {
 	t.Helper()
 	asmBin := buildAssembler(t)
 	var video *VideoChip
@@ -893,6 +963,7 @@ func runResonanceFrameForTest(t *testing.T, text string, aot bool) ([]byte, [10]
 			t.Fatalf("NewVideoChip: %v", err)
 		}
 		video.AttachBus(h.bus)
+		t.Cleanup(func() { _ = video.Stop() })
 		video.SetBigEndianMode(false)
 		h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, func(addr uint32, value uint32) {
 			if addr == BLT_CTRL && value&1 != 0 && video.HandleRead(BLT_OP) == bltOpMode7 {
@@ -934,7 +1005,7 @@ func runResonanceFrameForTest(t *testing.T, text string, aot bool) ([]byte, [10]
 		if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
 			t.Fatalf("RUN Resonance frame produced an error: %q", out)
 		}
-		return video.FinishFrame(), mode7
+		return video.FinishFrame(), mode7, video
 	}
 
 	h := newEhbasicAOTREPLHarnessWithFileIO(t, asmBin, repoRootDir(t))
@@ -949,7 +1020,7 @@ func runResonanceFrameForTest(t *testing.T, text string, aot bool) ([]byte, [10]
 	if strings.Contains(out, "?") || strings.Contains(out, "ERROR") {
 		t.Fatalf("RUN AOT Resonance frame produced an error: %q\n%s\n%s", out, readAOTStateDebug(h), readAOTAsmDebug(h))
 	}
-	return video.FinishFrame(), mode7
+	return video.FinishFrame(), mode7, video
 }
 
 func frameHistogram(frame []byte) map[uint32]int {

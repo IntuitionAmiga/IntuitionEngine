@@ -87,21 +87,20 @@ Add `rpi-live-images` as the aggregate image target. Keep separate Pi 4 and Pi 4
 
 ### 5. Establish one verified Raspberry Pi golden image
 
-- Copy `../IntuitionSubtractor/rpi-subsynth-golden.img` to the ignored repository-root path `rpi-ie-golden.img`.
+- Maintain the reviewed Raspberry Pi OS Trixie image at the ignored repository-root path `rpi-ie-golden.img`.
 - Never modify `rpi-ie-golden.img` in place. Every image build starts with a fresh copy and leaves the source byte-identical after success or failure.
 - Add a small tracked manifest with the golden image SHA-256, partition layout, operating-system release, ARM64 architecture, expected PREEMPT_RT kernel identity and required appliance runtime packages.
 - Validate the checksum, DOS partitions, Raspberry Pi boot files, kernel files and operating-system identity before copying the image.
-- Reject Subsynth executables, services, accounts, first-boot markers, branding, configuration and `/opt/subsynth` content in both the golden image and finished images. Implement this as one short forbidden-path and forbidden-name inventory.
 - Preserve the working Raspberry Pi firmware, bootloader, PREEMPT_RT kernel, JACK packages, real-time limits and audio-group configuration. Do not replace them during normal image construction.
-- Validate that the golden image contains JACK, `jackd2`, `rtkit` and the packages required for the IE appliance session, including Cage, Xwayland, `xwayland-run`, greetd, NetworkManager, fonts, input support, AppArmor, polkit and partition-growth tools.
+- Validate that the golden image contains JACK, `jackd2`, `rtkit` and the packages required for the IE appliance session, including Cage, Xwayland, greetd, NetworkManager, fonts, input support, AppArmor, polkit and partition-growth tools.
 - Validate golden-image JACK state only: `jackd2`, `libjack`, real-time limits, audio-group membership and required audio-device permissions. Pin the exact direct JACK2 launcher arguments in source tests rather than treating them as golden-image configuration.
 - Configure the appliance launch environment with `IE_AUDIO_BACKEND=jack`. IE launches its owned `jackd` at 44,100 Hz with the tested direct JACK2 arguments and runtime-selected ALSA device when no compatible external server exists. Prevent competing sound servers from claiming the selected appliance audio device. Oto fallback starts only after failed JACK resources and any owned server have stopped and released that device.
 - Before constructing Oto fallback, generate a minimal Raspberry Pi-only ALSA configuration in the IE runtime directory which points the default PCM to the same hardware selected by the JACK launcher, set `ALSA_CONFIG_PATH` for the Oto process, and validate the file before use. Give the confined IE profile access only to that runtime file and the selected device. Do not change normal x64 Oto routing or the system-wide ALSA configuration.
 - Add a dedicated AppArmor child profile for `/usr/bin/jackd` and an explicit transition from the confined IE profile. Permit only the JACK configuration, runtime socket and shared-memory paths, selected audio devices, required ARM64 libraries and the capabilities needed for the reviewed real-time configuration. Do not run `jackd` unconfined.
 - Generate the Raspberry Pi IE and JACK AppArmor profiles with ARM64 library paths. Do not copy x86-64 multiarch paths into the Pi images. Validate both the required ARM64 rules and the absence of x86-only library rules.
 - Permit and test only the signals required for IE to terminate its confined owned `jackd` process group. Do not grant signal access to unrelated profiles or processes.
-- Use the copied Subsynth golden image directly only when it already contains the complete Pi base: Raspberry Pi firmware, PREEMPT_RT kernel, JACK2, required appliance packages and no Subsynth residue. The golden image does not contain the current IE binary, IE services, board configuration or IESHARE payload. Otherwise run one short, idempotent native Raspberry Pi preparation script on a copy.
-- The preparation script adds only missing graphical or appliance packages and removes Subsynth residue and transient package state.
+- Use the maintained Raspberry Pi OS golden image only when it already contains the complete Pi base: Raspberry Pi firmware, PREEMPT_RT kernel, JACK2 and required appliance packages. The golden image does not contain the current IE binary, IE services, board configuration or IESHARE payload. Otherwise run one short, idempotent native Raspberry Pi preparation script on a copy.
+- The preparation script adds only missing graphical or appliance packages and removes transient package state.
 - The native preparation script verifies that the PREEMPT_RT kernel, JACK installation, real-time configuration, Raspberry Pi firmware and bootloader remain unchanged, then shuts down cleanly.
 - Copy the prepared image back as `rpi-ie-golden.img` and update its manifest. Native preparation is a maintenance operation, not part of normal image builds. It must never reinstall or replace the RT kernel, JACK or the Raspberry Pi boot stack.
 - Do not support `--rebuild-golden`. Replacing the golden image and its manifest is an explicit maintenance operation.
@@ -159,7 +158,6 @@ Add `rpi-live-images` as the aggregate image target. Keep separate Pi 4 and Pi 4
 - Build each image from a fresh golden-image copy and prove that the source golden image remains byte-identical.
 - Inspect each partition table and prove that boot and root partitions are preserved and IESHARE occupies only appended space.
 - Verify the firmware, PREEMPT_RT kernel files, JACK packages, 44,100 Hz `jackd` configuration and ordering, declared real-time limits, audio-group configuration, ARM64 executables, runtime packages, permissions, ARM64 AppArmor policies and transition, fstab, services and IESHARE growth ordering.
-- Prove that no Subsynth residue remains.
 - Compare every Raspberry Pi payload inventory with the x64 payload inventory.
 - Verify image and ZIP checksums, run `unzip -t`, and compare documentation archive entries with `x64-live`.
 - Build twice and compare filesystem layout and payload inventories. Do not require byte-identical filesystem images where timestamps or filesystem identifiers legitimately differ.
