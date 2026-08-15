@@ -687,32 +687,6 @@
       border-radius: 0;
     }
 
-    .yt-lite.pending {
-      background-image: repeating-linear-gradient(135deg, rgba(236, 58, 55, 0.14), rgba(236, 58, 55, 0.14) 12px, rgba(45, 43, 85, 0.88) 12px, rgba(45, 43, 85, 0.88) 24px);
-      border: 2px dashed var(--red);
-      cursor: default;
-    }
-
-    .thumb .yt-lite.pending {
-      border-width: 0 0 2px;
-    }
-
-    .yt-lite .yt-pending {
-      position: absolute;
-      inset: 0;
-      display: grid;
-      place-items: center;
-      padding: 0.6rem;
-      text-align: center;
-      color: #FFB8C6;
-      font-weight: 760;
-      font-size: 0.8rem;
-    }
-
-    .yt-lite:not(.pending) .yt-pending {
-      display: none;
-    }
-
     .yt-lite > .lty-playbtn {
       width: 68px;
       height: 48px;
@@ -732,10 +706,6 @@
     .yt-lite:hover > .lty-playbtn,
     .yt-lite > .lty-playbtn:focus {
       filter: none;
-    }
-
-    .yt-lite.pending > .lty-playbtn {
-      display: none;
     }
 
     .yt-lite > iframe {
@@ -935,7 +905,7 @@ GATE 0, ON : REM play the note</code></pre>
           <span class="kicker">One effect, every way in</span>
           <h3>Fourteen implementations of one effect</h3>
           <p>Fourteen versions produce the same picture through different CPUs, languages and guest operating systems. Six CPUs perform the same calculations and write the same VideoChip registers. IE64 BASIC and IEScript reach those registers through their own interfaces, while EmuTOS and AROS use guest drivers and applications. The fourteenth version halts IE64 after setup, then Copper and the blitter calculate and render every later frame. The IE64 version plays a stereo SAP tune through two Atari POKEY chips.</p>
-          <div class="yt-lite pending" data-asset="AL-DEMO-ROTO" data-id="P52ripOFWJQ"><button type="button" class="lty-playbtn" aria-label="Play rotozoomer comparison demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+          <div class="yt-lite" data-asset="AL-DEMO-ROTO" data-id="P52ripOFWJQ"><button type="button" class="lty-playbtn" aria-label="Play rotozoomer comparison demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
           <div class="tag-row" style="margin-top: 0.8rem">
             <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_ie64.asm">IE64 &middot; rotozoomer_ie64.asm</a>
             <a class="tag" href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer.asm">IE32 &middot; rotozoomer.asm</a>
@@ -960,7 +930,7 @@ GATE 0, ON : REM play the note</code></pre>
         </div>
         <div class="thumb-grid">
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D006-SHOT" data-id="iWq_oXNLQYc"><button type="button" class="lty-playbtn" aria-label="Play voodoo_mega_demo.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D006-SHOT" data-id="iWq_oXNLQYc"><button type="button" class="lty-playbtn" aria-label="Play voodoo_mega_demo.iex demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>voodoo_mega_demo.iex</code><div class="runtime">IE32</div><p>IE32 CPU driving a 3dfx-style Voodoo, while a second CPU, a 6502 core, plays the C64 SID soundtrack.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/voodoo_mega_demo.asm">Source</a></p></div>
           </article>
         </div>
@@ -971,23 +941,23 @@ GATE 0, ON : REM play the note</code></pre>
         </div>
         <div class="thumb-grid">
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D010-SHOT" data-id="0HkhXvpHwIE"><button type="button" class="lty-playbtn" aria-label="Play VGA Mode 03h Z80 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D010-SHOT" data-id="0HkhXvpHwIE"><button type="button" class="lty-playbtn" aria-label="Play VGA Mode 03h Z80 demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>vga_text_sap_demo.ie80</code><div class="runtime">Z80</div><p>A Z80 fills all 2,000 VGA Mode 03h cells with a four-wave plasma, palette fades, an integrated logo and a persistent scroller while Atari POKEY plays an embedded SAP tune.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/vga_text_sap_demo.asm">Source</a></p></div>
           </article>
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D015-SHOT" data-id="2pUGWbrNIa4"><button type="button" class="lty-playbtn" aria-label="Play ted_121_colors_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D015-SHOT" data-id="2pUGWbrNIa4"><button type="button" class="lty-playbtn" aria-label="Play ted_121_colors_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>ted_121_colors_68k.ie68</code><div class="runtime">M68K</div><p>Motorola 68020 CPU on the Commodore TED's 121-colour mode, with a Spectrum AY chip in Plus mode.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/ted_121_colors_68k.asm">Source</a></p></div>
           </article>
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D024-SHOT" data-id="hyE5hgejIx4"><button type="button" class="lty-playbtn" aria-label="Play ula_boing_ie64.ie64 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D024-SHOT" data-id="hyE5hgejIx4"><button type="button" class="lty-playbtn" aria-label="Play ula_boing_ie64.ie64 demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>ula_boing_ie64.ie64</code><div class="runtime">IE64</div><p>A 64-bit IE64 RISC CPU uses its FPU to render a red-and-white chequered Boing ball through ZX Spectrum ULA video, with synthesised SFX, reverb and real-time MIDI music.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/c/ula_boing_ie64.c">Source</a></p></div>
           </article>
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D027-SHOT" data-id="No4LqAZhU34"><button type="button" class="lty-playbtn" aria-label="Play antic_plasma_x86.ie86 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D027-SHOT" data-id="No4LqAZhU34"><button type="button" class="lty-playbtn" aria-label="Play antic_plasma_x86.ie86 demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>antic_plasma_x86.ie86</code><div class="runtime">x86</div><p>Intel x86 CPU driving Atari ANTIC/GTIA graphics, with Commodore SID music. A plasma from three rival makers at once.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/antic_plasma_x86.asm">Source</a></p></div>
           </article>
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D016-SHOT" data-id="_p9SoVska5s"><button type="button" class="lty-playbtn" aria-label="Play rotating_cube_copper_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D016-SHOT" data-id="_p9SoVska5s"><button type="button" class="lty-playbtn" aria-label="Play rotating_cube_copper_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>rotating_cube_copper_68k.ie68</code><div class="runtime">M68K</div><p>Motorola 68020 CPU on PC VGA, while a second CPU, a 6502 core, plays the C64 SID soundtrack. The native IE Video Copper rewrites the VGA palette registers in step with the beam as it sweeps the screen, for raster bars real VGA silicon never had a copper to make.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotating_cube_copper_68k.asm">Source</a></p></div>
           </article>
         </div>
@@ -998,11 +968,11 @@ GATE 0, ON : REM play the note</code></pre>
         </div>
         <div class="thumb-grid">
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D002-SHOT" data-id="hOhwO8FsOYs"><button type="button" class="lty-playbtn" aria-label="Play wobble_zoom.bas demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D002-SHOT" data-id="hOhwO8FsOYs"><button type="button" class="lty-playbtn" aria-label="Play wobble_zoom.bas demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>wobble_zoom.bas</code><div class="runtime">IE64 BASIC</div><p>A texture wobble-zoom over a MIDI soundtrack, written entirely in IE64 BASIC.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/basic/wobble_zoom.bas">Source</a></p></div>
           </article>
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D003-SHOT" data-id="3Jm4T8XIQt8"><button type="button" class="lty-playbtn" aria-label="Play resonance.bas demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D003-SHOT" data-id="3Jm4T8XIQt8"><button type="button" class="lty-playbtn" aria-label="Play resonance.bas demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>resonance.bas</code><div class="runtime">IE64 BASIC</div><p>IE64 BASIC locked to a MIDI orchestral track: raster bands, stars and scroll all synchronised to the music.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/basic/resonance.bas">Source</a></p></div>
           </article>
         </div>
@@ -1013,19 +983,19 @@ GATE 0, ON : REM play the note</code></pre>
         </div>
         <div class="thumb-grid">
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D011-SHOT" data-id="x1PdwmZfU5s"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro.iex demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D011-SHOT" data-id="x1PdwmZfU5s"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro.iex demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>robocop_intro.iex</code><div class="runtime">IE32</div><p>The RoboCop intro on the IE32 CPU.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/robocop_intro.asm">Source</a></p></div>
           </article>
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D020-SHOT" data-id="exBhXuVu2Ts"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D020-SHOT" data-id="exBhXuVu2Ts"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_68k.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>robocop_intro_68k.ie68</code><div class="runtime">M68K</div><p>The RoboCop intro on the Motorola 68020.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/robocop_intro_68k.asm">Source</a></p></div>
           </article>
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D022-SHOT" data-id="1NcecIeN9oI"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_z80.ie80 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D022-SHOT" data-id="1NcecIeN9oI"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_z80.ie80 demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>robocop_intro_z80.ie80</code><div class="runtime">Z80</div><p>The RoboCop intro on the Zilog Z80.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/robocop_intro_z80.asm">Source</a></p></div>
           </article>
           <article class="thumb">
-            <div class="yt-lite pending" data-asset="AL-D025-SHOT" data-id="xTuHXZa_NN8"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_65.ie65 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D025-SHOT" data-id="xTuHXZa_NN8"><button type="button" class="lty-playbtn" aria-label="Play robocop_intro_65.ie65 demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
             <div class="thumb-body"><code>robocop_intro_65.ie65</code><div class="runtime">6502</div><p>The RoboCop intro on the MOS 6502.</p><p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/robocop_intro_65.asm">Source</a></p></div>
           </article>
         </div>
@@ -1041,7 +1011,7 @@ GATE 0, ON : REM play the note</code></pre>
             <div class="runtime">4 CPUs + Voodoo</div>
             <p>mk64-ie runs four processors at once inside a single <code>mariokart64.ie68</code>: a main 68020 building each display list, a second 68020 translating it into draw calls, a third 68020 running the audio sequencer, and an IE64 worker doing transform and lighting, with the geometry feeding a Voodoo. The two additional 68020 CPU cores use the M68K worker type's two available instances. <a href="#coprocessors">How the four CPUs split the work</a>.</p>
             <p><a href="https://github.com/IntuitionAmiga/mk64-ie/blob/mk64-ie/IE-PORT-NOTES.md">Source</a></p>
-            <div class="yt-lite pending" data-asset="AL-D028-SHOT" data-id="3f11zTtFd6s"><button type="button" class="lty-playbtn" aria-label="Play mariokart64.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-D028-SHOT" data-id="3f11zTtFd6s"><button type="button" class="lty-playbtn" aria-label="Play mariokart64.ie68 demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
           </article>
           <article class="demo-card">
             <span class="kicker">Texture-mapped 3D</span>
@@ -1049,7 +1019,7 @@ GATE 0, ON : REM play the note</code></pre>
             <div class="runtime">M68K (68020)</div>
             <p>Team17's texture-mapped 3D shooter (<em>Redux High Overdrive</em>) running as a bare-metal 68020 flat programme, <code>ab3d2_ie68.ie68</code>. Ships in redux low and high builds, a high-overdrive build, and optional SID-audio variants.</p>
             <p><a href="https://github.com/IntuitionAmiga/alienbreed3d2/tree/main/ab3d2_source/ie">Source</a></p>
-            <div class="yt-lite pending" data-asset="AL-GAME-AB3D2" data-id="X_JDXjzWmus"><button type="button" class="lty-playbtn" aria-label="Play Alien Breed 3D 2: The Killing Grounds demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-GAME-AB3D2" data-id="X_JDXjzWmus"><button type="button" class="lty-playbtn" aria-label="Play Alien Breed 3D 2: The Killing Grounds demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
           </article>
           <article class="demo-card">
             <span class="kicker">id Software Doom</span>
@@ -1057,7 +1027,7 @@ GATE 0, ON : REM play the note</code></pre>
             <div class="runtime">x86</div>
             <p>Chocolate Doom compiled to a freestanding x86 image, <code>iedoom.ie86</code>, drawing straight to the framebuffer and loading <code>doom1.wad</code> from the disk volume.</p>
             <p><a href="https://github.com/IntuitionAmiga/chocolate-doom/tree/master/src/iedoom">Source</a></p>
-            <div class="yt-lite pending" data-asset="AL-GAME-DOOMX86" data-id="EVU4GOjpTZI"><button type="button" class="lty-playbtn" aria-label="Play Chocolate Doom (x86) demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-GAME-DOOMX86" data-id="EVU4GOjpTZI"><button type="button" class="lty-playbtn" aria-label="Play Chocolate Doom (x86) demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
           </article>
           <article class="demo-card">
             <span class="kicker">id Software Doom</span>
@@ -1065,7 +1035,7 @@ GATE 0, ON : REM play the note</code></pre>
             <div class="runtime">M68K (68020)</div>
             <p>The same engine as a bare-metal 68020 flat programme, <code>iedoom.ie68</code>, a true ELF-to-flat build with no hosted OS. Same <code>doom1.wad</code>, same renderer, a different CPU.</p>
             <p><a href="https://github.com/IntuitionAmiga/chocolate-doom/tree/master/src/iedoom">Source</a></p>
-            <div class="yt-lite pending" data-asset="AL-GAME-DOOM68K" data-id="sIAqHhCDCHQ"><button type="button" class="lty-playbtn" aria-label="Play Chocolate Doom (M68K) demo video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-GAME-DOOM68K" data-id="sIAqHhCDCHQ"><button type="button" class="lty-playbtn" aria-label="Play Chocolate Doom (M68K) demo video"><span class="lyt-visually-hidden">Play video</span></button></div>
           </article>
         </div>
 
@@ -1459,7 +1429,7 @@ IE_PSG_BASE    0x000F0C00</code></pre>
             <h3>A rotozoomer in a GEM window</h3>
             <p>Proof of the driver at work: <code>rotozoomer_gem.prg</code> is a rotozoomer written in m68k assembly as an ordinary windowed GEM application. It runs on the EmuTOS desktop and drives the VideoChip blitter's Mode 7 affine texture unit for the rotation and zoom, a stock GEM programme reaching hardware no Atari ever shipped. Its soundtrack is an Amiga AHX module, played with no Paula emulation at all: the AHX oscillators and envelopes are rebuilt as voices on the machine's own subtractive SoundChip synth.</p>
             <p><a href="https://github.com/IntuitionAmiga/IntuitionEngine/blob/main/sdk/examples/asm/rotozoomer_gem.asm">Source</a></p>
-            <div class="yt-lite pending" data-asset="AL-GEM-ROTO" data-id="qgOWCFo-b8w"><button type="button" class="lty-playbtn" aria-label="Play the EmuTOS GEM rotozoomer video"><span class="lyt-visually-hidden">Play video</span></button><span class="yt-pending">Video pending</span></div>
+            <div class="yt-lite" data-asset="AL-GEM-ROTO" data-id="qgOWCFo-b8w"><button type="button" class="lty-playbtn" aria-label="Play the EmuTOS GEM rotozoomer video"><span class="lyt-visually-hidden">Play video</span></button></div>
           </article>
           <article class="card">
             <span class="kicker">AROS graphics and filesystem</span>
@@ -2036,7 +2006,7 @@ SOUND PLAY "SONG.MID"</code></pre>
   <script>
     // Lite YouTube facade: derive the poster from the video id, inject the
     // youtube-nocookie iframe only on click. Tiles with an empty/placeholder
-    // data-id stay in the red-dashed "Video pending" state.
+    // data-id without a valid YouTube identifier remain inactive.
     document.addEventListener('DOMContentLoaded', function () {
       var idPattern = /^[A-Za-z0-9_-]{11}$/;
       document.querySelectorAll('.yt-lite').forEach(function (el) {
@@ -2044,7 +2014,6 @@ SOUND PLAY "SONG.MID"</code></pre>
         if (!idPattern.test(id)) {
           return;
         }
-        el.classList.remove('pending');
         el.style.backgroundImage = 'url(https://i.ytimg.com/vi/' + id + '/hqdefault.jpg)';
         el.addEventListener('click', function () {
           if (el.classList.contains('lyt-activated')) {
