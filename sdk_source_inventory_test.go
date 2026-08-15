@@ -297,6 +297,24 @@ func sdkIEMonFactsFromSource(t *testing.T) []sdkSourceFact {
 		Name:     "The first whole-machine reverse-history record automatically arms a bus page-dirty cursor and takes a full checkpoint.",
 		Evidence: "`debug_commands.go` `recordWholeMachineHistory`, `debug_reverse_epoch.go` `ensureEpochHistoryLocked`",
 	})
+	cpuCommand := sourceBetween(t, source, "func (m *MachineMonitor) cmdCPU", "func (m *MachineMonitor) cmdCPUOnline")
+	for _, needle := range []string{
+		"running := entry.CPU.IsRunning()",
+		"entry.CPU.Freeze()",
+		"entry.CPU.Resume()",
+		"m.showRegisters()",
+		"m.showDisassembly(0, 8)",
+	} {
+		if !strings.Contains(cpuCommand, needle) {
+			t.Fatalf("debug_commands.go CPU inspection coherence contract changed; review iemon.md: %s", needle)
+		}
+	}
+	facts = append(facts, sdkSourceFact{
+		Surface:  "IEMon",
+		Kind:     "monitor contract",
+		Name:     "When a thawed CPU is listed or selected for focus, IEMon temporarily freezes it to capture coherent state and then restores its prior running state.",
+		Evidence: "`debug_commands.go` `cmdCPU` running-state capture around program-counter, register, and disassembly inspection",
+	})
 	sortSDKSourceFacts(facts)
 	return facts
 }
@@ -477,8 +495,8 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		needle string
 	}{
 		{"scripts/rpi-ie-golden.manifest", piManifest, "os_release=Debian GNU/Linux 13 (trixie)"},
-		{"scripts/rpi-live/ie-session.sh", piSession, `exec cage -s -- /opt/ie/ie-launch.sh`},
-		{"scripts/rpi-live/ie-launch.sh", readAuditFile(t, "scripts/rpi-live/ie-launch.sh"), "xwayland-run"},
+		{"scripts/rpi-live/ie-session.sh", piSession, `cage -s -- /opt/ie/ie-launch.sh`},
+		{"scripts/rpi-live/ie-launch.sh", readAuditFile(t, "scripts/rpi-live/ie-launch.sh"), `/opt/ie/IntuitionEngine "$@"`},
 		{"scripts/rpi-live/greetd-config.toml", piGreetd, "[initial_session]"},
 		{"scripts/rpi-live/greetd-config.toml", piGreetd, `command = "/opt/ie/ie-session.sh"`},
 	} {
@@ -549,13 +567,19 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		}
 	}
 	goMod := readAuditFile(t, "go.mod")
-	if !strings.Contains(goMod, "go 1.26.0") || strings.Contains(goMod, "\ntoolchain ") {
+	if !strings.Contains(goMod, "go 1.27rc2") || strings.Contains(goMod, "\ntoolchain ") {
 		t.Fatal("go.mod minimum/unpinned toolchain contract changed; review architecture.md")
 	}
 	workflow := readAuditFile(t, ".github/workflows/test.yml")
-	for _, needle := range []string{`go-version: ["1.26.0", stable]`, "make headless-novulkan"} {
+	for _, needle := range []string{"go-version: 1.27.0-rc.2", "GOTOOLCHAIN: local", "make headless-novulkan"} {
 		if !strings.Contains(workflow, needle) {
 			t.Fatalf("Go compatibility workflow changed; review architecture.md: %s", needle)
+		}
+	}
+	releaseWorkflow := readAuditFile(t, ".github/workflows/release.yml")
+	for _, needle := range []string{"go-version: 1.27.0-rc.2", "GOTOOLCHAIN: local"} {
+		if !strings.Contains(releaseWorkflow, needle) {
+			t.Fatalf("Go release workflow changed; review architecture.md: %s", needle)
 		}
 	}
 	makefile := readAuditFile(t, "Makefile")
@@ -807,7 +831,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"FrameGenerationSource lets the compositor skip collect/copy/blend/upload work only after source TickFrame hooks run and only when every enabled source generation is unchanged.", "`video_interface.go` `FrameGenerationSource`, `video_compositor.go` `canSkipUnchangedCompositeLocked`"},
 		{"The unchanged-frame composite skip is enabled by default and can be disabled with IE_VIDEO_COMPOSITE_SKIP=0; logical frame timing still advances on skipped ticks.", "`video_compositor.go` `videoCompositeSkipEnabled`/timing callback path, `script_engine.go` `onFrameTiming`, and `video_compositor_skip_test.go`"},
 		{"VIDEO_CTRL bit 1 is a presentation hold. It retains the last completed VideoChip frame while guest updates continue; clearing it presents the completed framebuffer to compositor and direct frame readers.", "`video_chip.go` `setPresentationHoldLocked`/`presentationFrameLocked`, `video_chip_regressions_test.go`"},
-		{"While a VideoChip is registered with a running compositor, the compositor owns its Copper frame clock; counted ownership prevents private refresh ticks from starting overlapping Copper frames and is released on stop, close, or unregister.", "`video_chip.go` `acquireCompositorFrameClock`/`releaseCompositorFrameClock`/`runPrivateRefreshTick`, `video_compositor.go` registration and lifecycle ownership, and compositor Copper ownership tests"},
+		{"While a VideoChip is registered with a running compositor, the compositor owns its Copper frame clock for the complete registration lifecycle. The private VideoChip refresh ticker continues its other timing work but does not start a second Copper frame.", "`video_chip.go` `acquireCompositorFrameClock`/`releaseCompositorFrameClock`/`runPrivateRefreshTick`, `video_compositor.go` registration and lifecycle ownership, and compositor Copper ownership tests"},
 		{"IE32 JIT backends are available on Linux amd64, Linux arm64, and js/wasm. --nojit also selects interpreter execution for IE32 coprocessor workers created by that launch.", "`jit_ie32_available_linux.go`, `jit_ie32_available_wasm.go`, `main.go` `SetIE32JITDisabled`, `coprocessor_manager.go` `createWorker`"},
 		{"The BLT_CTRL start edge samples the register shadow from the shared bus image in little-endian register order; VideoChip big-endian mode affects guest-facing register and pixel access, not the internal bus-shadow hydration order.", "`video_chip.go` `handleBlitterWriteLocked`/`hydrateBlitterStagedFromShadowLocked`/`readBlitterShadowU32Locked`, and `video_blitter_test.go` big-endian shadow hydration coverage"},
 		{"VideoChip Mode7 honours the BLT_FLAGS BPP field: RGBA32 samples and writes 4-byte pixels, while CLUT8 samples and writes 1-byte palette indices with BPP-aware default strides.", "`video_chip.go` `blitMode7Locked`, `bppFromFlags`, `defaultStrideBPP`, and `video_blitter_test.go` Mode7 CLUT8 coverage"},
@@ -862,7 +886,7 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"When IE_PERF_ACCT is enabled, the subsystem report is written to standard error once during clean shutdown or terminal-signal shutdown; IE_PERF_ACCT_OUT also writes it to a file.", "`perf_report_exit.go` `dumpSubsysPerfReport`, `perf_report_exit_signal.go`, `profile_cpu.go` `exitProfiled`, and `profile_cpu_signal.go`"},
 		{"IE64 BASIC startup and a full reset that reloads BASIC force one Go collection after image loading and before CPU, compositor, render-loop, and audio startup.", "`boot_gc.go` `bootForcedGC`, `main.go` initial BASIC and full-reset call sites, and `boot_gc_test.go`"},
 		{"The Makefile passes PGO profiles explicitly: PGO_PROFILE selects native profiles and WASM_PGO selects wasm profiles; make pgo-regenerate writes default.pgo.new.", "`Makefile` PGO variables and build recipes, `scripts/pgo-regenerate.sh`, and `build_profiles_drift_test.go`"},
-		{"The source requires Go 1.26.0 or later. go.mod declares the minimum language version without pinning a patch release, and CI builds both Go 1.26.0 and the current stable release. The default Make build still enables the experimental simd/archsimd API explicitly.", "`go.mod` language directive without a `toolchain` directive, `.github/workflows/test.yml` compatibility matrix, `Makefile` `GOEXPERIMENT=simd` export"},
+		{"The source requires Go 1.27rc2. go.mod declares that minimum, and CI and release workflows pin Go 1.27rc2 with GOTOOLCHAIN=local. The default Make build enables the experimental simd/archsimd API explicitly.", "`go.mod` language directive, `.github/workflows/test.yml`, `.github/workflows/release.yml`, and `Makefile` `GOEXPERIMENT=simd` export"},
 		{"Deopt reasons are unsupported, helper, mmio, smc, interrupt, cache_pressure, and debug.", "`jit_deopt_reasons.go` `deoptReasonNames`"},
 		{"IE64 helper resume is enabled by default and can be disabled with IE64_JIT_RESUME=0, false, off, or no.", "`jit_helper_resume_common.go` `ie64JITResumeEnabled`, `jit_exec.go` resume loop, and `jit_helper_resume_test.go` environment coverage"},
 		{"IE64 helper resume is cancelled by timer delivery, debug breakpoints, pending invalidation, PC changes, MMU mode changes, or PTBR changes.", "`jit_helper_resume_common.go` `canResumeJITHelper`, `jit_exec.go` pending-interrupt cancellation, and `jit_helper_resume_test.go` cancellation coverage"},
@@ -875,7 +899,8 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"The audio event ring is enabled by default and can be disabled with IE_AUDIO_EVENT_RING=0, which restores the synchronous barrier path.", "`audio_event_ring.go` `audioEventRingRequested`, `audio_chip.go` event-ring construction"},
 		{"The IEScript compile cache is opt-in with IE_SCRIPT_COMPILE_CACHE=1.", "`script_engine.go` `NewScriptEngine`, `script_compile_cache.go` cache path"},
 		{"It is cached by script name plus exact source text", "`script_compile_cache.go` `compileScript` cache key"},
-		{"SIMD acceleration kernels are enabled by default on amd64 builds and can be disabled with IE_SIMD=0.", "`simd_gate.go` `simdRequested`/`simdKernelsActive`, `simd_gate_amd64.go` `simdHostSupported` AVX2 gate, and `simd_gate_stub.go` non-amd64 scalar fallback"},
+		{"SIMD acceleration kernels are enabled by default on x64 and Linux ARM64 builds and can be disabled with IE_SIMD=0.", "`simd_gate.go` `simdRequested`/`simdKernelsActive`, host gate files, architecture dispatch files, and `simd_gate_stub.go` scalar fallback"},
+		{"MachineBus 16- and 32-bit shared-RAM transfers use striped locks, so an aligned or unaligned transfer cannot be observed as a torn value.", "`machine_bus.go` `lockAtomicRAMSpan`/`atomicRAM16`/`atomicRAM32`, and `machine_bus_test.go` torn-transfer coverage"},
 	} {
 		facts = append(facts, sdkSourceFact{
 			Surface:  "Architecture",

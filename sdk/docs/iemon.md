@@ -1,6 +1,6 @@
 # Intuition Engine Machine Monitor
 
-*Last modified: 2026-08-08*
+*Last modified: 2026-08-15*
 
 ## Overview
 
@@ -755,6 +755,11 @@ W $2000 (id:3 coproc:Z80)
 
 List all registered CPUs with their ID, label, status, and program counter. When a coprocessor manager is attached, offline coprocessor worker slots are also shown. The focussed CPU is marked with `*`.
 
+When a thawed CPU is listed or selected for focus, IEMon temporarily freezes it
+to capture coherent state and then restores its prior running state. For a
+listing, the captured value is the program counter. This does not leave the CPU
+stopped.
+
 ```
 > cpu
 *id:0   IE64         [FROZEN ]  PC=$1000
@@ -796,6 +801,10 @@ or stopped by its ID or suffixed label.
 #### `cpu <id|label>` - Switch Focus
 
 Switch the focussed CPU by stable ID or label. All register/disassembly/step commands operate on the focussed CPU.
+
+For a running selected CPU, the coherent capture includes the register and
+disassembly view. Selecting focus therefore does not change the CPU's
+persistent running state.
 
 ```
 > cpu 1

@@ -14,7 +14,7 @@ func scaleF32SpanSIMD(s []float32, gain float32) {
 	if full > 0 {
 		g := archsimd.BroadcastFloat32x8(gain)
 		for i := 0; i < full; i += simdF32Lanes {
-			archsimd.LoadFloat32x8Slice(s[i : i+simdF32Lanes]).Mul(g).StoreSlice(s[i : i+simdF32Lanes])
+			archsimd.LoadFloat32x8(s[i : i+simdF32Lanes]).Mul(g).Store(s[i : i+simdF32Lanes])
 		}
 	}
 	if full < len(s) {
@@ -32,12 +32,12 @@ func clampF32SpanSIMD(s []float32, min, max float32) {
 		lo := archsimd.BroadcastFloat32x8(min)
 		hi := archsimd.BroadcastFloat32x8(max)
 		for i := 0; i < full; i += simdF32Lanes {
-			v := archsimd.LoadFloat32x8Slice(s[i : i+simdF32Lanes])
+			v := archsimd.LoadFloat32x8(s[i : i+simdF32Lanes])
 			// where v < min -> min, else v
 			v = lo.Merge(v, v.Less(lo))
 			// where v > max -> max, else v
 			v = hi.Merge(v, v.Greater(hi))
-			v.StoreSlice(s[i : i+simdF32Lanes])
+			v.Store(s[i : i+simdF32Lanes])
 		}
 	}
 	if full < len(s) {

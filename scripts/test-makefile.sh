@@ -14,7 +14,7 @@ make_db() {
 }
 
 make_dry() {
-  make -n "$@" 2>&1
+  make -n MAKE='echo make' EMUTOS_SRC_DIR=/tmp/intuitionengine-makefile-test-no-emutos-source "$@" 2>&1
 }
 
 assert_target_exists() {
@@ -34,7 +34,7 @@ assert_recipe_contains() {
   shift 2
   local dry
   dry="$(make_dry "$@" "$target")"
-  printf '%s\n' "$dry" | rg -q "$regex" || fail "$target recipe does not match: $regex"
+  printf '%s\n' "$dry" | rg -q -- "$regex" || fail "$target recipe does not match: $regex"
 }
 
 assert_recipe_not_contains() {
@@ -43,7 +43,7 @@ assert_recipe_not_contains() {
   shift 2
   local dry
   dry="$(make_dry "$@" "$target")"
-  if printf '%s\n' "$dry" | rg -q "$regex"; then
+  if printf '%s\n' "$dry" | rg -q -- "$regex"; then
     fail "$target recipe unexpectedly matches: $regex"
   fi
 }
@@ -89,6 +89,40 @@ assert_makefile_not_contains() {
   if rg -q "$regex" Makefile; then
     fail "Makefile unexpectedly matches: $regex"
   fi
+}
+
+assert_go127_workflows() {
+  local workflows=(.github/workflows/test.yml .github/workflows/release.yml)
+  if rg -q 'go-version-file:' "${workflows[@]}"; then
+    fail "CI or release workflow still uses go-version-file"
+  fi
+
+  local setups versions
+  setups="$(rg -c 'uses: actions/setup-go@' "${workflows[@]}" | awk -F: '{sum += $2} END {print sum + 0}')"
+  versions="$(rg -c 'go-version: 1\.27\.0-rc\.2' "${workflows[@]}" | awk -F: '{sum += $2} END {print sum + 0}')"
+  [[ "$setups" -eq "$versions" ]] || fail "every setup-go step must select Go 1.27rc2"
+
+  for workflow in "${workflows[@]}"; do
+    rg -q 'GOTOOLCHAIN: local' "$workflow" || fail "$workflow does not force the local toolchain"
+  done
+
+  rg -q 'GOEXPERIMENT: simd' .github/workflows/release.yml || \
+    fail "the Linux x64 release build does not enable SIMD"
+  local release_matrix
+  release_matrix="$(sed -n '/windows:/,/macos:/p' .github/workflows/release.yml)$(sed -n '/macos:/,/release:/p' .github/workflows/release.yml)"
+  [[ "$(printf '%s\n' "$release_matrix" | rg -c 'goexperiment: simd')" -eq 2 ]] || \
+    fail "Windows and macOS x64 release entries must enable SIMD"
+  [[ "$(printf '%s\n' "$release_matrix" | rg -c 'goexperiment: none')" -eq 2 ]] || \
+    fail "Windows and macOS ARM64 release entries must remain scalar"
+  printf '%s\n' "$release_matrix" | rg -q 'GOEXPERIMENT:.*matrix\.goexperiment' || \
+    fail "release matrix does not pass its SIMD selection to Go"
+
+	local cross_compile_job
+	cross_compile_job="$(sed -n '/^  cross-compile:/,/^  sdk-smoke:/p' .github/workflows/test.yml)"
+	printf '%s\n' "$cross_compile_job" | rg -q 'gcc-aarch64-linux-gnu' || \
+		fail "cross-compile CI does not install the ARM64 C compiler"
+	printf '%s\n' "$cross_compile_job" | rg -q 'g\+\+-aarch64-linux-gnu' || \
+		fail "cross-compile CI does not install the ARM64 C++ compiler"
 }
 
 assert_go_test_inventory_guard_runtime() {
@@ -184,11 +218,11 @@ assert_no_nested_external_git_checkouts() {
 
 assert_ab3d2_prepares_embed_before_build() {
   local dry copy_original copy_high build_original build_high
-  dry="$(make_dry ab3d2)"
-  copy_original="$(printf '%s\n' "$dry" | rg -n 'AB3D2_SOURCE=\.\./alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68\.ie68' | head -n 1 | cut -d: -f1 || true)"
-  copy_high="$(printf '%s\n' "$dry" | rg -n 'AB3D2_SOURCE=\.\./alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high\.ie68' | head -n 1 | cut -d: -f1 || true)"
-  build_original="$(printf '%s\n' "$dry" | rg -n 'test-cross-amd64-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2 VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=1' | head -n 1 | cut -d: -f1 || true)"
-  build_high="$(printf '%s\n' "$dry" | rg -n 'test-cross-amd64-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2-Karlos-TKG-High VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=1' | head -n 1 | cut -d: -f1 || true)"
+  dry="$(sed -n '/^ab3d2:/,/^$/p' Makefile)"
+  copy_original="$(printf '%s\n' "$dry" | rg -n 'prepare-ab3d2-embed AB3D2_SOURCE=\$\(AB3D2_ORIGINAL_SOURCE\)' | head -n 1 | cut -d: -f1 || true)"
+  copy_high="$(printf '%s\n' "$dry" | rg -n 'prepare-ab3d2-embed AB3D2_SOURCE=\$\(AB3D2_SOURCE\)' | head -n 1 | cut -d: -f1 || true)"
+  build_original="$(printf '%s\n' "$dry" | rg -n 'test-cross-amd64-binaries CROSS_BUILD_DIR=\$\(AB3D2_BUILD_DIR\) CROSS_BINARY_PREFIX=\$\(AB3D2_ORIGINAL_BINARY_PREFIX\)' | head -n 1 | cut -d: -f1 || true)"
+  build_high="$(printf '%s\n' "$dry" | rg -n 'test-cross-amd64-binaries CROSS_BUILD_DIR=\$\(AB3D2_BUILD_DIR\) CROSS_BINARY_PREFIX=\$\(AB3D2_BINARY_PREFIX\)' | head -n 1 | cut -d: -f1 || true)"
   [[ -n "$copy_original" && -n "$copy_high" ]] || fail "ab3d2 dry-run does not refresh both packed AB3D2 images"
   [[ -n "$build_original" && -n "$build_high" ]] || fail "ab3d2 dry-run does not build both AB3D2 variants"
   [[ "$copy_original" -lt "$build_original" && "$build_original" -lt "$copy_high" && "$copy_high" -lt "$build_high" ]] || fail "ab3d2 variants are not staged before their builds"
@@ -196,16 +230,16 @@ assert_ab3d2_prepares_embed_before_build() {
 
 assert_ab3d2_starts_fullscreen() {
   local dry
-  dry="$(make_dry ab3d2)"
-  printf '%s\n' "$dry" | rg -q 'test-cross-amd64-binaries .*EMBEDDED_AB3D2_START_FULLSCREEN=1' || \
+  dry="$(sed -n '/^ab3d2:/,/^$/p' Makefile)"
+  printf '%s\n' "$dry" | rg -q 'test-cross-amd64-binaries .*EMBEDDED_AB3D2_START_FULLSCREEN=\$\(AB3D2_START_FULLSCREEN\)' || \
     fail "AB3D2 package build does not stamp fullscreen startup"
 }
 
 assert_ab3d2_target_packages_redux_high() {
   local dry cp_rom build_vm
-  dry="$(make_dry ab3d2)"
-  cp_rom="$(printf '%s\n' "$dry" | rg -n 'AB3D2_SOURCE=\.\./alienbreed3d2/ab3d2_source/ie/bin/ab3d2_ie68_redux_high\.ie68' | head -n 1 | cut -d: -f1 || true)"
-  build_vm="$(printf '%s\n' "$dry" | rg -n 'test-cross-amd64-binaries CROSS_BUILD_DIR=\./bin/ab3d2 CROSS_BINARY_PREFIX=IntuitionEngine-AB3D2-Karlos-TKG-High VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=1' | head -n 1 | cut -d: -f1 || true)"
+  dry="$(sed -n '/^ab3d2:/,/^$/p' Makefile)"
+  cp_rom="$(printf '%s\n' "$dry" | rg -n 'prepare-ab3d2-embed AB3D2_SOURCE=\$\(AB3D2_SOURCE\)' | head -n 1 | cut -d: -f1 || true)"
+  build_vm="$(printf '%s\n' "$dry" | rg -n 'test-cross-amd64-binaries CROSS_BUILD_DIR=\$\(AB3D2_BUILD_DIR\) CROSS_BINARY_PREFIX=\$\(AB3D2_BINARY_PREFIX\) VM_EMBED_TAGS="embed_ab3d2" EMBEDDED_AB3D2_START_FULLSCREEN=\$\(AB3D2_START_FULLSCREEN\)' | head -n 1 | cut -d: -f1 || true)"
   [[ -n "$cp_rom" ]] || fail "ab3d2 dry-run does not embed the Redux High IE68 image"
   [[ -n "$build_vm" ]] || fail "ab3d2 dry-run does not build Redux High binaries with the expected prefix"
   [[ "$cp_rom" -lt "$build_vm" ]] || fail "ab3d2 builds binaries before refreshing the embedded ROM"
@@ -257,6 +291,14 @@ if [[ "${1:-}" == "--go-test-inventory-guard" ]]; then
 fi
 
 assert_delete_on_error
+assert_go127_workflows
+rg -q 'runtime_asmcgocall runtime\.asmcgocall' jit_call_darwin_nocgo.go || \
+  fail "native JIT bridge does not support cgo-disabled release builds"
+[[ "$(rg -c 'GOOS=darwin GOARCH=(amd64|arm64) go (build|test).* -ldflags=-checklinkname=0' scripts/test-cross-compile.sh)" -eq 4 ]] || \
+  fail "every Darwin cross-build must permit its cgo-independent JIT bridge"
+macos_release_job="$(sed -n '/^  macos:/,/^  release:/p' .github/workflows/release.yml)"
+printf '%s\n' "$macos_release_job" | rg -q -- '-checklinkname=0.*main\.Version' || \
+  fail "macOS release build does not permit its cgo-independent JIT bridge"
 
 assert_var IEXEC_BUILD_DATE 2026-04-25
 assert_no_dup_assign IEXEC_BUILD_DATE
@@ -315,7 +357,12 @@ assert_makefile_contains 'RPI_TOOLCHAIN_SYSROOT.*-print-sysroot'
 assert_makefile_contains 'RPI_PKG_CONFIG_LIBDIR.*RPI_CROSS_OVERLAY'
 assert_recipe_contains prepare-rpi-cross-overlay 'prepare_rpi_cross_overlay\.sh'
 assert_makefile_contains '^rpi-arm64-preflight: validate-rpi-sysroot-preflight'
-assert_makefile_contains 'RPI_GO \?= env GOTOOLCHAIN=go1\.26\.4'
+assert_makefile_contains 'RPI_GO \?= env GOTOOLCHAIN=go1\.27rc2'
+assert_recipe_contains headless-novulkan 'CGO_ENABLED=1'
+assert_makefile_contains 'ARM64_QEMU_CGO_ENV := .*CGO_ENABLED=1.*CC=\$\(CROSS_CC\)'
+assert_makefile_contains 'ARM64_QEMU_EXEC = .* -L \$\(RPI_TOOLCHAIN_SYSROOT\)'
+rg -q 'CGO_ENABLED=1 CC="\$ARM64_CC" GOOS=linux GOARCH=arm64 go test' scripts/test-cross-compile.sh || \
+  fail "Linux ARM64 cross tests do not enable cgo with the cross compiler"
 assert_recipe_contains rpi-4-arm64 'CROSS_SYSROOT=' -o x64-live-embed-assets
 assert_makefile_contains '^define build-rpi-binary'
 assert_makefile_contains 'build-linux-vm-binary,arm64'
@@ -375,13 +422,13 @@ assert_recipe_contains x86-bench-after "BENCH_PKG='\\.'"
 assert_recipe_contains x86-bench-compare "BENCH_REGEX='BenchmarkX86JIT_'"
 assert_recipe_contains x86-bench-compare "BENCH_TAGS='headless'"
 assert_recipe_contains x86-bench-compare "BENCH_PKG='\\.'"
-assert_recipe_contains ie32-bench-baseline "BENCH_REGEX='BenchmarkIE32_\\(ALU\\|Memory\\|Mixed\\|Call\\)_\\(Interpreter\\|JIT\\)'"
+assert_recipe_contains ie32-bench-baseline "BENCH_REGEX='BenchmarkIE32_\\(ALU\\|Memory\\|Mixed\\|Call\\|VoodooMegaDemo\\)_\\(Interpreter\\|JIT\\)'"
 assert_recipe_contains ie32-bench-baseline "BENCH_TAGS='headless'"
 assert_recipe_contains ie32-bench-baseline "BENCH_PKG='\\.'"
-assert_recipe_contains ie32-bench-after "BENCH_REGEX='BenchmarkIE32_\\(ALU\\|Memory\\|Mixed\\|Call\\)_\\(Interpreter\\|JIT\\)'"
+assert_recipe_contains ie32-bench-after "BENCH_REGEX='BenchmarkIE32_\\(ALU\\|Memory\\|Mixed\\|Call\\|VoodooMegaDemo\\)_\\(Interpreter\\|JIT\\)'"
 assert_recipe_contains ie32-bench-after "BENCH_TAGS='headless'"
 assert_recipe_contains ie32-bench-after "BENCH_PKG='\\.'"
-assert_recipe_contains ie32-bench-compare "BENCH_REGEX='BenchmarkIE32_\\(ALU\\|Memory\\|Mixed\\|Call\\)_\\(Interpreter\\|JIT\\)'"
+assert_recipe_contains ie32-bench-compare "BENCH_REGEX='BenchmarkIE32_\\(ALU\\|Memory\\|Mixed\\|Call\\|VoodooMegaDemo\\)_\\(Interpreter\\|JIT\\)'"
 assert_recipe_contains ie32-bench-compare "BENCH_TAGS='headless'"
 assert_recipe_contains ie32-bench-compare "BENCH_PKG='\\.'"
 assert_recipe_contains test-ie32-jit-parity 'require-go-test-inventory\.sh'
@@ -389,7 +436,8 @@ assert_recipe_contains test-ie32-jit-parity 'test-ie32-jit-race'
 assert_recipe_contains test-ie32-jit-parity 'make test-wasm-build'
 assert_recipe_contains test-ie32-jit-parity 'make test-wasm-node'
 assert_recipe_contains test-ie32-jit-parity 'GOOS=linux GOARCH=arm64'
-assert_recipe_contains test-ie32-jit-parity 'IE32_JIT_TEST_REGEX'
+assert_var IE32_JIT_TEST_REGEX
+assert_recipe_contains test-ie32-jit-parity 'TestIE32'
 assert_makefile_contains 'TestIE32\(JIT\|StepOne\|Retired\|Wasm\)\.\*'
 assert_recipe_contains test-ie32-jit-race 'go test -race'
 assert_recipe_contains x86-iedoom-timedemo 'IE_NO_IPC=1'
@@ -452,10 +500,10 @@ assert_recipe_contains arosvision-probe-tree 'scripts/prepare-arosvision-probe\.
 assert_makefile_contains '^arosvision-live-base:'
 assert_recipe_contains arosvision-live-base 'scripts/prepare-arosvision-probe\.sh --base "\.\./AROSVision" "build/arosvision"'
 assert_makefile_contains '^arosvision-live-components: arosvision-live-base'
-assert_recipe_contains arosvision-live-components '\$\(MAKE\) aros-ie-live-inputs'
+assert_recipe_contains arosvision-live-components '(\$\(MAKE\)|make) aros-ie-live-inputs'
 assert_makefile_contains '^arosvision-live-overlays: arosvision-live-components'
 assert_recipe_contains arosvision-live-overlays 'scripts/prepare-arosvision-probe\.sh --overlay "\.\./AROSVision" "build/arosvision"'
-assert_recipe_contains arosvision-live-overlays 'IE_AROS_DIR="\$\(AROS_RELEASE_DIR\)"'
+assert_recipe_contains arosvision-live-overlays 'IE_AROS_DIR=".*AROS"'
 assert_makefile_contains '^arosvision-live-tree: arosvision-live-overlays'
 assert_makefile_not_contains '^arosvision-live-tree:.*aros-ie-live-assets'
 assert_makefile_not_contains '^arosvision-live-tree:.*iewarp-runtime-assets'

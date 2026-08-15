@@ -63,8 +63,8 @@
 | IEMon | command example | `accesslog on 4096` | `debug_commands.go` `monitorHelpRegistry` example for `accesslog` |
 | IEMon | command example | `accesslog on; bug` | `debug_commands.go` `monitorHelpRegistry` example for `bug` |
 | IEMon | command example | `accesslog show 20` | `debug_commands.go` `monitorHelpRegistry` example for `accesslog` |
-| IEMon | command example | `addr $F0000` | `debug_commands.go` `monitorHelpRegistry` example for `addr` |
 | IEMon | command example | `addr $F0000` | `debug_commands.go` `monitorHelpRegistry` example for `map` |
+| IEMon | command example | `addr $F0000` | `debug_commands.go` `monitorHelpRegistry` example for `addr` |
 | IEMon | command example | `addr pc` | `debug_commands.go` `monitorHelpRegistry` example for `addr` |
 | IEMon | command example | `addr sprite_buffer` | `debug_commands.go` `monitorHelpRegistry` example for `addr` |
 | IEMon | command example | `alias` | `debug_commands.go` `monitorHelpRegistry` example for `alias` |
@@ -112,16 +112,16 @@
 | IEMon | command example | `f buffer buffer+255 FF` | `debug_commands.go` `monitorHelpRegistry` example for `f` |
 | IEMon | command example | `fa` | `debug_commands.go` `monitorHelpRegistry` example for `fa` |
 | IEMon | command example | `fa; s 10` | `debug_commands.go` `monitorHelpRegistry` example for `fa` |
-| IEMon | command example | `fa; ta` | `debug_commands.go` `monitorHelpRegistry` example for `ta` |
 | IEMon | command example | `fa; ta` | `debug_commands.go` `monitorHelpRegistry` example for `fa` |
+| IEMon | command example | `fa; ta` | `debug_commands.go` `monitorHelpRegistry` example for `ta` |
 | IEMon | command example | `fault break m68k.illegal` | `debug_commands.go` `monitorHelpRegistry` example for `fault` |
 | IEMon | command example | `fault list` | `debug_commands.go` `monitorHelpRegistry` example for `fault` |
 | IEMon | command example | `fault off` | `debug_commands.go` `monitorHelpRegistry` example for `fault` |
 | IEMon | command example | `freeze *` | `debug_commands.go` `monitorHelpRegistry` example for `freeze` |
 | IEMon | command example | `freeze 0` | `debug_commands.go` `monitorHelpRegistry` example for `freeze` |
 | IEMon | command example | `freeze M68K` | `debug_commands.go` `monitorHelpRegistry` example for `freeze` |
-| IEMon | command example | `g` | `debug_commands.go` `monitorHelpRegistry` example for `x` |
 | IEMon | command example | `g` | `debug_commands.go` `monitorHelpRegistry` example for `g` |
+| IEMon | command example | `g` | `debug_commands.go` `monitorHelpRegistry` example for `x` |
 | IEMon | command example | `g $2000` | `debug_commands.go` `monitorHelpRegistry` example for `g` |
 | IEMon | command example | `g main` | `debug_commands.go` `monitorHelpRegistry` example for `g` |
 | IEMon | command example | `h #0 $FFFF 4C 00` | `debug_commands.go` `monitorHelpRegistry` example for `h` |
@@ -403,5 +403,6 @@
 | IEMon | monitor contract | `Entering the monitor freezes every guest CPU and the audio clock; leaving restores the pre-entry audio state unless fa or ta was issued during the session.` | `debug_monitor.go` `freezeMediaOnEntry`/`resumeMediaOnExit`, `debug_commands.go` `cmdFreezeAudio`/`cmdThawAudio` |
 | IEMon | monitor contract | `Second M68K, x86, and IE64 instances are labelled coproc:M68K#1, coproc:X86#1, and coproc:IE64#1 and receive separate monitor CPU IDs; cpu online starts instance 0 only.` | `coprocessor_manager.go` `coprocInstanceLabel`/`RegisterCPU` and `WorkerInventory` |
 | IEMon | monitor contract | `The first whole-machine reverse-history record automatically arms a bus page-dirty cursor and takes a full checkpoint.` | `debug_commands.go` `recordWholeMachineHistory`, `debug_reverse_epoch.go` `ensureEpochHistoryLocked` |
+| IEMon | monitor contract | `When a thawed CPU is listed or selected for focus, IEMon temporarily freezes it to capture coherent state and then restores its prior running state.` | `debug_commands.go` `cmdCPU` running-state capture around program-counter, register, and disassembly inspection |
 | IEMon | region divergence row | `6502 \| Page-1 stack, 0xF000-0xF0FF direct MMIO, VGA at 0xD700-0xD70D, and ULA at 0xD800-0xD817` | `cpu_six5go2.go` stack/MMIO mapping, `vga_constants.go` `C6502_VGA_*`, `ula_constants.go` `C6502_ULA_BASE` |
 | IEMon | region divergence row | `Z80 \| 0xF000-0xF0FF direct MMIO window and 0xA0-0xAD VGA port range` | `cpu_z80_runner.go` MMIO translation, `vga_constants.go` `Z80_VGA_PORT_*` |

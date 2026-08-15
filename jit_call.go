@@ -1,38 +1,27 @@
-// jit_call.go - Safe native code invocation via runtime.asmcgocall
+// jit_call.go - Safe native code invocation via runtime.cgocall
 //
 // Switches to the g0 stack before calling JIT-compiled native code. This
 // prevents Go's async GC preemption (SIGURG) from interrupting native
 // execution, which would crash because the signal handler can't interpret
 // a PC in mmap'd memory.
 //
-// We deliberately linkname runtime.asmcgocall instead of runtime.cgocall
-// because asmcgocall is the low-level stack-switch primitive without
-// cgocall's iscgo guard. This means the JIT works in both CGO_ENABLED=1
-// (the normal development build) and CGO_ENABLED=0 builds (the portable
-// benchmark binary produced by build_6502_benchmarks.sh with -tags
-// 'osusergo netgo headless novulkan'). cgocall would fatal with
-// "cgocall unavailable" in the CGO_ENABLED=0 case because the runtime/cgo
-// package is not linked in, leaving iscgo=false.
-//
-// The asm trampolines in jit_call_arm64.s / jit_call_amd64.s were already
-// written to the asmcgocall contract (they literally say "called on the
-// g0 stack by asmcgocall") — this file just routes through asmcgocall
-// directly instead of hopping through cgocall first.
+// Cgo-disabled Darwin builds use the equivalent bridge in
+// jit_call_darwin_nocgo.go.
 
-//go:build (amd64 && (linux || windows || darwin)) || (arm64 && (linux || windows || darwin))
+//go:build (amd64 || arm64) && ((linux && cgo) || windows || (darwin && cgo))
 
 package main
 
 import "unsafe"
 
-//go:linkname runtime_asmcgocall runtime.asmcgocall
-func runtime_asmcgocall(fn unsafe.Pointer, arg unsafe.Pointer) int32
+//go:linkname runtime_cgocall runtime.cgocall
+func runtime_cgocall(fn unsafe.Pointer, arg unsafe.Pointer) int32
 
 //go:linkname runtime_noescape runtime.noescape
 //go:noescape
 func runtime_noescape(p unsafe.Pointer) unsafe.Pointer
 
-// jitCallArgs is the argument block passed through runtime.asmcgocall to
+// jitCallArgs is the argument block passed through runtime.cgocall to
 // the assembly trampoline (jitCall). The trampoline reads fn and arg,
 // calls the native code, and stores the return value in ret.
 type jitCallArgs struct {
@@ -42,7 +31,7 @@ type jitCallArgs struct {
 }
 
 // jitCallABI0 is set by assembly (GLOBL/DATA) to the ABI0 address of
-// jitCall. runtime.asmcgocall requires an ABI0 function pointer.
+// jitCall. runtime.cgocall requires an ABI0 function pointer.
 var jitCallABI0 unsafe.Pointer
 
 // callNative calls a native JIT block at fn, passing arg (typically a
@@ -52,7 +41,7 @@ func callNative(fn uintptr, arg uintptr) {
 	args := jitCallArgs{fn: fn, arg: arg}
 	jitPrepareForExec()
 	defer jitFinishExec()
-	runtime_asmcgocall(jitCallABI0, runtime_noescape(unsafe.Pointer(&args)))
+	runtime_cgocall(jitCallABI0, runtime_noescape(unsafe.Pointer(&args)))
 }
 
 // callNativeArgRet is the argument-bearing counterpart to callNativeRet. It
@@ -62,7 +51,7 @@ func callNativeArgRet(fn uintptr, arg uintptr) uintptr {
 	args := jitCallArgs{fn: fn, arg: arg}
 	jitPrepareForExec()
 	defer jitFinishExec()
-	runtime_asmcgocall(jitCallABI0, runtime_noescape(unsafe.Pointer(&args)))
+	runtime_cgocall(jitCallABI0, runtime_noescape(unsafe.Pointer(&args)))
 	return args.ret
 }
 
@@ -73,6 +62,6 @@ func callNativeRet(fn uintptr) uintptr {
 	args := jitCallArgs{fn: fn}
 	jitPrepareForExec()
 	defer jitFinishExec()
-	runtime_asmcgocall(jitCallABI0, runtime_noescape(unsafe.Pointer(&args)))
+	runtime_cgocall(jitCallABI0, runtime_noescape(unsafe.Pointer(&args)))
 	return args.ret
 }

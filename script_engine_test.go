@@ -15,7 +15,11 @@ import (
 
 func waitScriptStopped(t *testing.T, se *ScriptEngine) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	timeout := 2 * time.Second
+	if raceEnabled {
+		timeout = 10 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if !se.IsRunning() {
 			return

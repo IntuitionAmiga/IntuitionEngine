@@ -29,9 +29,9 @@ func createIE64Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWor
 	if ring := coprocRingIndex(EXEC_TYPE_IE64, instance); ring >= 0 {
 		cpu.regs[30] = uint64(ringBaseAddr(ring))
 	}
-	cpu.regs[31] = uint64(end - 0xFF)  // Stack at top of worker region
-	cpu.CoprocMode = true              // Skip PC range check in Execute()
-	cpu.jitEnabled = jitAvailable      // Use JIT when available
+	cpu.regs[31] = uint64(end - 0xFF) // Stack at top of worker region
+	cpu.CoprocMode = true             // Skip PC range check in Execute()
+	cpu.jitEnabled = jitAvailable     // Use JIT when available
 
 	done := make(chan struct{})
 	stopFn := func() { cpu.running.Store(false) }
@@ -46,6 +46,7 @@ func createIE64Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWor
 		stopCPU:   stopFn,
 		execCPU:   execFn,
 		done:      done,
+		started:   true,
 		loadBase:  base,
 		loadEnd:   end,
 		debugCPU:  adapter,

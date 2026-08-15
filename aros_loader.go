@@ -225,7 +225,7 @@ func (l *AROSLoader) StartTimer() {
 // avoid spurious exceptions during early boot.
 func (l *AROSLoader) refreshIRQArming() {
 	// AROS uses autovectors: L2→vector 26, L3→vector 27, L4→vector 28, L5→vector 29.
-	base := l.cpu.VBR
+	base := l.cpu.loadVBR()
 	vec2 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL2)*4)
 	vec3 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL3)*4)
 	vec4 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL4)*4)

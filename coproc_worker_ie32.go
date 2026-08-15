@@ -6,7 +6,7 @@ func createIE32Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWor
 	return createIE32WorkerConfigured(bus, data, instance, false)
 }
 
-func createIE32WorkerConfigured(bus *MachineBus, data []byte, instance uint32, disableJIT bool) (*CoprocWorker, error) {
+func createIE32WorkerConfigured(bus *MachineBus, data []byte, instance uint32, disableJIT bool, startNow ...bool) (*CoprocWorker, error) {
 	base, end, size, ok := workerWindow(EXEC_TYPE_IE32, instance)
 	if !ok {
 		return nil, fmt.Errorf("IE32 worker instance out of range: %d", instance)
@@ -31,8 +31,9 @@ func createIE32WorkerConfigured(bus *MachineBus, data []byte, instance uint32, d
 	cpu.CoprocMode = true // Skip PC range check in Execute()
 
 	done := make(chan struct{})
+	startFn := func() { cpu.running.Store(true) }
 	stopFn := func() { cpu.running.Store(false) }
-	execFn := func() { cpu.running.Store(true); cpu.Execute() }
+	execFn := func() { cpu.Execute() }
 
 	adapter := NewDebugIE32(cpu)
 
@@ -40,6 +41,7 @@ func createIE32WorkerConfigured(bus *MachineBus, data []byte, instance uint32, d
 		cpuType:    EXEC_TYPE_IE32,
 		monitorID:  -1,
 		stop:       stopFn,
+		startCPU:   startFn,
 		stopCPU:    stopFn,
 		execCPU:    execFn,
 		disposeCPU: cpu.Dispose,
@@ -52,10 +54,9 @@ func createIE32WorkerConfigured(bus *MachineBus, data []byte, instance uint32, d
 	adapter.workerFreeze = worker.Pause
 	adapter.workerResume = worker.Unpause
 
-	go func() {
-		defer close(done)
-		cpu.Execute()
-	}()
+	if len(startNow) == 0 || startNow[0] {
+		worker.Start()
+	}
 
 	return worker, nil
 }

@@ -65,6 +65,7 @@ symbols, and Appendix J gives the full memory map.
 | CMOVcc | Chapter 30, Appendix G |
 | Clipboard bridge monitor view | Chapter 33 |
 | Code invalidation | Chapter 34, Chapter 44 |
+| Coherent CPU inspection | Chapter 33 |
 | COMPILE | Chapter 2, Chapter 35, Appendix I |
 | Compiled BASIC | Chapter 1, Chapter 2, Chapter 25, Chapter 35 |
 | Compositor | Chapter 3, Appendix K |
@@ -74,6 +75,7 @@ symbols, and Appendix J gives the full memory map.
 | Coprocessor | Chapter 32, Chapter 40, Chapter 43, Chapter 57, Chapter 61, Appendix I |
 | Coprocessor instance discovery | Chapter 32, Appendix D, Appendix H |
 | Coprocessor mailbox | Chapter 32, Chapter 43, Appendix D, Appendix J |
+| Coprocessor mailbox publication order | Chapter 32, Chapter 43 |
 | Coprocessor worker windows | Chapter 32, Chapter 42, Appendix J |
 | COPROC_CMD_ERROR | Chapter 32, Appendix D |
 | COPROC_CMD_START_MEM | Chapter 32, Chapter 43, Appendix D, Appendix I |

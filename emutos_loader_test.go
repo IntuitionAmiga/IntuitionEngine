@@ -244,11 +244,14 @@ func TestEmuTOSBoot(t *testing.T) {
 	loader.StartTimer()
 	defer loader.Stop()
 
-	go cpu.ExecuteInstruction()
-	defer cpu.running.Store(false)
+	runner := NewM68KRunner(cpu)
+	runner.cpu.m68kJitEnabled = false
+	runner.StartExecution()
+	defer runner.Stop()
 
 	// Let it boot for 3 seconds
 	time.Sleep(3 * time.Second)
+	runner.Stop()
 
 	t.Logf("CPU running: %v, PC=%08X, A7=%08X, SR=%04X",
 		cpu.Running(), cpu.PC, cpu.AddrRegs[7], cpu.SR)
@@ -280,15 +283,16 @@ func TestEmuTOSBoot_VDIRendering(t *testing.T) {
 	loader.StartTimer()
 	defer loader.Stop()
 
-	go cpu.ExecuteInstruction()
-	defer cpu.running.Store(false)
+	runner := NewM68KRunner(cpu)
+	runner.cpu.m68kJitEnabled = false
+	runner.StartExecution()
+	defer runner.Stop()
 
 	// Let EmuTOS boot fully — GEM desktop takes ~2s
 	time.Sleep(5 * time.Second)
 
 	// Stop CPU before reading memory to avoid races
-	cpu.running.Store(false)
-	time.Sleep(50 * time.Millisecond) // let CPU loop exit
+	runner.Stop()
 
 	// --- System variable dump ---
 	vbasad := cpu.Read32(0x44E) // v_bas_ad: framebuffer base

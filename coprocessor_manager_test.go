@@ -38,6 +38,63 @@ func TestIE32WorkerDiscardUnregistersCPUInvalidator(t *testing.T) {
 	}
 }
 
+func TestDiscardUnownedWorkerDoesNotDisposeRunningWorkerAfterTimeout(t *testing.T) {
+	disposed := false
+	worker := &CoprocWorker{
+		started:    true,
+		stopCPU:    func() {},
+		disposeCPU: func() { disposed = true },
+		done:       make(chan struct{}),
+	}
+
+	discardUnownedWorker(worker, time.Millisecond)
+
+	if disposed {
+		t.Fatal("running worker was disposed after its stop timed out")
+	}
+}
+
+func TestDiscardUnownedWorkerDisposesWorkerAfterItStops(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	disposed := false
+	worker := &CoprocWorker{
+		started:    true,
+		stopCPU:    func() {},
+		disposeCPU: func() { disposed = true },
+		done:       done,
+	}
+
+	discardUnownedWorker(worker, time.Second)
+
+	if !disposed {
+		t.Fatal("stopped worker was not disposed")
+	}
+}
+
+func TestStopWorkerAndUnregisterDisposesUnstartedWorker(t *testing.T) {
+	_, manager := newTestBusAndManager(t)
+	disposed := false
+	worker := &CoprocWorker{
+		monitorID: -1,
+		stopCPU:   func() {},
+		disposeCPU: func() {
+			disposed = true
+		},
+		done: make(chan struct{}),
+	}
+
+	started := time.Now()
+	manager.stopWorkerAndUnregister(EXEC_TYPE_IE32, worker)
+
+	if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+		t.Fatalf("stopping an unstarted worker took %s", elapsed)
+	}
+	if !disposed {
+		t.Fatal("unstarted worker was not disposed")
+	}
+}
+
 const (
 	ie32_LOAD  = 0x01
 	ie32_STORE = 0x02
@@ -1667,8 +1724,8 @@ func assertX86CoprocNativeBlock(t *testing.T, worker *CoprocWorker) {
 		return
 	}
 	cpu := worker.debugCPU.(*DebugX86).cpu
-	if cpu.x86JitCache == nil || cpu.x86JitCache.Get(uint64(worker.loadBase)) == nil {
-		t.Fatal("x86 coprocessor service completed without compiling its entry block")
+	if cpu.jitStats.nativeRetired.Load() == 0 {
+		t.Fatal("x86 coprocessor service completed without retiring native instructions")
 	}
 }
 

@@ -58,6 +58,7 @@ func createM68KWorker(bus *MachineBus, data []byte, instance uint32) (*CoprocWor
 		stopCPU:   stopFn,
 		execCPU:   execFn,
 		done:      done,
+		started:   true,
 		loadBase:  base,
 		loadEnd:   end,
 		debugCPU:  adapter,

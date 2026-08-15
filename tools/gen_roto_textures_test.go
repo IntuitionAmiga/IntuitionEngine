@@ -91,8 +91,8 @@ func TestNoCPURotoTextureMatchesRawAndPreservesCanonicalPixels(t *testing.T) {
 	}
 
 	decoded := make([]byte, 0, len(raw))
-	for y := 0; y < rotoTextureHeight; y++ {
-		for x := 0; x < rotoTextureWidth; x++ {
+	for y := range rotoTextureHeight {
+		for x := range rotoTextureWidth {
 			r, g, b, a := img.At(x, y).RGBA()
 			decoded = append(decoded, byte(r>>8), byte(g>>8), byte(b>>8), byte(a>>8))
 		}
@@ -102,8 +102,8 @@ func TestNoCPURotoTextureMatchesRawAndPreservesCanonicalPixels(t *testing.T) {
 	}
 
 	changed := false
-	for y := 0; y < rotoTextureHeight; y++ {
-		for x := 0; x < rotoTextureWidth; x++ {
+	for y := range rotoTextureHeight {
+		for x := range rotoTextureWidth {
 			offset := (y*rotoTextureWidth + x) * rotoPixelBytes
 			if y < 182 || y >= 238 || x < 20 || x >= 236 {
 				if !bytes.Equal(raw[offset:offset+rotoPixelBytes], base[offset:offset+rotoPixelBytes]) {

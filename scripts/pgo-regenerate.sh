@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pgo-regenerate.sh - capture the amd64 default.pgo from the manifest workloads.
+# pgo-regenerate.sh - capture the x64 default.pgo from the manifest workloads.
 #
 # Implements the procedure documented in default.pgo.manifest and
 # sdk/docs/architecture.md: build a -pgo=off capture binary, run each workload
@@ -7,9 +7,9 @@
 # merge the profiles with `go tool pprof -proto`.
 #
 # The workloads are GUI demos and need a display (DISPLAY / Wayland). The result
-# is written to default.pgo.new; review it (benchstat, no regression) and then
-# `mv default.pgo.new default.pgo` and update default.pgo.manifest in the same
-# change set. Nothing is overwritten in place.
+# is written to default.pgo.new. Move it to default.pgo after the native and
+# wasm build checks pass, then update default.pgo.manifest in the same change
+# set. Nothing is overwritten in place.
 #
 # (c) 2024 - 2026 Zayn Otley
 # https://github.com/IntuitionAmiga/IntuitionEngine
@@ -22,11 +22,13 @@ cd "$ROOT"
 
 OUT="${1:-default.pgo.new}"
 WORKDIR="$(mktemp -d)"
-CAPTURE_BIN="$WORKDIR/ie-pgo-capture"
+CAPTURE_BIN="${PGO_CAPTURE_BIN:-$WORKDIR/ie-pgo-capture}"
 trap 'rm -rf "$WORKDIR"' EXIT
 
-echo "==> Building capture binary (-pgo=off)"
-CGO_ENABLED=1 "$GO" build -pgo=off -tags "embed_basic embed_emutos embed_aros" -o "$CAPTURE_BIN" .
+if [[ -z "${PGO_CAPTURE_BIN:-}" ]]; then
+  echo "==> Building capture binary (-pgo=off)"
+  CGO_ENABLED=1 "$GO" build -pgo=off -tags "embed_basic embed_emutos embed_aros" -o "$CAPTURE_BIN" .
+fi
 
 # Each entry: name|duration_seconds|space-separated VM args.
 WORKLOADS=(
@@ -37,8 +39,12 @@ WORKLOADS=(
   "iescript_emutos|15|-emutos -emutos-image sdk/examples/prebuilt/etos256us.img -script emutos_jit_probe.ies"
   "robocop_m68k|30|-m68k sdk/examples/prebuilt/robocop_intro_68k.ie68"
 )
+if [[ -n "${PGO_WORKLOADS:-}" ]]; then
+  mapfile -t WORKLOADS <<<"$PGO_WORKLOADS"
+fi
 
 PROFILES=()
+missing=0
 for entry in "${WORKLOADS[@]}"; do
   IFS='|' read -r name dur args <<<"$entry"
   prof="$WORKDIR/$name.pprof"
@@ -48,12 +54,13 @@ for entry in "${WORKLOADS[@]}"; do
   if [ -s "$prof" ]; then
     PROFILES+=("$prof")
   else
-    echo "WARNING: $name produced no profile (missing demo or no display?)" >&2
+    echo "ERROR: $name produced no profile (missing demo or no display?)" >&2
+    missing=1
   fi
 done
 
-if [ "${#PROFILES[@]}" -eq 0 ]; then
-  echo "ERROR: no profiles captured; nothing to merge" >&2
+if [[ "$missing" -ne 0 || "${#PROFILES[@]}" -ne "${#WORKLOADS[@]}" ]]; then
+  echo "ERROR: every declared workload must produce a non-empty profile" >&2
   exit 1
 fi
 
@@ -65,5 +72,5 @@ CGO_ENABLED=1 "$GO" build -pgo="$OUT" -o /dev/null .
 
 echo
 echo "Wrote $OUT from ${#PROFILES[@]} workload(s)."
-echo "Next: benchstat against -pgo=off (no regression across video/audio/bus),"
-echo "then 'mv $OUT default.pgo' and update default.pgo.manifest."
+echo "Next: verify native and wasm builds, then 'mv $OUT default.pgo' and"
+echo "update default.pgo.manifest."

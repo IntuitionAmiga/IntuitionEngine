@@ -256,7 +256,9 @@ func ProbeAROSReadyState(cpu *M68KCPU, loader *AROSLoader) AROSReadyState {
 	state.TaskReadyCount = countAROSList(cpu, sysBase+arosExecTaskReadyOffset)
 	state.TaskWaitCount = countAROSList(cpu, sysBase+arosExecTaskWaitOffset)
 	if loader != nil {
+		loader.armMu.Lock()
 		state.IRQReady = loader.l2Armed || loader.l4Armed || loader.l5Armed
+		loader.armMu.Unlock()
 	}
 
 	state.Ready = state.TaskName != "" && state.TaskReadyCount >= 0 && state.TaskWaitCount >= 0
@@ -438,7 +440,6 @@ func (h AROSBootHarness) Run(ctx context.Context) AROSBootResult {
 	defer func() {
 		h.CPU.FaultHook = prevHook
 	}()
-
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(poll)

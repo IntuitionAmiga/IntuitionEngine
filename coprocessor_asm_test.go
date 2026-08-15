@@ -364,23 +364,11 @@ func TestCoprocCallerPlumbing_Z80(t *testing.T) {
 	}
 
 	z80cpu := NewCPU_Z80(z80adapter)
-	go z80cpu.Execute()
-
-	// Z80 HALT doesn't stop execution - it just spins in NOP cycles.
-	// Poll Halted flag to detect completion, then stop.
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			z80cpu.SetRunning(false)
-			t.Fatal("Z80 program timed out")
-		default:
-		}
-		if z80cpu.Halted {
-			z80cpu.SetRunning(false)
-			break
-		}
-		time.Sleep(time.Millisecond)
+	for steps := 0; steps < 1000 && !z80cpu.Halted; steps++ {
+		z80cpu.Step()
+	}
+	if !z80cpu.Halted {
+		t.Fatal("Z80 program did not halt within 1000 instructions")
 	}
 
 	result := bus.Read8(0x8000)
@@ -448,22 +436,11 @@ func TestCoprocCallerPlumbing_6502(t *testing.T) {
 	cpu6502 := NewCPU_6502(bus)
 	cpu6502.PC = loadAddr
 
-	go cpu6502.Execute()
-
-	// Poll sentinel address $0201 for non-zero to detect completion
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			cpu6502.SetRunning(false)
-			t.Fatal("6502 program timed out")
-		default:
-		}
-		if bus.Read8(0x0201) != 0 {
-			cpu6502.SetRunning(false)
-			break
-		}
-		time.Sleep(time.Millisecond)
+	for steps := 0; steps < 1000 && bus.Read8(0x0201) == 0; steps++ {
+		cpu6502.Step()
+	}
+	if bus.Read8(0x0201) == 0 {
+		t.Fatal("6502 program did not signal completion within 1000 instructions")
 	}
 
 	result := bus.Read8(0x0200)
@@ -618,26 +595,11 @@ func TestCoprocCallerPlumbing_X86(t *testing.T) {
 	x86bus := NewX86BusAdapter(bus)
 	cpu := NewCPU_X86(x86bus)
 	cpu.EIP = WORKER_X86_BASE
-	go func() {
-		for cpu.Running() {
-			cpu.Step()
-		}
-	}()
-
-	// x86 HLT sets Halted=true but doesn't stop Execute loop
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			cpu.SetRunning(false)
-			t.Fatal("x86 program timed out")
-		default:
-		}
-		if cpu.Halted {
-			cpu.SetRunning(false)
-			break
-		}
-		time.Sleep(time.Millisecond)
+	for steps := 0; steps < 1000 && !cpu.Halted; steps++ {
+		cpu.Step()
+	}
+	if !cpu.Halted {
+		t.Fatal("x86 program did not halt within 1000 instructions")
 	}
 
 	result := bus.Read32(0x600000)

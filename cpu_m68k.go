@@ -839,6 +839,14 @@ type M68KCPU struct {
 	m68kJitFallbackFirstSnapshots  map[uint32]m68kJITFallbackSnapshot
 }
 
+func (cpu *M68KCPU) loadVBR() uint32 {
+	return atomic.LoadUint32(&cpu.VBR)
+}
+
+func (cpu *M68KCPU) storeVBR(value uint32) {
+	atomic.StoreUint32(&cpu.VBR, value)
+}
+
 // m68kVerifyWrite records one RAM byte's pre-write value for the JIT verifier's
 // undoable interpreter pre-pass. Types live in this always-compiled file
 // because M68KCPU fields reference them on every platform.
@@ -3066,10 +3074,10 @@ func isNativeNumericMMIOAddr(addr uint32) bool {
 func (cpu *M68KCPU) Read8(addr uint32) uint8 {
 	addr &= M68K_ADDRESS_MASK
 
-	// Lock-free fast path for non-I/O addresses using unsafe pointer
+	// Atomic fast path for non-I/O addresses shared with asynchronous devices.
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
-		value := *(*byte)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		value := atomicRAM8(cpu.memory, addr)
 		cpu.debugOnRead(addr, 1)
 		return value
 	}
@@ -3127,11 +3135,11 @@ func (cpu *M68KCPU) Read16(addr uint32) uint16 {
 		return (hi << 8) | lo
 	}
 
-	// Lock-free fast path for non-I/O addresses using unsafe pointer
+	// Atomic fast path for non-I/O addresses shared with asynchronous devices.
 	// Read as little-endian uint16, then byte-swap to big-endian
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
-		leValue := *(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		leValue := atomicRAM16(cpu.memory, addr)
 		cpu.debugOnRead(addr, 2)
 		return bits.ReverseBytes16(leValue)
 	}
@@ -3190,11 +3198,11 @@ func (cpu *M68KCPU) Read32(addr uint32) uint32 {
 		return (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
 	}
 
-	// Lock-free fast path for non-I/O addresses using unsafe pointer
+	// Atomic fast path for non-I/O addresses shared with asynchronous devices.
 	// Read as little-endian uint32, then byte-swap to big-endian
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
-		leValue := *(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr)))
+		leValue := atomicRAM32(cpu.memory, addr)
 		cpu.debugOnRead(addr, 4)
 		return bits.ReverseBytes32(leValue)
 	}
@@ -3260,10 +3268,10 @@ func (cpu *M68KCPU) Write8(addr uint32, value uint8) {
 	}
 	cpu.invalidateM68KJITForGuestWrite(addr, 1)
 
-	// Fast path: non-I/O memory using unsafe pointer
+	// Atomic fast path for non-I/O addresses shared with asynchronous devices.
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
-		*(*byte)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = value
+		atomicStoreRAM8(cpu.memory, addr, value)
 		cpu.debugOnWrite(addr, 1, 0, uint64(value))
 		return
 	}
@@ -3299,11 +3307,11 @@ func (cpu *M68KCPU) Write16(addr uint32, value uint16) {
 	}
 	cpu.invalidateM68KJITForGuestWrite(addr, 2)
 
-	// Fast path: non-I/O memory using unsafe pointer
+	// Atomic fast path for non-I/O addresses shared with asynchronous devices.
 	// Byte-swap from big-endian to little-endian and write as uint16
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
-		*(*uint16)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = bits.ReverseBytes16(value)
+		atomicStoreRAM16(cpu.memory, addr, bits.ReverseBytes16(value))
 		cpu.debugOnWrite(addr, 2, 0, uint64(value))
 		return
 	}
@@ -3376,11 +3384,11 @@ func (cpu *M68KCPU) Write32(addr uint32, value uint32) {
 	}
 	cpu.invalidateM68KJITForGuestWrite(addr, 4)
 
-	// Fast path: non-I/O memory using unsafe pointer
+	// Atomic fast path for non-I/O addresses shared with asynchronous devices.
 	// Byte-swap from big-endian to little-endian and write as uint32
 	// EXCLUDE VGA windows (0xA0000-0xBFFFF) which need bus routing
 	if addr < 0xA0000 {
-		*(*uint32)(unsafe.Pointer(uintptr(cpu.memBase) + uintptr(addr))) = bits.ReverseBytes32(value)
+		atomicStoreRAM32(cpu.memory, addr, bits.ReverseBytes32(value))
 		cpu.debugOnWrite(addr, 4, 0, uint64(value))
 		return
 	}
@@ -4383,7 +4391,7 @@ func (cpu *M68KCPU) ProcessException(vector uint8) {
 	savedA7 := cpu.AddrRegs[7]
 	cpu.pushExceptionFrame(oldSR, oldPC, vector, frameFormat)
 
-	vecAddr := cpu.VBR + uint32(vector)*M68K_LONG_SIZE
+	vecAddr := cpu.loadVBR() + uint32(vector)*M68K_LONG_SIZE
 	newPC := cpu.Read32(vecAddr)
 
 	// Uninitialised vectors: restore state and continue (ignore exception)
@@ -4489,7 +4497,7 @@ func (cpu *M68KCPU) ProcessInterrupt(level uint8) bool {
 		cpu.pushExceptionFrame(oldSR, cpu.PC, uint8(vector), M68K_FRAME_FMT_0)
 
 		// Get new PC from vector table
-		vecAddr := cpu.VBR + uint32(vector)*M68K_LONG_SIZE
+		vecAddr := cpu.loadVBR() + uint32(vector)*M68K_LONG_SIZE
 		cpu.PC = cpu.Read32(vecAddr)
 
 		// Interrupt entry is complete here; do not latch inException.
@@ -5194,7 +5202,7 @@ func (cpu *M68KCPU) ExecMovec() {
 			cpu.USP = value
 		case M68K_CR_VBR:
 			// Relocates exception vector table for multiple contexts
-			cpu.VBR = value
+			cpu.storeVBR(value)
 		case M68K_CR_CACR:
 			// Cache control - enables/disables instruction cache
 			cpu.CACR = value
@@ -5222,7 +5230,7 @@ func (cpu *M68KCPU) ExecMovec() {
 		case M68K_CR_USP:
 			value = cpu.USP
 		case M68K_CR_VBR:
-			value = cpu.VBR
+			value = cpu.loadVBR()
 		case M68K_CR_CACR:
 			value = cpu.CACR
 		case M68K_CR_CAAR:

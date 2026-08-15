@@ -177,21 +177,17 @@ VM_NOVULKAN_TAGS := novulkan $(VM_EMBED_TAGS)
 # main package. Each recipe passes -pgo explicitly rather than relying on that
 # auto-discovery, so a regenerated root profile cannot silently change targets
 # that should use their own, and so the wasm target's choice is deliberate:
-#   - PGO_PROFILE is the amd64 profile used by the native, novulkan and headless
-#     builds (all amd64). Override to point a recipe at a target-specific profile
+#   - PGO_PROFILE is the x64 profile used by the native, novulkan and headless
+#     x64 builds. Override to point a recipe at a target-specific profile
 #     (e.g. `make novulkan PGO_PROFILE=default.novulkan.pgo`).
-#   - WASM_PGO is the wasm build's profile. It defaults to the amd64 default.pgo:
+#   - WASM_PGO is the wasm build's profile. It defaults to the x64 default.pgo:
 #     a PGO profile is symbolic (function names and edge weights) and Go applies
 #     it in the arch-independent inliner, so the profile's samples for functions
 #     shared between the native and wasm builds (bus, IE64 interpreter, BASIC
-#     runtime, video kernels) drive the wasm codegen too. Entries for
-#     amd64-only functions (the native JIT) are simply dropped, and PGO never
-#     pessimises, so this is >= -pgo=off; the measured cost is ~0.2 % wasm size.
-#     Go cannot sample-profile js/wasm itself (no threads/SIGPROF, so an
-#     IE_CPUPROFILE capture there yields zero samples), so a wasm-native profile
-#     would have to come from a browser/Node CPU capture converted to pprof; set
-#     WASM_PGO=default.wasm.pgo once such a profile exists to also cover the wasm
-#     JIT paths. Set WASM_PGO=off to opt out entirely.
+#     runtime, video kernels) drive the wasm codegen too. Entries for x64-only
+#     functions are ignored by the wasm build.
+#     Go cannot sample-profile js/wasm itself. WASM_PGO=off is the explicit
+#     opt-out.
 PGO_PROFILE ?= default.pgo
 WASM_PGO    ?= default.pgo
 
@@ -204,10 +200,10 @@ override GOAMD64 := v3
 export GOAMD64
 
 # SIMD acceleration kernels (simd/archsimd) are default-on for make builds. The
-# kernels live behind the goexperiment.simd build tag and an amd64 guard; on any
-# other target the stubs (simd_gate_stub.go) compile scalar-only, so exporting
-# the experiment globally is safe for the arm64 cross builds and the CGO_ENABLED=0
-# purego recipe (all probed to build with it set). Runtime kill switch: IE_SIMD=0
+# kernels live behind the goexperiment.simd build tag. x64 and Linux ARM64 use
+# architecture-specific kernels. Other targets compile scalar-only stubs, so
+# exporting the experiment globally is safe for cross-builds and the
+# CGO_ENABLED=0 purego recipe. Runtime kill switch: IE_SIMD=0
 # reverts a SIMD-built binary to scalar kernels. Dev machines using `go run .`
 # need a one-time `go env -w GOEXPERIMENT=simd` (GOEXPERIMENT cannot live in
 # go.mod); without it they still build and run correctly, scalar-only.
@@ -350,7 +346,7 @@ SHOWREEL_ALL_ARTIFACTS := \
 #   make                      Full build (Vulkan + Ebiten + OTO)
 #   make novulkan             Software Voodoo only (no Vulkan SDK needed)
 #   make headless             No display, no audio, no Vulkan (CI/testing)
-#   make headless-novulkan    CGO_ENABLED=0 portable build (cross-compile safe)
+#   make headless-novulkan    Headless build with the software Voodoo renderer
 
 # Release directories
 RELEASE_DIR := ./release
@@ -370,7 +366,7 @@ AB3D2_README := $(AB3D2_BUILD_DIR)/README.md
 AB3D2_ARCHIVE := $(AB3D2_BUILD_DIR)/IntuitionEngine-AB3D2-x64.zip
 
 # Main targets
-.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-wasm-crt-browser test-x86-jit-parity test-6502-jit-parity test-ie32-jit-parity test-ie32-jit-race test-z80-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos rpi-4-arm64 rpi-400-arm64 rpi-5-arm64 rpi-arm64-preflight rpi-host-helper-arm64 build-image-pi4 build-image-pi400 build-image-pi5 rpi-live-payload-check rpi4-live-payload-check rpi400-live-payload-check rpi5-live-payload-check rpi-live-images rpi4-live-qemu rpi4-live-hardware-qemu prepare-rpi-cross-overlay validate-rpi-sysroot validate-rpi-sysroot-preflight test vet tidy test-makefile test-cross test-cross-binaries test-cross-amd64-binaries test-ie64-toolchain ab3d2 ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd check-docs bench-baseline bench-after bench-compare x86-bench-baseline x86-bench-after x86-bench-compare z80-bench-baseline z80-bench-after z80-bench-compare ie32-bench-baseline ie32-bench-after ie32-bench-compare x86-iedoom-timedemo
+.PHONY: all setup intuition-engine pgo-regenerate clean distclean list install uninstall novulkan headless headless-novulkan wasm wasm-profile wasm-deploy test-wasm-build test-wasm test-wasm-node test-wasm-crt-browser test-x86-jit-parity test-6502-jit-parity test-ie32-jit-parity test-ie32-jit-race test-z80-jit-parity x86-64-v3 x64-live-embed-assets x64-live x64-live-rebuild-golden x64-live-qemu x64-live-demos x64-live-payload-check x64-live-sdk-tools x64-live-refman-pdfs x64-live-sdk-companion-pdfs x64-live-ab3d2-assets x64-live-aros-demos rpi-4-arm64 rpi-400-arm64 rpi-5-arm64 rpi-arm64-preflight rpi-host-helper-arm64 build-image-pi4 build-image-pi400 build-image-pi5 rpi-live-payload-check rpi4-live-payload-check rpi400-live-payload-check rpi5-live-payload-check rpi-live-images rpi4-live-qemu rpi4-live-hardware-qemu prepare-rpi-cross-overlay validate-rpi-sysroot validate-rpi-sysroot-preflight test vet tidy test-makefile test-pgo-regenerate test-cross test-cross-binaries test-cross-amd64-binaries test-ie64-toolchain ab3d2 ab3d64 prepare-ab3d2-embed compress-ab3d2 check-linux-arm64-cross-prereqs test-race test-simd test-simd-arm64-qemu check-docs bench-baseline bench-after bench-compare x86-bench-baseline x86-bench-after x86-bench-compare z80-bench-baseline z80-bench-after z80-bench-compare ie32-bench-baseline ie32-bench-after ie32-bench-compare x86-iedoom-timedemo
 .PHONY: sdk sdk-build clean-sdk release-src release-sdk release-linux release-linux-amd64 release-linux-arm64 release-windows release-macos release-macos-amd64 release-macos-arm64 release-all release-verify players
 .PHONY: build-showreel-deps run-showreel check-showreel-prereqs showreel-emutos showreel-ie32 showreel-ie64 showreel-m68k showreel-z80 showreel-6502 showreel-x86 font-rgba
 .PHONY: testdata-opl testdata-harte testdata-x86 test-harte test-harte-short test-x86-harte test-x86-harte-short clean-testdata
@@ -393,14 +389,17 @@ test:
 
 # The inventory command makes the gate fail if its named acceptance tests are
 # removed or renamed, rather than allowing an unmatched -run regex to pass.
+ARM64_QEMU_CGO_ENV := GODEBUG=asyncpreemptoff=1 CGO_ENABLED=1 CC=$(CROSS_CC) GOOS=linux GOARCH=arm64
+ARM64_QEMU_EXEC = $$QEMU_AARCH64 -L $(RPI_TOOLCHAIN_SYSROOT)
+
 test-6502-jit-parity:
 	@tests="$$( $(GO) test -tags headless -list '^(TestJIT6502_|TestP65JIT|TestP65Decimal|TestP65Wasm|Test6502Klaus)' . )"; test -n "$$tests"
 	$(GO) test -tags headless -count=1 -run '^(TestJIT6502_|TestP65JIT|TestP65Decimal|TestP65Wasm|Test6502Klaus)' .
 	@QEMU_AARCH64="$$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)"; \
 	test -n "$$QEMU_AARCH64" || { echo "missing qemu-aarch64 or qemu-aarch64-static" >&2; exit 1; }; \
-	tests="$$(GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -list '^TestJIT6502_ARM64_' .)"; \
+	tests="$$($(ARM64_QEMU_CGO_ENV) $(GO) test -exec "$(ARM64_QEMU_EXEC)" -tags "novulkan headless" -list '^TestJIT6502_ARM64_' .)"; \
 	test -n "$$tests" || { echo "empty 6502 ARM64 QEMU test inventory" >&2; exit 1; }; \
-	GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -count=1 -run '^TestJIT6502_ARM64_' .
+	$(ARM64_QEMU_CGO_ENV) $(GO) test -exec "$(ARM64_QEMU_EXEC)" -tags "novulkan headless" -count=1 -run '^TestJIT6502_ARM64_' .
 	@$(MAKE) test-wasm-node
 
 # test-ie32-jit-parity is deliberately non-vacuous: each backend executes the
@@ -417,8 +416,8 @@ test-ie32-jit-parity:
 	IE_REQUIRE_IE32_WASM_BROWSER=1 GOEXPERIMENT=none $(GO) test -tags headless -count=1 -run '^TestIE32WasmBrowser_PairedPerformanceHarness$$' .
 	@QEMU_AARCH64="$$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)"; \
 	test -n "$$QEMU_AARCH64" || { echo "missing qemu-aarch64 or qemu-aarch64-static" >&2; exit 1; }; \
-	./scripts/require-go-test-inventory.sh "empty IE32 ARM64 JIT inventory" env GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOEXPERIMENT=none $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -list '$(IE32_JIT_TEST_REGEX)' . || exit $$?; \
-	GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOEXPERIMENT=none $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -count=1 -run '$(IE32_JIT_TEST_REGEX)' .
+	./scripts/require-go-test-inventory.sh "empty IE32 ARM64 JIT inventory" env $(ARM64_QEMU_CGO_ENV) GOEXPERIMENT=none $(GO) test -exec "$(ARM64_QEMU_EXEC)" -tags "novulkan headless" -list '$(IE32_JIT_TEST_REGEX)' . || exit $$?; \
+	$(ARM64_QEMU_CGO_ENV) GOEXPERIMENT=none $(GO) test -exec "$(ARM64_QEMU_EXEC)" -tags "novulkan headless" -count=1 -run '$(IE32_JIT_TEST_REGEX)' .
 
 IE32_JIT_RACE_TEST_REGEX := ^TestIE32JIT_(BusWritePublishesInvalidationGeneration|BusWriteIsDrainedAtNextExecutionBoundary|ExternalWriteDropsPureBlockCache|CPUWriteDropsPureBlockCache|NonOverlappingWriteRetainsPureBlockCache|StaticRegionTracksDiscontiguousSources|DynamicWriteInvalidatesEveryRetainedBlock|SourceWriteClearsTransientFragmentFallback|GeneratedStoreDrainsBeforeChainedTarget|SelfOverwritingGeneratedStorePublishesInvalidation|SourceStampRejectsUnpublishedCodeWrite|ProgramLoadInvalidatesOtherCPUCache)$$
 test-ie32-jit-race:
@@ -443,10 +442,10 @@ test-z80-jit-parity:
 	@$(MAKE) test-wasm-node WASM_NODE_TEST_REGEX='^(TestWasmJIT_Z80|TestZ80Wasm|TestZ80JIT_Full|TestAYZ80PlaybackRealProgramsJITParity)'
 	@QEMU_AARCH64="$$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)"; \
 	test -n "$$QEMU_AARCH64" || { echo "missing qemu-aarch64 or qemu-aarch64-static" >&2; exit 1; }; \
-	./scripts/require-go-test-inventory.sh "empty pre-JIT Z80 ARM64 contract inventory" env GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOEXPERIMENT=none $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -list '$(Z80_INTERPRETER_TEST_REGEX)' . || exit $$?; \
-	GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOEXPERIMENT=none $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -count=1 -run '$(Z80_INTERPRETER_TEST_REGEX)' . || exit $$?; \
-	./scripts/require-go-test-inventory.sh "empty Z80 ARM64 JIT inventory" env GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOEXPERIMENT=none $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -list '^(TestZ80JIT_Manifest|TestZ80JIT_Full|TestZ80JITARM64|TestARM64Z80JIT_|TestAYZ80PlaybackRealProgramsJITParity)' . || exit $$?; \
-	GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOEXPERIMENT=none $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -count=1 -run '^(TestZ80JIT_Manifest|TestZ80JIT_Full|TestZ80JITARM64|TestARM64Z80JIT_|TestAYZ80PlaybackRealProgramsJITParity)' .
+	./scripts/require-go-test-inventory.sh "empty pre-JIT Z80 ARM64 contract inventory" env $(ARM64_QEMU_CGO_ENV) GOEXPERIMENT=none $(GO) test -exec "$(ARM64_QEMU_EXEC)" -tags "novulkan headless" -list '$(Z80_INTERPRETER_TEST_REGEX)' . || exit $$?; \
+	$(ARM64_QEMU_CGO_ENV) GOEXPERIMENT=none $(GO) test -exec "$(ARM64_QEMU_EXEC)" -tags "novulkan headless" -count=1 -run '$(Z80_INTERPRETER_TEST_REGEX)' . || exit $$?; \
+	./scripts/require-go-test-inventory.sh "empty Z80 ARM64 JIT inventory" env $(ARM64_QEMU_CGO_ENV) GOEXPERIMENT=none $(GO) test -exec "$(ARM64_QEMU_EXEC)" -tags "novulkan headless" -list '^(TestZ80JIT_Manifest|TestZ80JIT_Full|TestZ80JITARM64|TestARM64Z80JIT_|TestAYZ80PlaybackRealProgramsJITParity)' . || exit $$?; \
+	$(ARM64_QEMU_CGO_ENV) GOEXPERIMENT=none $(GO) test -exec "$(ARM64_QEMU_EXEC)" -tags "novulkan headless" -count=1 -run '^(TestZ80JIT_Manifest|TestZ80JIT_Full|TestZ80JITARM64|TestARM64Z80JIT_|TestAYZ80PlaybackRealProgramsJITParity)' .
 
 test-ie64-toolchain:
 	@bash ./scripts/test-ie64-toolchain.sh
@@ -471,6 +470,28 @@ test-simd:
 	IE_SIMD=0 GOEXPERIMENT=simd GOAMD64=$(GOAMD64) $(GO) test -tags headless -run '$(SIMD_TEST_REGEX)' ./...
 	GOEXPERIMENT=simd GOAMD64=$(GOAMD64) $(GO) test -tags headless -run 'TestSIMDRasterizeRowsMatchesScalarBitExact' -count=1 .
 	GOEXPERIMENT=none $(GO) build ./...
+
+test-simd-arm64-qemu:
+	@set -e; \
+	qemu="$$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)"; \
+	if [ -z "$$qemu" ]; then \
+		echo "Error: qemu-aarch64-static or qemu-aarch64 is required" >&2; \
+		exit 1; \
+	fi; \
+	sysroot="$(RPI_TOOLCHAIN_SYSROOT)"; \
+	if [ ! -f "$$sysroot/lib/ld-linux-aarch64.so.1" ]; then \
+		echo "Error: ARM64 runtime loader is missing from $$sysroot" >&2; \
+		exit 1; \
+	fi; \
+	qemu_exec="$$qemu -L $$sysroot"; \
+	regex='TestSIMD|TestClampF32'; \
+	./scripts/require-go-test-inventory.sh "empty ARM64 SIMD inventory" \
+		env GOEXPERIMENT=simd CGO_ENABLED=1 CC=$(CROSS_CC) GOOS=linux GOARCH=arm64 \
+		$(GO) test -exec="$$qemu_exec" -tags 'novulkan headless' -list "$$regex" .; \
+	GOEXPERIMENT=simd CGO_ENABLED=1 CC=$(CROSS_CC) GOOS=linux GOARCH=arm64 \
+		$(GO) test -exec="$$qemu_exec" -tags 'novulkan headless' -run "$$regex" -count=1 .; \
+	IE_SIMD=0 GOEXPERIMENT=simd CGO_ENABLED=1 CC=$(CROSS_CC) GOOS=linux GOARCH=arm64 \
+		$(GO) test -exec="$$qemu_exec" -tags 'novulkan headless' -run 'TestSIMDARM64KillSwitchUsesScalarDispatch' -count=1 .
 
 vet:
 	$(GO) vet -tags headless -unsafeptr=false ./...
@@ -597,8 +618,11 @@ ie32-bench-compare:
 		BENCH_TAGS='headless' \
 		BENCH_PKG='.'
 
-test-makefile:
+test-makefile: test-pgo-regenerate
 	@bash ./scripts/test-makefile.sh
+
+test-pgo-regenerate:
+	@bash ./scripts/test-pgo-regenerate.sh
 
 .PHONY: test-rpi-live-image test-rpi-sysroot test-rpi-binary test-rpi-golden-prepare test-rpi-append-ieshare test-rpi4-live-qemu test-ieshare-payload test-verify-rpi-live-image
 test-rpi-live-image:
@@ -623,9 +647,9 @@ setup:
 	@echo "Creating build directories..."
 	@$(MKDIR) -p $(BIN_DIR)
 
-# Regenerate the amd64 default.pgo from the manifest workloads. Writes
-# default.pgo.new (never overwrites default.pgo in place); review with benchstat,
-# then move it into place and update default.pgo.manifest. Needs a display.
+# Regenerate the x64 default.pgo from the manifest workloads. Writes
+# default.pgo.new without overwriting default.pgo. Verify native and wasm
+# builds, then move it into place and update default.pgo.manifest. Needs a display.
 .PHONY: pgo-regenerate
 pgo-regenerate:
 	@GO="$(GO)" bash scripts/pgo-regenerate.sh default.pgo.new
@@ -680,7 +704,7 @@ RPI_GOLDEN_IMAGE ?= rpi-ie-golden.img
 RPI_GOLDEN_MANIFEST ?= scripts/rpi-ie-golden.manifest
 RPI_TOOLCHAIN_SYSROOT ?= $(shell $(CROSS_CC) -print-sysroot)
 RPI_CROSS_OVERLAY ?= build/rpi-cross-overlay
-RPI_GO ?= env GOTOOLCHAIN=go1.26.4 $(GO)
+RPI_GO ?= env GOTOOLCHAIN=go1.27rc2 $(GO)
 RPI_BINARY_TAGS := $(VM_EMBED_TAGS) jack
 RPI_PKG_CONFIG_LIBDIR := $(RPI_CROSS_OVERLAY)/pkgconfig
 
@@ -868,17 +892,17 @@ headless: setup
 	@cp $(BIN_DIR)/IntuitionEngine $(BIN_DIR)/ie_headless
 	@echo "Intuition Engine VM (headless) build complete"
 
-# Build headless+novulkan with CGO disabled (fully portable, cross-compile safe)
+# Build headless with the software Voodoo renderer.
 headless-novulkan: setup
-	@echo "Building Intuition Engine VM (headless-novulkan, CGO_ENABLED=0)..."
-	@CGO_ENABLED=0 $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -pgo=$(PGO_PROFILE) -tags "novulkan headless" .
+	@echo "Building Intuition Engine VM (headless-novulkan)..."
+	@CGO_ENABLED=1 $(NICE) -$(NICE_LEVEL) $(GO) build $(GO_FLAGS) -pgo=$(PGO_PROFILE) -tags "novulkan headless" .
 	@mv IntuitionEngine $(BIN_DIR)/
 	@echo "Intuition Engine VM (headless-novulkan) build complete"
 
 # --- WebAssembly demo (IE64 BASIC in the browser) ----------------------------
 # The js/wasm target uses the IE64 WebAssembly bytecode JIT with interpreter
 # fallback and the software Voodoo rasteriser. GOEXPERIMENT=none because the
-# simd experiment is amd64 only.
+# wasm does not use the native x64 or Linux ARM64 archsimd kernels.
 WASM_DEMO_DIR := intuitionengine.com/demo
 WASM_BINARY   := $(WASM_DEMO_DIR)/ie.wasm
 WASM_TAGS     := embed_basic
@@ -996,7 +1020,7 @@ test-x86-jit-parity:
 	@$(MAKE) test-wasm-node
 	@QEMU_AARCH64="$$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)"; \
 	test -n "$$QEMU_AARCH64" || { echo "missing qemu-aarch64 or qemu-aarch64-static" >&2; exit 1; }; \
-	GODEBUG=asyncpreemptoff=1 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GO) test -exec "$$QEMU_AARCH64" -tags "novulkan headless" -run '^($(X86_JIT_ARM64_QEMU_REGEX))$$' -count=1 .
+	$(ARM64_QEMU_CGO_ENV) $(GO) test -exec "$(ARM64_QEMU_EXEC)" -tags "novulkan headless" -run '^($(X86_JIT_ARM64_QEMU_REGEX))$$' -count=1 .
 
 test-cross:
 	@bash ./scripts/test-cross-compile.sh
@@ -2902,7 +2926,7 @@ help:
 	@echo "  intuition-engine - Build only the Intuition Engine VM (full)"
 	@echo "  novulkan         - Build without Vulkan (software Voodoo only)"
 	@echo "  headless         - Build without display/audio (CI/testing)"
-	@echo "  headless-novulkan - Fully portable CGO_ENABLED=0 build"
+	@echo "  headless-novulkan - Headless software Voodoo build with native JITs"
 	@echo "  wasm             - Build the browser demo (js/wasm, IE64 BASIC machine with wasm JIT backends where available)"
 	@echo "  wasm-profile     - Browser demo build with symbols for devtools profiling (do not deploy)"
 	@echo "  wasm-deploy      - Build the browser demo, then netlify deploy --prod on success"

@@ -149,7 +149,6 @@ func TestAROSInterpreterPostReadySoakAcceptance(t *testing.T) {
 			prevHook(record)
 		}
 	}
-	defer func() { env.CPU.FaultHook = prevHook }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -222,7 +221,6 @@ func TestAROSInterpreterPostReadyMouseInputSoakAcceptance(t *testing.T) {
 			prevHook(record)
 		}
 	}
-	defer func() { env.CPU.FaultHook = prevHook }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
@@ -332,7 +330,6 @@ func TestAROSInterpreterPostReadyKeyboardInputSoakAcceptance(t *testing.T) {
 			prevHook(record)
 		}
 	}
-	defer func() { env.CPU.FaultHook = prevHook }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()

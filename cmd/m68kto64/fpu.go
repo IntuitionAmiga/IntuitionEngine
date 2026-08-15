@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -654,9 +655,9 @@ func (c *Converter) emitFMovemStore(e *Emit, regs []string, ea Operand, size str
 	case AMPreDec:
 		// m68k FMOVEM -(An) stores in reverse mask order (FP7 first → FP0 last
 		// at lowest addr). Emit reverse.
-		for i := len(regs) - 1; i >= 0; i-- {
+		for _, reg := range slices.Backward(regs) {
 			e.Lf("sub.l %s, %s, #%d", ea.Reg.IE64, ea.Reg.IE64, step)
-			e.Lf("%s %s, (%s)", op, regs[i], ea.Reg.IE64)
+			e.Lf("%s %s, (%s)", op, reg, ea.Reg.IE64)
 		}
 		return nil
 	case AMPostInc:
@@ -691,9 +692,9 @@ func (c *Converter) emitFMovemLoad(e *Emit, regs []string, ea Operand, size stri
 		}
 		return nil
 	case AMPreDec:
-		for i := len(regs) - 1; i >= 0; i-- {
+		for _, reg := range slices.Backward(regs) {
 			e.Lf("sub.l %s, %s, #%d", ea.Reg.IE64, ea.Reg.IE64, step)
-			e.Lf("%s %s, (%s)", op, regs[i], ea.Reg.IE64)
+			e.Lf("%s %s, (%s)", op, reg, ea.Reg.IE64)
 		}
 		return nil
 	case AMIndirect, AMDispAn, AMIndexAn, AMAbsW, AMAbsL, AMDispPC, AMIndexPC:

@@ -1,6 +1,6 @@
 module github.com/intuitionamiga/IntuitionEngine
 
-go 1.26.0
+go 1.27rc2
 
 require (
 	github.com/ebitengine/oto/v3 v3.5.0-alpha.9

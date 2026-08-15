@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"sync"
 	"time"
 )
 
@@ -31,6 +32,7 @@ type EmuTOSLoader struct {
 	timerDone  chan struct{}
 	vblankDone chan struct{}
 
+	armMu   sync.Mutex
 	l4Armed bool
 	l5Armed bool
 
@@ -155,7 +157,10 @@ func (l *EmuTOSLoader) StartTimer() {
 					continue
 				}
 				l.refreshIRQArming()
-				if l.l5Armed {
+				l.armMu.Lock()
+				l5 := l.l5Armed
+				l.armMu.Unlock()
+				if l5 {
 					l.cpu.AssertInterrupt(5)
 					l.fixIORECIfNeeded()
 					l.pumpIOREC()
@@ -180,7 +185,10 @@ func (l *EmuTOSLoader) StartTimer() {
 					continue
 				}
 				l.refreshIRQArming()
-				if l.l4Armed {
+				l.armMu.Lock()
+				l4 := l.l4Armed
+				l.armMu.Unlock()
+				if l4 {
 					l.cpu.AssertInterrupt(4)
 				}
 			}
@@ -189,13 +197,15 @@ func (l *EmuTOSLoader) StartTimer() {
 }
 
 func (l *EmuTOSLoader) refreshIRQArming() {
+	l.armMu.Lock()
+	defer l.armMu.Unlock()
 	if l.l4Armed && l.l5Armed {
 		return
 	}
 
 	// EmuTOS uses autovectors: L4->vector 28 (0x70), L5->vector 29 (0x74).
 	// Only assert timer/VBL interrupts once handlers are installed.
-	base := l.cpu.VBR
+	base := l.cpu.loadVBR()
 	if !l.l4Armed {
 		vec4 := l.cpu.Read32(base + uint32(M68K_VEC_LEVEL4)*4)
 		l.l4Armed = l.isValidVector(vec4)
@@ -312,7 +322,10 @@ func (l *EmuTOSLoader) fixIORECIfNeeded() {
 }
 
 func (l *EmuTOSLoader) pumpIOREC() {
-	if !l.l5Armed || l.iorecBufBase == 0 || l.iorecBufSize == 0 || l.iorecReadIdx == 0 || l.iorecWriteIdx == 0 {
+	l.armMu.Lock()
+	l5 := l.l5Armed
+	l.armMu.Unlock()
+	if !l5 || l.iorecBufBase == 0 || l.iorecBufSize == 0 || l.iorecReadIdx == 0 || l.iorecWriteIdx == 0 {
 		return
 	}
 	bufPtr := l.cpu.Read32(l.iorecBufBase)

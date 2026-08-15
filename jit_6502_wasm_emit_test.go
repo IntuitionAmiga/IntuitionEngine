@@ -157,6 +157,50 @@ func TestP65WasmCompileBlockAbsoluteJump(t *testing.T) {
 	}
 }
 
+func TestP65WasmCompileBlockJSR(t *testing.T) {
+	module, err := p65WasmCompileBlock([]JIT6502Instr{{opcode: 0x20, length: 3, operand: 0x0700}}, 0x0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	r := wazero.NewRuntime(ctx)
+	defer r.Close(ctx)
+	envB := newWasmModuleBuilder()
+	envB.defineMemory(1)
+	envB.exportMemory("mem")
+	env, err := r.InstantiateWithConfig(ctx, envB.build(), wazero.NewModuleConfig().WithName("env"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := env.ExportedMemory("mem")
+	const guest, pages = 0x1000, 0x3000
+	if !mem.WriteUint32Le(p65WasmTestCtx+p65WasmCtxOffCpuPtr, p65WasmTestCPU) ||
+		!mem.WriteUint32Le(p65WasmTestCtx+p65WasmCtxOffMemPtr, guest) ||
+		!mem.WriteUint32Le(p65WasmTestCtx+p65WasmCtxOffDirectPages, pages) ||
+		!mem.WriteByte(p65WasmTestCPU+cpu6502OffSP, 0x00) {
+		t.Fatal("seed JSR context")
+	}
+	mod, err := r.Instantiate(ctx, module)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mod.ExportedFunction("block").Call(ctx, p65WasmTestCtx); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := mem.ReadByte(p65WasmTestCPU + cpu6502OffSP); !ok || got != 0xFE {
+		t.Fatalf("SP=%02X ok=%v, want FE", got, ok)
+	}
+	if high, ok := mem.ReadByte(guest + 0x0100); !ok || high != 0x06 {
+		t.Fatalf("stack high=%02X ok=%v, want 06", high, ok)
+	}
+	if low, ok := mem.ReadByte(guest + 0x01FF); !ok || low != 0x02 {
+		t.Fatalf("stack low=%02X ok=%v, want 02", low, ok)
+	}
+	if got, ok := mem.ReadUint32Le(p65WasmTestCtx + p65WasmCtxOffRetPC); !ok || got != 0x0700 {
+		t.Fatalf("RetPC=%04X ok=%v, want 0700", got, ok)
+	}
+}
+
 func TestP65WasmCompileBlockConditionalBranch(t *testing.T) {
 	module, err := p65WasmCompileBlock([]JIT6502Instr{{opcode: 0xD0, length: 2, operand: 0xFE}}, 0x0600)
 	if err != nil {

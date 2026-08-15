@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
 #
-# build_all_cpu_benchmarks.sh - Build a portable, fully-static test
-# binary that contains every CPU interpreter + JIT benchmark
+# build_all_cpu_benchmarks.sh - Build a test binary that contains every CPU
+# interpreter and JIT benchmark
 # (6502 + Z80 + M68K + IE64 + x86) so the whole suite can be shipped to
-# another machine and run there without a Go toolchain, Vulkan SDK,
-# audio libraries, libc, or the IntuitionEngine source tree.
+# another machine and run there without a Go toolchain or the source tree.
 #
-# Sister of build_6502_benchmarks.sh - same static-binary recipe, same
+# Sister of build_6502_benchmarks.sh with the same
 # PGO two-pass option - but the resulting binary contains the full set
 # of CPU benches the run_all_cpu_benches.sh report consumes.
-#
-# Both interpreter AND JIT benchmarks run in the static binary. JIT
-# works under CGO_ENABLED=0 because jit_call.go dispatches through
-# runtime.asmcgocall (g0 stack-switch primitive) rather than
-# runtime.cgocall (which has an iscgo guard that fatals in
-# CGO_ENABLED=0 builds). The asm trampolines in jit_call_{amd64,arm64}.s
-# are written to the asmcgocall contract.
 #
 # After building, use the companion runner script to actually run the
 # benchmarks and print the comparison table:
@@ -47,11 +39,7 @@
 #
 #     BENCH_BIN     output path (default: ./all_cpu_bench.test)
 #     BENCH_TAGS    build tags (default: "osusergo netgo headless novulkan")
-#                   osusergo + netgo swap os/user and net to pure-Go
-#                   implementations so nothing reaches libc and the Go
-#                   linker produces a fully static ELF.
-#     CGO_ENABLED   0 (default, fully static; JIT still works via
-#                   runtime.asmcgocall) or 1 (dynamic libc).
+#     CGO_ENABLED   must be 1 for Linux native JIT benchmarks.
 #     PGO           1 (default) two-pass profile-guided build:
 #                     pass 1: build unoptimised profiling binary
 #                     pass 2: collect profile across all CPU benches
@@ -79,15 +67,15 @@ PGO_TIME="${PGO_TIME:-1s}"
 PGO_PATTERN='Benchmark(6502|Z80|M68K|IE32|IE64|X86JIT)_.+_(Interpreter|JIT)$'
 
 if [ -z "${CGO_ENABLED+set}" ]; then
-    CGO_ENABLED=0
+    CGO_ENABLED=1
 fi
 export CGO_ENABLED
 
-if [ "${CGO_ENABLED}" = "0" ]; then
-    cgo_desc="disabled (fully static binary, JIT via runtime.asmcgocall)"
-else
-    cgo_desc="enabled (dynamic libc linkage)"
+if [ "${CGO_ENABLED}" != "1" ]; then
+    echo "error: Linux native JIT benchmarks require CGO_ENABLED=1" >&2
+    exit 1
 fi
+cgo_desc="enabled"
 
 if [ "${PGO}" = "0" ]; then
     pgo_desc="disabled (single-pass build)"
@@ -161,15 +149,7 @@ fi
 size=$(wc -c < "${BENCH_BIN}")
 size_mib=$(awk -v s="${size}" 'BEGIN { printf "%.1f", s / 1024 / 1024 }')
 
-if command -v file >/dev/null 2>&1; then
-    case "$(file "${BENCH_BIN}")" in
-        *statically\ linked*) link_desc="statically linked" ;;
-        *dynamically\ linked*) link_desc="dynamically linked (libc dependency)" ;;
-        *) link_desc="unknown linkage" ;;
-    esac
-else
-    link_desc="(file(1) unavailable, linkage unchecked)"
-fi
+link_desc=$(file -b "${BENCH_BIN}" 2>/dev/null || printf 'linkage not inspected')
 
 echo "Built ${BENCH_BIN} (${size_mib} MiB, ${link_desc})" >&2
 echo >&2

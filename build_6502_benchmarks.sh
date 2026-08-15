@@ -1,21 +1,9 @@
 #!/usr/bin/env bash
 #
-# build_6502_benchmarks.sh - Build the portable 6502 benchmark binary.
+# build_6502_benchmarks.sh - Build the 6502 benchmark binary.
 #
-# This script is a build helper only. It produces a fully static test
-# binary (CGO_ENABLED=0 + osusergo + netgo + headless + novulkan,
-# -trimpath, stripped link flags) that can be copied to another machine
-# running the same OS/architecture and executed there without a Go
-# toolchain, Vulkan SDK, audio libraries, libc, or the IntuitionEngine
-# source tree.
-#
-# Both the interpreter AND JIT benchmarks run in the static binary. This
-# is possible because the JIT call trampoline (jit_call.go) dispatches
-# through runtime.asmcgocall - the raw g0 stack-switch primitive - rather
-# than runtime.cgocall, which has an iscgo guard that fatals in
-# CGO_ENABLED=0 builds. The asm trampolines in jit_call_{amd64,arm64}.s
-# are already written to the asmcgocall contract ("called on the g0
-# stack by asmcgocall") so no assembly changes were needed.
+# This script produces a stripped test binary containing both interpreter
+# and JIT benchmarks. Linux native JIT builds require cgo.
 #
 # After building, use the companion runner script to actually run the
 # benchmarks and print the comparison table:
@@ -36,15 +24,7 @@
 #
 #     BENCH_BIN     - output path (default: ./6502_bench.test)
 #     BENCH_TAGS    - build tags (default: "osusergo netgo headless novulkan")
-#                     osusergo + netgo swap the os/user and net packages
-#                     to their pure-Go implementations, so nothing in the
-#                     binary reaches for libc and the Go linker produces
-#                     a fully static ELF.
-#     CGO_ENABLED   - 0 (default, fully static; JIT still works via
-#                     runtime.asmcgocall) or 1 (dynamically links libc -
-#                     not needed for the JIT path since asmcgocall works
-#                     in both modes, but provided as an escape hatch if
-#                     you ever need cgo packages in a future benchmark).
+#     CGO_ENABLED   - must be 1 for Linux native JIT benchmarks.
 #     PGO           - 1 (default) two-pass profile-guided build:
 #                       pass 1: build an unoptimised profiling binary
 #                       pass 2: rebuild with -pgo=<profile>
@@ -68,19 +48,16 @@ PGO="${PGO:-1}"
 PGO_PROFILE="${PGO_PROFILE:-./default.pgo}"
 PGO_TIME="${PGO_TIME:-1s}"
 PGO_PATTERN='Benchmark6502_(ALU|Memory|Call|Branch|Mixed)_'
-# Default to CGO disabled so the resulting binary is fully static and
-# portable. The JIT benchmarks still run because jit_call.go routes
-# through runtime.asmcgocall rather than runtime.cgocall.
 if [ -z "${CGO_ENABLED+set}" ]; then
-    CGO_ENABLED=0
+    CGO_ENABLED=1
 fi
 export CGO_ENABLED
 
-if [ "${CGO_ENABLED}" = "0" ]; then
-    cgo_desc="disabled (fully static binary, JIT via runtime.asmcgocall)"
-else
-    cgo_desc="enabled (dynamic libc linkage)"
+if [ "${CGO_ENABLED}" != "1" ]; then
+    echo "error: Linux native JIT benchmarks require CGO_ENABLED=1" >&2
+    exit 1
 fi
+cgo_desc="enabled"
 
 if [ "${PGO}" = "0" ]; then
     pgo_desc="disabled (single-pass build)"
@@ -165,18 +142,7 @@ fi
 size=$(wc -c < "${BENCH_BIN}")
 size_mib=$(awk -v s="${size}" 'BEGIN { printf "%.1f", s / 1024 / 1024 }')
 
-# Verify the binary is actually static so we don't silently ship a binary
-# that drags in libc. `file` reports "statically linked" for a pure Go
-# build; "dynamically linked" means something pulled in a cgo dependency.
-if command -v file >/dev/null 2>&1; then
-    case "$(file "${BENCH_BIN}")" in
-        *statically\ linked*) link_desc="statically linked" ;;
-        *dynamically\ linked*) link_desc="dynamically linked (libc dependency)" ;;
-        *) link_desc="unknown linkage" ;;
-    esac
-else
-    link_desc="(file(1) unavailable, linkage unchecked)"
-fi
+link_desc=$(file -b "${BENCH_BIN}" 2>/dev/null || printf 'linkage not inspected')
 
 echo "Built ${BENCH_BIN} (${size_mib} MiB, ${link_desc})" >&2
 echo >&2

@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-08-14*
+*Last modified: 2026-08-15*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -393,9 +393,9 @@ flowchart TB
 
 **Bus architecture notes:**
 
-- **Concurrent multi-CPU bus** - the Program Executor selects the primary CPU mode, but the Coprocessor Manager can launch additional worker CPUs that run concurrently on the same bus. Address dispatch is immutable after mapping is sealed, `ioPageBitmap` provides the fast path, and I/O callbacks protect their own mutable state. There is no central bus-arbitration model exposed to guest software.
+- **Concurrent multi-CPU bus** - the Program Executor selects the primary CPU mode, but the Coprocessor Manager can launch additional worker CPUs that run concurrently on the same bus. MachineBus 16- and 32-bit shared-RAM transfers use striped locks, so an aligned or unaligned transfer cannot be observed as a torn value. Address dispatch is immutable after mapping is sealed, `ioPageBitmap` provides the fast path, and I/O callbacks protect their own mutable state. There is no central bus-arbitration model exposed to guest software.
 - **No centralised interrupt controller** - each CPU has per-CPU interrupt lines (IRQ/NMI as `atomic.Bool`). Peripherals signal the active CPU directly.
-- **MMIO dispatch** - the bus uses an `ioPageBitmap []bool` fast path (page = 256 bytes). Non-I/O pages use direct unsafe pointer access with zero dispatch overhead.
+- **MMIO dispatch** - the bus uses an `ioPageBitmap []bool` fast path (page = 256 bytes). Non-I/O pages use the shared-RAM transfer path; mapped I/O and strict windows take checked dispatch paths.
 
 ### Runtime Data and Control Flow
 
@@ -786,8 +786,8 @@ Interrupt Delivery" section of this manual for the full model.
   `[memBase+addr]` access only when the MMU is off **and** the address is in the
   low window (size-aware bound: `addr <= MemSize - accessBytes`). Otherwise it
   takes the JITContext-mediated *helper exit*.
-- **Helper exit protocol**: native code cannot safely call back into Go (it runs
-  on g0 via `asmcgocall`), so on a high/MMU access it writes a structured request
+- **Helper exit protocol**: native code cannot safely call back into Go, so on a
+  high/MMU access it writes a structured request
   to the `JITContext` (`NeedHelper`, `HelperAddr`, `HelperSize`, `HelperVal`,
   `HelperRd`, `HelperPC`, `LiveSP`), flushes the live SP and the faulting
   instruction's PC, and returns through the epilogue. `ExecuteJIT` dispatches the
@@ -913,15 +913,18 @@ semantics.
 Build tags change host backends, not the guest-visible ISA contract. The main
 guest bus, CPU cores, MMIO register addresses, assemblers, and script binding
 names remain the reference surface unless a specific backend is absent from the
-build. On amd64, release profiles target x86-64-v3 for codegen quality; lower
+build. On x64, release profiles target x86-64-v3 for codegen quality; lower
 `GOAMD64` levels still build and run, with SSE4.1 as the enforced runtime floor.
+
+The Raspberry Pi appliance is based on Debian 13 (Trixie), and its automatic
+session runs through greetd, Cage, and integrated Xwayland.
 
 | Profile | Build tags / knobs | Runtime effect visible to users |
 |---------|--------------------|---------------------------------|
 | Default VM | no special tag | Ebiten display, Oto audio, Vulkan-backed Voodoo where available, and normal host integrations. |
 | `novulkan` | `-tags novulkan` | Voodoo uses the software backend and does not require the Vulkan SDK. Guest Voodoo registers remain mapped. |
 | `headless` | `-tags headless` | Display, audio backend, overlay, clipboard, and GUI integrations use stubs suitable for CI. CPU, bus, MMIO, scripting, and most device state paths still compile for tests. |
-| `headless-novulkan` | `CGO_ENABLED=0 -tags "novulkan headless"` | Pure-Go portable VM build with headless stubs and software Voodoo path. |
+| `headless-novulkan` | `CGO_ENABLED=1 -tags "novulkan headless"` | Headless stubs, software Voodoo path and native JITs. |
 | Browser (`make wasm`) | `GOOS=js GOARCH=wasm -tags embed_basic` | IE32, IE64, M68K, 6502, x86, and Z80 use WebAssembly JIT backends. IE32 lowers its eligible direct-RAM subset and resumes through the interpreter at observation boundaries. Z80 emits every non-observation opcode-manifest row from a source-stamped cache; port and block I/O use frozen canonical helpers, and its shared frontend eagerly forms bounded four-block static chains. The 6502 backend lowers documented NMOS instructions in eligible direct RAM and uses interpreter resume at mapping and observation boundaries. `IE64_WASM_JIT=0`, `M68K_WASM_JIT=0`, `P65_WASM_JIT=0`, `X86_WASM_JIT=0`, and `Z80_WASM_JIT=0` disable the corresponding browser backend; x86 also requires WebAssembly SIMD. Ebiten renders to a WebGL canvas, Oto uses WebAudio, Vulkan is excluded, and guest RAM is a fixed 256 MiB heap backing. FileIO and Bootstrap HostFS use an in-memory volume seeded from web assets, with file contents fetched lazily on first read. CPU execution yields cooperatively so browser events, asynchronous compilation, video, and audio continue on the single WebAssembly thread. |
 | Raspberry Pi 4 / Pi 400 live image | Linux ARM64, cgo, embedded system images, `jack` tag, `GOARM64=v8.0`, `-mcpu=cortex-a72` | Debian 13 (Trixie) appliance image with JACK output, a PREEMPT_RT kernel, and the shared IESHARE payload. The automatic appliance session runs through greetd, Cage, and integrated Xwayland. Pi 4 and Pi 400 use one ARMv8.0 Cortex-A72 binary and `default.pgo.rpi400` when that profile exists; otherwise PGO is disabled. |
 | Raspberry Pi 5 live image | Linux ARM64, cgo, embedded system images, `jack` tag, `GOARM64=v8.2`, `-mcpu=cortex-a76` | Debian 13 (Trixie) appliance image with the same session, guest-facing payload, and audio contract. Pi 5 uses ARMv8.2 Cortex-A76 settings and `default.pgo.rpi5` when that profile exists; otherwise PGO is disabled. The Pi 5 image is derived from that completed image by copying it and replacing only the Intuition Engine binary before independent verification and packaging. |
@@ -972,15 +975,14 @@ files disappear when the page reloads.
 
 ### Build Flags Outside Make
 
-The source requires Go 1.26.0 or later. `go.mod` declares the minimum language
-version without pinning a patch release, and CI builds both Go 1.26.0 and the
-current stable release. The default Make build still enables the experimental
-`simd/archsimd` API explicitly.
+The source requires Go 1.27rc2. `go.mod` declares that minimum, and CI and
+release workflows pin Go 1.27rc2 with `GOTOOLCHAIN=local`. The default Make
+build enables the experimental `simd/archsimd` API explicitly.
 
 The Makefile targets export `GOEXPERIMENT=simd` and select `GOAMD64=v3` for the
 release profile, and they pass `-trimpath` and `-pgo=default.pgo`. A bare
 `go build .` run outside Make inherits none of that: it loses the v3 codegen
-level, compiles the scalar kernels instead of the amd64 SIMD ones unless
+level, compiles the scalar kernels instead of the x64 or Linux ARM64 SIMD ones unless
 `go env -w GOEXPERIMENT=simd` has been set on the machine, and produces a
 binary with untrimmed source paths. Profile-guided optimisation is the
 exception, because the toolchain picks up `default.pgo` from the main package
@@ -1008,9 +1010,8 @@ results and verifies the merged profile builds without fallback, writing
 `default.pgo.new` rather than overwriting in place); or do the same steps by
 hand. Confirm that `go build -pgo=default.pgo .` completes without a warning or a
 fallback. Record the revision, toolchain, workloads and durations in
-`default.pgo.manifest` beside the profile, and accept the new profile only when
-benchstat shows no regression against `-pgo=off` across the video, audio and bus
-benchmarks.
+`default.pgo.manifest` beside the profile. Complete capture plus successful
+native and wasm build checks is the acceptance rule.
 
 The Makefile passes PGO profiles explicitly: `PGO_PROFILE` selects native
 profiles and `WASM_PGO` selects wasm profiles; `make pgo-regenerate` writes
@@ -1024,14 +1025,10 @@ arch-independent inliner, so `default.pgo`'s samples for the functions shared
 between the native and wasm builds (bus, IE64 interpreter, BASIC runtime, video
 kernels) drive the wasm codegen as well; entries for amd64-only functions such
 as the native JIT are dropped. The current profile adds approximately 0.2 per
-cent to the wasm binary size; performance acceptance still requires measurement
-against `-pgo=off`, because PGO is not an architectural guarantee against
-regression. Go cannot sample-profile js/wasm itself, because the single-threaded
-WebAssembly runtime has no SIGPROF-equivalent, so an `IE_CPUPROFILE` capture on
-wasm yields zero samples; a profile that also covers the wasm JIT paths must
-come from a browser or Node CPU capture converted to pprof, at which point
-`WASM_PGO=default.wasm.pgo` selects it. Each is a Makefile variable, so any
-target can be pointed at a target-specific profile.
+cent to the wasm binary size. Go cannot sample-profile js/wasm itself because
+the single-threaded WebAssembly runtime has no SIGPROF equivalent, so an
+`IE_CPUPROFILE` capture on wasm yields zero samples. The shared x64 profile
+remains the wasm profile for this migration.
 
 The Raspberry Pi release recipes make their profile choice independently of
 `PGO_PROFILE`. The shared Pi 4 and Pi 400 binary selects
@@ -1622,7 +1619,14 @@ Epoch-driven reverse history is switched on automatically the first time whole-m
 
 The IEScript compile cache is opt-in with `IE_SCRIPT_COMPILE_CACHE=1`. A parsed script proto does not depend on the Lua state it runs in. It is cached by script name plus exact source text and shared across the validate pass, the run, and later re-runs under the same name rather than being reparsed each time. Including the name keeps runtime diagnostics tied to the correct script. The cache only ever holds scripts that parse cleanly, so a syntax error is reported the same way with the cache on or off. IEScript also gains additive batching APIs that need no switch: `audio.write_regs` performs one Lua-to-Go call and applies each pair as an ordered bus write, matching a sequence of `audio.write_reg` calls exactly, and `sys.wait_until` evaluates a predicate immediately and then after at most the requested number of compositor frames.
 
-SIMD acceleration kernels are enabled by default on amd64 builds and can be disabled with `IE_SIMD=0`. Hot pixel and sample spans (compositor blend and normalise, blitter fill and colour expand, software Voodoo untextured and blended spans, audio post-effects) dispatch through package-level function variables that point at bit-exact SIMD variants when the host provides the AVX2 baseline; every kernel keeps a scalar leaf as its canonical reference, and non-amd64 targets, hosts without the baseline, or `IE_SIMD=0` route the scalar path. The SIMD variants are additive and never alter emulated results.
+SIMD acceleration kernels are enabled by default on x64 and Linux ARM64 builds
+and can be disabled with `IE_SIMD=0`. x64 uses eight-lane AVX2 kernels. Linux
+ARM64 uses four-lane Neon kernels for audio clamp, blitter fill, opaque
+compositor copy, frame alpha normalisation, compositor blend and eligible
+software Voodoo spans. Linux ARM64 resampling remains scalar because Go
+1.27rc2 has no arbitrary `Uint32x4` gather or permutation. Every kernel keeps a
+scalar leaf as its canonical reference. Other targets, x64 hosts without AVX2
+and `IE_SIMD=0` route the scalar path. SIMD does not alter emulated results.
 
 ### Triple-Buffer Protocol
 

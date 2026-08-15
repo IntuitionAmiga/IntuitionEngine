@@ -6,9 +6,10 @@ Intuition Engine is a multi-CPU fantasy computer implemented in Go. It reimagine
 
 It can be run as a desktop emulator or booted as an x64 live USB appliance. For programmers, it is a bare-metal target with an SDK, examples, and maintained reference documentation for writing directly against the Intuition Engine hardware.
 
-Native builds derive guest RAM from host memory, then apply a platform reserve
-and the selected profile's active-visible ceiling. Browser builds use a fixed
-256 MiB heap backing. Guest software discovers total and active-visible RAM
+Native builds use autodetected guest RAM from host memory, then apply a platform
+reserve and the selected profile's active visible RAM ceiling. Browser builds
+use a fixed 256 MiB heap backing. Guest software discovers total and active
+visible RAM
 through SYSINFO and CPU-specific paths.
 
 [Try Intuition Engine in a browser](https://intuitionengine.io) | [Download releases](https://github.com/IntuitionAmiga/IntuitionEngine/releases) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
@@ -51,15 +52,17 @@ make sdk
 
 ## Build
 
-Requires Go 1.26.0 or later. The default amd64 build enables the experimental `simd/archsimd` API.
+Requires Go 1.27rc2 or later. The default x64 and Linux ARM64 builds enable the
+experimental `simd/archsimd` API.
 
 The default build shown in the quick start produces the emulator at `bin/IntuitionEngine` and core SDK tools under `sdk/bin/`.
 
-On amd64, `make` builds enable SIMD acceleration and target the x86-64-v3 baseline
+On x64, `make` builds enable SIMD acceleration and target the x86-64-v3 baseline
 by default. The live image inherits both settings. `IE_SIMD=0` selects the
 bit-exact scalar span kernels at runtime, but it does not lower the binary's
 x86-64-v3 CPU requirement. For an older x86-64 host, build outside the Makefile
-with a suitable lower `GOAMD64` value. For `go run .` outside `make`, enable the
+with a suitable lower `GOAMD64` value. Linux ARM64 `make` builds use Neon SIMD.
+For `go run .` outside `make`, enable the
 SIMD experiment once with `go env -w GOEXPERIMENT=simd`, or leave it unset to use
 the scalar kernels.
 
@@ -220,9 +223,9 @@ Maintained profiles:
 | macOS | ARM64 | `novulkan` | IE64 and M68K |
 | Browser | WebAssembly | `make wasm` | IE32, IE64, M68K, 6502, Z80 and x86 |
 
-SIMD span acceleration (`simd/archsimd`) is amd64 only and default-on for `make`
-builds; every other architecture falls back to the bit-exact scalar kernels
-automatically.
+SIMD span acceleration (`simd/archsimd`) is enabled for x64 and Linux ARM64
+`make` builds. Other targets use the bit-exact scalar kernels. Set `IE_SIMD=0`
+to select the scalar kernels at runtime.
 
 Unsupported JIT operations and host platforms retain interpreter fallback. See
 the [architecture guide](sdk/docs/architecture.md#platform-jit-matrix) for the

@@ -41,7 +41,7 @@ func (b *CoprocZ80Bus) Tick(cycles int) {
 	// No cycle-accurate timing for coprocessor workers
 }
 
-func createZ80Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWorker, error) {
+func createZ80Worker(bus *MachineBus, data []byte, instance uint32, startNow ...bool) (*CoprocWorker, error) {
 	base, end, size, ok := workerWindow(EXEC_TYPE_Z80, instance)
 	if !ok {
 		return nil, fmt.Errorf("Z80 worker instance out of range: %d", instance)
@@ -69,7 +69,7 @@ func createZ80Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWork
 	stopFn := func() { cpu.SetRunning(false) }
 	// Workers run under the JIT like the main runner; interpreted service
 	// loops stall guests that wait on their results.
-	execFn := func() { cpu.SetRunning(true); cpu.z80JitExecute() }
+	execFn := func() { cpu.z80JitExecute() }
 
 	adapter := NewDebugZ80(cpu, nil)
 
@@ -80,6 +80,7 @@ func createZ80Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWork
 		stopCPU:   stopFn,
 		execCPU:   execFn,
 		done:      done,
+		startCPU:  func() { cpu.SetRunning(true) },
 		loadBase:  base,
 		loadEnd:   end,
 		debugCPU:  adapter,
@@ -88,10 +89,9 @@ func createZ80Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWork
 	adapter.workerFreeze = worker.Pause
 	adapter.workerResume = worker.Unpause
 
-	go func() {
-		defer close(done)
-		cpu.z80JitExecute()
-	}()
+	if len(startNow) == 0 || startNow[0] {
+		worker.Start()
+	}
 
 	return worker, nil
 }

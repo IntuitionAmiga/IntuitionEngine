@@ -1,4 +1,4 @@
-//go:build amd64 && goexperiment.simd
+//go:build goexperiment.simd && (amd64 || (linux && arm64))
 
 package main
 
@@ -11,7 +11,7 @@ import (
 
 func TestSIMDFillUint32SpanMatchesScalar(t *testing.T) {
 	r := rand.New(rand.NewSource(11))
-	for _, words := range []int{0, 1, 2, 7, 8, 9, 1023, 1024} {
+	for _, words := range []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1023, 1024} {
 		n := words * 4
 		v := r.Uint32()
 		a := make([]byte, n)

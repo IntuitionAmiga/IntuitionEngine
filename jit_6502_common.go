@@ -139,6 +139,8 @@ func newJIT6502Context(cpu *CPU_6502) *JIT6502Context {
 	}
 	if len(cpu.fastAdapter.ioPageBitmap) > 0 {
 		ctx.IOBitmapPtr = uintptr(unsafe.Pointer(&cpu.fastAdapter.ioPageBitmap[0]))
+	} else {
+		ctx.IOBitmapPtr = uintptr(unsafe.Pointer(&cpu.directPageBitmap[0]))
 	}
 	ctx.CodePageBitmapPtr = uintptr(unsafe.Pointer(&cpu.codePageBitmap[0]))
 	ctx.DirectPageBitmapPtr = uintptr(unsafe.Pointer(&cpu.directPageBitmap[0]))

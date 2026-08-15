@@ -32,6 +32,10 @@ func runX86JITProgramWithSetup(t *testing.T, startPC uint32, setup func(*CPU_X86
 	cpu.x86JitEnabled = true
 	cpu.EIP = startPC
 	cpu.x86JitIOBitmap = buildX86IOBitmap(adapter, bus)
+	runner, ok := any(cpu).(interface{ X86ExecuteJIT() })
+	if !ok {
+		t.Skip("x86 JIT not available on this platform")
+	}
 
 	for i, b := range code {
 		cpu.memory[startPC+uint32(i)] = b
@@ -44,7 +48,7 @@ func runX86JITProgramWithSetup(t *testing.T, startPC uint32, setup func(*CPU_X86
 	go func() {
 		cpu.running.Store(true)
 		cpu.Halted = false
-		cpu.X86ExecuteJIT()
+		runner.X86ExecuteJIT()
 		close(done)
 	}()
 

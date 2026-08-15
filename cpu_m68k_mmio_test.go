@@ -157,6 +157,7 @@ func testM68KRunnerRotozoomerBinaryReachesWaitVSyncWithConfiguredBlitter(t *test
 
 	runner := NewM68KRunner(cpu)
 	runner.cpu.m68kJitEnabled = useJIT
+	debugger := NewDebugM68K(cpu, runner)
 	runner.StartExecution()
 	defer runner.Stop()
 
@@ -168,7 +169,9 @@ func testM68KRunnerRotozoomerBinaryReachesWaitVSyncWithConfiguredBlitter(t *test
 	// the entire deadline under load (word fetches advance PC in steps).
 	const waitVSyncLo, waitVSyncHi = 0x1078, 0x1095
 	inWaitVSync := func() bool {
+		debugger.Freeze()
 		pc := cpu.PC
+		debugger.Resume()
 		return pc >= waitVSyncLo && pc <= waitVSyncHi
 	}
 	deadline := time.Now().Add(250 * time.Millisecond)
@@ -180,7 +183,9 @@ func testM68KRunnerRotozoomerBinaryReachesWaitVSyncWithConfiguredBlitter(t *test
 	}
 
 	if !inWaitVSync() {
-		t.Fatalf("runner did not reach wait_vsync; PC=0x%X", cpu.PC)
+		debugger.Freeze()
+		pc := cpu.PC
+		t.Fatalf("runner did not reach wait_vsync; PC=0x%X", pc)
 	}
 	if got := video.HandleRead(VIDEO_CTRL); got != 1 {
 		t.Fatalf("VIDEO_CTRL at wait_vsync = %d, want 1", got)

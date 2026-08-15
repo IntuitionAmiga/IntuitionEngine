@@ -15,6 +15,7 @@ func newCoprocStagingHarness(t *testing.T) (*MachineBus, *CoprocessorManager, st
 	bus := NewMachineBus()
 	baseDir := t.TempDir()
 	mgr := NewCoprocessorManager(bus, baseDir)
+	t.Cleanup(mgr.StopAll)
 	bus.MapIO(COPROC_BASE, COPROC_END, mgr.HandleRead, mgr.HandleWrite)
 	return bus, mgr, baseDir
 }

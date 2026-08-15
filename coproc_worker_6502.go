@@ -26,30 +26,53 @@ func (b *CoprocBus32) translate(addr uint32) uint32 {
 }
 
 func (b *CoprocBus32) Read8(addr uint32) uint8 {
-	return b.mem[b.translate(addr)]
+	a := b.translate(addr)
+	if coprocessorMailboxSpan(a, 1) {
+		return b.bus.Read8(a)
+	}
+	return b.mem[a]
 }
 
 func (b *CoprocBus32) Write8(addr uint32, value uint8) {
-	b.mem[b.translate(addr)] = value
+	a := b.translate(addr)
+	if coprocessorMailboxSpan(a, 1) {
+		b.bus.Write8(a, value)
+		return
+	}
+	b.mem[a] = value
 }
 
 func (b *CoprocBus32) Read16(addr uint32) uint16 {
 	a := b.translate(addr)
+	if coprocessorMailboxSpan(a, 2) {
+		return atomicRAM16(b.mem, a)
+	}
 	return binary.LittleEndian.Uint16(b.mem[a:])
 }
 
 func (b *CoprocBus32) Write16(addr uint32, value uint16) {
 	a := b.translate(addr)
+	if coprocessorMailboxSpan(a, 2) {
+		atomicStoreRAM16(b.mem, a, value)
+		return
+	}
 	binary.LittleEndian.PutUint16(b.mem[a:], value)
 }
 
 func (b *CoprocBus32) Read32(addr uint32) uint32 {
 	a := b.translate(addr)
+	if coprocessorMailboxSpan(a, 4) {
+		return b.bus.Read32(a)
+	}
 	return binary.LittleEndian.Uint32(b.mem[a:])
 }
 
 func (b *CoprocBus32) Write32(addr uint32, value uint32) {
 	a := b.translate(addr)
+	if coprocessorMailboxSpan(a, 4) {
+		b.bus.Write32(a, value)
+		return
+	}
 	binary.LittleEndian.PutUint32(b.mem[a:], value)
 }
 
@@ -115,6 +138,7 @@ func create6502Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWor
 		stopCPU:   stopFn,
 		execCPU:   execFn,
 		done:      done,
+		started:   true,
 		loadBase:  base,
 		loadEnd:   end,
 		debugCPU:  adapter,

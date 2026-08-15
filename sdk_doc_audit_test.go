@@ -109,9 +109,9 @@ var britishEnglishAmericanisms = map[string]string{
 var sdkAuditLastModifiedDates = map[string]string{
 	"sdk/docs/IE64_ISA.md":     "2026-07-09",
 	"sdk/docs/IE32_ISA.md":     "2026-08-08",
-	"sdk/docs/iemon.md":        "2026-08-08",
+	"sdk/docs/iemon.md":        "2026-08-15",
 	"sdk/docs/iescript.md":     "2026-08-11",
-	"sdk/docs/architecture.md": "2026-08-14",
+	"sdk/docs/architecture.md": "2026-08-15",
 }
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {
@@ -2220,6 +2220,66 @@ func TestSDKCompanionDocs_IEMonCommandCoverageMatchesHelpRegistry(t *testing.T) 
 	}
 }
 
+func TestSDKCompanionDocs_IEMonCPUInspectionPreservesRunningState(t *testing.T) {
+	doc := readAuditFile(t, "sdk/docs/iemon.md")
+	source := readAuditFile(t, "debug_commands.go")
+	command := sourceBetween(t, source, "func (m *MachineMonitor) cmdCPU", "func (m *MachineMonitor) cmdCPUOnline")
+	for _, needle := range []string{
+		"running := entry.CPU.IsRunning()",
+		"entry.CPU.Freeze()",
+		"entry.CPU.Resume()",
+		"m.showRegisters()",
+		"m.showDisassembly(0, 8)",
+	} {
+		if !strings.Contains(command, needle) {
+			t.Fatalf("debug_commands.go CPU inspection behaviour changed; review iemon.md: %s", needle)
+		}
+	}
+	for _, required := range []string{
+		"When a thawed CPU is listed or selected for focus, IEMon temporarily freezes it to capture coherent state and then restores its prior running state.",
+		"the captured value is the program counter",
+		"the coherent capture includes the register and disassembly view",
+	} {
+		if !normalizedContains(doc, required) {
+			t.Fatalf("iemon.md omits CPU inspection running-state contract: %s", required)
+		}
+	}
+}
+
+func TestSDKCompanionDocs_ArchitectureSharedRAMTransfersDoNotTear(t *testing.T) {
+	doc := readAuditFile(t, "sdk/docs/architecture.md")
+	bus := readAuditFile(t, "machine_bus.go")
+	regression := readAuditFile(t, "machine_bus_test.go")
+	for _, needle := range []string{
+		"const atomicRAMLockStripeCount = 256",
+		"func lockAtomicRAMSpan(memory []byte, addr, width uint32, write bool)",
+		"func atomicRAM16(memory []byte, addr uint32) uint16",
+		"func atomicRAM32(memory []byte, addr uint32) uint32",
+	} {
+		if !strings.Contains(bus, needle) {
+			t.Fatalf("machine_bus.go shared-RAM transfer behaviour changed; review architecture.md: %s", needle)
+		}
+	}
+	for _, needle := range []string{
+		"TestAtomicRAM16DoesNotTearWithinBackingWord",
+		"TestAtomicRAM32DoesNotTearAcrossBackingWords",
+		"TestMachineBusRAM32DoesNotTearAcrossBackingWords",
+	} {
+		if !strings.Contains(regression, needle) {
+			t.Fatalf("machine_bus_test.go lacks shared-RAM non-tearing coverage: %s", needle)
+		}
+	}
+	for _, required := range []string{
+		"MachineBus 16- and 32-bit shared-RAM transfers use striped locks",
+		"cannot be observed as a torn value",
+		"Non-I/O pages use the shared-RAM transfer path",
+	} {
+		if !strings.Contains(doc, required) {
+			t.Fatalf("architecture.md omits shared-RAM transfer contract: %s", required)
+		}
+	}
+}
+
 func TestSDKCompanionDocs_IEMonDispatchAliasesAndIE64Cause11(t *testing.T) {
 	doc := readAuditFile(t, "sdk/docs/iemon.md")
 	source := readAuditFile(t, "debug_commands.go")
@@ -3481,7 +3541,7 @@ func TestSDKCompanionDocs_ArchitectureCopperFrameClockOwnershipMatchesSource(t *
 		"Ownership claims are counted",
 		"Stopping or closing the compositor, or unregistering the source, releases",
 	} {
-		if !strings.Contains(section, required) {
+		if !normalizedContains(section, required) {
 			t.Fatalf("architecture.md omits compositor Copper frame-clock contract: %s", required)
 		}
 	}
@@ -3739,7 +3799,7 @@ func TestSDKCompanionDocs_ArchitecturePerformanceRoadmapClaimsMatchSource(t *tes
 		"x86 self-modifying-code tracking uses 256-byte code pages and range invalidation.",
 		"Video frame leases are enabled by default and can be disabled with `IE_VIDEO_FRAME_LEASES=0`.",
 		"Frame leases keep compositor handoff buffers stable until release; hardware layers retain leases or stage copies when leases are unavailable.",
-		"SIMD acceleration kernels are enabled by default on amd64 builds and can be disabled with `IE_SIMD=0`.",
+		"SIMD acceleration kernels are enabled by default on x64 and Linux ARM64 builds and can be disabled with `IE_SIMD=0`.",
 		"ReadSamples uses safe block ticking only when every active sample ticker implements `ReadSamplesBlockTicker`, SFX allows block ticking, and no sample mixers are registered.",
 	} {
 		if !normalizedContains(doc, required) {

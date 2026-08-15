@@ -53,7 +53,6 @@ This module is a critical component of the Intuition Engine, interfacing directl
 package main
 
 import (
-	"encoding/binary"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -75,6 +74,154 @@ const (
 	banked8BitVisibleRAMBytes uint64 = uint64(DEFAULT_MEMORY_SIZE)
 	m68kProfileTop2GiB        uint64 = 2 * 1024 * 1024 * 1024
 )
+
+func coprocessorMailboxSpan(addr uint32, width uint32) bool {
+	return addr >= MAILBOX_BASE && uint64(addr)+uint64(width) <= uint64(MAILBOX_END)+1
+}
+
+const atomicRAMLockStripeCount = 256
+
+var atomicRAMLockStripes [atomicRAMLockStripeCount]sync.RWMutex
+
+type atomicRAMSpanLock struct {
+	first  *sync.RWMutex
+	second *sync.RWMutex
+	write  bool
+}
+
+func lockAtomicRAMSpan(memory []byte, addr, width uint32, write bool) atomicRAMSpanLock {
+	firstWord := addr &^ 3
+	lastWord := (addr + width - 1) &^ 3
+	firstIndex := (uintptr(unsafe.Pointer(&memory[firstWord])) >> 2) & (atomicRAMLockStripeCount - 1)
+	lastIndex := (uintptr(unsafe.Pointer(&memory[lastWord])) >> 2) & (atomicRAMLockStripeCount - 1)
+	if lastIndex < firstIndex {
+		firstIndex, lastIndex = lastIndex, firstIndex
+	}
+	locked := atomicRAMSpanLock{
+		first: &atomicRAMLockStripes[firstIndex],
+		write: write,
+	}
+	if lastIndex != firstIndex {
+		locked.second = &atomicRAMLockStripes[lastIndex]
+	}
+	if write {
+		locked.first.Lock()
+		if locked.second != nil {
+			locked.second.Lock()
+		}
+	} else {
+		locked.first.RLock()
+		if locked.second != nil {
+			locked.second.RLock()
+		}
+	}
+	return locked
+}
+
+func (locked atomicRAMSpanLock) unlock() {
+	if locked.write {
+		if locked.second != nil {
+			locked.second.Unlock()
+		}
+		locked.first.Unlock()
+		return
+	}
+	if locked.second != nil {
+		locked.second.RUnlock()
+	}
+	locked.first.RUnlock()
+}
+
+func atomicRAM8Unlocked(memory []byte, addr uint32) uint8 {
+	wordAddr := addr &^ 3
+	shift := (addr & 3) * 8
+	word := atomic.LoadUint32((*uint32)(unsafe.Pointer(&memory[wordAddr])))
+	return uint8(word >> shift)
+}
+
+func atomicStoreRAM8Unlocked(memory []byte, addr uint32, value uint8) uint8 {
+	wordAddr := addr &^ 3
+	shift := (addr & 3) * 8
+	ptr := (*uint32)(unsafe.Pointer(&memory[wordAddr]))
+	mask := uint32(0xff) << shift
+	for {
+		old := atomic.LoadUint32(ptr)
+		next := old&^mask | uint32(value)<<shift
+		if atomic.CompareAndSwapUint32(ptr, old, next) {
+			return uint8(old >> shift)
+		}
+	}
+}
+
+func atomicRAM8(memory []byte, addr uint32) uint8 {
+	locked := lockAtomicRAMSpan(memory, addr, 1, false)
+	defer locked.unlock()
+	return atomicRAM8Unlocked(memory, addr)
+}
+
+func atomicStoreRAM8(memory []byte, addr uint32, value uint8) uint8 {
+	locked := lockAtomicRAMSpan(memory, addr, 1, true)
+	defer locked.unlock()
+	return atomicStoreRAM8Unlocked(memory, addr, value)
+}
+
+func atomicRAM16(memory []byte, addr uint32) uint16 {
+	locked := lockAtomicRAMSpan(memory, addr, 2, false)
+	defer locked.unlock()
+	if addr&3 <= 2 {
+		wordAddr := addr &^ 3
+		word := atomic.LoadUint32((*uint32)(unsafe.Pointer(&memory[wordAddr])))
+		return uint16(word >> ((addr & 3) * 8))
+	}
+	return uint16(atomicRAM8Unlocked(memory, addr)) |
+		uint16(atomicRAM8Unlocked(memory, addr+1))<<8
+}
+
+func atomicStoreRAM16(memory []byte, addr uint32, value uint16) uint16 {
+	locked := lockAtomicRAMSpan(memory, addr, 2, true)
+	defer locked.unlock()
+	if addr&3 <= 2 {
+		wordAddr := addr &^ 3
+		shift := (addr & 3) * 8
+		ptr := (*uint32)(unsafe.Pointer(&memory[wordAddr]))
+		mask := uint32(0xffff) << shift
+		for {
+			old := atomic.LoadUint32(ptr)
+			next := old&^mask | uint32(value)<<shift
+			if atomic.CompareAndSwapUint32(ptr, old, next) {
+				return uint16(old >> shift)
+			}
+		}
+	}
+	old := uint16(atomicStoreRAM8Unlocked(memory, addr, uint8(value)))
+	old |= uint16(atomicStoreRAM8Unlocked(memory, addr+1, uint8(value>>8))) << 8
+	return old
+}
+
+func atomicRAM32(memory []byte, addr uint32) uint32 {
+	locked := lockAtomicRAMSpan(memory, addr, 4, false)
+	defer locked.unlock()
+	if addr&3 == 0 {
+		return atomic.LoadUint32((*uint32)(unsafe.Pointer(&memory[addr])))
+	}
+	return uint32(atomicRAM8Unlocked(memory, addr)) |
+		uint32(atomicRAM8Unlocked(memory, addr+1))<<8 |
+		uint32(atomicRAM8Unlocked(memory, addr+2))<<16 |
+		uint32(atomicRAM8Unlocked(memory, addr+3))<<24
+}
+
+func atomicStoreRAM32(memory []byte, addr uint32, value uint32) uint32 {
+	locked := lockAtomicRAMSpan(memory, addr, 4, true)
+	defer locked.unlock()
+	if addr&3 == 0 {
+		return atomic.SwapUint32((*uint32)(unsafe.Pointer(&memory[addr])), value)
+	}
+	old := uint32(atomicStoreRAM8Unlocked(memory, addr, uint8(value)))
+	old |= uint32(atomicStoreRAM8Unlocked(memory, addr+1, uint8(value>>8))) << 8
+	old |= uint32(atomicStoreRAM8Unlocked(memory, addr+2, uint8(value>>16))) << 16
+	old |= uint32(atomicStoreRAM8Unlocked(memory, addr+3, uint8(value>>24))) << 24
+	return old
+}
 
 // ------------------------------------------------------------------------------
 // Memory Map Boundaries
@@ -117,7 +264,7 @@ type MachineBus struct {
 		It maintains a contiguous block of main memory and a
 		mapping of memory‐mapped I/O regions.
 
-		The hot RAM path is lock-free. Mapping changes and reset are
+		Shared RAM operations use striped backing-word locks. Mapping changes and reset are
 		caller-quiesced: CPUs, JIT execution, DMA, and device producers must
 		be stopped before remapping or clearing backing memory.
 	*/
@@ -140,7 +287,7 @@ type MachineBus struct {
 	// Registered via MapIO64, used by Read64/Write64 for native 64-bit dispatch.
 	mapping64  map[uint32][]IORegion64
 	mapState   atomic.Pointer[busMapSnapshot]
-	sealedSnap *busMapSnapshot
+	sealedSnap atomic.Pointer[busMapSnapshot]
 
 	// Policy for 64-bit access to legacy-only MMIO regions (default: Fault)
 	legacyMMIO64Policy MMIO64Policy
@@ -316,7 +463,7 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 			// Regular memory write
 			if mapped+4 <= uint32(len(bus.memory)) {
 				locked := bus.beginM68KJITRAMWrite(uint64(mapped), 4)
-				binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
+				atomicStoreRAM32(bus.memory, mapped, value)
 				bus.invalidateM68KJITRAMWrite(uint64(mapped), 4)
 				bus.endM68KJITRAMWrite(locked)
 				bus.notifyCoprocessorCompletionWrite(mapped, value)
@@ -330,6 +477,11 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 	// Normal bounds check for regular memory
 	if addr+4 > uint32(len(bus.memory)) {
 		return false
+	}
+	if coprocessorMailboxSpan(addr, 4) {
+		atomicStoreRAM32(bus.memory, addr, value)
+		bus.notifyCoprocessorCompletionWrite(addr, value)
+		return true
 	}
 
 	// Process I/O regions
@@ -358,7 +510,7 @@ func (bus *MachineBus) Write32WithFault(addr uint32, value uint32) bool {
 
 	// Regular memory write
 	locked := bus.beginM68KJITRAMWrite(uint64(addr), 4)
-	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+	atomicStoreRAM32(bus.memory, addr, value)
 	bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
 	bus.endM68KJITRAMWrite(locked)
 	bus.notifyCoprocessorCompletionWrite(addr, value)
@@ -378,19 +530,19 @@ func write32Fanout8(region IORegion, addr uint32, value uint32) bool {
 
 func (bus *MachineBus) shadowWrite32(region IORegion, addr uint32, value uint32) {
 	if region.Shadow && addr+4 <= uint32(len(bus.memory)) {
-		binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+		atomicStoreRAM32(bus.memory, addr, value)
 	}
 }
 
 func (bus *MachineBus) shadowWrite16(region IORegion, addr uint32, value uint16) {
 	if region.Shadow && addr+2 <= uint32(len(bus.memory)) {
-		binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+		atomicStoreRAM16(bus.memory, addr, value)
 	}
 }
 
 func (bus *MachineBus) shadowWrite8(region IORegion, addr uint32, value uint8) {
 	if region.Shadow && addr < uint32(len(bus.memory)) {
-		bus.memory[addr] = value
+		atomicStoreRAM8(bus.memory, addr, value)
 	}
 }
 
@@ -425,7 +577,7 @@ func (bus *MachineBus) backingVisibleSize() uint64 {
 
 func (bus *MachineBus) readRAM8(addr uint32) uint8 {
 	if addr < uint32(len(bus.memory)) {
-		return bus.memory[addr]
+		return atomicRAM8(bus.memory, addr)
 	}
 	if bus.backing != nil && uint64(addr) < bus.backing.Size() {
 		return bus.backing.Read8(uint64(addr))
@@ -613,7 +765,7 @@ func (bus *MachineBus) notifyCoprocessorCompletionWrite(addr, value uint32) {
 
 func (bus *MachineBus) writeRAM8Raw(addr uint32, value uint8) bool {
 	if addr < uint32(len(bus.memory)) {
-		bus.memory[addr] = value
+		atomicStoreRAM8(bus.memory, addr, value)
 		return true
 	}
 	if bus.backing != nil && uint64(addr) < bus.backing.Size() {
@@ -635,6 +787,9 @@ func (bus *MachineBus) writeRAM8(addr uint32, value uint8) bool {
 }
 
 func (bus *MachineBus) readRAM16(addr uint32) uint16 {
+	if uint64(addr)+2 <= uint64(len(bus.memory)) {
+		return atomicRAM16(bus.memory, addr)
+	}
 	return uint16(bus.readRAM8(addr)) | uint16(bus.readRAM8(addr+1))<<8
 }
 
@@ -643,14 +798,21 @@ func (bus *MachineBus) writeRAM16(addr uint32, value uint16) bool {
 		return false
 	}
 	locked := bus.beginM68KJITRAMWrite(uint64(addr), 2)
-	bus.writeRAM8Raw(addr, uint8(value))
-	bus.writeRAM8Raw(addr+1, uint8(value>>8))
+	if uint64(addr)+2 <= uint64(len(bus.memory)) {
+		atomicStoreRAM16(bus.memory, addr, value)
+	} else {
+		bus.writeRAM8Raw(addr, uint8(value))
+		bus.writeRAM8Raw(addr+1, uint8(value>>8))
+	}
 	bus.invalidateM68KJITRAMWrite(uint64(addr), 2)
 	bus.endM68KJITRAMWrite(locked)
 	return true
 }
 
 func (bus *MachineBus) readRAM32(addr uint32) uint32 {
+	if uint64(addr)+4 <= uint64(len(bus.memory)) {
+		return atomicRAM32(bus.memory, addr)
+	}
 	return uint32(bus.readRAM8(addr)) |
 		uint32(bus.readRAM8(addr+1))<<8 |
 		uint32(bus.readRAM8(addr+2))<<16 |
@@ -662,10 +824,14 @@ func (bus *MachineBus) writeRAM32(addr uint32, value uint32) bool {
 		return false
 	}
 	locked := bus.beginM68KJITRAMWrite(uint64(addr), 4)
-	bus.writeRAM8Raw(addr, uint8(value))
-	bus.writeRAM8Raw(addr+1, uint8(value>>8))
-	bus.writeRAM8Raw(addr+2, uint8(value>>16))
-	bus.writeRAM8Raw(addr+3, uint8(value>>24))
+	if uint64(addr)+4 <= uint64(len(bus.memory)) {
+		atomicStoreRAM32(bus.memory, addr, value)
+	} else {
+		bus.writeRAM8Raw(addr, uint8(value))
+		bus.writeRAM8Raw(addr+1, uint8(value>>8))
+		bus.writeRAM8Raw(addr+2, uint8(value>>16))
+		bus.writeRAM8Raw(addr+3, uint8(value>>24))
+	}
 	bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
 	bus.endM68KJITRAMWrite(locked)
 	return true
@@ -732,7 +898,7 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped+4 <= uint32(len(bus.memory)) {
-				result := binary.LittleEndian.Uint32(bus.memory[mapped : mapped+4])
+				result := atomicRAM32(bus.memory, mapped)
 				return result, true
 			}
 		}
@@ -743,6 +909,9 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 	// Check for out-of-bounds access
 	if addr+4 > uint32(len(bus.memory)) {
 		return 0, false
+	}
+	if coprocessorMailboxSpan(addr, 4) {
+		return atomicRAM32(bus.memory, addr), true
 	}
 
 	// Check for I/O regions
@@ -767,7 +936,7 @@ func (bus *MachineBus) Read32WithFault(addr uint32) (uint32, bool) {
 	}
 
 	// Regular memory read
-	result := binary.LittleEndian.Uint32(bus.memory[addr : addr+4])
+	result := atomicRAM32(bus.memory, addr)
 	return result, true
 }
 
@@ -804,7 +973,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped+2 <= uint32(len(bus.memory)) {
 				locked := bus.beginM68KJITRAMWrite(uint64(mapped), 2)
-				binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
+				atomicStoreRAM16(bus.memory, mapped, value)
 				bus.invalidateM68KJITRAMWrite(uint64(mapped), 2)
 				bus.endM68KJITRAMWrite(locked)
 				return true
@@ -839,6 +1008,10 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 	if addr+2 > uint32(len(bus.memory)) {
 		return false
 	}
+	if coprocessorMailboxSpan(addr, 2) {
+		atomicStoreRAM16(bus.memory, addr, value)
+		return true
+	}
 
 	// Process I/O regions
 	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
@@ -864,7 +1037,7 @@ func (bus *MachineBus) Write16WithFault(addr uint32, value uint16) bool {
 
 	// Regular memory write
 	locked := bus.beginM68KJITRAMWrite(uint64(addr), 2)
-	binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+	atomicStoreRAM16(bus.memory, addr, value)
 	bus.invalidateM68KJITRAMWrite(uint64(addr), 2)
 	bus.endM68KJITRAMWrite(locked)
 	return true
@@ -896,7 +1069,7 @@ func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped+2 <= uint32(len(bus.memory)) {
-				result := binary.LittleEndian.Uint16(bus.memory[mapped : mapped+2])
+				result := atomicRAM16(bus.memory, mapped)
 				return result, true
 			}
 		}
@@ -923,6 +1096,9 @@ func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 	if addr+2 > uint32(len(bus.memory)) {
 		return 0, false
 	}
+	if coprocessorMailboxSpan(addr, 2) {
+		return atomicRAM16(bus.memory, addr), true
+	}
 
 	// Check for I/O regions
 	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
@@ -946,7 +1122,7 @@ func (bus *MachineBus) Read16WithFault(addr uint32) (uint16, bool) {
 	}
 
 	// Regular memory read
-	result := binary.LittleEndian.Uint16(bus.memory[addr : addr+2])
+	result := atomicRAM16(bus.memory, addr)
 	return result, true
 }
 
@@ -982,7 +1158,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped < uint32(len(bus.memory)) {
 				locked := bus.beginM68KJITRAMWrite(uint64(mapped), 1)
-				bus.memory[mapped] = value
+				atomicStoreRAM8(bus.memory, mapped, value)
 				bus.invalidateM68KJITRAMWrite(uint64(mapped), 1)
 				bus.endM68KJITRAMWrite(locked)
 				return true
@@ -1016,6 +1192,10 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 	if addr >= uint32(len(bus.memory)) {
 		return false
 	}
+	if coprocessorMailboxSpan(addr, 1) {
+		atomicStoreRAM8(bus.memory, addr, value)
+		return true
+	}
 
 	// Process I/O regions
 	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
@@ -1036,7 +1216,7 @@ func (bus *MachineBus) Write8WithFault(addr uint32, value uint8) bool {
 
 	// Regular memory write
 	locked := bus.beginM68KJITRAMWrite(uint64(addr), 1)
-	bus.memory[addr] = value
+	atomicStoreRAM8(bus.memory, addr, value)
 	bus.invalidateM68KJITRAMWrite(uint64(addr), 1)
 	bus.endM68KJITRAMWrite(locked)
 	return true
@@ -1073,7 +1253,7 @@ func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped < uint32(len(bus.memory)) {
-				result := bus.memory[mapped]
+				result := atomicRAM8(bus.memory, mapped)
 				return result, true
 			}
 		}
@@ -1100,6 +1280,9 @@ func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 	if addr >= uint32(len(bus.memory)) {
 		return 0, false
 	}
+	if coprocessorMailboxSpan(addr, 1) {
+		return atomicRAM8(bus.memory, addr), true
+	}
 
 	// Check for I/O regions
 	if regions, exists := bus.legacyRegions(addr & PAGE_MASK); exists {
@@ -1120,7 +1303,7 @@ func (bus *MachineBus) Read8WithFault(addr uint32) (uint8, bool) {
 	}
 
 	// Regular memory read
-	result := bus.memory[addr]
+	result := atomicRAM8(bus.memory, addr)
 	return result, true
 }
 
@@ -1304,14 +1487,14 @@ func (bus *MachineBus) publishMapSnapshot() {
 		ioPageBitmap: bus.ioPageBitmap,
 	}
 	bus.mapState.Store(snap)
-	if bus.sealedSnap != nil {
-		bus.sealedSnap = snap
+	if bus.sealedSnap.Load() != nil {
+		bus.sealedSnap.Store(snap)
 	}
 }
 
 func (bus *MachineBus) currentMapSnapshot() *busMapSnapshot {
-	if bus.sealedSnap != nil {
-		return bus.sealedSnap
+	if snap := bus.sealedSnap.Load(); snap != nil {
+		return snap
 	}
 	if snap := bus.mapState.Load(); snap != nil {
 		return snap
@@ -1765,19 +1948,19 @@ func (bus *MachineBus) SealMappings() {
 		bus.publishMapSnapshot()
 		snap = bus.mapState.Load()
 	}
-	bus.sealedSnap = snap
+	bus.sealedSnap.Store(snap)
 	bus.sealed.Store(true)
 }
 
 // UnsealMappings permits runtime owners that have stopped all CPU runners to
 // update MMIO mappings before launching the next runner.
 func (bus *MachineBus) UnsealMappings() {
-	bus.sealedSnap = nil
+	bus.sealedSnap.Store(nil)
 	bus.sealed.Store(false)
 }
 
 func (bus *MachineBus) mappingsSealed() bool {
-	return bus.sealedSnap != nil || bus.sealed.Load()
+	return bus.sealedSnap.Load() != nil || bus.sealed.Load()
 }
 
 func (bus *MachineBus) MapIO(start, end uint32, onRead func(addr uint32) uint32, onWrite func(addr uint32, value uint32)) {
@@ -2037,17 +2220,20 @@ func (bus *MachineBus) Write32(addr uint32, value uint32) {
 		fmt.Printf("Warning: Write32 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
+	if coprocessorMailboxSpan(addr, 4) {
+		old := atomicStoreRAM32(bus.memory, addr, value)
+		bus.notifyCoprocessorCompletionWrite(addr, value)
+		bus.debugOnWrite(addr, 4, uint64(old), uint64(value))
+		return
+	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
 	snap := bus.currentMapSnapshot()
 	if !ioPageMappedForSizedAccess(snap, addr, 4) {
-		// No I/O on this page - lock-free write using unsafe pointer
-		var old uint32
-		if bus.debugWriteActive() {
-			old = *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
-		}
+		// No I/O on this page. Use an atomic store because CPUs and devices may
+		// access shared guest RAM concurrently.
 		locked := bus.beginM68KJITRAMWrite(uint64(addr), 4)
-		*(*uint32)(unsafe.Pointer(&bus.memory[addr])) = value
+		old := atomicStoreRAM32(bus.memory, addr, value)
 		bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
 		bus.endM68KJITRAMWrite(locked)
 		bus.notifyCoprocessorCompletionWrite(addr, value)
@@ -2093,7 +2279,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped+4 <= uint32(len(bus.memory)) {
 				locked := bus.beginM68KJITRAMWrite(uint64(mapped), 4)
-				binary.LittleEndian.PutUint32(bus.memory[mapped:mapped+4], value)
+				atomicStoreRAM32(bus.memory, mapped, value)
 				bus.invalidateM68KJITRAMWrite(uint64(mapped), 4)
 				bus.endM68KJITRAMWrite(locked)
 				bus.notifyCoprocessorCompletionWrite(mapped, value)
@@ -2158,7 +2344,7 @@ func (bus *MachineBus) write32Slow(addr uint32, value uint32) {
 
 	// Regular memory write
 	locked := bus.beginM68KJITRAMWrite(uint64(addr), 4)
-	binary.LittleEndian.PutUint32(bus.memory[addr:addr+4], value)
+	atomicStoreRAM32(bus.memory, addr, value)
 	bus.invalidateM68KJITRAMWrite(uint64(addr), 4)
 	bus.endM68KJITRAMWrite(locked)
 	bus.notifyCoprocessorCompletionWrite(addr, value)
@@ -2192,12 +2378,17 @@ func (bus *MachineBus) Read32(addr uint32) uint32 {
 		fmt.Printf("Warning: Read32 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
+	if coprocessorMailboxSpan(addr, 4) {
+		value := atomicRAM32(bus.memory, addr)
+		bus.debugOnRead(addr, 4)
+		return value
+	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
 	snap := bus.currentMapSnapshot()
 	if !ioPageMappedForSizedAccess(snap, addr, 4) {
-		// No I/O on this page - lock-free read using unsafe pointer
-		value := *(*uint32)(unsafe.Pointer(&bus.memory[addr]))
+		// No I/O on this page. CPUs and devices may share this RAM.
+		value := atomicRAM32(bus.memory, addr)
 		bus.debugOnRead(addr, 4)
 		return value
 	}
@@ -2234,7 +2425,7 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped+4 <= uint32(len(bus.memory)) {
-				result := binary.LittleEndian.Uint32(bus.memory[mapped : mapped+4])
+				result := atomicRAM32(bus.memory, mapped)
 				return result
 			}
 		}
@@ -2289,7 +2480,7 @@ func (bus *MachineBus) read32Slow(addr uint32) uint32 {
 	}
 
 	// Regular memory read
-	result := binary.LittleEndian.Uint32(bus.memory[addr : addr+4])
+	result := atomicRAM32(bus.memory, addr)
 	return result
 }
 
@@ -2370,7 +2561,7 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped+2 <= uint32(len(bus.memory)) {
 				locked := bus.beginM68KJITRAMWrite(uint64(mapped), 2)
-				binary.LittleEndian.PutUint16(bus.memory[mapped:mapped+2], value)
+				atomicStoreRAM16(bus.memory, mapped, value)
 				bus.invalidateM68KJITRAMWrite(uint64(mapped), 2)
 				bus.endM68KJITRAMWrite(locked)
 				return
@@ -2435,7 +2626,7 @@ func (bus *MachineBus) write16Slow(addr uint32, value uint16) {
 
 	// Regular memory write
 	locked := bus.beginM68KJITRAMWrite(uint64(addr), 2)
-	binary.LittleEndian.PutUint16(bus.memory[addr:addr+2], value)
+	atomicStoreRAM16(bus.memory, addr, value)
 	bus.invalidateM68KJITRAMWrite(uint64(addr), 2)
 	bus.endM68KJITRAMWrite(locked)
 }
@@ -2494,7 +2685,7 @@ func (bus *MachineBus) read16Slow(addr uint32) uint16 {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped+2 <= uint32(len(bus.memory)) {
-				result := binary.LittleEndian.Uint16(bus.memory[mapped : mapped+2])
+				result := atomicRAM16(bus.memory, mapped)
 				return result
 			}
 		}
@@ -2544,7 +2735,7 @@ func (bus *MachineBus) read16Slow(addr uint32) uint16 {
 	}
 
 	// Regular memory read
-	result := binary.LittleEndian.Uint16(bus.memory[addr : addr+2])
+	result := atomicRAM16(bus.memory, addr)
 	return result
 }
 
@@ -2573,6 +2764,11 @@ func (bus *MachineBus) Write8(addr uint32, value uint8) {
 		fmt.Printf("Warning: Write8 to out-of-bounds address 0x%08X\n", addr)
 		return
 	}
+	if coprocessorMailboxSpan(addr, 1) {
+		old := atomicStoreRAM8(bus.memory, addr, value)
+		bus.debugOnWrite(addr, 1, uint64(old), uint64(value))
+		return
+	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
 	if !bus.ioPageMapped(addr >> 8) {
@@ -2582,7 +2778,7 @@ func (bus *MachineBus) Write8(addr uint32, value uint8) {
 			old = bus.memory[addr]
 		}
 		locked := bus.beginM68KJITRAMWrite(uint64(addr), 1)
-		bus.memory[addr] = value
+		atomicStoreRAM8(bus.memory, addr, value)
 		bus.invalidateM68KJITRAMWrite(uint64(addr), 1)
 		bus.endM68KJITRAMWrite(locked)
 		bus.debugOnWrite(addr, 1, uint64(old), uint64(value))
@@ -2609,7 +2805,7 @@ func (bus *MachineBus) WriteMemoryDirect(addr uint32, value uint8) {
 			old = bus.memory[addr]
 		}
 		locked := bus.beginM68KJITRAMWrite(uint64(addr), 1)
-		bus.memory[addr] = value
+		atomicStoreRAM8(bus.memory, addr, value)
 		bus.invalidateM68KJITRAMWrite(uint64(addr), 1)
 		bus.endM68KJITRAMWrite(locked)
 		bus.debugOnWrite(addr, 1, uint64(old), uint64(value))
@@ -2641,7 +2837,7 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 			// Proceed with writing to the mapped address if in bounds
 			if mapped < uint32(len(bus.memory)) {
 				locked := bus.beginM68KJITRAMWrite(uint64(mapped), 1)
-				bus.memory[mapped] = value
+				atomicStoreRAM8(bus.memory, mapped, value)
 				bus.invalidateM68KJITRAMWrite(uint64(mapped), 1)
 				bus.endM68KJITRAMWrite(locked)
 				return
@@ -2699,7 +2895,7 @@ func (bus *MachineBus) write8Slow(addr uint32, value uint8) {
 
 	// Regular memory write
 	locked := bus.beginM68KJITRAMWrite(uint64(addr), 1)
-	bus.memory[addr] = value
+	atomicStoreRAM8(bus.memory, addr, value)
 	bus.invalidateM68KJITRAMWrite(uint64(addr), 1)
 	bus.endM68KJITRAMWrite(locked)
 }
@@ -2721,6 +2917,11 @@ func (bus *MachineBus) Read8(addr uint32) uint8 {
 		}
 		fmt.Printf("Warning: Read8 from out-of-bounds address 0x%08X\n", addr)
 		return 0
+	}
+	if coprocessorMailboxSpan(addr, 1) {
+		value := atomicRAM8(bus.memory, addr)
+		bus.debugOnRead(addr, 1)
+		return value
 	}
 
 	// Lock-free fast path: check bitmap for I/O mappings
@@ -2748,8 +2949,11 @@ func (bus *MachineBus) Read8NoDebug(addr uint32) uint8 {
 		fmt.Printf("Warning: Read8 from out-of-bounds address 0x%08X\n", addr)
 		return 0
 	}
+	if coprocessorMailboxSpan(addr, 1) {
+		return atomicRAM8(bus.memory, addr)
+	}
 	if !bus.ioPageMapped(addr >> 8) {
-		return bus.memory[addr]
+		return atomicRAM8(bus.memory, addr)
 	}
 	return bus.read8Slow(addr)
 }
@@ -2779,7 +2983,7 @@ func (bus *MachineBus) read8Slow(addr uint32) uint8 {
 
 			// Regular memory read with mapped address if in bounds
 			if mapped < uint32(len(bus.memory)) {
-				result := bus.memory[mapped]
+				result := atomicRAM8(bus.memory, mapped)
 				return result
 			}
 		}
@@ -2830,7 +3034,7 @@ func (bus *MachineBus) read8Slow(addr uint32) uint8 {
 	}
 
 	// Regular memory read
-	result := bus.memory[addr]
+	result := atomicRAM8(bus.memory, addr)
 	return result
 }
 

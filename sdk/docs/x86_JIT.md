@@ -199,7 +199,7 @@ Triggered when a block's execution count reaches 64 (profile-guided: skipped if 
 
 ### Dirty-Register Tracking
 
-`x86CompileState.dirtyMask` tracks which guest registers were written during block execution. The epilogue only stores dirty mapped registers back to `jitRegs[]`, eliminating unnecessary stores for read-only registers. The dirty mask is initialized from `x86AnalyzeBlockRegs()` static analysis and refined by per-instruction `x86MarkDirty()` calls.
+`x86CompileState.dirtyMask` tracks which guest registers were written during block execution. The epilogue only stores dirty mapped registers back to `jitRegs[]`, eliminating unnecessary stores for read-only registers. The dirty mask is initialised from `x86AnalyzeBlockRegs()` static analysis and refined by per-instruction `x86MarkDirty()` calls.
 
 ### 8-bit Register Handling
 
@@ -227,7 +227,7 @@ Stack frame slots:
 
 ## Self-Loop Native Compilation
 
-When a block's backward Jcc targets its own start PC (self-loop), the JIT compiles it with a native backward branch instead of returning to Go on every iteration. This eliminates the `runtime.asmcgocall` round-trip overhead that otherwise dominates tight loops.
+When a block's backward Jcc targets its own start PC (self-loop), the JIT compiles it with a native backward branch instead of returning to Go on every iteration. This eliminates the `runtime.cgocall` round-trip overhead that otherwise dominates tight loops.
 
 **Implementation:**
 1. Block scanner detects backward Jcc targeting `startPC`
@@ -259,7 +259,7 @@ Hot blocks can be compiled together as a single native unit with one prologue/ep
 4. Single shared epilogue
 5. Deferred bail stubs at region end
 
-Regions are only formed for 3+ block sequences. Single-block self-loops use the lighter self-loop optimization. Two-block sequences use Tier 2 single-block recompilation. Linux/ARM64 promotes acyclic direct-only regions and keeps region back-edges at the dispatcher until variable retirement and cycle accounting have a dedicated region-loop ABI.
+Regions are only formed for 3+ block sequences. Single-block self-loops use the lighter self-loop optimisation. Two-block sequences use Tier 2 single-block recompilation. Linux/ARM64 promotes acyclic direct-only regions and keeps region back-edges at the dispatcher until variable retirement and cycle accounting have a dedicated region-loop ABI.
 
 ---
 
@@ -516,7 +516,7 @@ Hot-block detection uses execution count with profile-guided promotion:
 - **Hysteresis:** `lastPromoteAt` prevents re-promoting recently promoted blocks
 - **Counters tracked per JITBlock:** `execCount`, `chainHits`, `unchainedExits`, `ioBails`
 
-Multi-block regions are preferred (3+ blocks with linear successor chain). Single self-loops use the lightweight self-loop optimization. Two-block sequences fall back to Tier 2 single-block recompilation.
+Multi-block regions are preferred (3+ blocks with linear successor chain). Single self-loops use the lightweight self-loop optimisation. Two-block sequences fall back to Tier 2 single-block recompilation.
 
 ---
 
@@ -636,13 +636,13 @@ At JIT init, `detectX86HostFeatures()` queries CPUID to detect available host CP
 | ERMS | Leaf 7, EBX bit 9 | Hardware REP MOVSB/STOSB for proven-safe ranges |
 | FSRM | Leaf 7, EDX bit 4 | Future: fast short REP MOVSB (Ice Lake+) |
 
-### BMI2 Shift Optimization
+### BMI2 Shift Optimisation
 
 When `HasBMI2` is true and the peephole dead-flag analysis determines a shift instruction's flag output has no consumer (`flagsNeeded[i] == false`), the emitter uses VEX-encoded SHLX/SHRX/SARX instead of standard SHL/SHR/SAR. These BMI2 shifts do not modify EFLAGS, preserving any prior flag state across the shift. Applies to Grp2 Ev,Ib (0xC1) with shift ops 4 (SHL), 5 (SHR), 7 (SAR).
 
 ### LZCNT/TZCNT for BSF/BSR
 
-When `HasLZCNT` is true, BSF uses TZCNT and BSR uses LZCNT for better throughput (no false dependency on the destination register). Zero-input semantics are preserved: a TEST+JZ checks for zero before the TZCNT/LZCNT, leaving the destination unchanged and ZF=1 on zero input (matching the interpreter's behavior at `cpu_x86_grp.go:1167`). For BSR via LZCNT, the result is converted with `XOR dst, 31` to match BSR's bit-position convention.
+When `HasLZCNT` is true, BSF uses TZCNT and BSR uses LZCNT for better throughput (no false dependency on the destination register). Zero-input semantics are preserved: a TEST+JZ checks for zero before the TZCNT/LZCNT, leaving the destination unchanged and ZF=1 on zero input (matching the interpreter's behaviour at `cpu_x86_grp.go:1167`). For BSR via LZCNT, the result is converted with `XOR dst, 31` to match BSR's bit-position convention.
 
 ### Hardware REP STOSB/MOVSB (ERMS)
 

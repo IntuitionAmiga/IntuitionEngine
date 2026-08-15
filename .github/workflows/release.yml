@@ -9,7 +9,7 @@ permissions:
 
 env:
   APP_NAME: IntuitionEngine
-  GO_VERSION_FILE: go.mod
+  GOTOOLCHAIN: local
   AROS_RUNTIME_DIR: ../AROS/bin/ie-m68k/bin/ie-m68k/AROS
 
 jobs:
@@ -24,7 +24,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ${{ env.GO_VERSION_FILE }}
+          go-version: 1.27.0-rc.2
 
       - name: Install dependencies
         run: |
@@ -43,6 +43,7 @@ jobs:
           GOOS: linux
           GOARCH: amd64
           CGO_ENABLED: "1"
+          GOEXPERIMENT: simd
         run: |
           COMMIT=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -97,16 +98,18 @@ jobs:
         include:
           - arch: amd64
             goarch: amd64
+            goexperiment: simd
             upx: true
           - arch: arm64
             goarch: arm64
+            goexperiment: none
             upx: false
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ${{ env.GO_VERSION_FILE }}
+          go-version: 1.27.0-rc.2
 
       - name: Extract version
         id: version
@@ -120,6 +123,7 @@ jobs:
           GOOS: windows
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          GOEXPERIMENT: ${{ matrix.goexperiment }}
         run: |
           COMMIT=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -168,14 +172,16 @@ jobs:
         include:
           - arch: amd64
             goarch: amd64
+            goexperiment: simd
           - arch: arm64
             goarch: arm64
+            goexperiment: none
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: ${{ env.GO_VERSION_FILE }}
+          go-version: 1.27.0-rc.2
 
       - name: Extract version
         id: version
@@ -189,11 +195,12 @@ jobs:
           GOOS: darwin
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          GOEXPERIMENT: ${{ matrix.goexperiment }}
         run: |
           COMMIT=$(git rev-parse --short HEAD)
           BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           VERSION="${{ steps.version.outputs.version }}"
-          go build -ldflags "-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "novulkan embed_basic embed_emutos embed_aros" .
+          go build -ldflags "-checklinkname=0 -s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.BuildDate=${BUILD_DATE}" -tags "novulkan embed_basic embed_emutos embed_aros" .
           go build -ldflags "-s -w" -o ie32asm assembler/ie32asm.go
           go build -ldflags "-s -w" -tags ie64 -o ie64asm ./assembler
           go build -ldflags "-s -w" -o ie32to64 ./cmd/ie32to64/

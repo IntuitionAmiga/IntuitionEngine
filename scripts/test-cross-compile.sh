@@ -10,6 +10,17 @@ if [[ -z "$QEMU_AARCH64" ]]; then
   QEMU_AARCH64="$(command -v qemu-aarch64-static || command -v qemu-aarch64 || true)"
 fi
 
+ARM64_CC="${ARM64_CC:-}"
+if [[ -z "$ARM64_CC" ]]; then
+  ARM64_CC="$(command -v aarch64-suse-linux-gcc || command -v aarch64-linux-gnu-gcc || true)"
+fi
+if [[ -z "$ARM64_CC" ]]; then
+  echo "missing Linux ARM64 cross compiler" >&2
+  exit 1
+fi
+ARM64_SYSROOT="$($ARM64_CC -print-sysroot)"
+ARM64_QEMU_EXEC="$QEMU_AARCH64 -L $ARM64_SYSROOT"
+
 # GODEBUG=asyncpreemptoff=1 is required, not a preference. Go delivers its
 # async-preemption signal at arbitrary points, including while a goroutine is
 # executing JIT-compiled guest code, and qemu user mode mishandles signal
@@ -39,15 +50,15 @@ ARM64_QEMU_TEST_REGEX="${ARM64_QEMU_TEST_REGEX:-TestJITContext_FieldOffsets|Test
 # catch.
 ARM64_QEMU_SKIP_REGEX="${ARM64_QEMU_SKIP_REGEX:-TestJIT_ARM64_(IE64Load_HighBacking_EndToEnd|LOAD_HighAddr_HelperEndToEnd|POP_HighSP_HelperEndToEnd)}"
 
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -tags "novulkan headless" .
+CGO_ENABLED=1 CC="$ARM64_CC" GOOS=linux GOARCH=arm64 go build -tags "novulkan headless" .
 if [[ -n "$QEMU_AARCH64" ]]; then
-  GODEBUG="$ARM64_QEMU_GODEBUG" CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go test -exec "$QEMU_AARCH64" -tags "novulkan headless" -run "$ARM64_QEMU_TEST_REGEX" -skip "$ARM64_QEMU_SKIP_REGEX" -count 1 .
+  GODEBUG="$ARM64_QEMU_GODEBUG" CGO_ENABLED=1 CC="$ARM64_CC" GOOS=linux GOARCH=arm64 go test -exec "$ARM64_QEMU_EXEC" -tags "novulkan headless" -run "$ARM64_QEMU_TEST_REGEX" -skip "$ARM64_QEMU_SKIP_REGEX" -count 1 .
 else
   echo "skipping Linux/arm64 qemu tests: qemu-aarch64 not found" >&2
 fi
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags novulkan .
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -tags novulkan .
-CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -tags novulkan .
-IE_REQUIRE_JIT=1 CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go test -c -tags headless .
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -tags novulkan .
-CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go test -c -tags headless .
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -ldflags=-checklinkname=0 -tags novulkan .
+IE_REQUIRE_JIT=1 CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go test -c -ldflags=-checklinkname=0 -tags headless .
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -ldflags=-checklinkname=0 -tags novulkan .
+CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go test -c -ldflags=-checklinkname=0 -tags headless .

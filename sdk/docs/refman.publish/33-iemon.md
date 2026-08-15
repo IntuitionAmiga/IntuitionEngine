@@ -356,6 +356,13 @@ or focusses a CPU by numeric ID or exact label. Coprocessor workers use
 labels such as `coproc:M68K`; a second M68K, x86, or IE64 instance is
 listed with a `#1` suffix and can be focussed by that label or its ID.
 
+If you have thawed a CPU during the monitor session, `cpu` briefly
+pauses it while reading the programme counter shown in the list, then
+restores its running state. Focussing a running CPU by ID or label does
+the same while capturing its registers and disassembly. Inspection
+therefore presents one coherent view without leaving the selected CPU
+stopped.
+
 | Command | Effect |
 |---------|--------|
 | `cpu` | List all registered CPUs and their IDs. |

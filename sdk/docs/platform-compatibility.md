@@ -7,11 +7,11 @@ Supported platforms, build profiles, and known limitations for Intuition Engine 
 | Platform | Architecture | Status | Build Profile | Notes |
 |----------|-------------|--------|---------------|-------|
 | Linux | x86_64 | **Official** | `full`, `novulkan`, `headless`, `headless-novulkan` | Primary development platform |
-| Linux | aarch64 | **Official** | `full`, `novulkan`, `headless`, `headless-novulkan` | IE64 native JIT |
-| Windows | x86_64 | **Official** | `novulkan` | Pure-Go release build, full guest JIT parity with Linux amd64 |
-| Windows | ARM64 | **Official** | `novulkan` | Pure-Go release build, IE64 native JIT |
-| macOS | x86_64 | **Official** | `novulkan` | Pure-Go release build, full guest JIT parity with Linux/Windows amd64 |
-| macOS | ARM64 | **Official** | `novulkan` | Pure-Go release build, IE64 native JIT via `MAP_JIT` |
+| Linux | aarch64 | **Official** | `full`, `novulkan`, `headless`, `headless-novulkan` | Native JITs and Linux ARM64 SIMD kernels |
+| Windows | x86_64 | **Official** | `novulkan` | Pure-Go release build, full guest JIT parity with Linux x64 |
+| Windows | ARM64 | **Official** | `novulkan` | Pure-Go release build, IE64 and M68K native JITs |
+| macOS | x86_64 | **Official** | `novulkan` | Pure-Go release build, full guest JIT parity with Linux and Windows x64 |
+| macOS | ARM64 | **Official** | `novulkan` | Pure-Go release build, IE64 and M68K native JITs via `MAP_JIT` |
 
 **Official** platforms are built in CI and have maintained release packaging targets. BSD variants remain out of scope.
 
@@ -22,7 +22,7 @@ Supported platforms, build profiles, and known limitations for Intuition Engine 
 The complete build with all features enabled.
 
 **Requirements:**
-- Go 1.26+
+- Go 1.27rc2+
 - CGO enabled on Linux
 - C compiler (gcc or clang) for Linux native builds
 - Vulkan SDK and drivers (for Voodoo GPU path)
@@ -35,7 +35,7 @@ The complete build with all features enabled.
 Software-only Voodoo rasteriser. Removes the Vulkan SDK dependency.
 
 **Requirements:**
-- Go 1.26+
+- Go 1.27rc2+
 - CGO enabled on Linux native builds
 - C compiler for Linux native builds
 - No CGO toolchain required for Windows or macOS cross-builds
@@ -49,7 +49,7 @@ Software-only Voodoo rasteriser. Removes the Vulkan SDK dependency.
 No display, no audio. For CI/testing and batch processing.
 
 **Requirements:**
-- Go 1.26+
+- Go 1.27rc2+
 - CGO enabled on Linux
 - C compiler for Linux native runs
 
@@ -57,17 +57,17 @@ No display, no audio. For CI/testing and batch processing.
 
 ### headless-novulkan
 
-Fully portable build with no CGO dependencies. Cross-compile safe.
+Headless build with the software Voodoo renderer and native JITs.
 
 **Requirements:**
-- Go 1.26+
+- Go 1.27rc2+
 
-**Features:** Stub display/audio backends, software Voodoo rasteriser. No native dependencies.
+**Features:** Stub display and audio backends, software Voodoo rasteriser and native JITs.
 
-**Use this for:** Cross-compilation, CI environments without C toolchains, embedded deployment.
+**Use this for:** Headless testing without Vulkan.
 
 ```bash
-CGO_ENABLED=0 go build -tags "novulkan headless" .
+CGO_ENABLED=1 go build -tags "novulkan headless" .
 ```
 
 ## Graphics Backends
@@ -102,7 +102,7 @@ Ebiten provides:
 - `novulkan` profile only
 - Release artifacts are ad-hoc binaries; testers may need `xattr -dr com.apple.quarantine .` after download
 - amd64 builds have full guest JIT parity with Linux/Windows amd64
-- arm64 builds use the native IE64 arm64 JIT backend; other guest cores remain interpreter-only on arm64
+- arm64 builds use the native IE64 and M68K JIT backends; other guest cores remain interpreter-only on arm64
 
 ### Cross-Compilation
 - Linux release builds remain native-arch or Linux-cross-toolchain builds because the full profile still uses CGO

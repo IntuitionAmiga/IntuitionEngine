@@ -57,6 +57,7 @@ func createX86Worker(bus *MachineBus, data []byte, instance uint32) (*CoprocWork
 		stopCPU:   stopFn,
 		execCPU:   execFn,
 		done:      done,
+		started:   true,
 		loadBase:  base,
 		loadEnd:   end,
 		debugCPU:  dbg,

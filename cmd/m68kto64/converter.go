@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"math/bits"
+	"slices"
 	"strings"
 )
 
@@ -1230,9 +1231,9 @@ func (c *Converter) emitMovemStore(e *Emit, regs []string, ea Operand, size int,
 	if ea.Mode == AMPreDec {
 		// Predecrement: reverse order, sub-then-store per reg.
 		rA := ea.Reg.IE64
-		for i := len(regs) - 1; i >= 0; i-- {
+		for _, reg := range slices.Backward(regs) {
 			e.Lf("sub.l %s, %s, #%d", rA, rA, size)
-			c.emitStoreMem(e, regs[i], rA, size)
+			c.emitStoreMem(e, reg, rA, size)
 		}
 		return nil
 	}

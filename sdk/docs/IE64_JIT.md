@@ -117,7 +117,7 @@ IE64 Machine Code (at PROG_START)
   CodeCache.Put()         jit_common.go    Cache by dispatcher key for O(1) lookup
         |
         v
-  callNative()            jit_call.go      Execute via runtime.asmcgocall
+  callNative()            jit_call.go      Execute via runtime.cgocall
         |
         v
   Dispatcher read         jit_exec.go      Read RetPC (uint64) + RetCount from JITContext
@@ -132,7 +132,7 @@ exhaustive list of JIT source files.
 |------|-----------|---------|
 | `jit_common.go` | (none) | JITContext, CodeBuffer, block scanner, register analysis, code cache |
 | `jit_exec.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | Dispatcher loop (`ExecuteJIT`), timer handling |
-| `jit_call.go` | `(amd64 && (linux \|\| windows \|\| darwin)) \|\| (arm64 && (linux \|\| windows \|\| darwin))` | `callNative` via `runtime.asmcgocall` plus darwin exec/write protection hooks |
+| `jit_call.go` | `(amd64 \|\| arm64) && ((linux && cgo) \|\| windows \|\| darwin)` | `callNative` via `runtime.cgocall` plus Darwin executable-memory protection hooks |
 | `jit_call_arm64.s` | `arm64 && (linux \|\| windows \|\| darwin)` | ARM64 trampoline (`R0` receives `*jitCallArgs`; native block receives `JITContext*`) |
 | `jit_call_amd64.s` | `amd64 && (linux \|\| darwin)` | SysV x86-64 trampoline |
 | `jit_call_amd64_windows.s` | `amd64 && windows` | Windows x86-64 trampoline |

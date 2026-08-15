@@ -34,8 +34,8 @@ func compositorOpaqueCopySpanSIMD(dst, src []byte) {
 		su := pixelSliceU32(src, pixels)
 		alpha := archsimd.BroadcastUint32x8(0xFF000000)
 		for i := 0; i < full; i += simdPixelLanes {
-			v := archsimd.LoadUint32x8Slice(su[i : i+simdPixelLanes])
-			v.Or(alpha).StoreSlice(du[i : i+simdPixelLanes])
+			v := archsimd.LoadUint32x8(su[i : i+simdPixelLanes])
+			v.Or(alpha).Store(du[i : i+simdPixelLanes])
 		}
 	}
 	if tail := full * BYTES_PER_PIXEL; tail < n {
@@ -57,8 +57,8 @@ func compositorBlendSpanSIMD(dst, src []byte) {
 		rMask := archsimd.BroadcastUint32x8(0x00FFFFFF)
 		zero := archsimd.BroadcastUint32x8(0)
 		for i := 0; i < full; i += simdPixelLanes {
-			v := archsimd.LoadUint32x8Slice(su[i : i+simdPixelLanes])
-			d := archsimd.LoadUint32x8Slice(du[i : i+simdPixelLanes])
+			v := archsimd.LoadUint32x8(su[i : i+simdPixelLanes])
+			d := archsimd.LoadUint32x8(du[i : i+simdPixelLanes])
 			alphaNonZero := v.And(aMask).NotEqual(zero)
 			rgbNonZero := v.And(rMask).NotEqual(zero)
 			promoted := v.Or(aMask)
@@ -66,7 +66,7 @@ func compositorBlendSpanSIMD(dst, src []byte) {
 			value := v.Merge(promoted, alphaNonZero)
 			// write where not fully-zero; keep dst otherwise.
 			writeMask := alphaNonZero.Or(rgbNonZero)
-			value.Merge(d, writeMask).StoreSlice(du[i : i+simdPixelLanes])
+			value.Merge(d, writeMask).Store(du[i : i+simdPixelLanes])
 		}
 	}
 	if tail := full * BYTES_PER_PIXEL; tail < n {
@@ -83,14 +83,14 @@ func normaliseFrameLeaseSpanSIMD(pixels []byte) {
 		rMask := archsimd.BroadcastUint32x8(0x00FFFFFF)
 		zero := archsimd.BroadcastUint32x8(0)
 		for i := 0; i < full; i += simdPixelLanes {
-			v := archsimd.LoadUint32x8Slice(pu[i : i+simdPixelLanes])
+			v := archsimd.LoadUint32x8(pu[i : i+simdPixelLanes])
 			alphaZero := v.And(aMask).Equal(zero)
 			rgbNonZero := v.And(rMask).NotEqual(zero)
 			promoted := v.Or(aMask)
 			// promote only where alpha==0 && rgb!=0; every other lane keeps v
 			// (fully-zero stays zero, alpha-set stays as-is).
 			promoteMask := alphaZero.And(rgbNonZero)
-			promoted.Merge(v, promoteMask).StoreSlice(pu[i : i+simdPixelLanes])
+			promoted.Merge(v, promoteMask).Store(pu[i : i+simdPixelLanes])
 		}
 	}
 	if tail := full * BYTES_PER_PIXEL; tail < len(pixels) {

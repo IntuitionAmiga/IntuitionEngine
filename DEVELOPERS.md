@@ -14,13 +14,13 @@ concurrently on the same MachineBus.
 
 ## 1. Prerequisites
 
-Requires Go 1.26.0 or later. The default amd64 build enables the experimental
-`simd/archsimd` API.
+Requires Go 1.27rc2 or later. The default x64 and Linux ARM64 builds enable the
+experimental `simd/archsimd` API.
 
 The default native build uses Ebiten, Oto and the Vulkan-backed Voodoo renderer.
 It therefore needs the normal native compiler, window-system, audio and Vulkan
 development dependencies for the host. If the Vulkan SDK is unavailable, use
-`make novulkan`. For CI or a fully portable build, use `make headless` or
+`make novulkan`. For CI or a display-free build, use `make headless` or
 `make headless-novulkan`.
 
 Some guest toolchains are optional:
@@ -50,7 +50,7 @@ make novulkan
 # CI build without display, audio or Vulkan backends
 make headless
 
-# Pure-Go portable build
+# Headless build without Vulkan
 make headless-novulkan
 
 # Browser build
@@ -85,14 +85,15 @@ headers.
 
 ### Makefile build baseline
 
-Makefile-driven builds export `GOEXPERIMENT=simd`. On amd64 they also export
+Makefile-driven builds export `GOEXPERIMENT=simd`. On x64 they also export
 `GOAMD64=v3`, so those binaries require an x86-64-v3-compatible processor.
 `IE_SIMD=0` selects scalar kernels at runtime but does not lower that processor
 baseline.
 
 A bare `go build .` does not inherit `GOAMD64=v3`. It compiles scalar kernels
-unless `GOEXPERIMENT=simd` has been configured in the Go environment. Use the
-Makefile targets for release artefacts and performance measurements.
+unless `GOEXPERIMENT=simd` has been configured in the Go environment. Linux
+ARM64 SIMD is enabled by the same experiment setting. Use the Makefile targets
+for release artefacts and performance measurements.
 
 ### Build profiles
 
@@ -101,7 +102,7 @@ Makefile targets for release artefacts and performance measurements.
 | Default | `make` | Ebiten, Oto and Vulkan Voodoo |
 | No Vulkan | `make novulkan` | Ebiten, Oto and software Voodoo |
 | Headless | `make headless` | Display and audio stubs, software Voodoo |
-| Portable headless | `make headless-novulkan` | `CGO_ENABLED=0`, display and audio stubs, software Voodoo |
+| Headless, no Vulkan | `make headless-novulkan` | Display and audio stubs, software Voodoo |
 | Browser | `make wasm` | WebGL, WebAudio, software Voodoo and WebAssembly JIT backends |
 
 Build tags change host backends, not the guest ISA or MMIO contracts.
@@ -110,7 +111,7 @@ Build tags change host backends, not the guest ISA or MMIO contracts.
 |-----|--------|
 | `headless` | Replace GUI, audio and video presentation backends with test stubs |
 | `novulkan` | Use the software Voodoo renderer |
-| `goexperiment.simd` | Compile amd64 SIMD kernels when the Go experiment is enabled |
+| `goexperiment.simd` | Compile x64 and Linux ARM64 SIMD kernels when the Go experiment is enabled |
 | `embed_basic` | Embed the EhBASIC image |
 | `embed_emutos` | Embed the EmuTOS ROM |
 | `embed_aros` | Embed the AROS ROM |
@@ -278,9 +279,9 @@ make vet
 make tidy
 make test-makefile
 
-# Portable build profiles
+# Headless build profiles
 go build -tags novulkan .
-CGO_ENABLED=0 go build -tags "novulkan headless" .
+CGO_ENABLED=1 go build -tags "novulkan headless" .
 ```
 
 Relevant repository gates include:
@@ -445,7 +446,7 @@ Selected shared status registers:
 
 | Platform | Native profile | JIT coverage |
 |----------|----------------|--------------|
-| Linux amd64 and arm64 | Default, `novulkan`, headless and portable headless | See the JIT matrix above |
+| Linux x64 and ARM64 | Default, `novulkan`, headless and headless with no Vulkan | See the JIT matrix above |
 | Windows amd64 and arm64 | Pure-Go `novulkan` release | See the JIT matrix above |
 | macOS amd64 and arm64 | Pure-Go `novulkan` release | See the JIT matrix above |
 | Browser | `make wasm` | IE32, IE64, M68K, 6502, Z80 and x86 WebAssembly JITs |

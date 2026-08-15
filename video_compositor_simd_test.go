@@ -1,4 +1,4 @@
-//go:build amd64 && goexperiment.simd
+//go:build goexperiment.simd && (amd64 || (linux && arm64))
 
 package main
 
@@ -12,7 +12,10 @@ import (
 // scalar leaves for every length, pixel class, and buffer base. These call the
 // scalar and SIMD leaves directly, never the ...Impl dispatch var.
 
-var simdSpanByteLengths = []int{0, 4, 8, 28, 32, 4092, 4096}
+var simdSpanByteLengths = []int{
+	0, 4, 8, 12, 16, 20, 24, 28, 32, 36,
+	4092, 4096,
+}
 
 // pixelClassPool spans the three compositor pixel classes plus mixed alpha.
 var pixelClassPool = []uint32{
@@ -86,7 +89,7 @@ func TestSIMDNormaliseFrameLeaseSpanMatchesScalar(t *testing.T) {
 }
 
 // Misaligned base: offset the whole buffer by one pixel so the vector base is
-// not 32-byte aligned, exercising the unaligned load/store path.
+// not naturally vector-aligned, exercising the unaligned load/store path.
 func TestSIMDCompositorMisalignedBase(t *testing.T) {
 	r := rand.New(rand.NewSource(4))
 	const pixels = 1024

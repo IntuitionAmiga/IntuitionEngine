@@ -280,6 +280,14 @@ func newX86ShadowFixture(t x86ShadowTB, rom []byte, forceNative, largeBus bool) 
 // return.
 func x86ShadowStepBudget(t x86ShadowTB, cpu *CPU_X86, forceNative bool, budget int64, deadline time.Duration) {
 	t.Helper()
+	var runner interface{ X86ExecuteJIT() }
+	if forceNative {
+		var ok bool
+		runner, ok = any(cpu).(interface{ X86ExecuteJIT() })
+		if !ok {
+			t.Skip("x86 JIT not available on this platform")
+		}
+	}
 	cpu.x86InstrBudget = budget
 	cpu.x86BudgetActive = true
 	cpu.running.Store(true)
@@ -287,7 +295,7 @@ func x86ShadowStepBudget(t x86ShadowTB, cpu *CPU_X86, forceNative bool, budget i
 	done := make(chan struct{})
 	go func() {
 		if forceNative {
-			cpu.X86ExecuteJIT()
+			runner.X86ExecuteJIT()
 		} else {
 			cpu.x86RunInterpreter()
 		}

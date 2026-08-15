@@ -328,6 +328,13 @@ or the manager refuses to route it work.
 | Request area | `16` request descriptors, `32` bytes each |
 | Response area | `16` response descriptors, `16` bytes each |
 
+The caller writes
+all request fields and the pending response descriptor before advancing
+`head`. The new head value publishes the completed request slot to the
+worker. The worker writes the response data, length, result, and final
+status before advancing `tail`. The new tail value publishes the
+completed response to the caller. Do not advance either index early.
+
 The CPU type indices are IE32 `0`, 6502 `1`, M68K `2`, Z80 `3`, x86
 `4`, and IE64 `5`. A worker must copy byte `+$03` to `+$04` during
 startup. If it does not acknowledge the current layout within the start

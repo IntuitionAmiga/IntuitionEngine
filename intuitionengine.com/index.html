@@ -1512,7 +1512,7 @@ Mode: 960 x 540 RGBA32, stride 3840</code></pre>
         <div class="section-head">
           <h2>CPUs can be devices for another CPU</h2>
           <p>Type <code>COSTART</code> at the BASIC prompt and a separate processor starts working while your programme continues. The worker executes 6502, Z80, 68020, x86, IE32 or IE64 instructions and communicates through shared RAM, mailbox rings and tickets. One CPU can therefore provide a service to another without reducing the worker to a host library call.</p>
-          <p>There is no central bus arbiter. Every CPU carries its own interrupt lines, while devices use their defined targets and delivery paths. The processors cooperate over shared RAM and the same devices rather than through a master. Any CPU can bring the others online: M68K, x86 and IE64 each run two worker instances and IE32, the 6502 and the Z80 run one, for up to nine workers at once, all executing concurrently. A caller queues a request and polls or waits on a ticket; BASIC drives it through named commands, while assembly and C write the coprocessor MMIO block and mailbox rings directly.</p>
+          <p>There is no guest-visible central bus arbiter. Every CPU carries its own interrupt lines, while devices use their defined targets and delivery paths. The processors cooperate over shared RAM and the same devices rather than through a master. Any CPU can bring the others online: M68K, x86 and IE64 each run two worker instances and IE32, the 6502 and the Z80 run one, for up to nine workers at once, all executing concurrently. A caller queues a request and polls or waits on a ticket; BASIC drives it through named commands, while assembly and C write the coprocessor MMIO block and mailbox rings directly.</p>
         </div>
         <div class="card">
           <h3>Request flow</h3>
@@ -1745,13 +1745,13 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
       <div class="wrap">
         <div class="section-head">
           <h2>IE Mon at hardware level</h2>
-          <p>IE Mon is a whole-machine debugger. From a frozen machine it switches focus between the six CPUs, disassembles all six instruction sets, single-steps one core while the rest stay frozen, or thaws chosen cores to run alongside it, sets conditional breakpoints and watchpoints, intercepts faults, edits memory in a hex editor, reads named I/O registers, and walks reverse history across every registered device.</p>
+          <p>IE Mon is a whole-machine debugger. It switches focus between every registered CPU and disassembles all six instruction sets. When a running CPU is listed or selected, IE Mon briefly freezes it to capture coherent state, then restores its previous running state. From a frozen machine it single-steps one core while the rest stay frozen, or thaws chosen cores to run alongside it, sets conditional breakpoints and watchpoints, intercepts faults, edits memory in a hex editor, reads named I/O registers, and walks reverse history across every registered device.</p>
         </div>
         <div class="grid two">
           <article class="card">
             <span class="kicker">Execution control</span>
             <h3>CPU state, live</h3>
-            <p>IE Mon switches focus between the six registered CPUs and disassembles each instruction set natively, from IE64 and x86 to Z80 and 6502. It single-steps one core while the rest stay frozen, or thaws chosen cores to run alongside it, evaluates address expressions such as <code>pc+$20</code>, interleaves source when available, sets conditional breakpoints, intercepts faults, and assembles one IE64 instruction at an address.</p>
+            <p>IE Mon switches focus between registered CPUs and disassembles all six instruction sets natively, from IE64 and x86 to Z80 and 6502. It single-steps one core while the rest stay frozen, or thaws chosen cores to run alongside it, evaluates address expressions such as <code>pc+$20</code>, interleaves source when available, sets conditional breakpoints, intercepts faults, and assembles one IE64 instruction at an address.</p>
             <pre class="code-panel"><code>cpu
 r
 d /s pc 8

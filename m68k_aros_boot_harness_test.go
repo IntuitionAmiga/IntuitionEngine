@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -170,6 +171,33 @@ func TestAROSBootHarness_ReturnsReadyState(t *testing.T) {
 	}
 	if len(result.Faults) != 0 {
 		t.Fatalf("ready harness faults = %d, want 0", len(result.Faults))
+	}
+}
+
+func TestAROSBootHarness_RestoresPreviousFaultHook(t *testing.T) {
+	cpu := newMoveATestCPU()
+	previousCalls := 0
+	previousHook := func(M68KFaultRecord) {
+		previousCalls++
+	}
+	cpu.FaultHook = previousHook
+	h := AROSBootHarness{
+		CPU:          cpu,
+		Timeout:      50 * time.Millisecond,
+		PollInterval: time.Millisecond,
+		Probe: func(*M68KCPU, *AROSLoader) AROSReadyState {
+			return AROSReadyState{Ready: true}
+		},
+	}
+
+	h.Run(context.Background())
+
+	if reflect.ValueOf(cpu.FaultHook).Pointer() != reflect.ValueOf(previousHook).Pointer() {
+		t.Fatal("harness did not restore the previous fault hook")
+	}
+	cpu.FaultHook(M68KFaultRecord{})
+	if previousCalls != 1 {
+		t.Fatalf("restored fault hook calls = %d, want 1", previousCalls)
 	}
 }
 

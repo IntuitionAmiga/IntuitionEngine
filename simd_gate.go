@@ -10,10 +10,9 @@ import (
 // the IE_JIT_DISPATCH_CACHE convention (jit_dispatch_cache.go:7).
 var simdRequested = os.Getenv("IE_SIMD") != "0"
 
-// simdKernelsActive is set true by the amd64 && goexperiment.simd init() when
-// SIMD is both requested and supported by the host CPU. On any other build it
-// stays false and every ...Impl var keeps its scalar default. This is the single
-// source of truth queried by SIMDStatus.
+// simdKernelsActive is set by the x64 or Linux ARM64 SIMD gate when SIMD is
+// requested and supported. On other builds it stays false and every ...Impl
+// variable keeps its scalar default. This is the source queried by SIMDStatus.
 var simdKernelsActive bool
 
 // SIMDStatus returns a human-readable description of the SIMD dispatch state for

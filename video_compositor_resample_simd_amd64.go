@@ -28,11 +28,11 @@ func compositorResampleRowSIMD(dst, srcRow []byte, p *resamplePlan, colBase, col
 		base := int(p.blockBase[idx])
 		src := pixelSliceU32(srcRow[base:], resampleLanes)
 		perm := p.blockPerm[idx*resampleLanes : idx*resampleLanes+resampleLanes]
-		v := archsimd.LoadUint32x8Slice(src)
-		indices := archsimd.LoadUint32x8Slice(perm)
+		v := archsimd.LoadUint32x8(src)
+		indices := archsimd.LoadUint32x8(perm)
 		out := v.Permute(indices)
 		du := pixelSliceU32(dst[i*BYTES_PER_PIXEL:], resampleLanes)
-		out.StoreSlice(du)
+		out.Store(du)
 		i += resampleLanes
 	}
 	if i < cols {

@@ -1899,7 +1899,7 @@ Section: IE64 system instructions; IE32 instruction schema and address
 conventions.
 Claim: Fixed-form processor instructions must describe only the fields
 they actually encode, IE32 memory-indirect stores must document their
-source-backed double-indirect behavior, and the IE32 processor manual
+source-backed double-indirect behaviour, and the IE32 processor manual
 must not define a loader/programme-loading contract.
 Purpose judgement: The ISA manuals are processor user's manuals written
 as if IE64 and IE32 are physical CPUs. Generic operand-field prose on
@@ -1921,7 +1921,7 @@ fixed-form field descriptions, documenting WAIT's `imm32` field only;
 replaced generic IE32 NOP/HALT field descriptions with fixed-form
 reserved-byte descriptions; replaced the bad section 10.3
 memory-indirect store cross-reference with the actual pointer-read then
-write behavior; and rewrote IE32 address-convention wording to describe
+write behaviour; and rewrote IE32 address-convention wording to describe
 reset `PC`, initial `SP`, stack boundaries, and CPU access width without
 loader contract language.
 Notes: This entry closes the fixed-form system-instruction and IE32
@@ -2096,7 +2096,7 @@ must not contradict the ISA manual for absolute branch targets or
 wording must avoid implementation API and branch-only boilerplate.
 Purpose judgement: The ISA manuals are physical-CPU-style processor
 reference manuals. A debugger single-step path that implements different
-architectural behavior makes source-truth verification impossible, and
+architectural behaviour makes source-truth verification impossible, and
 Go method names or platform-scope phrasing do not belong in a CPU
 transfer-width table.
 Canonical sources checked: `cpu_ie32.go` `Execute`, `StepOne`,
@@ -3688,23 +3688,22 @@ Status: FIXED
 Document: `sdk/docs/architecture.md`, the architecture empirical inventory,
 and companion gates.
 Section: Build Flags Outside Make.
-Claim: Commit `cf65a651` changes the supported host-Go contract from a pinned
-Go 1.26.4 toolchain to Go 1.26.0 or later. `go.mod` declares only the minimum
-language version, CI builds both 1.26.0 and the current stable release, and the
-default Make path continues to enable `GOEXPERIMENT=simd`.
+Claim: The Go 1.27 migration changes the supported host-Go contract to
+Go 1.27rc2. `go.mod` declares that minimum, CI and release workflows pin rc2
+with `GOTOOLCHAIN=local`, and the default Make path continues to enable
+`GOEXPERIMENT=simd`.
 Purpose judgement: This is a host build and deployment contract, not processor
 ISA, monitor-command, or scripting-API behaviour. It belongs in Architecture's
 existing build-flags section and does not require changes to the other four
 manuals.
-Canonical sources checked: full diff and final tree for `cf65a651`;
-`go.mod`, `Makefile`, `.github/workflows/test.yml`, `README.md`, and
-`DEVELOPERS.md`.
+Canonical sources checked: `go.mod`, `Makefile`, `.github/workflows/test.yml`,
+`.github/workflows/release.yml`, `README.md`, and `DEVELOPERS.md`.
 Runnable verification: architecture source-inventory generation and manual
 coverage, companion-document and ledger gates, `make check-docs`, Makefile
 shell checks, PDF manifest verification, and final five-book PDF inspection.
-Observed result: Added the minimum-versus-pin distinction and an empirical
-source gate that fails if the language directive, absent `toolchain` directive,
-CI compatibility matrix, or Make SIMD experiment changes.
+Observed result: Updated the empirical source gate so it fails if the language
+directive, workflow pins, local-toolchain requirement, or Make SIMD experiment
+changes.
 Action: Updated Architecture, its generated source inventory, gates, and this
 ledger. Regenerate all five PDFs and the render manifest after the gates pass.
 Notes: The existing uncommitted SDK-DOC-0101 audit corrections were preserved.
@@ -3984,6 +3983,45 @@ companion renderer uses only the published preface as read-only input and writes
 only the five root companion PDFs.
 Disposition: KEEP.
 
+ID: SDK-DOC-0110
+Status: FIXED
+Document: `sdk/docs/architecture.md`, `sdk/docs/iemon.md`, their empirical
+inventories, and companion gates.
+Section: Go 1.27 and tracked-worktree source re-audit.
+Claim: The five manuals must be rechecked against commits `51aeb685` and
+`91766cf9`, plus every current tracked code and test change. The relevant
+public changes are Go 1.27 build support, x64 and Linux ARM64 SIMD dispatch,
+the headless native-JIT build profile, concurrent MachineBus RAM transfer
+semantics, and coherent IEMon CPU inspection while a CPU is thawed.
+Purpose judgement: Build-profile changes and MachineBus transfer semantics are
+Architecture material. The temporary freeze and restore around IEMon `cpu`
+inspection is a monitor-command side effect. M68K atomic implementation,
+coprocessor start serialisation, loader locking, benchmark mechanics, and
+demo/test implementation details do not add IE64/IE32 ISA or IE Script
+contracts.
+Canonical sources checked: full commit range `9ab42313..91766cf9`; every
+current tracked source, test, build, workflow, and documentation diff outside
+the protected refman trees; `machine_bus.go` and non-tearing tests;
+`debug_commands.go` and monitor tests; SIMD gates and differential tests;
+Go/module and workflow configuration; M68K, coprocessor, loader, browser, and
+Raspberry Pi paths.
+Runnable verification: MachineBus non-tearing tests; IEMon command/state
+tests; source-inventory golden and manual-coverage gates; all companion and
+ledger gates; `make check-docs`; protected-refman checksum comparison; final
+isolated five-PDF render, manifest verification, and PDF inspection.
+Observed result: Architecture no longer claims unsafe direct RAM transfer and
+now documents non-tearing shared 16- and 32-bit MachineBus transfers. IEMon
+now documents coherent `cpu` listing/focus capture and prior running-state
+restoration. The existing Go 1.27, SIMD, headless-native-JIT, and Raspberry Pi
+Architecture edits are source-backed. No source-backed change was found for
+the IE64 ISA, IE32 ISA, or IE Script manual.
+Action: Regenerate all five PDFs and the render manifest after all pre-render
+gates pass.
+Notes: Existing `sdk/docs/refman/` and `sdk/docs/refman.publish/` changes are
+outside scope and checksum-protected. The companion renderer reads the
+published preface without modifying either protected tree.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -4023,7 +4061,7 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
 `SDK-DOC-0104`, `SDK-DOC-0105`, `SDK-DOC-0106`, `SDK-DOC-0107`, and
-`SDK-DOC-0108`, and `SDK-DOC-0109`
+`SDK-DOC-0108`, `SDK-DOC-0109`, and `SDK-DOC-0110`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -4105,7 +4143,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0109` and
+Open claim-group backlog: none for this run after `SDK-DOC-0110` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate

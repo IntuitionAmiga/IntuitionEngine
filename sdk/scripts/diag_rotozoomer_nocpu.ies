@@ -1,10 +1,9 @@
 -- Diagnostic for the IE64 no-CPU rotozoomer.
 --
--- The script starts the bootstrap, waits for IE64 to halt, then observes the
--- custom chips. It does not write guest memory or device registers after the
--- bootstrap starts.
+-- Launch this script with the rotozoomer programme on the command line. The
+-- script waits for IE64 to halt, then observes the custom chips. It does not
+-- write guest memory or device registers.
 
-local IMAGE = "sdk/examples/prebuilt/rotozoomer_nocpu.ie64"
 local COPPER_PC = 0xF0014
 local COPPER_STATUS = 0xF0018
 local BLT_STATUS = 0xF0044
@@ -15,10 +14,15 @@ local RENDER_BUFFER = 0xA00000
 local MIDI_POSITION = 0xF0BB0
 
 assert(cpu.mode() == "ie64", "select IE64 before running this diagnostic")
-cpu.load_stopped(IMAGE)
-cpu.start()
-assert(sys.wait_until(function() return not cpu.is_running() end, 600),
-    "IE64 bootstrap did not halt")
+local halted = false
+for _ = 1, 100 do
+    if not cpu.is_running() then
+        halted = true
+        break
+    end
+    sys.wait_ms(100)
+end
+assert(halted, "IE64 bootstrap did not halt")
 
 local halted_pc = dbg.get_pc() or 0
 local retired = cpu.jit_stats().instruction_count
@@ -27,7 +31,7 @@ local samples = {}
 local observations = {}
 
 for frame = 1, 3 do
-    sys.wait_frames(1)
+    sys.wait_ms(1000)
     local stats = cpu.jit_stats()
     assert(not cpu.is_running(), "IE64 resumed after halt")
     assert(stats.instruction_count == retired, "retired instruction count changed after halt")
@@ -47,6 +51,13 @@ for frame = 1, 3 do
         observation.midi)
 end
 
+for _, sample in ipairs(samples) do
+    sys.print("[no cpu rotozoomer] " .. sample)
+end
+sys.print(string.format(
+    "[no cpu rotozoomer] midi_playing=%s midi_before=%d midi_after=%d",
+    tostring(audio.midi_is_playing()), midi_before, video.read_reg(MIDI_POSITION)))
+
 assert(audio.midi_is_playing(), "MIDI playback stopped after IE64 halted")
 assert(video.read_reg(MIDI_POSITION) > midi_before, "MIDI position did not advance")
 for frame = 2, #observations do
@@ -57,9 +68,5 @@ for frame = 2, #observations do
     assert(current.fb == RENDER_BUFFER, "unexpected framebuffer")
     assert(current.hash ~= previous.hash, "frame hash did not evolve")
     assert(current.midi > previous.midi, "MIDI position did not advance between frames")
-end
-
-for _, sample in ipairs(samples) do
-    sys.print("[no cpu rotozoomer] " .. sample)
 end
 sys.exit(0)

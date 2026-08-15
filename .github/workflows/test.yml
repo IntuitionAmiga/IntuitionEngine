@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   build:
     name: Build (${{ matrix.profile }})
@@ -22,13 +25,13 @@ jobs:
             cgo: "1"
           - profile: headless-novulkan
             tags: "novulkan headless"
-            cgo: "0"
+            cgo: "1"
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 1.27.0-rc.2
 
       - name: Install dependencies
         if: matrix.cgo == '1'
@@ -42,18 +45,14 @@ jobs:
         run: go build -tags "${{ matrix.tags }}" .
 
   go-compatibility:
-    name: Default SIMD build (Go ${{ matrix.go-version }})
+    name: Default SIMD build (Go 1.27rc2)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        go-version: ["1.26.0", stable]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version: 1.27.0-rc.2
 
       - name: Build default SIMD configuration
         run: make headless-novulkan
@@ -66,7 +65,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 1.27.0-rc.2
 
       - name: Install dependencies
         run: |
@@ -84,7 +83,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 1.27.0-rc.2
 
       - name: Run tests
         run: go test -tags headless -timeout 10m -count=1 ./...
@@ -100,7 +99,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 1.27.0-rc.2
 
       - name: Run Windows JIT tests
         shell: bash
@@ -114,7 +113,12 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 1.27.0-rc.2
+
+      - name: Install ARM64 cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
       - name: Run cross-compile checks
         run: make test-cross
@@ -127,7 +131,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          go-version: 1.27.0-rc.2
 
       - name: Build IE32 assembler
         run: go build -o ie32asm assembler/ie32asm.go
@@ -161,6 +165,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: 1.27.0-rc.2
 
       - name: Check for broken internal doc links
         run: |

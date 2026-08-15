@@ -1714,15 +1714,21 @@ func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 		sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
 		for _, entry := range entries {
 			status := "FROZEN"
-			if entry.CPU.IsRunning() {
+			running := entry.CPU.IsRunning()
+			if running {
 				status = "RUNNING"
+				entry.CPU.Freeze()
+			}
+			pc := entry.CPU.GetPC()
+			if running {
+				entry.CPU.Resume()
 			}
 			focus := " "
 			if entry.ID == m.focusedID {
 				focus = "*"
 			}
 			m.appendOutput(fmt.Sprintf("%sid:%-3d %-12s [%-7s]  PC=$%X",
-				focus, entry.ID, entry.Label, status, entry.CPU.GetPC()), colorWhite)
+				focus, entry.ID, entry.Label, status, pc), colorWhite)
 		}
 		if m.coprocMgr != nil {
 			registered := make(map[uint32]bool)
@@ -1756,13 +1762,20 @@ func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 
 	// Try numeric ID first
 	if id, err := strconv.Atoi(target); err == nil {
-		if _, ok := m.cpus[id]; ok {
+		if entry, ok := m.cpus[id]; ok {
 			m.clearAssembleModeLocked()
 			m.focusedID = id
+			running := entry.CPU.IsRunning()
+			if running {
+				entry.CPU.Freeze()
+			}
 			m.saveCurrentRegs()
-			m.appendOutput(fmt.Sprintf("Focussed on id:%d %s", id, m.cpus[id].Label), colorCyan)
+			m.appendOutput(fmt.Sprintf("Focussed on id:%d %s", id, entry.Label), colorCyan)
 			m.showRegisters()
 			m.showDisassembly(0, 8)
+			if running {
+				entry.CPU.Resume()
+			}
 			return false
 		}
 		m.appendOutput(fmt.Sprintf("No CPU with id:%d", id), colorRed)
@@ -1778,12 +1791,20 @@ func (m *MachineMonitor) cmdCPU(cmd MonitorCommand) bool {
 	}
 
 	if len(matches) == 1 {
+		entry := matches[0]
 		m.clearAssembleModeLocked()
-		m.focusedID = matches[0].ID
+		m.focusedID = entry.ID
+		running := entry.CPU.IsRunning()
+		if running {
+			entry.CPU.Freeze()
+		}
 		m.saveCurrentRegs()
-		m.appendOutput(fmt.Sprintf("Focussed on id:%d %s", matches[0].ID, matches[0].Label), colorCyan)
+		m.appendOutput(fmt.Sprintf("Focussed on id:%d %s", entry.ID, entry.Label), colorCyan)
 		m.showRegisters()
 		m.showDisassembly(0, 8)
+		if running {
+			entry.CPU.Resume()
+		}
 		return false
 	}
 

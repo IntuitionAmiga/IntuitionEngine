@@ -223,6 +223,8 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		}
 		if blk == nil {
 			cpu.interpret6502One()
+			cpu.jitStats.bails.Add(1)
+			cpu.jitTestRetire(1)
 			continue
 		}
 		binary.LittleEndian.PutUint32(rt.ctx[p65WasmCtxOffNeedBail:], 0)
@@ -231,6 +233,8 @@ func (cpu *CPU_6502) ExecuteJIT6502() {
 		if !rt.invoke(blk) {
 			delete(rt.cache, pc)
 			cpu.interpret6502One()
+			cpu.jitStats.bails.Add(1)
+			cpu.jitTestRetire(1)
 			continue
 		}
 		needBail := binary.LittleEndian.Uint32(rt.ctx[p65WasmCtxOffNeedBail:])

@@ -58,15 +58,15 @@ VBlank and other device state before the next guest read.
 ```
 Z80 Program Memory
        |
-  z80JITScanBlock()     — decode instructions, detect terminators/fallbacks
+  z80JITScanBlock()     : decode instructions, detect terminators/fallbacks
        |
-  compileBlockZ80()     — emit native x86-64 via CodeBuffer
+  compileBlockZ80()     : emit native x86-64 via CodeBuffer
        |
-  ExecMem.Write()       — copy to RWX mmap region
+  ExecMem.Write()       : copy to RWX mmap region
        |
-  callNative()          — Go→native via runtime.cgocall
+  callNative()          : Go to native via runtime.cgocall
        |
-  ExecuteJITZ80()       — exec loop: cache lookup, compile, execute, handle bail/inval
+  ExecuteJITZ80()       : exec loop: cache lookup, compile, execute, handle bail/inval
 ```
 
 ## Register Mapping (x86-64)
@@ -152,9 +152,9 @@ Each `JITZ80Instr` stores: opcode, prefix, displacement, operand, length, cycle 
 - **Misc:** CPL / SCF / CCF / DI / EI / NOP / LD A,(nn) / LD (nn),A / LD HL,(nn) / LD (nn),HL
 - **16-bit ALU:** ADD HL,rp
 - **ED prefix:** NEG / IM 0/1/2 / LD I,A / LD R,A / LD A,I / SBC HL,rp / ADC HL,rp / LDI / LDD / CPI / CPD / LD (nn),rp / LD rp,(nn)
-- **CB prefix:** All 256 opcodes — RLC/RRC/RL/RR/SLA/SRA/SRL/SLL + BIT/SET/RES for both register and (HL) operands
+- **CB prefix:** All 256 opcodes: RLC/RRC/RL/RR/SLA/SRA/SRL/SLL + BIT/SET/RES for both register and (HL) operands
 - **DD/FD prefix:** LD r,(IX+d) / LD (IX+d),r / LD (IX+d),n / ALU A,(IX+d) / INC/DEC (IX+d) / LD IX,nn / INC IX / DEC IX / ADD IX,rp / LD SP,IX / PUSH IX / POP IX (same for IY)
-- **DDCB/FDCB:** BIT/SET/RES/rotate b,(IX+d) — all indexed bit operations
+- **DDCB/FDCB:** BIT/SET/RES/rotate b,(IX+d), covering all indexed bit operations
 
 ### Canonical helper exits
 
@@ -197,10 +197,10 @@ The emitter uses a per-flag-bit peephole system for partial flag materialization
 
 All flag computation functions accept a `flagMask uint8` parameter and conditionally skip individual flag bits not present in the mask:
 
-- `z80EmitFlags_ADD(buf, flagMask)` — ADD/ADC: S, Z, H, P/V (overflow), C from result
-- `z80EmitFlags_SUB(buf, flagMask)` — SUB/SBC/CP: same as ADD + N=1
-- `z80EmitFlags_Logic(buf, isAND, flagMask)` — AND/OR/XOR: S, Z, P/V (parity via lookup table), H (1 for AND)
-- `z80EmitFlags_INC_DEC_Runtime(buf, isDec, flagMask)` — INC/DEC: preserves C, runtime H and P/V
+- `z80EmitFlags_ADD(buf, flagMask)`: ADD/ADC: S, Z, H, P/V (overflow), C from result
+- `z80EmitFlags_SUB(buf, flagMask)`: SUB/SBC/CP: same as ADD + N=1
+- `z80EmitFlags_Logic(buf, isAND, flagMask)`: AND/OR/XOR: S, Z, P/V (parity via lookup table), H (1 for AND)
+- `z80EmitFlags_INC_DEC_Runtime(buf, isDec, flagMask)`: INC/DEC: preserves C, runtime H and P/V
 
 Individual flag bits (S=0x80, Z=0x40, Y=0x20, H=0x10, X=0x08, PV=0x04, N=0x02, C=0x01) are conditionally skipped when not present in `flagMask`. This enables partial materialization: e.g., `JR Z` only needs the Z flag, so only Z is computed and the remaining ~50 bytes of S/H/PV/C flag code are skipped.
 
@@ -216,7 +216,7 @@ The Z80 JIT uses block chaining to eliminate Go dispatch overhead between compil
 
 Each compiled block has two entry points:
 - **`entry`** (full prologue): used by Go dispatch on first entry. Loads registers from CPU struct, sets up stack frame.
-- **`chainEntry`** (lightweight): used by chained blocks. Skips register loads — all Z80 registers are in callee-saved host registers (RBX=A, RBP=F, R12=BC, R13=DE, R14=HL) and survive JMPs within the same `callNative` frame.
+- **`chainEntry`** (lightweight): used by chained blocks. It skips register loads because all Z80 registers are in callee-saved host registers (RBX=A, RBP=F, R12=BC, R13=DE, R14=HL) and survive JMPs within the same `callNative` frame.
 
 ### Chained Accounting
 
@@ -225,7 +225,7 @@ Three accumulator fields in `Z80JITContext` track state across chained blocks:
 - **`ChainCount`** (uint32): accumulated instruction count
 - **`ChainRIncrements`** (uint32): accumulated R register increments
 
-Every exit path (chain exit, bail, selfmod, epilogue) ADDs the current block's contribution to these accumulators before returning. The Go exec loop reads the final accumulated values — it never infers per-block values from the originally dispatched block.
+Every exit path (chain exit, bail, selfmod, epilogue) ADDs the current block's contribution to these accumulators before returning. The Go exec loop reads the final accumulated values. It never infers per-block values from the originally dispatched block.
 
 ### Chain Budget and Interrupt Responsiveness
 
@@ -258,7 +258,7 @@ The Go exec loop populates the RTS cache when entering blocks that have `chainEn
 | HALT | Plain epilogue (returns to Go) | |
 | JP (HL/IX/IY) | Plain epilogue | Dynamic, no cache |
 
-## Memory Specialization (DJNZ Loop Optimization)
+## Memory Specialisation (DJNZ Loop Optimisation)
 
 For qualifying DJNZ loops, the JIT hoists page-check validation out of the loop body and uses unchecked direct memory access inside the loop.
 
@@ -324,7 +324,7 @@ Intel Core i5-8365U @ 1.60GHz, `go test -bench BenchmarkZ80_ -benchtime 3s`:
 |--|---------|----------|----------|
 | ALU MIPS | 433 | 1405 | 1612 |
 | Memory MIPS | 333 | 1106 | 335 |
-| Mixed MIPS | 228 | 1389 | — |
+| Mixed MIPS | 228 | 1389 | Not measured |
 | Call MIPS | 93 | 362 | 95 |
 
 The Z80 JIT is 3x behind the 6502 JIT on ALU workloads due to **structural register packing overhead**: Z80 packs B:C/D:E/H:L into 16-bit host register pairs (R12W/R13W/R14W), requiring a 2-instruction MOVZX+SHR extraction per high-byte read. The 6502 maps A/X/Y to dedicated host registers with zero extraction cost. Each Z80 ALU iteration executes ~27 native instructions vs the 6502's ~11 for equivalent work. Note that the Z80 Memory benchmark (333 MIPS) is comparable to M68K's MemCopy (335 MIPS), and the Z80 Call benchmark (93 MIPS) is comparable to M68K's Call (95 MIPS). The gap is specifically in register-heavy ALU code. Closing it requires tier-2 register unpacking for hot blocks (see Future Work).
@@ -349,7 +349,7 @@ The Z80 JIT is 3x behind the 6502 JIT on ALU workloads due to **structural regis
 | ALU | 30.6 us (1.9x) | 21.5 us (2.1x) | 5.3 us (8.2x) | 4.1x faster |
 | Memory | 32.4 us (1.1x) | 20.6 us (1.2x) | 4.6 us (5.3x) | 4.5x faster |
 | Mixed | 35.3 us (2.2x) | 23.9 us (2.0x) | 9.0 us (5.5x) | 2.7x faster |
-| Call | — | 67.3 us (0.42x) | 11.0 us (2.6x) | 6.1x faster |
+| Call | Not measured | 67.3 us (0.42x) | 11.0 us (2.6x) | 6.1x faster |
 
 Key optimizations:
 - **Block chaining** (Phase A): lightweight chain entry/exit, patchable JMP rel32, cycle-based interrupt budget, chained accounting (ChainCycles/ChainCount/ChainRIncrements). Eliminated Go dispatch overhead between blocks.
@@ -359,18 +359,18 @@ Key optimizations:
 - **DJNZ fast path**: 3-instruction SUB+TEST+JZ replaces 9-instruction extract/dec/repack sequence.
 - **Earlier**: shared exit trampoline, native LDIR loop, CB/DDCB coverage, self-mod write-before-check.
 
-The ALU workload at 433 MIPS peaks with register-only operations in a natively-chained DJNZ loop with deferred flag materialization (flags computed only at loop exit, not per iteration). The Call workload went from 0.42x regression to 2.8x speedup via RTS cache chaining. The remaining 3-4x gap to the 6502 JIT (1405 MIPS ALU) is due to Z80 packed register extraction overhead — each B/D/H read requires 2 host instructions (MOVZX+SHR) that the 6502 avoids with dedicated host registers.
+The ALU workload at 433 MIPS peaks with register-only operations in a natively-chained DJNZ loop with deferred flag materialisation (flags computed only at loop exit, not per iteration). The Call workload went from 0.42x regression to 2.8x speedup via RTS cache chaining. The remaining 3-4x gap to the 6502 JIT (1405 MIPS ALU) is due to Z80 packed register extraction overhead. Each B/D/H read requires 2 host instructions (MOVZX+SHR) that the 6502 avoids with dedicated host registers.
 
 ## Testing
 
 Z80 JIT coverage includes native, ARM64 QEMU, Node wasm, and Chromium module tests:
 - `jit_z80_full_fixture_test.go` - complete committed rotozoomer and Robocop binaries on fresh interpreter/JIT machines at four exact retired-instruction and deterministic frame checkpoints; compares CPU state, cycles, machine memory, versioned video state, changing framebuffer content, and IEMon snapshots on amd64, Linux ARM64 and Node wasm
-- `jit_z80_common_test.go` — 25 tests: field offsets (including ChainCycles/ChainRIncrements/CycleBudget), parity table, direct page bitmap, scanner, peephole flag analysis
-- `jit_z80_exec_test.go` — 76+ tests: end-to-end JIT execution, all prefix groups, self-mod, EI delay, interrupt, bail PC, cycle accuracy, banked alias, interpreter equivalence, ALU equivalence sweep (8 ops x 5 operands = 40 subtests), chain correctness (ChainBasic, ChainCallRet, ChainBudgetExhaustion, BailAfterChain, SelfModAfterChain, ChainCycleAccuracy, RETCache), memory loop optimization (unchecked, page-cross, non-direct, decrement, self-mod), lazy flags (branch consumer, CP+JR, dead producer, DAA, CB rotate)
+- `jit_z80_common_test.go`: 25 tests covering field offsets (including ChainCycles/ChainRIncrements/CycleBudget), parity table, direct page bitmap, scanner and peephole flag analysis
+- `jit_z80_exec_test.go`: 76+ tests covering end-to-end JIT execution, all prefix groups, self-mod, EI delay, interrupt, bail PC, cycle accuracy, banked alias, interpreter equivalence, ALU equivalence sweep (8 ops x 5 operands = 40 subtests), chain correctness (ChainBasic, ChainCallRet, ChainBudgetExhaustion, BailAfterChain, SelfModAfterChain, ChainCycleAccuracy, RETCache), memory loop optimisation (unchecked, page-cross, non-direct, decrement, self-mod), lazy flags (branch consumer, CP+JR, dead producer, DAA, CB rotate)
 - `jit_z80_emit_amd64_test.go` - 8 tests: per-instruction emission, register preservation, lazy flag elimination, memory bail
 - `jit_z80_wasm_emit_test.go`, `jit_z80_wasm_runtime_js_test.go` and `jit_8bit_mmio_poll_wasm_js_test.go` - wazero ABI, exhaustive manifest admission, real WebAssembly differential execution, interrupt wake-up, helper, invalidation, and VBlank poll parking coverage
 - `jit_z80_wasm_browser_test.go` - Chromium module-instantiation and shared-memory access gate
-- `z80_jit_benchmark_test.go` — 4 benchmark pairs (interpreter + JIT)
+- `z80_jit_benchmark_test.go`: 4 benchmark pairs (interpreter + JIT)
 
 The matching IEScript diagnostics are
 `sdk/scripts/z80_jit_rotozoomer_parity.ies` and
@@ -383,7 +383,7 @@ Run: `go test -tags headless -run TestZ80JIT ./...`
 
 ## Future Work
 
-- **Tier-2 register unpacking (D2 — primary remaining lever):** The 3-4x gap to the 6502 JIT is caused by Z80 packed register pairs (B:C in R12W, D:E in R13W, H:L in R14W). Each high-byte read (B, D, H) costs 2 host instructions (MOVZX+SHR). A tier-2 compiler could unpack hot blocks' registers into individual byte slots (stack or repurposed scratch registers), eliminating extraction overhead. `execCount` tracking is already wired; needs: promotion threshold check, tier-2 compile function with unpacked register allocation, tier-1/tier-2 equivalence tests.
+- **Tier-2 register unpacking (D2, the main remaining lever):** The 3-4x gap to the 6502 JIT is caused by Z80 packed register pairs (B:C in R12W, D:E in R13W, H:L in R14W). Each high-byte read (B, D, H) costs 2 host instructions (MOVZX+SHR). A tier-2 compiler could unpack hot blocks' registers into individual byte slots (stack or repurposed scratch registers), eliminating extraction overhead. `execCount` tracking is already wired. This needs a promotion threshold check, a tier-2 compile function with unpacked register allocation, and tier-1/tier-2 equivalence tests.
 - **6502-style N/Z flag deferral:** The 6502 JIT defers N/Z to a "pending register" (zero materialization cost). The Z80 always materializes into BPL. Deferring Z80's Z flag to the result register and testing it directly at conditional branches would save ~14 bytes per flag-producing instruction before a branch.
 - **CP+branch fusion (D3):** Fuse `CP r; JR Z,target` into a single compare-and-branch using host flags.
 - **Lower-cost concurrent generation guards:** patched chain edges currently validate both physical and logical mapping generations before every jump. Any future reduction must retain the stale-target regressions.

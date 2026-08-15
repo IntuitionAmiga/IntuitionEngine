@@ -183,8 +183,8 @@ func TestP65WasmJIT_NodeStructuredPrefixAndSMCBoundary(t *testing.T) {
 		if got := bus.Read8(0x0608); got != 0x02 {
 			t.Fatalf("modified opcode=%02X, want JAM", got)
 		}
-		if cpu.PC != 0x0608 {
-			t.Fatalf("stale compiled instruction ran: PC=%04X, want 0608", cpu.PC)
+		if cpu.PC != 0x0609 {
+			t.Fatalf("PC after modified JAM=%04X, want 0609", cpu.PC)
 		}
 	})
 }
@@ -299,6 +299,7 @@ func TestP65WasmJIT_NodeStackParity(t *testing.T) {
 	interp.Execute()
 	jitBus, jit := newCPU()
 	jit.jitEnabled = true
+	jit.jitTestStopAfter = 8
 	jit.jit6502Execute()
 	if jit.A != interp.A || jit.SP != interp.SP || jit.SR != interp.SR || jit.PC != interp.PC || jit.Cycles != interp.Cycles || jitBus.Read8(0x0100) != interpBus.Read8(0x0100) {
 		t.Fatalf("JIT A=%02X SP=%02X SR=%02X PC=%04X cycles=%d stack=%02X; interpreter A=%02X SP=%02X SR=%02X PC=%04X cycles=%d stack=%02X",

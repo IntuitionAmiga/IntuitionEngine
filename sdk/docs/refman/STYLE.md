@@ -28,6 +28,42 @@ documentation is wrong unless the code itself is being changed in the
 same pass and verified. Record the exact files checked in
 `verify/CLAIM_LEDGER.txt`.
 
+## Current Shared-Memory And Coherent Inspection Editorial Pass
+
+This pass documents the reader-visible publication and inspection contracts
+in the current tracked implementation. Audit Chapter 24 first, then execute
+the required changes in ascending reader order over Chapters 32, 33, and 43,
+then Appendix L and the claim ledger.
+Finish with focused bus, coprocessor, and monitor tests, the affected PRG
+harnesses, reader-facing scans, strict publication, and PDF generation.
+
+Document only these source-backed contracts:
+
+- A coprocessor caller fills the request and pending-response fields before
+  advancing the ring head. A worker fills the response fields and completion
+  status before advancing the ring tail. The head or tail update publishes
+  the preceding descriptor contents to the other side.
+- If a CPU has been thawed during an IE Mon session, `cpu` briefly pauses it
+  while capturing the displayed programme counter, then restores its running
+  state. Selecting that running CPU by ID or label likewise captures coherent
+  registers and disassembly without leaving it stopped.
+
+Chapter 24 must be checked but must not claim a general atomic or non-torn
+shared-RAM contract. Some CPUs retain direct low-RAM paths, so tests of the
+bus-routed path alone do not establish such a machine-wide guarantee. Chapter
+32 must teach publish-last ordering for mailbox descriptors. Chapter 33
+must add the coherent inspection rule beside `cpu`, `freeze`, and `thaw`.
+Chapter 43 must explain why its existing 6502 service writes result, length,
+and status before the final tail store. Appendix L must index all three
+reader tasks.
+
+Do not mention locks, atomics, implementation languages, source files, tests,
+host scheduling, race detectors, or internal worker lifecycle changes in
+reader-facing prose. Do not claim that an individual field, an entire
+descriptor, arbitrary RAM, or a `64`-bit transfer is atomic. Keep all
+author-verification detail in
+`verify/CLAIM_LEDGER.txt`.
+
 ## Current IE Script JIT Statistics Editorial Pass
 
 This pass documents the complete reader-visible `cpu.jit_stats()`

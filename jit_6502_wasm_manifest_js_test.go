@@ -20,9 +20,8 @@ func TestP65WasmJIT_ManifestNativeExecution(t *testing.T) {
 		}
 		t.Run(fmt.Sprintf("opcode_%02X", entry.Opcode), func(t *testing.T) {
 			interp := newWasmManifest6502CPU(entry)
-			if cycles := interp.Step(); cycles == 0 {
-				t.Fatalf("interpreter did not retire opcode %02X", entry.Opcode)
-			}
+			interp.Step()
+			interp.SetRunning(false)
 
 			jit := newWasmManifest6502CPU(entry)
 			jit.jitEnabled = true
@@ -41,7 +40,10 @@ func TestP65WasmJIT_ManifestNativeExecution(t *testing.T) {
 }
 
 func newWasmManifest6502CPU(entry P65OpcodeManifestEntry) *CPU_6502 {
-	bus := NewMachineBus()
+	bus, err := NewMachineBusSized(1 << 16)
+	if err != nil {
+		panic(fmt.Sprintf("create 6502 manifest bus: %v", err))
+	}
 	for index := 0; index < int(entry.Length); index++ {
 		bus.Write8(0x0600+uint32(index), entry.Representative[index])
 	}

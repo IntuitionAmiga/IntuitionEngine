@@ -66,7 +66,7 @@ func (r *jit6502TestRig) compileAndRun(t *testing.T, program []byte, startPC uin
 				break
 			}
 			if off+length == len(program) && program[off] == 0x00 {
-				program[off] = haltOpcode
+				program[off] = 0x02
 				break
 			}
 			off += length
@@ -91,7 +91,7 @@ func (r *jit6502TestRig) compileAndRun(t *testing.T, program []byte, startPC uin
 	}
 	// JAM is the test-only block delimiter above, never an instruction whose
 	// fallback side effect belongs in the emitter assertion.
-	if instrs[len(instrs)-1].opcode == haltOpcode {
+	if instrs[len(instrs)-1].opcode == 0x02 {
 		instrs = instrs[:len(instrs)-1]
 	}
 	if len(instrs) == 0 {

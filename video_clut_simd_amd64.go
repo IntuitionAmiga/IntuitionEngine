@@ -7,9 +7,10 @@ import (
 	"unsafe"
 )
 
-// clut8ExpandSpanSIMD gathers palette words scalar (archsimd 1.26 has no gather)
-// into an 8-lane staging buffer, then wide-stores each vector. Byte-identical to
-// the scalar leaf. Whether this beats the scalar/unrolled leaves is a benchmark
+// clut8ExpandSpanSIMD gathers palette words scalar (Go 1.27 archsimd has no
+// suitable gather) into an 8-lane staging buffer, then wide-stores each vector.
+// It is byte-identical to the scalar leaf. Whether this beats the scalar and
+// unrolled leaves is a benchmark
 // question (the eight dependent LUT loads, not the store, bound the kernel); it
 // is wired only if the stop rule is cleared.
 func clut8ExpandSpanSIMD(dst, src []byte, pal *[256]uint32) {
@@ -27,7 +28,7 @@ func clut8ExpandSpanSIMD(dst, src []byte, pal *[256]uint32) {
 			lane[5] = pal[src[i+5]]
 			lane[6] = pal[src[i+6]]
 			lane[7] = pal[src[i+7]]
-			archsimd.LoadUint32x8(&lane).StoreSlice(du[i : i+simdPixelLanes])
+			archsimd.LoadUint32x8Array(&lane).Store(du[i : i+simdPixelLanes])
 		}
 	}
 	for i := full; i < n; i++ {

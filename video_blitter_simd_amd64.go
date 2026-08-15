@@ -18,7 +18,7 @@ func fillUint32LESpanSIMD(dst []byte, v uint32) {
 		du := unsafe.Slice((*uint32)(unsafe.Pointer(&dst[0])), words)
 		bc := archsimd.BroadcastUint32x8(v)
 		for i := 0; i < full; i += simdPixelLanes {
-			bc.StoreSlice(du[i : i+simdPixelLanes])
+			bc.Store(du[i : i+simdPixelLanes])
 		}
 	}
 	if tail := full * 4; tail < len(dst) {
@@ -28,7 +28,8 @@ func fillUint32LESpanSIMD(dst []byte, v uint32) {
 
 // Colour-expand row: no SIMD variant. The scalar fast path already removes the
 // per-pixel bus dispatch that dominated the generic loop. A vector variant would
-// still gather MSB-first bit-packed template bits lane by lane (archsimd 1.26 has
-// no gather or bit-to-lane expand), so the mask unpack, not the fg/bg select,
-// bounds the kernel; a vector store cannot clear the 10% stop rule. colorExpand
+// still gather MSB-first bit-packed template bits lane by lane (Go 1.27
+// archsimd has no gather or bit-to-lane expand), so the mask unpack, not the
+// fg/bg select, bounds the kernel; a vector store cannot clear the 10% stop
+// rule. colorExpand
 // RowImpl therefore stays scalar. See simd_evidence notes.

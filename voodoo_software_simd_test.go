@@ -1,4 +1,4 @@
-//go:build amd64 && goexperiment.simd
+//go:build goexperiment.simd && (amd64 || (linux && arm64))
 
 package main
 
@@ -246,6 +246,47 @@ func TestSIMDRasterizeRowsMatchesScalarBitExact(t *testing.T) {
 		t.Fatalf("only %d eligible cases generated", cases)
 	}
 	t.Logf("compared %d eligible triangles bit-exact", cases)
+}
+
+func TestSIMDRasterizeRowsShortWidthsMatchScalar(t *testing.T) {
+	if raceEnabled {
+		t.Skip("race build inhibits gc FMA fusion")
+	}
+	if !scalarBuildUsesFMA() {
+		t.Skip("strict Voodoo parity requires an FMA-fused scalar build")
+	}
+	const width, height = 12, 12
+	for span := range 10 {
+		bScalar := newVoodooBackendForTest(t, width, height)
+		bSIMD := newVoodooBackendForTest(t, width, height)
+		for i := range bScalar.depthBuffer {
+			bScalar.depthBuffer[i] = 1
+			bSIMD.depthBuffer[i] = 1
+		}
+
+		sScalar, minY, maxY := benchVoodooSetup(bScalar, 8, width, height)
+		sScalar.minX = 0
+		sScalar.maxX = span
+		sSIMD := sScalar
+		sSIMD.targets = [][]byte{bSIMD.colorBuffer}
+
+		saved := voodooRasterizeRowsSIMDFn
+		voodooRasterizeRowsSIMDFn = nil
+		bScalar.rasterizeRows(&sScalar, minY, maxY)
+		voodooRasterizeRowsSIMDFn = saved
+		rasterizeRowsSIMD(bSIMD, &sSIMD, minY, maxY)
+
+		for i := range bScalar.colorBuffer {
+			if bScalar.colorBuffer[i] != bSIMD.colorBuffer[i] {
+				t.Fatalf("span %d colour byte %d differs", span, i)
+			}
+		}
+		for i := range bScalar.depthBuffer {
+			if math.Float32bits(bScalar.depthBuffer[i]) != math.Float32bits(bSIMD.depthBuffer[i]) {
+				t.Fatalf("span %d depth value %d differs", span, i)
+			}
+		}
+	}
 }
 
 func benchVoodooSetup(b *VoodooSoftwareBackend, size int, w, h int) (voodooTriangleSetup, int, int) {

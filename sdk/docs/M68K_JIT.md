@@ -163,7 +163,7 @@ per target without disturbing the amd64 path.
 | `jit_m68k_dispatch_stub.go` | all other platforms | Interpreter fallback for non-JIT platforms |
 | `jit_region_backends.go` | `amd64 && (linux \|\| windows \|\| darwin)` | Region walker registry, including `ScanRegionM68K` |
 | `jit_common.go` | (none) | Shared: CodeBuffer, CodeCache, JITBlock, chainSlot (reused from IE64) |
-| `jit_call.go` | shared IE64 JIT trampoline | `callNative()` via `runtime.asmcgocall` (reused from IE64) |
+| `jit_call.go` | shared IE64 JIT trampoline | `callNative()` via `runtime.cgocall` (reused from IE64) |
 | `jit_mmap.go` / `jit_mmap_darwin_amd64.go` / `jit_mmap_windows.go` | Linux / macOS amd64 / Windows | Executable memory allocator + `PatchRel32At` (reused from IE64) |
 
 ### Tests
@@ -198,12 +198,12 @@ inline.
 | R12 | A0 | Callee-saved, mapped |
 | R13 | A7/SP | Callee-saved, mapped |
 | R14 | CCR | Callee-saved, 5-bit XNZVC (lazy: may be stale when EFLAGS live) |
-| R15 | — | JITContext pointer |
-| RDI | — | &DataRegs[0] (AddrRegs at a fixed delta) |
-| RSI | — | &cpu.memory[0] |
+| R15 | - | JITContext pointer |
+| RDI | - | &DataRegs[0] (AddrRegs at a fixed delta) |
+| RSI | - | &cpu.memory[0] |
 | R8 | A6 | Pinned (freed by removing the IOThreshold pin) |
 | R9 | A5 | Pinned (freed by removing the AddrBase pin) |
-| RAX,RCX,RDX,R10,R11 | — | Scratch |
+| RAX,RCX,RDX,R10,R11 | - | Scratch |
 
 Loop blocks containing native FP additionally pin FP0-FP7 to xmm8-xmm15
 (`m68kFPPinned`, `jit_m68k_fpu_sse_amd64.go`) on non-Windows hosts only;

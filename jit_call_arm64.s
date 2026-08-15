@@ -1,6 +1,6 @@
 // jit_call_arm64.s - ARM64 native code call trampoline for JIT
 //
-// This trampoline runs on the g0 stack via runtime.cgocall, which switches
+// This trampoline runs on the g0 stack via runtime.asmcgocall, which switches
 // stacks and prevents GC preemption during native code execution. The
 // trampoline receives a pointer to jitCallArgs in R0.
 
@@ -8,17 +8,17 @@
 
 #include "textflag.h"
 
-// jitCallABI0 holds the ABI0 address of jitCall for runtime.cgocall.
+// jitCallABI0 holds the ABI0 address of jitCall for runtime.asmcgocall.
 GLOBL ·jitCallABI0(SB), NOPTR|RODATA, $8
 DATA  ·jitCallABI0(SB)/8, $jitCall(SB)
 
-// jitCall is called on the g0 stack by asmcgocall.
+// jitCall is called on the g0 stack by runtime.asmcgocall.
 // R0 = *jitCallArgs {fn uintptr, arg uintptr, ret uintptr}
-// R30 = return address in asmcgocall
+// R30 = return address in runtime.asmcgocall
 TEXT jitCall(SB), NOSPLIT, $0
 	// Allocate stack space to save LR and args pointer
 	SUB	$32, RSP
-	MOVD	R30, 24(RSP)	// save LR (return to asmcgocall)
+	MOVD	R30, 24(RSP)	// save LR (return to runtime.asmcgocall)
 	MOVD	R0, 16(RSP)	// save args pointer
 
 	// Load native code address and argument from args struct

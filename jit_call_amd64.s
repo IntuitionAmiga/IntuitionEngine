@@ -1,6 +1,6 @@
 // jit_call_amd64.s - x86-64 native code call trampoline for JIT
 //
-// This trampoline runs on the g0 stack via runtime.cgocall, which switches
+// This trampoline runs on the g0 stack via runtime.asmcgocall, which switches
 // stacks and prevents GC preemption during native code execution. The
 // trampoline receives a pointer to jitCallArgs in DI.
 
@@ -8,11 +8,11 @@
 
 #include "textflag.h"
 
-// jitCallABI0 holds the ABI0 address of jitCall for runtime.cgocall.
+// jitCallABI0 holds the ABI0 address of jitCall for runtime.asmcgocall.
 GLOBL ·jitCallABI0(SB), NOPTR|RODATA, $8
 DATA  ·jitCallABI0(SB)/8, $jitCall(SB)
 
-// jitCall is called on the g0 stack by asmcgocall.
+// jitCall is called on the g0 stack by runtime.asmcgocall.
 // DI = *jitCallArgs {fn uintptr, arg uintptr, ret uintptr}
 TEXT jitCall(SB), NOSPLIT, $0
 	// Save args pointer (DI is caller-saved in System V ABI)

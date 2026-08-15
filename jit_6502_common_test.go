@@ -120,6 +120,26 @@ func TestJIT6502_ContextConstruction(t *testing.T) {
 	}
 }
 
+func TestJIT6502_ContextConstructionWithoutIOBitmap(t *testing.T) {
+	bus := NewMachineBus()
+	coprocBus := &CoprocBus32{
+		bus:          bus,
+		mem:          bus.GetMemory(),
+		bankBase:     WORKER_6502_BASE,
+		mailboxBase:  MAILBOX_BASE,
+		mailboxStart: 0x2000,
+		mailboxEnd:   0x2000 + uint16(MAILBOX_SIZE),
+	}
+	cpu := NewCPU_6502(coprocBus)
+	ctx := newJIT6502Context(cpu)
+	if ctx == nil {
+		t.Fatal("newJIT6502Context returned nil")
+	}
+	if ctx.IOBitmapPtr == 0 {
+		t.Fatal("IOBitmapPtr is zero for an adapter without an I/O bitmap")
+	}
+}
+
 // ===========================================================================
 // DirectPageBitmap Tests
 // ===========================================================================

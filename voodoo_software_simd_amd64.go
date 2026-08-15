@@ -18,7 +18,7 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 	v0, v1, v2 := s.v0, s.v1, s.v2
 
 	bc := archsimd.BroadcastFloat32x8
-	laneIdx := archsimd.LoadFloat32x8(&[8]float32{0, 1, 2, 3, 4, 5, 6, 7})
+	laneIdx := archsimd.LoadFloat32x8Array(&[8]float32{0, 1, 2, 3, 4, 5, 6, 7})
 	zero := bc(0)
 	one := bc(1)
 	half := bc(0.5)
@@ -182,9 +182,9 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 					for l := 0; l < sliceLen; l++ {
 						ob[l] = b.depthBuffer[wordBase+l]
 					}
-					oldZ = archsimd.LoadFloat32x8(&ob)
+					oldZ = archsimd.LoadFloat32x8Array(&ob)
 				} else {
-					oldZ = archsimd.LoadFloat32x8Slice(b.depthBuffer[wordBase : wordBase+simdF32Lanes])
+					oldZ = archsimd.LoadFloat32x8(b.depthBuffer[wordBase : wordBase+simdF32Lanes])
 				}
 				writeMask = writeMask.And(depthCompare(z, oldZ))
 			}
@@ -196,17 +196,18 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 				continue
 			}
 
-			// Texture: hybrid stage. Texel fetch (no SIMD gather in archsimd 1.26)
+			// Texture: hybrid stage. Texel fetch (no suitable gather in Go 1.27
+			// archsimd)
 			// and combineVoodooColors run scalar per lane on the pre-clamp
 			// interpolated r,g,b,a; texture coordinates use the exact scalar slope
 			// expression so gc fuses them identically. r,g,b,a are replaced with
 			// the combined result, then the vector pipeline resumes.
 			if s.texActive {
 				var ra, ga, bba, aa [8]float32
-				r.Store(&ra)
-				g.Store(&ga)
-				bb.Store(&bba)
-				a.Store(&aa)
+				r.StoreArray(&ra)
+				g.StoreArray(&ga)
+				bb.StoreArray(&bba)
+				a.StoreArray(&aa)
 				wmBits := writeMask.ToBits()
 				for l := 0; l < simdF32Lanes; l++ {
 					if wmBits&(1<<uint(l)) == 0 {
@@ -219,10 +220,10 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 					texR, texG, texB, texA := sampleVoodooTexel(s.texData, s.texWidth, s.texHeight, s.texClampS, s.texClampT, sTex, tTex)
 					ra[l], ga[l], bba[l], aa[l] = combineVoodooColors(s.fbzColorPath, s.colorPathSet, ra[l], ga[l], bba[l], aa[l], texR, texG, texB, texA)
 				}
-				r = archsimd.LoadFloat32x8(&ra)
-				g = archsimd.LoadFloat32x8(&ga)
-				bb = archsimd.LoadFloat32x8(&bba)
-				a = archsimd.LoadFloat32x8(&aa)
+				r = archsimd.LoadFloat32x8Array(&ra)
+				g = archsimd.LoadFloat32x8Array(&ga)
+				bb = archsimd.LoadFloat32x8Array(&bba)
+				a = archsimd.LoadFloat32x8Array(&aa)
 			}
 
 			r = clamp01(r)
@@ -241,9 +242,9 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 			// hybrid over the clamped pre-fog r,g,b: bit-exact by construction.
 			if s.chromaKeyEnable {
 				var ra, ga, ba [8]float32
-				r.Store(&ra)
-				g.Store(&ga)
-				bb.Store(&ba)
+				r.StoreArray(&ra)
+				g.StoreArray(&ga)
+				bb.StoreArray(&ba)
 				var keep uint8
 				for l := 0; l < simdF32Lanes; l++ {
 					if !voodooChromaTest(s.chromaKey, s.chromaRange, ra[l], ga[l], ba[l]) {
@@ -268,18 +269,18 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 			// applyDither per lane and reloads, guaranteeing bit-exactness.
 			if s.ditherEnable {
 				var ra, ga, ba [8]float32
-				r.Store(&ra)
-				g.Store(&ga)
-				bb.Store(&ba)
+				r.StoreArray(&ra)
+				g.StoreArray(&ga)
+				bb.StoreArray(&ba)
 				for l := 0; l < simdF32Lanes; l++ {
 					th := b.getDitherThreshold(xc+l, y, s.dither2x2)
 					ra[l] = b.applyDither(ra[l], th)
 					ga[l] = b.applyDither(ga[l], th)
 					ba[l] = b.applyDither(ba[l], th)
 				}
-				r = archsimd.LoadFloat32x8(&ra)
-				g = archsimd.LoadFloat32x8(&ga)
-				bb = archsimd.LoadFloat32x8(&ba)
+				r = archsimd.LoadFloat32x8Array(&ra)
+				g = archsimd.LoadFloat32x8Array(&ga)
+				bb = archsimd.LoadFloat32x8Array(&ba)
 			}
 
 			if s.forceOpaqueAlpha {
@@ -295,11 +296,11 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 			if s.alphaBlendEnable {
 				var ra, ga, ba, aa [8]float32
 				var zz [8]float32
-				r.Store(&ra)
-				g.Store(&ga)
-				bb.Store(&ba)
-				a.Store(&aa)
-				z.Store(&zz)
+				r.StoreArray(&ra)
+				g.StoreArray(&ga)
+				bb.StoreArray(&ba)
+				a.StoreArray(&aa)
+				z.StoreArray(&zz)
 				wmBits := writeMask.ToBits()
 				for l := 0; l < sliceLen; l++ {
 					if wmBits&(1<<uint(l)) == 0 {
@@ -323,9 +324,9 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 				var pk [8]uint32
 				var wm [8]int32
 				var zz [8]float32
-				packed.Store(&pk)
-				writeMask.ToInt32x8().Store(&wm)
-				z.Store(&zz)
+				packed.StoreArray(&pk)
+				writeMask.ToInt32x8().StoreArray(&wm)
+				z.StoreArray(&zz)
 				for l := 0; l < sliceLen; l++ {
 					if wm[l] == 0 {
 						continue
@@ -342,13 +343,13 @@ func rasterizeRowsSIMD(b *VoodooSoftwareBackend, s *voodooTriangleSetup, minY, m
 
 			for _, tu := range targetsU {
 				du := tu[wordBase : wordBase+simdF32Lanes]
-				d := archsimd.LoadUint32x8Slice(du)
-				packed.Merge(d, writeMask).StoreSlice(du)
+				d := archsimd.LoadUint32x8(du)
+				packed.Merge(d, writeMask).Store(du)
 			}
 
 			if s.depthEnable && s.depthWrite {
 				dslice := b.depthBuffer[wordBase : wordBase+simdF32Lanes]
-				z.Merge(oldZ, writeMask).StoreSlice(dslice)
+				z.Merge(oldZ, writeMask).Store(dslice)
 			}
 		}
 	}

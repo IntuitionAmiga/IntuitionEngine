@@ -6,6 +6,85 @@ import (
 	"testing"
 )
 
+func TestAtomicRAM16DoesNotTearWithinBackingWord(t *testing.T) {
+	memory := make([]byte, 8)
+	const first = uint16(0x00ff)
+	const second = uint16(0xff00)
+	atomicStoreRAM16(memory, 0, first)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1_000_000; i++ {
+			atomicStoreRAM16(memory, 0, first)
+			atomicStoreRAM16(memory, 0, second)
+		}
+	}()
+	for {
+		value := atomicRAM16(memory, 0)
+		if value != first && value != second {
+			t.Fatalf("torn 16-bit value = %#04x", value)
+		}
+		select {
+		case <-done:
+			return
+		default:
+		}
+	}
+}
+
+func TestAtomicRAM32DoesNotTearAcrossBackingWords(t *testing.T) {
+	memory := make([]byte, 12)
+	const first = uint32(0x0000ffff)
+	const second = uint32(0xffff0000)
+	atomicStoreRAM32(memory, 3, first)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 1_000_000; i++ {
+			atomicStoreRAM32(memory, 3, first)
+			atomicStoreRAM32(memory, 3, second)
+		}
+	}()
+	for {
+		value := atomicRAM32(memory, 3)
+		if value != first && value != second {
+			t.Fatalf("torn cross-word 32-bit value = %#08x", value)
+		}
+		select {
+		case <-done:
+			return
+		default:
+		}
+	}
+}
+
+func TestMachineBusRAM32DoesNotTearAcrossBackingWords(t *testing.T) {
+	bus := NewMachineBus()
+	const addr = uint32(0x1003)
+	const first = uint32(0x0000ffff)
+	const second = uint32(0xffff0000)
+	bus.Write32(addr, first)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 500_000; i++ {
+			bus.Write32(addr, first)
+			bus.Write32(addr, second)
+		}
+	}()
+	for {
+		value := bus.Read32(addr)
+		if value != first && value != second {
+			t.Fatalf("torn bus RAM value = %#08x", value)
+		}
+		select {
+		case <-done:
+			return
+		default:
+		}
+	}
+}
+
 // TestBus32GetMemory verifies that MachineBus exposes its memory slice
 // via GetMemory() for direct access by CPU cores.
 func TestBus32GetMemory(t *testing.T) {

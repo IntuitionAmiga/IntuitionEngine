@@ -135,6 +135,14 @@ The service's first two instructions copy the ring layout version from
 `$2803` to `$2804`. This acknowledgement is required before the start
 command succeeds and before the manager routes requests to the worker.
 
+The stores from `$0014` through `$003B` finish the response result,
+length, and status fields. The store at `$0040` advances `tail` only
+after those fields are complete. That final byte is the publication
+step: once the caller sees the new tail, it may consume the response.
+Moving the tail store earlier could expose a response whose later fields
+still belong to the preceding operation. The ordering of these stores is
+what makes the complete descriptor ready.
+
 Line `110` enqueues a normal BASIC `COCALL`. BASIC checks that `REQ`
 and `RESP` are public buffers created by `MEMALLOC`.
 

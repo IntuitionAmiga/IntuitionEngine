@@ -19,11 +19,14 @@ type CoprocWorker struct {
 	loadEnd   uint32
 
 	mu         sync.Mutex
+	startCPU   func()
 	stopCPU    func()        // sets running=false on the worker CPU
 	execCPU    func()        // architecture-specific run loop (blocks until done)
 	disposeCPU func()        // releases an architecture-specific discarded CPU
 	done       chan struct{} // closed when current Execute() returns
+	started    bool
 	frozen     bool
+	stopped    bool
 
 	// gatePending is set while a worker is installed in its slot but has not yet
 	// cleared the START-time version handshake. enqueue rejects a pending worker
@@ -107,6 +110,7 @@ type CoprocessorManager struct {
 	// workers is indexed [cpuType 1..6][instance 0..1]. The instance-1 slots
 	// of single-instance types stay nil.
 	workers              [7][2]*CoprocWorker
+	startMu              [7][2]sync.Mutex
 	nextTicket           uint32
 	completions          map[uint32]*CoprocCompletion
 	pendingMonitorUnregs []reapedMonitor
@@ -1291,6 +1295,11 @@ func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType, instance uint32,
 	if slot == nil {
 		return coprocLifecycleErr(coprocSelectionError(cpuType, instance), "invalid coprocessor CPU type %d instance %d", cpuType, instance)
 	}
+	m.mu.Unlock()
+	m.startMu[cpuType][instance].Lock()
+	m.mu.Lock()
+	defer m.startMu[cpuType][instance].Unlock()
+	slot = m.workerSlotLocked(cpuType, instance)
 
 	if existing := *slot; existing != nil {
 		if !replace {
@@ -1319,16 +1328,7 @@ func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType, instance uint32,
 
 	if *slot != nil {
 		m.mu.Unlock()
-		worker.stopCPU()
-		stopped := false
-		select {
-		case <-worker.done:
-			stopped = true
-		case <-time.After(2 * time.Second):
-		}
-		if stopped && worker.disposeCPU != nil {
-			worker.disposeCPU()
-		}
+		discardUnownedWorker(worker, 2*time.Second)
 		m.mu.Lock()
 		return coprocLifecycleErr(COPROC_ERR_LOAD_FAILED, "%s coprocessor worker was started concurrently", coprocInstanceLabel(cpuType, instance))
 	}
@@ -1351,6 +1351,7 @@ func (m *CoprocessorManager) startWorkerFromDataLocked(cpuType, instance uint32,
 	m.mu.Lock()
 	if *slot == worker {
 		worker.monitorID = newID
+		worker.Start()
 	} else if mon != nil && newID >= 0 {
 		m.mu.Unlock()
 		mon.UnregisterCPU(newID)
@@ -1442,11 +1443,17 @@ func (m *CoprocessorManager) awaitWorkerAckLocked(cpuType, instance uint32, slot
 }
 
 func (m *CoprocessorManager) watchWorkerDone(worker *CoprocWorker) {
-	if m == nil || worker == nil || worker.done == nil {
+	if m == nil || worker == nil {
+		return
+	}
+	worker.mu.Lock()
+	done := worker.done
+	worker.mu.Unlock()
+	if done == nil {
 		return
 	}
 	go func() {
-		<-worker.done
+		<-done
 		m.signalCompletionWake()
 	}()
 }
@@ -1474,6 +1481,26 @@ func (m *CoprocessorManager) stopWorkerLocked(cpuType, instance uint32) error {
 	m.stopWorkerAndUnregister(cpuType, worker)
 	m.mu.Lock()
 	return nil
+}
+
+func discardUnownedWorker(worker *CoprocWorker, timeout time.Duration) {
+	worker.mu.Lock()
+	started := worker.started
+	done := worker.done
+	worker.mu.Unlock()
+
+	stopped := !started
+	if started {
+		worker.stopCPU()
+		select {
+		case <-done:
+			stopped = true
+		case <-time.After(timeout):
+		}
+	}
+	if stopped && worker.disposeCPU != nil {
+		worker.disposeCPU()
+	}
 }
 
 func (m *CoprocessorManager) pruneCompletions() {
@@ -1506,13 +1533,13 @@ func (m *CoprocessorManager) createWorker(cpuType, instance uint32, data []byte)
 	}
 	switch cpuType {
 	case EXEC_TYPE_IE32:
-		return createIE32WorkerConfigured(m.bus, data, instance, m.ie32DisableJIT)
+		return createIE32WorkerConfigured(m.bus, data, instance, m.ie32DisableJIT, false)
 	case EXEC_TYPE_6502:
 		return create6502Worker(m.bus, data, instance)
 	case EXEC_TYPE_M68K:
 		return createM68KWorker(m.bus, data, instance)
 	case EXEC_TYPE_Z80:
-		return createZ80Worker(m.bus, data, instance)
+		return createZ80Worker(m.bus, data, instance, false)
 	case EXEC_TYPE_X86:
 		return createX86Worker(m.bus, data, instance)
 	case EXEC_TYPE_IE64:
@@ -1533,27 +1560,53 @@ func (m *CoprocessorManager) createWorkerAndRegister(cpuType uint32, data []byte
 		label := coprocLabel(cpuType)
 		worker.monitorID = m.monitor.RegisterCPU(label, worker.debugCPU)
 	}
+	worker.Start()
 	return worker, nil
 }
 
 // stopWorkerAndUnregister stops a worker and unregisters it from the monitor.
 // Caller must NOT hold m.mu.
 func (m *CoprocessorManager) stopWorkerAndUnregister(cpuType uint32, worker *CoprocWorker) {
-	if worker.debugCPU != nil {
-		worker.debugCPU.Freeze()
-	}
-	worker.stopCPU()
-	stopped := false
-	select {
-	case <-worker.done:
-		stopped = true
-	case <-time.After(2 * time.Second):
-	}
+	stopped := worker.Stop()
 	if stopped && worker.disposeCPU != nil {
 		worker.disposeCPU()
 	}
 	if m.monitor != nil && worker.monitorID >= 0 {
 		m.monitor.UnregisterCPU(worker.monitorID)
+	}
+}
+
+// Stop permanently stops the worker and waits for its current run to finish.
+func (w *CoprocWorker) Stop() bool {
+	w.mu.Lock()
+	if w.stopped {
+		if !w.started {
+			w.mu.Unlock()
+			return true
+		}
+		done := w.done
+		w.mu.Unlock()
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
+	w.stopped = true
+	if !w.started {
+		w.stopCPU()
+		w.mu.Unlock()
+		return true
+	}
+	w.stopCPU()
+	done := w.done
+	w.mu.Unlock()
+	select {
+	case <-done:
+		return true
+	case <-time.After(2 * time.Second):
+		return false
 	}
 }
 
@@ -1574,16 +1627,38 @@ func (w *CoprocWorker) Pause() {
 	}
 }
 
+// Start launches a worker that was constructed without starting its CPU.
+func (w *CoprocWorker) Start() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.started || w.stopped {
+		return
+	}
+	if w.startCPU != nil {
+		w.startCPU()
+	}
+	w.started = true
+	go func(done chan struct{}) {
+		defer close(done)
+		w.execCPU()
+	}(w.done)
+}
+
 // Unpause launches a new goroutine running execCPU.
 func (w *CoprocWorker) Unpause() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.frozen {
+	if !w.frozen || w.stopped {
 		return
 	}
 	w.done = make(chan struct{})
+	done := w.done
+	if w.startCPU != nil {
+		w.startCPU()
+	}
+	w.started = true
 	go func() {
-		defer close(w.done)
+		defer close(done)
 		w.execCPU()
 	}()
 	w.frozen = false

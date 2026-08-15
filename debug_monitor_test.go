@@ -126,11 +126,10 @@ func TestMonitorFreezeResume(t *testing.T) {
 	cpu.memory[PROG_START+86] = byte(uoff >> 16)
 	cpu.memory[PROG_START+87] = byte(uoff >> 24)
 
-	cpu.StartExecution()
-
 	mon := NewMachineMonitor(bus)
 	adapter := NewDebugIE64(cpu)
 	mon.RegisterCPU("IE64", adapter)
+	cpu.StartExecution()
 
 	// CPU should be running
 	if !adapter.IsRunning() {
@@ -1204,6 +1203,39 @@ func TestCPUSwitching(t *testing.T) {
 	focused = mon.FocusedCPU()
 	if focused == nil || focused.ID != id0 {
 		t.Errorf("After 'cpu ie64', focused CPU id=%d, expected %d", focused.ID, id0)
+	}
+}
+
+func TestCPUInspectionPreservesThawedCPURunningState(t *testing.T) {
+	bus := NewMachineBus()
+	cpu := NewCPU64(bus)
+	for addr := uint64(PROG_START); addr < uint64(PROG_START)+80; addr += 8 {
+		cpu.memory[addr] = OP_NOP64
+	}
+	cpu.memory[PROG_START+80] = OP_BRA
+	offset := int32(-88)
+	uoffset := uint32(offset)
+	cpu.memory[PROG_START+84] = byte(uoffset)
+	cpu.memory[PROG_START+85] = byte(uoffset >> 8)
+	cpu.memory[PROG_START+86] = byte(uoffset >> 16)
+	cpu.memory[PROG_START+87] = byte(uoffset >> 24)
+
+	mon := NewMachineMonitor(bus)
+	adapter := NewDebugIE64(cpu)
+	mon.RegisterCPU("IE64", adapter)
+	cpu.StartExecution()
+	t.Cleanup(cpu.Stop)
+
+	if !adapter.IsRunning() {
+		t.Fatal("CPU is not running before monitor inspection")
+	}
+	mon.ExecuteCommand("cpu")
+	if !adapter.IsRunning() {
+		t.Fatal("cpu listing left a thawed CPU stopped")
+	}
+	mon.ExecuteCommand("cpu 0")
+	if !adapter.IsRunning() {
+		t.Fatal("cpu focus change left a thawed CPU stopped")
 	}
 }
 
@@ -2445,14 +2477,15 @@ func TestCoprocWorkerReplaceUnregisters(t *testing.T) {
 	mgr.mu.Unlock()
 	oldID := w1.monitorID
 
-	// Create a second worker of the same type - should unregister the old one
+	// Stop the old worker before replacing its shared execution window.
+	mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, w1)
+
+	// Create a second worker of the same type.
 	w2, err := mgr.createWorkerAndRegister(EXEC_TYPE_IE32, code)
 	if err != nil {
 		t.Fatalf("second createWorkerAndRegister: %v", err)
 	}
 
-	// Stop old worker
-	mgr.stopWorkerAndUnregister(EXEC_TYPE_IE32, w1)
 	mgr.mu.Lock()
 	mgr.workers[EXEC_TYPE_IE32][0] = w2
 	mgr.mu.Unlock()
@@ -2752,10 +2785,11 @@ func TestCoprocRegistrationRace(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
+	nameAddr := uint32(0x400000)
+	writeString(bus, nameAddr, "worker.bin")
+
 	// Helper: trigger cmdStart through the real HandleWrite path
 	triggerStart := func() {
-		nameAddr := uint32(0x400000)
-		writeString(bus, nameAddr, "worker.bin")
 		bus.Write32(COPROC_CPU_TYPE, EXEC_TYPE_IE32)
 		bus.Write32(COPROC_NAME_PTR, nameAddr)
 		bus.Write32(COPROC_CMD, COPROC_CMD_START)

@@ -36,6 +36,7 @@ const (
 	p65WasmLVal   = 3
 	p65WasmLFlags = 4
 	p65WasmLAddr  = 5
+	p65WasmLCross = 6
 )
 
 type p65WasmLogicOp byte
@@ -101,6 +102,8 @@ func p65WasmSetNZValue(b *wasmBody) {
 	b.localGet(p65WasmLCtx)
 	b.i32Load(2, p65WasmCtxOffNZTable)
 	b.localGet(p65WasmLVal)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.op(wasmOpI32Add)
 	b.i32Load8U(0, 0)
 	b.op(wasmOpI32Or)
@@ -637,6 +640,16 @@ func p65WasmEmitReturnDynamicPC(b *wasmBody, pcLocal, retired, cycles uint32) {
 	b.op(wasmOpReturn)
 }
 
+func p65WasmEmitCrossReturn(b *wasmBody, retPC uint16, retired, cycles uint32) {
+	b.localGet(p65WasmLCross)
+	b.op(wasmOpI32Eqz)
+	b.ifVoid()
+	p65WasmEmitReturn(b, retPC, retired, cycles)
+	b.elseBranch()
+	p65WasmEmitReturn(b, retPC, retired, cycles+1)
+	b.end()
+}
+
 // p65WasmEmitBranch preserves CPU_6502's existing penalty-only branch
 // accounting: fall-through is zero cycles, a taken branch costs one, and a
 // page crossing costs one more. Each arm returns so the final straight-line
@@ -767,7 +780,7 @@ func p65WasmEmitAbsIndexedAddressWithCross(b *wasmBody, operand uint16, indexOff
 	b.op(wasmOpI32Add)
 	b.i32Const(8)
 	b.op(wasmOpI32ShrU)
-	b.localSet(p65WasmLFlags)
+	b.localSet(p65WasmLCross)
 	p65WasmEmitAbsIndexedAddress(b, operand, indexOffset)
 }
 
@@ -802,6 +815,15 @@ func p65WasmEmitIndirectStoreAddress(b *wasmBody, operand byte, indexedX bool) {
 	b.op(wasmOpI32Add)
 	b.i32Load8U(0, 0)
 	b.localSet(p65WasmLVal)
+	if !indexedX {
+		b.localGet(p65WasmLVal)
+		b.localGet(p65WasmLCPU)
+		b.i32Load8U(0, cpu6502OffY)
+		b.op(wasmOpI32Add)
+		b.i32Const(8)
+		b.op(wasmOpI32ShrU)
+		b.localSet(p65WasmLCross)
+	}
 	b.localGet(p65WasmLAddr)
 	b.i32Const(1)
 	b.op(wasmOpI32Add)
@@ -984,6 +1006,8 @@ func p65WasmEmitStack(b *wasmBody, opcode byte) {
 		b.localGet(p65WasmLAddr)
 		b.i32Const(1)
 		b.op(wasmOpI32Add)
+		b.i32Const(0xFF)
+		b.op(wasmOpI32And)
 		b.localSet(p65WasmLAddr)
 		b.localGet(p65WasmLCPU)
 		b.localGet(p65WasmLAddr)
@@ -1027,10 +1051,11 @@ func p65WasmEmitJSR(b *wasmBody, startPC uint16, target uint16) {
 	b.op(wasmOpI32Add)
 	b.i32Const(int32(returnAddr >> 8))
 	b.i32Store8(0, 0)
-	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
 	b.i32Const(1)
 	b.op(wasmOpI32Sub)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.localSet(p65WasmLAddr)
 	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
@@ -1043,10 +1068,11 @@ func p65WasmEmitJSR(b *wasmBody, startPC uint16, target uint16) {
 	b.op(wasmOpI32Add)
 	b.i32Const(int32(byte(returnAddr)))
 	b.i32Store8(0, 0)
-	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
 	b.i32Const(1)
 	b.op(wasmOpI32Sub)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.localSet(p65WasmLAddr)
 	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
@@ -1059,6 +1085,8 @@ func p65WasmEmitRTS(b *wasmBody) {
 	b.i32Load8U(0, cpu6502OffSP)
 	b.i32Const(1)
 	b.op(wasmOpI32Add)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.localSet(p65WasmLAddr)
 	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
@@ -1074,6 +1102,8 @@ func p65WasmEmitRTS(b *wasmBody) {
 	b.localGet(p65WasmLAddr)
 	b.i32Const(1)
 	b.op(wasmOpI32Add)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.localSet(p65WasmLAddr)
 	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
@@ -1122,6 +1152,8 @@ func p65WasmEmitRTI(b *wasmBody) {
 	b.i32Load8U(0, cpu6502OffSP)
 	b.i32Const(1)
 	b.op(wasmOpI32Add)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.localSet(p65WasmLAddr)
 	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
@@ -1145,6 +1177,8 @@ func p65WasmEmitRTI(b *wasmBody) {
 	b.localGet(p65WasmLAddr)
 	b.i32Const(1)
 	b.op(wasmOpI32Add)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.localSet(p65WasmLAddr)
 	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
@@ -1161,6 +1195,8 @@ func p65WasmEmitRTI(b *wasmBody) {
 	b.localGet(p65WasmLAddr)
 	b.i32Const(1)
 	b.op(wasmOpI32Add)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.localSet(p65WasmLAddr)
 	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
@@ -1196,6 +1232,8 @@ func p65WasmEmitBRK(b *wasmBody, startPC uint16) {
 	b.localGet(p65WasmLAddr)
 	b.i32Const(1)
 	b.op(wasmOpI32Sub)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.localSet(p65WasmLAddr)
 	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
@@ -1212,6 +1250,8 @@ func p65WasmEmitBRK(b *wasmBody, startPC uint16) {
 	b.localGet(p65WasmLAddr)
 	b.i32Const(1)
 	b.op(wasmOpI32Sub)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.localSet(p65WasmLAddr)
 	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
@@ -1231,6 +1271,8 @@ func p65WasmEmitBRK(b *wasmBody, startPC uint16) {
 	b.localGet(p65WasmLAddr)
 	b.i32Const(1)
 	b.op(wasmOpI32Sub)
+	b.i32Const(0xFF)
+	b.op(wasmOpI32And)
 	b.localSet(p65WasmLAddr)
 	b.localGet(p65WasmLCPU)
 	b.localGet(p65WasmLAddr)
@@ -1395,7 +1437,7 @@ func p65WasmCompileBlock(instrs []JIT6502Instr, startPC uint16) ([]byte, error) 
 			body.i32Load8U(0, 0)
 			body.localSet(p65WasmLVal)
 			p65WasmEmitArithmeticLoadedOperand(&body, decimalTableOffset, binaryTableOffset)
-			body.localGet(p65WasmLFlags)
+			body.localGet(p65WasmLCross)
 			body.op(wasmOpI32Eqz)
 			body.ifVoid()
 			p65WasmEmitReturn(&body, uint16(instrPC)+uint16(instr.length), uint32(index+1), cycles+uint32(jit6502BaseCycles[instr.opcode]))
@@ -1423,7 +1465,7 @@ func p65WasmCompileBlock(instrs []JIT6502Instr, startPC uint16) ([]byte, error) 
 			body.i32Load8U(0, 0)
 			body.localSet(p65WasmLVal)
 			p65WasmEmitLogicLoadedOperand(&body, op)
-			body.localGet(p65WasmLFlags)
+			body.localGet(p65WasmLCross)
 			body.op(wasmOpI32Eqz)
 			body.ifVoid()
 			p65WasmEmitReturn(&body, uint16(instrPC)+uint16(instr.length), uint32(index+1), cycles+uint32(jit6502BaseCycles[instr.opcode]))
@@ -1437,6 +1479,22 @@ func p65WasmCompileBlock(instrs []JIT6502Instr, startPC uint16) ([]byte, error) 
 			p65WasmEmitLogicImmediate(&body, byte(instr.operand), p65WasmOra)
 		case 0x49:
 			p65WasmEmitLogicImmediate(&body, byte(instr.operand), p65WasmEor)
+		case 0x05, 0x0D, 0x25, 0x2D, 0x45, 0x4D:
+			op := p65WasmOra
+			if instr.opcode == 0x25 || instr.opcode == 0x2D {
+				op = p65WasmAnd
+			} else if instr.opcode == 0x45 || instr.opcode == 0x4D {
+				op = p65WasmEor
+			}
+			p65WasmDirectGuard(&body, byte(instr.operand>>8))
+			body.localGet(p65WasmLCtx)
+			body.i32Load(2, p65WasmCtxOffMemPtr)
+			body.i32Const(int32(instr.operand))
+			body.op(wasmOpI32Add)
+			body.i32Load8U(0, 0)
+			body.localSet(p65WasmLVal)
+			p65WasmEmitLogicLoadedOperand(&body, op)
+			p65WasmDirectGuardEnd(&body, uint16(instrPC), uint32(index), cycles)
 		case 0xC9:
 			p65WasmEmitCompareImmediate(&body, byte(instr.operand), cpu6502OffA)
 		case 0xE0:
@@ -1532,6 +1590,7 @@ func p65WasmCompileBlock(instrs []JIT6502Instr, startPC uint16) ([]byte, error) 
 			p65WasmEmitIndirectStoreAddress(&body, byte(instr.operand), false)
 			p65WasmDynamicDirectGuard(&body)
 			p65WasmEmitLoadAtAddr(&body, cpu6502OffA)
+			p65WasmEmitCrossReturn(&body, uint16(instrPC)+uint16(instr.length), uint32(index+1), cycles+uint32(jit6502BaseCycles[instr.opcode]))
 			p65WasmDirectGuardEnd(&body, uint16(instrPC), uint32(index), cycles)
 			p65WasmDirectGuardEnd(&body, uint16(instrPC), uint32(index), cycles)
 		case 0x01, 0x11, 0x21, 0x31, 0x41, 0x51:
@@ -1552,6 +1611,9 @@ func p65WasmCompileBlock(instrs []JIT6502Instr, startPC uint16) ([]byte, error) 
 			body.i32Load8U(0, 0)
 			body.localSet(p65WasmLVal)
 			p65WasmEmitLogicLoadedOperand(&body, op)
+			if !indexedX {
+				p65WasmEmitCrossReturn(&body, uint16(instrPC)+uint16(instr.length), uint32(index+1), cycles+uint32(jit6502BaseCycles[instr.opcode]))
+			}
 			p65WasmDirectGuardEnd(&body, uint16(instrPC), uint32(index), cycles)
 			p65WasmDirectGuardEnd(&body, uint16(instrPC), uint32(index), cycles)
 		case 0x61, 0x71, 0xE1, 0xF1:
@@ -1570,6 +1632,9 @@ func p65WasmCompileBlock(instrs []JIT6502Instr, startPC uint16) ([]byte, error) 
 			body.i32Load8U(0, 0)
 			body.localSet(p65WasmLVal)
 			p65WasmEmitArithmeticLoadedOperand(&body, decimalTableOffset, binaryTableOffset)
+			if !indexedX {
+				p65WasmEmitCrossReturn(&body, uint16(instrPC)+uint16(instr.length), uint32(index+1), cycles+uint32(jit6502BaseCycles[instr.opcode]))
+			}
 			p65WasmDirectGuardEnd(&body, uint16(instrPC), uint32(index), cycles)
 			p65WasmDirectGuardEnd(&body, uint16(instrPC), uint32(index), cycles)
 		case 0xC1, 0xD1:
@@ -1583,6 +1648,9 @@ func p65WasmCompileBlock(instrs []JIT6502Instr, startPC uint16) ([]byte, error) 
 			body.i32Load8U(0, 0)
 			body.localSet(p65WasmLVal)
 			p65WasmEmitCompareLoadedOperand(&body, cpu6502OffA)
+			if instr.opcode == 0xD1 {
+				p65WasmEmitCrossReturn(&body, uint16(instrPC)+uint16(instr.length), uint32(index+1), cycles+uint32(jit6502BaseCycles[instr.opcode]))
+			}
 			p65WasmDirectGuardEnd(&body, uint16(instrPC), uint32(index), cycles)
 			p65WasmDirectGuardEnd(&body, uint16(instrPC), uint32(index), cycles)
 		case 0xBD, 0xB9, 0xBE, 0xBC: // abs-indexed loads
@@ -1598,7 +1666,7 @@ func p65WasmCompileBlock(instrs []JIT6502Instr, startPC uint16) ([]byte, error) 
 			p65WasmEmitAbsIndexedAddressWithCross(&body, instr.operand, indexOffset)
 			p65WasmDynamicDirectGuard(&body)
 			p65WasmEmitLoadAtAddr(&body, destOffset)
-			body.localGet(p65WasmLFlags)
+			body.localGet(p65WasmLCross)
 			body.op(wasmOpI32Eqz)
 			body.ifVoid()
 			p65WasmEmitReturn(&body, uint16(instrPC)+uint16(instr.length), uint32(index+1), cycles+uint32(jit6502BaseCycles[instr.opcode]))
@@ -1620,7 +1688,7 @@ func p65WasmCompileBlock(instrs []JIT6502Instr, startPC uint16) ([]byte, error) 
 			body.i32Load8U(0, 0)
 			body.localSet(p65WasmLVal)
 			p65WasmEmitCompareLoadedOperand(&body, cpu6502OffA)
-			body.localGet(p65WasmLFlags)
+			body.localGet(p65WasmLCross)
 			body.op(wasmOpI32Eqz)
 			body.ifVoid()
 			p65WasmEmitReturn(&body, uint16(instrPC)+uint16(instr.length), uint32(index+1), cycles+uint32(jit6502BaseCycles[instr.opcode]))
@@ -1765,7 +1833,7 @@ func p65WasmCompileBlock(instrs []JIT6502Instr, startPC uint16) ([]byte, error) 
 	m := newWasmModuleBuilder()
 	m.importMemory("env", "mem", 1)
 	typeIdx := m.addType([]byte{wasmTypeI32}, nil)
-	fn := m.addFunc(typeIdx, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, body.code)
+	fn := m.addFunc(typeIdx, []byte{wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32, wasmTypeI32}, body.code)
 	m.exportFunc("block", fn)
 	return m.build(), nil
 }

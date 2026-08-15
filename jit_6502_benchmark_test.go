@@ -104,11 +104,8 @@ func setup6502BenchInterp(program []byte, startPC uint16) (*CPU_6502, *MachineBu
 
 func setup6502BenchJIT(b *testing.B, program []byte, startPC uint16, resetState func(*CPU_6502)) *CPU_6502 {
 	b.Helper()
-	// The 6502 JIT trampoline dispatches through runtime.asmcgocall (see
-	// jit_call.go). asmcgocall is the raw stack-switch primitive and works
-	// in both CGO_ENABLED=1 and CGO_ENABLED=0 builds, so the only remaining
-	// gating condition is the platform build tag (amd64/arm64 + linux) via
-	// jit6502Available.
+	// The 6502 JIT trampoline dispatches through runtime.asmcgocall. Linux native
+	// JIT builds enable cgo, and jit6502Available supplies the platform gate.
 	if !jit6502Available {
 		b.Skip("6502 JIT is not available on this platform")
 	}
