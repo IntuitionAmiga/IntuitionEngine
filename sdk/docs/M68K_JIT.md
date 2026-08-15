@@ -261,8 +261,10 @@ FPU support is native, not fallback:
 
 - Register-to-register and EA forms are decoded by
   `m68kDecodeNativeFPURegToReg` / `m68kDecodeNativeFPUEA`
-  (`jit_m68k_common.go`) and emitted as SSE scalar code
-  (`jit_m68k_fpu_sse_amd64.go`, `jit_m68k_fpu_ea_amd64.go`).
+  (`jit_m68k_common.go`). On amd64 they are emitted as SSE scalar code by
+  `jit_m68k_fpu_sse_amd64.go` and `jit_m68k_fpu_ea_amd64.go`. On arm64 the
+  supported register forms are emitted as native scalar ARM64 floating-point
+  instructions by `jit_m68k_emit_arm64.go`.
 - FBcc is emitted natively.
 - Lazy FPSR: intermediate FPSR condition-code updates are elided when the
   next FPU instruction overwrites them without an observable fault point
