@@ -8,14 +8,15 @@ canonical architecture, instruction-set and JIT references are under
 Intuition Engine is a multi-CPU fantasy computer implemented primarily in the
 root Go `main` package. It supports IE64, IE32, M68K, Z80, 6502 and x86 guest
 CPUs. Most hardware is shared through one guest bus and exposed through native
-MMIO or an architecture-specific I/O window. The Program Executor selects the
-primary CPU mode, while the Coprocessor Manager can run additional CPU workers
-concurrently on the same MachineBus.
+MMIO or an architecture-specific I/O window. CLI and boot-profile routing select
+the initial CPU mode. The Program Executor handles later guest-requested
+launches, including BASIC `RUN`, while the Coprocessor Manager can run additional
+CPU workers concurrently on the same MachineBus.
 
 ## 1. Prerequisites
 
-Requires Go 1.27rc2 or later. The default x64 and Linux ARM64 builds enable the
-experimental `simd/archsimd` API.
+Requires [Go 1.27rc2 or later](https://go.dev/dl/). The default x64 and Linux
+ARM64 builds enable the experimental `simd/archsimd` API.
 
 The default native build uses Ebiten, Oto and the Vulkan-backed Voodoo renderer.
 It therefore needs the normal native compiler, window-system, audio and Vulkan
@@ -23,14 +24,28 @@ development dependencies for the host. If the Vulkan SDK is unavailable, use
 `make novulkan`. For CI or a display-free build, use `make headless` or
 `make headless-novulkan`.
 
+On Ubuntu or Debian, the native dependencies used by the Linux CI build can be
+installed with:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential git make \
+    libasound2-dev libgl1-mesa-dev libxcursor-dev libxi-dev \
+    libxinerama-dev libxrandr-dev libxxf86vm-dev liblhasa-dev
+```
+
+The default Vulkan build also needs the
+[LunarG Vulkan SDK](https://vulkan.lunarg.com/). It is not required by the
+`novulkan` or headless profiles.
+
 Some guest toolchains are optional:
 
 | Guest | External toolchain |
 |-------|--------------------|
-| M68K | VASM using Motorola syntax |
-| Z80 | VASM using standard Z80 syntax |
-| 6502 | cc65 (`ca65` and `ld65`) |
-| x86 | NASM |
+| M68K | [VASM](http://sun.hasenbraten.de/vasm/) using Motorola syntax |
+| Z80 | [VASM](http://sun.hasenbraten.de/vasm/) using standard Z80 syntax |
+| 6502 | [cc65](https://cc65.github.io/) (`ca65` and `ld65`) |
+| x86 | [NASM](https://www.nasm.us/) |
 
 Individual examples and OS rebuilds may require additional cross-compilers.
 Their Makefile targets report missing prerequisites.
@@ -56,13 +71,20 @@ make headless-novulkan
 # Browser build
 make wasm
 
-# Remove build artefacts
-make clean
-make distclean
-
 # List all supported targets
 make help
 ```
+
+### Cleaning the worktree
+
+The cleaning targets are not routine build commands. `make clean` removes build
+outputs and the tracked `sdk/examples/prebuilt/` demo images. Restore those
+tracked images with `git restore sdk/examples/prebuilt` if they contained no
+intentional changes, or rebuild the relevant examples before continuing.
+
+`make distclean` also removes checked-in generated IntuitionOS assets,
+downloaded test fixtures and the AROS build tree. Use it only when deliberately
+rebuilding all of those inputs from scratch.
 
 The VM is written to `bin/IntuitionEngine`. First-party tools are written to
 `sdk/bin/`:
@@ -81,7 +103,10 @@ The VM is written to `bin/IntuitionEngine`. First-party tools are written to
 
 The [Host SDK guide](sdk/docs/host-sdk-README.md) describes the packaged Linux
 x86-64 SDK, including its compiler components, runtime, libraries and public
-headers.
+headers. The Host SDK is also available from
+[intuitionengine.io](https://intuitionengine.io). It contains the IE32 and IE64
+development tools, not the VM or the external M68K, Z80, 6502 and x86
+toolchains listed above.
 
 ### Makefile build baseline
 
@@ -101,8 +126,8 @@ for release artefacts and performance measurements.
 |---------|---------|---------------|
 | Default | `make` | Ebiten, Oto and Vulkan Voodoo |
 | No Vulkan | `make novulkan` | Ebiten, Oto and software Voodoo |
-| Headless | `make headless` | Display and audio stubs, software Voodoo |
-| Headless, no Vulkan | `make headless-novulkan` | Display and audio stubs, software Voodoo |
+| Headless | `make headless` | Display and audio stubs; the headless constraints exclude Vulkan |
+| Headless CI | `make headless-novulkan` | The same guest model with explicit `headless novulkan` tags and native JITs |
 | Browser | `make wasm` | WebGL, WebAudio, software Voodoo and WebAssembly JIT backends |
 
 Build tags change host backends, not the guest ISA or MMIO contracts.
@@ -155,7 +180,7 @@ go build -tags ie64dis -o ie64dis ./assembler
 | `main.go` | CLI parsing and runtime assembly |
 | `machine_bus.go` | Guest RAM, MMIO dispatch and fast bus paths |
 | `machine_lifecycle.go` | Loading, reset and profile transitions |
-| `program_executor.go` | Guest CPU mode selection and programme launches |
+| `program_executor.go` | Guest-requested programme launches and launch hand-off |
 | `coprocessor_manager.go` | Concurrent CPU worker lifecycle, instances and tickets |
 | `cpu_*.go`, `cpu_*_runner.go` | Guest CPU interpreters and execution routing |
 | `jit_*.go` | Shared and CPU-specific JIT implementations |
@@ -189,9 +214,11 @@ and the relevant maintained reference:
 | Machine architecture and MMIO | [architecture.md](sdk/docs/architecture.md) |
 | IE32 instruction set | [IE32_ISA.md](sdk/docs/IE32_ISA.md) |
 | IE64 instruction set | [IE64_ISA.md](sdk/docs/IE64_ISA.md) |
+| IE32 JIT | [IE32_JIT.md](sdk/docs/IE32_JIT.md) |
 | IE64 JIT | [IE64_JIT.md](sdk/docs/IE64_JIT.md) |
 | M68K JIT | [M68K_JIT.md](sdk/docs/M68K_JIT.md) |
 | 6502 JIT | [6502_JIT.md](sdk/docs/6502_JIT.md) |
+| Z80 JIT | [Z80_JIT.md](sdk/docs/Z80_JIT.md) |
 | x86 JIT | [x86_JIT.md](sdk/docs/x86_JIT.md) |
 | Machine Monitor | [iemon.md](sdk/docs/iemon.md) |
 | IEScript | [iescript.md](sdk/docs/iescript.md) |
@@ -222,11 +249,12 @@ profile ceiling are applied. Browser builds instead use a fixed 256 MiB heap
 backing. A legacy 32 MiB fallback exists for native hosts where discovery is
 unavailable and for the default test bus. It is not the fixed machine size.
 
-Guest software must discover memory through `SYSINFO_TOTAL_RAM_LO/HI`,
-`SYSINFO_ACTIVE_RAM_LO/HI`, or the corresponding CPU control register. IE32,
-x86 and M68K are bounded by their 32-bit guest address space. The 6502 and Z80
-use banked windows, and OS profiles may impose narrower source-owned layouts.
-See the architecture reference for the current ranges and profile bounds.
+Guest software must discover memory through `SYSINFO_TOTAL_RAM_LO/HI` and
+`SYSINFO_ACTIVE_RAM_LO/HI`, using the access mapping for its CPU. IE64 can also
+read the active size from `CR_RAM_SIZE_BYTES`. IE32, x86 and M68K are bounded by
+their 32-bit guest address space. The 6502 and Z80 use banked windows, and OS
+profiles may impose narrower source-owned layouts. See the architecture
+reference for the current ranges and profile bounds.
 
 ## 5. Development workflow
 
@@ -270,19 +298,20 @@ go test -tags headless -run TestName ./...
 go test -tags headless -timeout 10m -count=1 ./...
 
 # Static analysis and documentation
-go vet ./...
+make vet
 make check-docs
 
 # Makefile quality gates
 make test
-make vet
-make tidy
 make test-makefile
 
-# Headless build profiles
+# No-Vulkan and headless build checks
 go build -tags novulkan .
 CGO_ENABLED=1 go build -tags "novulkan headless" .
 ```
+
+`make tidy` runs `go mod tidy -v` and can modify `go.mod` and `go.sum`. Use it
+when dependencies change, then inspect those files before keeping the result.
 
 Relevant repository gates include:
 
@@ -372,9 +401,11 @@ instruction accounting are part of its correctness contract. See
 here.
 
 The M68K JIT supports native amd64 and arm64 hosts plus WebAssembly. Its native
-implementation includes block chaining, lazy CCR handling and an eight-entry
-RTS cache. See [M68K_JIT.md](sdk/docs/M68K_JIT.md) for current backend files,
-admission rules and verification.
+implementation includes block chaining and lazy CCR handling. Its optional
+eight-entry RTS cache is disabled by default and is enabled with
+`IE_M68K_JIT_ENABLE_RTS_CACHE=1`. See
+[M68K_JIT.md](sdk/docs/M68K_JIT.md) for current backend files, admission rules
+and verification.
 
 The 6502 JIT is restricted to Linux amd64, Linux arm64 and WebAssembly. Windows
 and macOS use the interpreter. Z80 and x86 have their own asymmetric host
@@ -389,6 +420,7 @@ Common runtime switches include:
 | `IE_JIT_SMC_RANGE=0` | Use whole-cache invalidation instead of exact SMC ranges where supported |
 | `IE64_JIT_REGIONS=0` | Disable IE64 region promotion |
 | `IE64_JIT_REGION_MMU=0` | Disable IE64 region formation under MMU |
+| `IE_M68K_JIT_ENABLE_RTS_CACHE=1` | Enable the experimental M68K eight-entry RTS cache |
 | `X86_JIT_REGIONS=1` | Enable experimental x86 region promotion |
 | `X86_JIT_CHAINS=0` | Disable compatible x86 block chaining |
 
@@ -442,7 +474,7 @@ Selected shared status registers:
 | `SAP_PLAY_STATUS` | `0xF0D1C` | SAP player state |
 | `SID_PLAY_STATUS` | `0xF0E2C` | SID player state |
 
-## 9. Platform and release support
+## 9. Live images and release engineering
 
 | Platform | Native profile | JIT coverage |
 |----------|----------------|--------------|
@@ -451,11 +483,27 @@ Selected shared status registers:
 | macOS amd64 and arm64 | Pure-Go `novulkan` release | See the JIT matrix above |
 | Browser | `make wasm` | IE32, IE64, M68K, 6502, Z80 and x86 WebAssembly JITs |
 
-Release archives are built with `make release-all`, or with the platform and SDK
-targets listed by `make help`. Current native release families are Linux amd64
-and arm64, Windows amd64 and arm64, and macOS amd64 and arm64. The release gate
-also produces source and SDK archives plus `SHA256SUMS`. Run
-`make release-verify` to validate the staged release artefacts.
+Intuition Engine is distributed as bootable USB Live images from
+[intuitionengine.io](https://intuitionengine.io). Each image boots directly into
+IE64 BASIC.
+
+| Appliance | Build target | Local output |
+|-----------|--------------|--------------|
+| x64 | `make x64-live` | `build/x64-live/intuition-engine-x64.img` and its ZIP archive |
+| Raspberry Pi 4 and Pi 400 | `make build-image-pi4` | `build/rpi4-live/intuition-engine-rpi4.img` |
+| Raspberry Pi 5 | `make build-image-pi5` | `build/rpi5-live/intuition-engine-rpi5.img` |
+| Both Raspberry Pi families | `make rpi-live-images` | Both Raspberry Pi images above |
+
+These targets assemble complete appliances from golden images, guest payloads,
+demos and SDK material. They have additional host tools and source inputs beyond
+the ordinary VM build.
+
+The Makefile also retains `release-linux`, `release-windows`, `release-macos`,
+`release-sdk` and `release-all` for developer archives. Those archives are not
+the published Intuition Engine distribution. `release-all` creates source, SDK
+and platform archives plus `SHA256SUMS`. Its `release-verify` step checks the
+staged layout and then builds `ab3d64`, so it also requires the external AB3D2
+source and its build prerequisites.
 
 ## 10. Contribution checklist
 

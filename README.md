@@ -4,7 +4,7 @@
 
 Intuition Engine is a multi-CPU fantasy computer implemented in Go. It reimagines 1980s and 1990s home-computer ideas as one machine, not as a clone of any single system. Six heterogeneous processors share one MachineBus: IE64, IE32, M68K, Z80, 6502, and x86. The BASIC prompt, display chips, sound engines, DMA hardware, input devices, file devices, and monitor use that same machine architecture.
 
-It can be run as a desktop emulator or booted as an x64 live USB appliance. For programmers, it is a bare-metal target with an SDK, examples, and maintained reference documentation for writing directly against the Intuition Engine hardware.
+It can be run as a desktop emulator or booted as an x64 or Raspberry Pi live USB appliance. For programmers, it is a bare-metal target with an SDK, examples, and maintained reference documentation for writing directly against the Intuition Engine hardware.
 
 Native builds use autodetected guest RAM from host memory, then apply a platform
 reserve and the selected profile's active visible RAM ceiling. Browser builds
@@ -12,7 +12,7 @@ use a fixed 256 MiB heap backing. Guest software discovers total and active
 visible RAM
 through SYSINFO and CPU-specific paths.
 
-[Try Intuition Engine in a browser](https://intuitionengine.io) | [Download releases](https://github.com/IntuitionAmiga/IntuitionEngine/releases) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
+[Try Intuition Engine in a browser](https://intuitionengine.io) | [Download Live images and the Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
 
 ## Quick Start
 
@@ -32,12 +32,16 @@ make novulkan
 ./bin/IntuitionEngine
 ```
 
-Build SDK examples and run a demo:
+Build the SDK examples and run a generated demo:
 
 ```bash
 make sdk
 ./bin/IntuitionEngine sdk/examples/prebuilt/vga_text_hello.iex
 ```
+
+`make sdk` regenerates the files under `sdk/examples/prebuilt/`. Examples that
+need an optional external guest toolchain are skipped when that toolchain is
+not installed; the Makefile reports any such skips.
 
 ## Features
 
@@ -190,11 +194,13 @@ Core SDK tool outputs:
 
 The main output formats are `.iex` for IE32, `.ie64` for IE64, `.ie68` for M68K, `.ie80` for Z80, `.ie65` for 6502, and `.ie86` for x86.
 
-The [Linux x86-64 Host SDK](sdk/docs/host-sdk-README.md) packages these tools with QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation. Build its distributable archive with `make dist-host-sdk-linux-amd64`.
+The [Linux x86-64 Host SDK](sdk/docs/host-sdk-README.md) packages these tools with QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation. The packaged Host SDK is available from [intuitionengine.io](https://intuitionengine.io); build its source-tree archive with `make dist-host-sdk-linux-amd64`.
 
-## Live USB Image
+## Live USB Images
 
-The optional x64 live-image workflow builds a bootable raw UEFI image and a compressed archive:
+The published Intuition Engine distribution is supplied as bootable USB Live
+images. Each image starts IE64 BASIC. The x64 workflow builds a bootable raw
+UEFI image and a compressed archive:
 
 ```bash
 make x64-live
@@ -209,14 +215,28 @@ Default outputs:
 
 The image boots into Intuition Engine, starts the BASIC environment, and stages demos plus guest OS payloads on a FAT32 share. The image builder needs host image-building tools such as libguestfs, QEMU utilities, mtools, rsync, curl/aria2, and enough free disk space for the build workspace.
 
+Raspberry Pi Live images use the checked-in golden appliance inputs and the
+shared payload tree:
+
+```bash
+make build-image-pi4   # Raspberry Pi 4 and Pi 400
+make build-image-pi5   # Raspberry Pi 5
+make rpi-live-images   # Build both images
+```
+
+Their default outputs are `build/rpi4-live/intuition-engine-rpi4.img` and
+`build/rpi5-live/intuition-engine-rpi5.img`. The Pi workflows require the
+cross-compilation, golden-image and appliance build prerequisites described by
+the Makefile and architecture guide.
+
 ## Platform Support
 
 Maintained profiles:
 
 | Platform | Architecture | Maintained profiles | JIT-enabled guest CPUs |
 |----------|--------------|---------------------|------------------------|
-| Linux | x86_64 | `full`, `novulkan`, `headless`, `headless-novulkan` | IE32, IE64, M68K, 6502, Z80 and x86 |
-| Linux | aarch64 | `full`, `novulkan`, `headless`, `headless-novulkan` | IE32, IE64, M68K, 6502, Z80 and x86 |
+| Linux | x86_64 | `make`, `novulkan`, `headless`, `headless-novulkan` | IE32, IE64, M68K, 6502, Z80 and x86 |
+| Linux | aarch64 | `make`, `novulkan`, `headless`, `headless-novulkan` | IE32, IE64, M68K, 6502, Z80 and x86 |
 | Windows | x86_64 | `novulkan` | IE64, M68K, Z80 and x86 |
 | Windows | ARM64 | `novulkan` | IE64 and M68K |
 | macOS | x86_64 | `novulkan` | IE64, M68K, Z80 and x86 |
