@@ -14,8 +14,8 @@ func TestPinnedFrontendDeps(t *testing.T) {
 
 	mod := string(data)
 	want := []string{
-		"github.com/hajimehoshi/ebiten/v2 v2.10.0-alpha.12",
-		"github.com/ebitengine/purego v0.11.0-alpha.6",
+		"github.com/hajimehoshi/ebiten/v2 v2.10.0-alpha.13",
+		"github.com/ebitengine/purego v0.11.0-alpha.8",
 	}
 
 	for _, needle := range want {

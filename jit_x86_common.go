@@ -324,6 +324,15 @@ type x86FPUHelperPayload struct {
 	Bytes    [15]byte
 }
 
+func x86BlockHasNativeFPU(instrs []X86JITInstr) bool {
+	for _, instr := range instrs {
+		if instr.opcode >= 0xD8 && instr.opcode <= 0xDF && instr.hasModRM && instr.modrm>>6 == 3 {
+			return true
+		}
+	}
+	return false
+}
+
 func x86FPUHelperPayloadFor(ji X86JITInstr, memory []byte, cs uint16) (x86FPUHelperPayload, bool) {
 	if ji.opcode < 0xD8 || ji.opcode > 0xDF || ji.length == 0 || ji.length > 15 ||
 		ji.opcodePC+uint32(ji.length) > uint32(len(memory)) {
@@ -487,11 +496,28 @@ func (cpu *CPU_X86) x86RunFPUHelper(p x86FPUHelperPayload) int {
 	if p.Escape < 0xD8 || p.Escape > 0xDF || p.Length == 0 {
 		return 0
 	}
+	// Environment stores must observe the exact FTW loaded by FLDENV or
+	// FRSTOR. Renormalising before FNSTENV/FNSAVE would turn the interpreter's
+	// zero/special tags into the JIT's occupied representation and save the
+	// wrong guest environment.
+	isEnvironmentStore := p.ModRM>>6 != 3 &&
+		(p.Escape == 0xD9 || p.Escape == 0xDD) && ((p.ModRM>>3)&7) == 6
+	if cpu.x86FPUEnvLoaded && cpu.FPU != nil && !isEnvironmentStore {
+		// A later helper/native boundary needs the JIT's canonical occupied
+		// representation; preserve the exact environment only while it is the
+		// architectural state visible at the current boundary.
+		cpu.FPU.RenormalizeTags()
+		cpu.x86FPUEnvLoaded = false
+	}
 	cpu.EIP = p.InstrPC
 	cpu.CS = p.CS
 	cpu.jitDecodedFPU = &p
 	defer func() { cpu.jitDecodedFPU = nil }()
-	return cpu.Step()
+	ret := cpu.Step()
+	if (p.Escape == 0xD9 || p.Escape == 0xDD) && ((p.ModRM>>3)&7) == 4 && p.ModRM>>6 != 3 {
+		cpu.x86FPUEnvLoaded = true
+	}
+	return ret
 }
 
 // Prefix flag bits packed into X86JITInstr.prefixes
@@ -1177,6 +1203,14 @@ func x86NeedsFallback(instrs []X86JITInstr) bool {
 	}
 
 	opcode := instrs[0].opcode
+	// Memory x87 forms remain interpreter-owned. Their semantics include
+	// variable-width environment/BCD accesses and bus-visible effective
+	// addresses; routing them through the canonical Step path preserves exact
+	// operand consumption and MMIO/bounds behaviour. Register forms may still
+	// use the native/helper lowering below.
+	if opcode >= 0xD8 && opcode <= 0xDF && instrs[0].hasModRM && instrs[0].modrm>>6 != 3 {
+		return true
+	}
 
 	if x86ShouldStepInInterpreter(instrs[0]) {
 		return true

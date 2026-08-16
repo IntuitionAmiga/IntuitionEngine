@@ -118,6 +118,9 @@ type CPU_X86 struct {
 	// the helper is executing: an x87 helper must not decode bytes that guest
 	// self-modifying code may have changed after the block was compiled.
 	jitDecodedFPU *x86FPUHelperPayload
+	// x86FPUEnvLoaded keeps an interpreter-loaded x87 environment's exact FTW
+	// tags intact until the next boundary that explicitly normalises them.
+	x86FPUEnvLoaded bool
 
 	// Perf accounting for Metric 2 (real-workload acceptance gate).
 	// Counters increment only when IE_PERF_ACCT=1 at process start;

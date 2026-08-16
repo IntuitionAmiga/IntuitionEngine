@@ -130,6 +130,17 @@ prog_list_cmd_code:
     load.q  r29, (sp)
 
 .list_done:
+    ; Release the public command buffer before exiting. DOS may still hold
+    ; its mapped reference while it launches DIR, so the backing pages remain
+    ; alive until that mapping is released, but this task must drop its own
+    ; region explicitly rather than relying on task-slot teardown.
+    load.q  r1, 88(r29)
+    beqz    r1, .list_free_done
+    load.q  r2, 96(r29)
+    lsl     r2, r2, #12
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+.list_free_done:
     load.q  r1, 128(r29)               ; dos_library_token
     beqz    r1, .list_exit_task
     syscall #SYS_CLOSE_LIBRARY

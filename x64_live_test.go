@@ -534,10 +534,11 @@ func TestX64LiveHostHelperSecurityContract(t *testing.T) {
 		`host_helper=${HOST_HELPER_PKGS}`,
 		`set -- -ehbasic-host -ehbasic-host-appliance`,
 		`GOAMD64=v3 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -pgo=off -ldflags "-s -w" -o "$HOST_HELPER_BINARY" ./cmd/host-helper`,
-		`--mkdir /usr/libexec`,
-		`--copy-in "${HOST_HELPER_BINARY}:/usr/libexec/"`,
-		`chown root:root /usr/libexec/intuitionengine-host-helper`,
-		`chmod 0755 /usr/libexec/intuitionengine-host-helper`,
+		`mkdir /usr/libexec`,
+		`write ${HOST_HELPER_BINARY} /usr/libexec/intuitionengine-host-helper`,
+		`sif /usr/libexec/intuitionengine-host-helper mode 0100755`,
+		`sif /usr/libexec/intuitionengine-host-helper uid 0`,
+		`sif /usr/libexec/intuitionengine-host-helper gid 0`,
 		`ie-host-helper.service`,
 		`ExecStart=/usr/libexec/intuitionengine-host-helper serve`,
 		`<annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/intuitionengine-host-helper</annotate>`,
@@ -593,6 +594,16 @@ func TestX64LiveHostHelperSecurityContract(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("build_x64_ie_img.sh contains forbidden HOST helper security pattern %q", forbidden)
 		}
+	}
+}
+
+func TestX64LiveDoesNotChmodHostHelperBeforeInstallation(t *testing.T) {
+	body := readX64LiveScript(t)
+	if strings.Contains(body, "--run-command 'chmod 0755 /usr/libexec/intuitionengine-host-helper'") {
+		t.Fatal("build_golden_image chmods the host helper before install_host_helper_binary uploads it")
+	}
+	if !strings.Contains(body, "sif /usr/libexec/intuitionengine-host-helper mode 0100755") {
+		t.Fatal("install_host_helper_binary must set the installed helper mode")
 	}
 }
 

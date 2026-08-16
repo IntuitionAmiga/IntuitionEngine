@@ -1276,14 +1276,17 @@ func TestREPL_RunAOT_BlitFillAfterResonanceBloadKeepsDestination(t *testing.T) {
 	if strings.Contains(out, aotStubMarker) || strings.Contains(out, "ERROR") {
 		t.Fatalf("RUN AOT BLIT after BLOAD failed: %q\n%s", out, readAOTAsmDebug(h))
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
+	for loader.HandleRead(MEDIA_STATUS) == MEDIA_STATUS_LOADING && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
 	for midiPlayer.HandlePlayRead(MIDI_PLAY_STATUS)&MIDI_STATUS_LOADING != 0 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
 	status := midiPlayer.HandlePlayRead(MIDI_PLAY_STATUS)
 	if status&MIDI_STATUS_ERROR != 0 || status&MIDI_STATUS_BUSY == 0 {
-		t.Fatalf("RUN AOT SOUND PLAY did not start MIDI: status=%#x ctrl=%#x out=%q\n%s",
-			status, midiPlayer.HandlePlayRead(MIDI_PLAY_CTRL), out, readAOTAsmDebug(h))
+		t.Fatalf("RUN AOT SOUND PLAY did not start MIDI: status=%#x ctrl=%#x media-status=%#x media-error=%#x out=%q\n%s",
+			status, midiPlayer.HandlePlayRead(MIDI_PLAY_CTRL), loader.HandleRead(MEDIA_STATUS), loader.HandleRead(MEDIA_ERROR), out, readAOTAsmDebug(h))
 	}
 	if got := video.HandleRead(BLT_DST); got != 0x00C79000 {
 		t.Fatalf("RUN AOT BLIT after BLOAD destination=%#x, want SR %#x; SR var=%#x\n%s",
@@ -1382,22 +1385,26 @@ func TestREPL_RunAOT_CopperListUsesNativeMemallocPointer(t *testing.T) {
 
 func TestREPL_RunAOT_DelegatedMode7AfterNativeFPSetup(t *testing.T) {
 	h, _ := startREPL(t)
-	registers := make(map[uint32]uint32)
-	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END,
-		func(addr uint32) uint32 { return registers[addr] },
-		func(addr, value uint32) { registers[addr] = value })
+	video, err := NewVideoChip(VIDEO_BACKEND_EBITEN)
+	if err != nil {
+		t.Fatalf("NewVideoChip: %v", err)
+	}
+	video.AttachBus(h.bus)
+	video.SetBigEndianMode(false)
+	h.bus.MapIO(VIDEO_CTRL, VIDEO_REG_END, video.HandleRead, video.HandleWrite)
+	h.bus.MapIOByte(VIDEO_CTRL, VIDEO_REG_END, video.HandleWrite8)
 	runAOTLines(t, h,
 		"10 BB=MEMALLOC(1228800,4096):TX=MEMALLOC(2097152,4096)",
 		"20 ST=2560:TS=4096:FP=65536:CU=512:CV=256:HW=320:HH=240",
-		"30 A=0:Z=0:IN=0.12:SA=SIN(A):SZ=SIN(Z):CZ=COS(A)",
-		"40 SC=2.5-IN*1.5+SZ*0.18:CA=CZ/SC:MS=SA/SC",
-		"50 DC=INT(CA*FP):DS=INT(MS*FP)",
-		"60 MU=INT((CU-HW*CA+HH*MS)*FP):MV=INT((CV-HW*MS-HH*CA)*FP)",
+		"30 QX=0:QZ=0:QD=0.12:QS=SIN(QX):QT=SIN(QZ):QC=COS(QX)",
+		"40 QR=2.5-QD*1.5+QT*0.18:QA=QC/QR:QM=QS/QR",
+		"50 QN=INT(QA*FP):QJ=INT(QM*FP)",
+		"60 QK=INT((CU-HW*QA+HH*QM)*FP):QL=INT((CV-HW*QM-HH*QA)*FP)",
 		"65 POKE32 327680,BB:POKE32 327684,TX",
-		"70 BLIT MODE7 TX,BB,640,480,MU,MV,DC,DS,0-DS,DC,1023,511,TS,ST",
+		"70 BLIT MODE7 TX,BB,640,480,QK,QL,QN,QJ,0-QJ,QN,1023,511,TS,ST",
 		"80 END")
-	if got := registers[BLT_OP]; got != bltOpMode7 {
-		t.Fatalf("RUN AOT Mode7 op=%d, want MODE7\n%s", got, readAOTAsmDebug(h))
+	if got := video.HandleRead(BLT_OP); got != bltOpMode7 {
+		t.Fatalf("RUN AOT Mode7 op=%d, want MODE7 pc=%#x\n%s", got, h.cpu.PC, readAOTAsmDebug(h))
 	}
 	if got := h.bus.Read32(327680); got != 0x00820000 {
 		t.Fatalf("RUN AOT BB=%#x, want %#x (allocator cursor %#x)\n%s", got, uint32(0x00820000), h.bus.Read64(0x42280), readAOTAsmDebug(h))
@@ -1405,10 +1412,10 @@ func TestREPL_RunAOT_DelegatedMode7AfterNativeFPSetup(t *testing.T) {
 	if got := h.bus.Read32(327684); got != 0x0094C000 {
 		t.Fatalf("RUN AOT TX=%#x, want %#x", got, uint32(0x0094C000))
 	}
-	if got := registers[BLT_SRC]; got != 0x0094C000 {
+	if got := video.HandleRead(BLT_SRC); got != 0x0094C000 {
 		t.Fatalf("RUN AOT Mode7 src=%#x, want TX %#x", got, uint32(0x0094C000))
 	}
-	if got := registers[BLT_DST]; got != 0x00820000 {
+	if got := video.HandleRead(BLT_DST); got != 0x00820000 {
 		t.Fatalf("RUN AOT Mode7 dst=%#x, want BB %#x", got, uint32(0x00820000))
 	}
 	want := map[uint32]int32{
@@ -1417,7 +1424,7 @@ func TestREPL_RunAOT_DelegatedMode7AfterNativeFPSetup(t *testing.T) {
 		BLT_MODE7_DU_ROW: 0, BLT_MODE7_DV_ROW: 28248,
 	}
 	for addr, expected := range want {
-		if got := int32(registers[addr]); got != expected {
+		if got := int32(video.HandleRead(addr)); got != expected {
 			t.Fatalf("RUN AOT Mode7 register %#x=%d, want %d", addr, got, expected)
 		}
 	}
@@ -6242,6 +6249,8 @@ func (h *ehbasicTestHarness) pumpUntil(cond func() bool, max time.Duration) {
 
 func storeLine(t *testing.T, h *ehbasicTestHarness, line string) {
 	t.Helper()
+	const basicStateProgEnd = 0x042008
+	beforeEnd := h.bus.Read64(basicStateProgEnd)
 	h.sendInput(line + "\n")
 	// Numbered-line entry returns to repl_read without printing "Ready", so
 	// runUntilPrompt() would block its full deadline. Instead wait for the REPL
@@ -6249,7 +6258,9 @@ func storeLine(t *testing.T, h *ehbasicTestHarness, line string) {
 	// it), then a brief tail to let it tokenise and store. Condition-driven, so
 	// each call costs a few ms rather than a fixed 200ms.
 	h.pumpUntil(func() bool { return h.terminal.InputPending() == 0 }, 2*time.Second)
-	h.pump(10 * time.Millisecond)
+	h.pumpUntil(func() bool {
+		return h.bus.Read64(basicStateProgEnd) != beforeEnd
+	}, 2*time.Second)
 }
 
 // Direct-only / non-compilable raw roots must be rejected with the canonical

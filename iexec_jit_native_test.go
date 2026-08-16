@@ -16,12 +16,12 @@ import (
 
 func TestIExec_M152_HostBackedBootWithJIT(t *testing.T) {
 	hostRoot := makeM152Phase5GeneratedHostRoot(t)
-	rig, term := assembleAndLoadKernelWithBootstrapHostRoot(t, hostRoot)
+	rig, term := assembleAndLoadKernelWithBootstrapHostRootOptions(t, hostRoot, true)
 	rig.cpu.jitEnabled = true
 	rig.cpu.running.Store(true)
 	done := make(chan struct{})
 	go func() { rig.cpu.ExecuteJIT(); close(done) }()
-	time.Sleep(5 * time.Second)
+	time.Sleep(15 * time.Second)
 	rig.cpu.running.Store(false)
 	waitDoneWithGuard(t, done)
 

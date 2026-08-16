@@ -71,7 +71,10 @@ func (r *jitTestRig) compileAndRun(t *testing.T, instructions ...[]byte) {
 		return
 	}
 
-	r.execMem.Reset()
+	// Keep successive snippets at distinct executable addresses. QEMU user mode
+	// can retain a translated block when a dual-mapped RX page is overwritten;
+	// this emitter test must exercise each newly compiled instruction, not that
+	// emulator cache behaviour. ExecMem lifecycle/reuse is covered separately.
 	block, err := compileBlock(compilableInstrs, PROG_START, r.execMem)
 	if err != nil {
 		t.Fatalf("compileBlock: %v", err)

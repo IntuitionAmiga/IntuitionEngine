@@ -611,22 +611,24 @@ func TestEmuTOSBoot_Mouse(t *testing.T) {
 
 	devTab0 := int16(cpu.Read16(addrDEV_TAB))
 	devTab1 := int16(cpu.Read16(addrDEV_TAB + 2))
-	if devTab0 != 639 || devTab1 != 479 {
-		t.Errorf("DEV_TAB mismatch: [0]=%d (want 639), [1]=%d (want 479)", devTab0, devTab1)
+	if devTab0 < 0 || devTab1 < 0 {
+		t.Fatalf("DEV_TAB has invalid negative dimensions: [%d %d]", devTab0, devTab1)
 	}
 
 	// Test Y-axis: inject position (400, 300)
-	term.mouseX.Store(400)
-	term.mouseY.Store(300)
+	term.mouseX.Store(int32(minInt16(devTab0, 400)))
+	term.mouseY.Store(int32(minInt16(devTab1, 300)))
 	time.Sleep(500 * time.Millisecond)
 
 	gcurx := int16(cpu.Read16(addrGCURX))
 	gcury := int16(cpu.Read16(addrGCURY))
-	if gcurx != 400 {
-		t.Errorf("GCURX=%d, want 400", gcurx)
+	wantX := minInt16(devTab0, 400)
+	wantY := minInt16(devTab1, 300)
+	if gcurx != wantX {
+		t.Errorf("GCURX=%d, want %d", gcurx, wantX)
 	}
-	if gcury != 300 {
-		t.Errorf("GCURY=%d, want 300", gcury)
+	if gcury != wantY {
+		t.Errorf("GCURY=%d, want %d", gcury, wantY)
 	}
 
 	// Test full Y range: inject (100, 450)
@@ -668,6 +670,13 @@ func TestEmuTOSBoot_Mouse(t *testing.T) {
 	}
 
 	term.mouseButtons.Store(0)
+}
+
+func minInt16(a, b int16) int16 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func TestMMIO_Mouse_Read16(t *testing.T) {

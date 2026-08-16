@@ -90,12 +90,12 @@ func TestX86JIT_FPU_FSTP_STi_CopiesExactTagClass(t *testing.T) {
 		cpu.FPU.Reset()
 		cpu.FPU.setTop(5)
 		cpu.FPU.regs[5] = 0.0
-		cpu.FPU.setTag(5, x87TagZero)  // ST(0)
+		cpu.FPU.setTag(5, x87TagZero) // ST(0)
 		cpu.FPU.regs[7] = 1.5
 		cpu.FPU.setTag(7, x87TagValid) // ST(2)
 	}
 
-	jit := runX86JITProgramWithSetup(t, 0x1000, setup, 0xDD, 0xDA, 0xF4)      // FSTP ST(2); HLT
+	jit := runX86JITProgramWithSetup(t, 0x1000, setup, 0xDD, 0xDA, 0xF4) // FSTP ST(2); HLT
 	interp := runX86InterpreterProgramWithSetup(t, 0x1000, setup, 0xDD, 0xDA, 0xF4)
 
 	if got, want := jit.FPU.FTW, interp.FPU.FTW; got != want {
@@ -159,6 +159,98 @@ func TestX86JIT_FPUHelperUsesDecodedBytes(t *testing.T) {
 	}
 	if r.cpu.jitDecodedFPU != nil {
 		t.Fatal("decoded helper payload was not cleared")
+	}
+}
+
+func TestX86JIT_FPUHelperPreservesExactTagsForFNSTENV(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.FPU.Reset()
+	r.cpu.FPU.setTop(0)
+	r.cpu.FPU.regs[0] = 1
+	r.cpu.FPU.setTag(0, x87TagZero)
+	r.cpu.FPU.regs[1] = 2
+	r.cpu.FPU.setTag(1, x87TagSpecial)
+	r.cpu.x86FPUEnvLoaded = true
+
+	const pc = uint32(0x1000)
+	env := uint32(0x5000)
+	code := []byte{0xD9, 0x35, byte(env), byte(env >> 8), byte(env >> 16), byte(env >> 24)}
+	copy(r.cpu.memory[pc:], code)
+	instrs := x86ScanBlock(r.cpu.memory, pc)
+	if len(instrs) == 0 {
+		t.Fatal("x86ScanBlock returned no FNSTENV instruction")
+	}
+	payload, ok := x86FPUHelperPayloadFor(instrs[0], r.cpu.memory, r.cpu.CS)
+	if !ok {
+		t.Fatal("x86FPUHelperPayloadFor rejected FNSTENV")
+	}
+	r.cpu.x86RunFPUHelper(payload)
+	gotFTW := uint16(r.cpu.memory[env+8]) | uint16(r.cpu.memory[env+9])<<8
+	if got, want := gotFTW, r.cpu.FPU.FTW; got != want {
+		t.Fatalf("FNSTENV saved FTW=%04X, want exact FTW=%04X", got, want)
+	}
+	if got, want := r.cpu.FPU.getTag(0), x87TagZero; got != want {
+		t.Fatalf("FNSTENV changed zero tag to %d, want %d", got, want)
+	}
+	if got, want := r.cpu.FPU.getTag(1), x87TagSpecial; got != want {
+		t.Fatalf("FNSTENV changed special tag to %d, want %d", got, want)
+	}
+}
+
+func TestX86JIT_FPUHelperPreservesExactTagsForFNSAVE(t *testing.T) {
+	r := newX86JITTestRig(t)
+	r.cpu.FPU.Reset()
+	r.cpu.FPU.setTop(0)
+	r.cpu.FPU.regs[0] = 1
+	r.cpu.FPU.setTag(0, x87TagZero)
+	r.cpu.FPU.regs[1] = 2
+	r.cpu.FPU.setTag(1, x87TagSpecial)
+	wantFTW := r.cpu.FPU.FTW
+	r.cpu.x86FPUEnvLoaded = true
+
+	const pc = uint32(0x1000)
+	env := uint32(0x5000)
+	code := []byte{0xDD, 0x35, byte(env), byte(env >> 8), byte(env >> 16), byte(env >> 24)}
+	copy(r.cpu.memory[pc:], code)
+	instrs := x86ScanBlock(r.cpu.memory, pc)
+	if len(instrs) == 0 {
+		t.Fatal("x86ScanBlock returned no FNSAVE instruction")
+	}
+	payload, ok := x86FPUHelperPayloadFor(instrs[0], r.cpu.memory, r.cpu.CS)
+	if !ok {
+		t.Fatal("x86FPUHelperPayloadFor rejected FNSAVE")
+	}
+	r.cpu.x86RunFPUHelper(payload)
+	gotFTW := uint16(r.cpu.memory[env+8]) | uint16(r.cpu.memory[env+9])<<8
+	if gotFTW != wantFTW {
+		t.Fatalf("FNSAVE saved FTW=%04X, want exact FTW=%04X", gotFTW, wantFTW)
+	}
+	if got, want := r.cpu.FPU.FTW, uint16(0xFFFF); got != want {
+		t.Fatalf("FNSAVE post-reset FTW=%04X, want %04X", got, want)
+	}
+}
+
+func TestX86JIT_NativeFPUOperationInvalidatesExactEnvironmentTags(t *testing.T) {
+	const pc = uint32(0x1000)
+	env := uint32(0x5000)
+	setup := func(cpu *CPU_X86) {
+		cpu.FPU.Reset()
+		cpu.FPU.setTop(0)
+		cpu.FPU.regs[0] = 1
+		cpu.FPU.setTag(0, x87TagZero)
+		cpu.FPU.regs[1] = 2
+		cpu.FPU.setTag(1, x87TagSpecial)
+		cpu.x86FPUEnvLoaded = true
+	}
+
+	jit := runX86JITProgramWithSetup(t, pc, setup,
+		0xD8, 0xC1, // FADD ST(0), ST(1), native x87 operation
+		0xD9, 0x35, byte(env), byte(env>>8), byte(env>>16), byte(env>>24), // FNSTENV
+		0xF4,
+	)
+	gotFTW := uint16(jit.memory[env+8]) | uint16(jit.memory[env+9])<<8
+	if got, want := gotFTW, uint16(0xFFF0); got != want {
+		t.Fatalf("FNSTENV saved stale native-boundary FTW=%04X, want valid tags %04X", got, want)
 	}
 }
 

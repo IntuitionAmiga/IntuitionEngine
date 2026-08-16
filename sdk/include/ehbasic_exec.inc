@@ -1473,14 +1473,13 @@ exec_do_get:
     jsr     exec_store_fp64_r22
     rts
 .get_str:
-    ; Allocate a 2-byte string (char + null)
-    push    r8
-    move.q  r8, #1
-    jsr     str_alloc
-    move.q  r3, r8
-    pop     r8
-    beqz    r3, .get_done
-    store.b r8, (r3)             ; the character
+	; Allocate a 2-byte string (char + null)
+	move.q  r20, r8
+	move.q  r8, #1
+	jsr     str_alloc
+	move.q  r3, r8
+	beqz    r3, .get_done
+	store.b r20, (r3)             ; the character
     add.q   r4, r3, #1
     store.b r0, (r4)             ; null terminator
     store.q r3, (r22)            ; store pointer in var

@@ -70,7 +70,7 @@ The preserved Amiga ideas are the useful ones: small services, named ports, requ
 - **M13 startup block ABI**: boot-loaded and `ExecProgram`-launched tasks no longer self-locate from `GetSysInfo(CURRENT_TASK) + USER_SLOT_STRIDE`. The kernel allocates a dedicated startup page for each launched task, writes the 64-byte startup block there, and places the startup-page base VA at `0(sp)` before entering user code. Services discover task identity and actual code/data/stack bases by first loading the startup-page VA from `0(sp)` and then reading the startup block from that page.
 - **Phase 5 regression gate**: the full visible boot stack and both retained GUI demos are now covered by explicit M13 tests (`TestIExec_M13_Phase5_FullBootStack_ServiceCensus`, `..._GfxDemoRegression`, `..._AboutRegression`), so the milestone does not rely on older M11/M12 test names as an implicit proxy for final compatibility.
 - **Historical loader transition**: M14 phase 5 shipped the visible native DOS loader path end-to-end, and M14.2 phase 1 removed the remaining flat-image escape hatches. That historical contract used a strict fixed-base `ELF64` subset (`EM_IE64 = 0x4945`, `ET_EXEC`, `PT_LOAD` only, no dynamic linker) through `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`. The current M16.4.3 runtime ELF contract is the `ET_DYN` / `PT_NOTE` contract described above; the M14 wording here is provenance for how the flat-image path was removed.
-- M14 shipped runtime snapshot:
+- M14 shipped/current runtime:
   - the public ELF loader API is the file-backed DOS path: `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`
   - base M14 originally still brought boot services up from the legacy kernel `program_table` path
   - bootstrap grants were still keyed by boot index at runtime
@@ -83,8 +83,9 @@ The preserved Amiga ideas are the useful ones: small services, named ports, requ
   - the kernel now prepares staged strict-M14 ELF rows for the internal embedded boot manifest and keeps bootstrap grants keyed by internal manifest entry ID
   - `console.handler` and `dos.library` boot from that staged manifest source as the minimum pre-DOS bootstrap chain
   - once DOS is online, `dos.library` runs the fixed eager-module policy for `hardware.resource` and `input.device`, then launches `Shell` from the internal embedded manifest; `Shell` drives a command/configuration-only `S:Startup-Sequence`
-  - shipped service binaries under `LIBS:`, `DEVS:`, and `RESOURCES:` are now shipped as strict M14 ELF too
-  - the public DOS loader API is unchanged; the embedded-manifest service source remains internal-only
+- shipped service binaries under `LIBS:`, `DEVS:`, and `RESOURCES:` are now shipped as strict M14 ELF too
+- the public DOS loader API is unchanged; the embedded-manifest service source remains internal-only
+- M14.2 current runtime: `SYS_EXEC_PROGRAM` is descriptor-only, `DOS_RUN` rejects non-ELF executable content, and the remaining flat-image path is removed in M14.2.
 - console.handler: CON: handler with GetMsg polling and CON_READLINE protocol - **M11.5**: console.handler now owns terminal MMIO directly via its own `SYS_MAP_IO(0xF0, 1)` mapping and inlines the readline MMIO loop. The former kernel-side `SYS_READ_INPUT` (slot 37) is removed; slot 37 is an unallocated hole that returns `ERR_BADARG`.
 - **dos.library**: AmigaOS dos.library equivalent with a RAM-backed, case-insensitive filesystem and Amiga-shaped assign model. The file metadata table and open-handle table are unbounded user-space chains of `AllocMem`'d 4 KiB pages (85 file entries or 510 handle entries per page). As of **M12.8**, each file body is a variable-size chain of 4 KiB extents linked through `entry.file_va`; the old fixed `DOS_FILE_SIZE` per-file allocation is gone. `DOS_WRITE` now does an atomic swap onto a newly allocated extent chain so allocation failure leaves previous content intact. **M14 phases 2-3 add `DOS_LOADSEG` / `DOS_UNLOADSEG` / `DOS_RUNSEG`**: dos.library validates the strict native ELF subset, builds DOS-owned seglists with preserved target VA / `R/W/X` / entry-point metadata, frees them on demand, and launches them through the dual-mode `ExecProgram` descriptor handoff. **M15 expands the DOS namespace and layout model**: the built-in assign table now covers `RAM:`, `C:`, `L:`, `LIBS:`, `DEVS:`, `T:`, `S:`, and `RESOURCES:`; bare command search remains `C:`-only; `L:` is direct-access only in M15; `RAM:` remains a first-class compatibility root view; and `DOS_ASSIGN` adds DOS-side list/query/set of assign rows while keeping `RAM:` non-mutable.
 - **M15.2 host-backed boot runtime**: `SYS:` is the mounted host-backed boot volume and `IOSSYS:` is the built-in system assign rooted at `SYS:IOSSYS`. `DOS_ASSIGN` remains a compatibility projection: public list/query rows stay `name[16], target[16]`, `SYS:` host root and `IOSSYS:` built-in system assign are resolver-owned rather than mutable rows, canonical functional assigns keep their short public targets, `console.handler` boots from `IOSSYS:L/console.handler`, `dos.library` boots from `IOSSYS:LIBS/dos.library`, and `Shell` boots from `IOSSYS:Tools/Shell`.
@@ -129,20 +130,21 @@ The preserved Amiga ideas are the useful ones: small services, named ports, requ
 - M16.2.1 is ONLINE-only for non-library classes. Absent rows return `ERR_NOTFOUND`; LOADING/EXPUNGING rows return `ERR_AGAIN`; FAILED/UNLOADED rows return `ERR_NOTFOUND`. Compat-port-only use remains legacy transport unless the caller acquired a public module handle.
 - This milestone does not add demand-load for non-library rows, PIE, relocation, `ET_DYN`, ASLR, or third-party install policy.
 
-**M15.1 source layout:**
+**M15.1 source layout status:**
 
 - `sdk/intuitionos/iexec/iexec.s` remains the kernel image/layout file and the only assembly entrypoint for `exec.library`. `iexec.s` remains the kernel image/layout file at the new per-component boundary.
 - `sdk/intuitionos/iexec/runtime_builder.s` assembles the standalone hostfs runtime artifacts that are exported into `sdk/intuitionos/system/SYS/IOSSYS`.
 - Phase 1 of M15.1 moves command sources into `sdk/intuitionos/iexec/cmd/`; command sources now live under `sdk/intuitionos/iexec/cmd/`.
 - Phase 2 of M15.1 moves the non-DOS boot services into `handler/`, `dev/`, `resource/`, and `lib/` source files. `console.handler`, `input.device`, `hardware.resource`, `graphics.library`, and `intuition.library` are now split out of the kernel image source.
-- Phase 3 of M15.1 moves the interactive shell into `sdk/intuitionos/iexec/handler/shell.s`. `prog_shell` is split out of the kernel image source without changing the M15 shell behaviour.
+- Phase 3 of M15.1 moves the interactive shell into `sdk/intuitionos/iexec/handler/shell.s`. `prog_shell` is split out of the kernel image source without changing the M15 shell behavior.
 - Phase 4 of M15.1 moves `prog_doslib` into `sdk/intuitionos/iexec/lib/dos_library.s`; the DOS runtime body moves into a dedicated library source.
 - Phase 5 of M15.1 splits the remaining DOS-owned subordinate programs and assets: `prog_gfxdemo`, `prog_about`, and the ELF fixture now live in subordinate `cmd/` and `assets/` files (`sdk/intuitionos/iexec/cmd/gfxdemo.s`, `sdk/intuitionos/iexec/cmd/about.s`, and the ELF fixture).
 - Phase 6 of M15.1 moves the remaining boot/image wiring out of the root file. `sdk/intuitionos/iexec/boot/bootstrap.s` and `sdk/intuitionos/iexec/boot/strings.s` now hold the bootstrap tables and root boot strings.
+- Source split paths: `sdk/intuitionos/iexec/handler/`, `sdk/intuitionos/iexec/handler/shell.s`, `sdk/intuitionos/iexec/lib/dos_library.s`, and `sdk/intuitionos/iexec/cmd/gfxdemo.s` are the canonical component sources.
 - The generated runtime ELFs are rebuilt from `runtime_builder.s`; only `exec.library` remains ROM-resident at runtime.
 - IntuitionOS still lives under `sdk/` for repository-history reasons in M15.1. The refactor is about component ownership and maintainability, not yet about repo relocation.
 
-**M15.2 host-backed boot runtime snapshot:**
+**M15.2 host-backed boot current runtime:**
 
 - `SYS:` is the mounted host-backed boot volume.
 - `IOSSYS:` built-in system assign means `SYS:IOSSYS` internally, while public `DOS_ASSIGN` list/query remains the short compatibility projection.
@@ -186,7 +188,7 @@ The preserved Amiga ideas are the useful ones: small services, named ports, requ
 - the runtime loader contract remains strict `ET_EXEC`; M15.5 does not add `ET_DYN`, runtime relocation, ASLR, or KASLR
 - the canonical PIE-capable codegen rules now live in [Toolchain.md](/home/zayn/GolandProjects/IntuitionEngine/sdk/docs/IntuitionOS/Toolchain.md)
 
-**M16 protected module subsystem snapshot:**
+**M16 protected module subsystem current runtime:**
 
 - `OpenLibrary` / `CloseLibrary` are the canonical programmer-facing lifecycle for runtime libraries
 - exec owns the protected module registry and lifecycle; `dos.library` owns normal file/path/loading policy and protected task launch
@@ -197,6 +199,8 @@ The preserved Amiga ideas are the useful ones: small services, named ports, requ
 - `RESIDENT` pins or unpins library rows through the registry without reintroducing startup-script lifecycle hacks
 - library crash teardown signals openers with `SIGF_MODDEAD`, sweeps transient row state, and allows a later `OpenLibrary` to start a clean reload
 - see [M16-plan.md](/home/zayn/GolandProjects/IntuitionEngine/sdk/docs/IntuitionOS/M16-plan.md) for the full milestone/addendum spec
+
+Boot/services are loaded as strict ELF binaries; the embedded boot manifest is the internal source for shipped runtime services.
 
 **M16 registry summary:**
 

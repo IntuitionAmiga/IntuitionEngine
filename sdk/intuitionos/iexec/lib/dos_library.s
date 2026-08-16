@@ -293,6 +293,22 @@ prog_doslib_code:
     ; =====================================================================
 .dos_main_loop:
     load.q  r29, (sp)
+    ; Release the previous message's shared-buffer mapping before accepting
+    ; the next one. Keeping every SYS_MAP_SHARED region alive exhausts the
+    ; DOS task's region table during long command sequences.
+    load.q  r1, 168(r29)
+    beqz    r1, .dos_main_loop_wait
+    load.q  r2, 184(r29)
+    beqz    r2, .dos_main_loop_clear_map
+    lsl     r2, r2, #12
+    syscall #SYS_FREE_MEM
+    load.q  r29, (sp)
+.dos_main_loop_clear_map:
+    store.q r0, 168(r29)
+    store.q r0, 184(r29)
+    store.q r0, 984(r29)
+.dos_main_loop_wait:
+    load.q  r29, (sp)
     load.q  r1, 144(r29)               ; R1 = dos_port
     syscall #SYS_WAIT_PORT              ; R1=type R2=data0 R3=err R4=data1 R5=reply R6=share
     load.q  r29, (sp)
@@ -382,6 +398,9 @@ prog_doslib_code:
     lsl     r2, r2, #12
     syscall #SYS_FREE_MEM
     load.q  r29, (sp)
+    store.q r0, 168(r29)
+    store.q r0, 184(r29)
+    store.q r0, 984(r29)
     load.q  r1, 944(r29)
     move.q  r2, r0
     move.q  r3, r0
@@ -396,6 +415,9 @@ prog_doslib_code:
     lsl     r2, r2, #12
     syscall #SYS_FREE_MEM
     load.q  r29, (sp)
+    store.q r0, 168(r29)
+    store.q r0, 184(r29)
+    store.q r0, 984(r29)
     bra     .dos_get_iosm_reply_badarg
 .dos_get_iosm_reply_badarg:
     load.q  r1, 944(r29)
@@ -443,6 +465,9 @@ prog_doslib_code:
     move.l  r2, #4096
     syscall #SYS_FREE_MEM
     load.q  r29, (sp)
+    store.q r0, 168(r29)
+    store.q r0, 184(r29)
+    store.q r0, 984(r29)
     load.q  r20, 656(r29)
     load.q  r1, 944(r29)
     move.q  r2, r20
@@ -458,6 +483,9 @@ prog_doslib_code:
     lsl     r2, r2, #12
     syscall #SYS_FREE_MEM
     load.q  r29, (sp)
+    store.q r0, 168(r29)
+    store.q r0, 184(r29)
+    store.q r0, 984(r29)
 .dos_pmp_reply_badarg:
     load.q  r1, 944(r29)
     move.l  r2, #ERR_BADARG
@@ -781,6 +809,10 @@ prog_doslib_code:
     bne     r14, r15, .dos_dir_explicit_prefix_base_done
     add     r27, r27, #11
 .dos_dir_explicit_prefix_base_done:
+    ; r26 is the copied-string end and r27 is the normalized prefix start.
+    ; Keep the positive suffix length for metadata filtering.  Reversing
+    ; these operands produced an underflow, so SYS/IOSSYS aliases scanned
+    ; past the metadata list and eventually wrote beyond the shared page.
     sub     r30, r26, r27
     beqz    r30, .dos_dir_explicit_meta
     sub     r14, r26, #1
@@ -4137,17 +4169,26 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     bne     r24, r25, .davt_lookup_prefix
     load.b  r24, 2(r22)
     move.l  r25, #0x4D                 ; 'M'
-    beq     r24, r25, .davt_bad
+    ; RAM/ is a valid provider-backed target for a user assign. The built-in
+    ; RAM: volume remains non-mutable, but aliases may point at it.
 .davt_lookup_prefix:
     ; M15.3: validate_target must resolve against the static base table,
     ; not the overlay, so `ASSIGN ADD C: SYS:C/` stores the canonical
     ; "SYS:C/" target even if C has an overlay redirecting elsewhere.
     move.l  r24, #1
     store.q r24, 856(r29)
+    ; The lookup helper is intentionally free to clobber caller-save
+    ; registers. Preserve the canonical scratch pointer and first-component
+    ; length before calling it, otherwise nested targets such as
+    ; SYS/IOSSYS/ are stored with an empty or corrupt target.
+    store.q r22, 736(r29)
+    store.q r28, 744(r29)
     move.q  r1, r22
     move.q  r2, r28
     jsr     .dos_assign_lookup
     beqz    r3, .davt_bad
+    load.q  r22, 736(r29)
+    load.q  r28, 744(r29)
     move.q  r24, r1                     ; canonical base target ptr
     move.q  r25, r2                     ; canonical base target len
     blt     r28, r20, .davt_nested_ok   ; nested path already canonicalized
@@ -4236,6 +4277,26 @@ DOS_ASSIGN_LAYERED_MASK    equ 0xDE
     ; In:  r1 = target ptr, r2 = target len, r14 = source ptr, r29 = data base
     ; Out: r23 = resolved scratch ptr, r22 = 1
 .dos_resolve_apply_target:
+    ; An explicit RAM: alias is stored canonically as RAM/.  RAM itself is
+    ; the bare in-memory namespace, so discard that provider prefix before
+    ; appending the caller's relative path.
+    move.l  r24, #4
+    bne     r2, r24, .drat_copy_target_entry
+    load.b  r24, (r1)
+    move.l  r25, #0x52
+    bne     r24, r25, .drat_copy_target_entry
+    load.b  r24, 1(r1)
+    move.l  r25, #0x41
+    bne     r24, r25, .drat_copy_target_entry
+    load.b  r24, 2(r1)
+    move.l  r25, #0x4D
+    bne     r24, r25, .drat_copy_target_entry
+    load.b  r24, 3(r1)
+    move.l  r25, #0x2F
+    bne     r24, r25, .drat_copy_target_entry
+    add     r1, r1, #4
+    move.q  r2, r0
+.drat_copy_target_entry:
     add     r17, r29, #1000
     move.q  r20, r1
     move.q  r21, r2

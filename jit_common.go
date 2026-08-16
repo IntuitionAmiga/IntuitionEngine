@@ -1029,19 +1029,22 @@ type JITBlock struct {
 	x86CyclePrefix   []uint64
 	x86TickPrefix    []uint64
 	x86DynamicCycles []x86JITDynamicCycle
-	execAddr         uintptr
-	execSize         int
-	chainEntry       uintptr     // lightweight entry point for chained transitions (0 = none)
-	chainSlots       []chainSlot // patchable exit points
-	execCount        uint32      // execution count for hot-block detection (Tier 2)
-	tier             int         // compilation tier (0=Tier 1, 1=Tier 2)
-	regMap           [8]byte     // x86 JIT: guest-to-host register mapping for chain compatibility
-	chainHits        uint32      // times this block was entered via chain (not Go dispatch)
-	unchainedExits   uint32      // times this block exited via unchained path
-	ioBails          uint32      // times this block triggered I/O fallback
-	lastPromoteAt    uint32      // exec count when last promoted (hysteresis)
-	dominantDeopt    DeoptReason // first observed deopt reason for this block
-	rIncrements      int         // Z80: total R register increments for this block
+	// x86HasNativeFPU marks blocks containing register-form x87 operations
+	// whose native lowering keeps only occupied/empty FTW information.
+	x86HasNativeFPU bool
+	execAddr        uintptr
+	execSize        int
+	chainEntry      uintptr     // lightweight entry point for chained transitions (0 = none)
+	chainSlots      []chainSlot // patchable exit points
+	execCount       uint32      // execution count for hot-block detection (Tier 2)
+	tier            int         // compilation tier (0=Tier 1, 1=Tier 2)
+	regMap          [8]byte     // x86 JIT: guest-to-host register mapping for chain compatibility
+	chainHits       uint32      // times this block was entered via chain (not Go dispatch)
+	unchainedExits  uint32      // times this block exited via unchained path
+	ioBails         uint32      // times this block triggered I/O fallback
+	lastPromoteAt   uint32      // exec count when last promoted (hysteresis)
+	dominantDeopt   DeoptReason // first observed deopt reason for this block
+	rIncrements     int         // Z80: total R register increments for this block
 	// ptbr is the MMU page-table-base address active when this block was
 	// compiled, or 0 for non-MMU backends. Used by IE64's chain patcher
 	// to scope inbound/outbound chain links to a single address space —

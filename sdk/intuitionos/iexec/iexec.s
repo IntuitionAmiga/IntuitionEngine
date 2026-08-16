@@ -313,6 +313,35 @@ endif
     move.l  r3, #QUOTA_DEFAULT_GRANTS
     store.l r3, 16(r2)
 
+    ; Allocate the per-task quota-limit page. Each task owns five u32
+    ; limits, so 255 rows occupy 5100 bytes. The global defaults above remain
+    ; the fallback used when this optional page cannot be reserved.
+    ; 255 rows × 20 bytes = 5100 bytes, so reserve two 4 KiB pages.
+    move.l  r1, #2
+    jsr     alloc_pages
+    beqz    r1, .quota_limit_page_skip
+    move.l  r2, #KERN_DATA_BASE
+    store.w r1, KD_QUOTA_LIMIT_PAGE_PPN(r2)
+    lsl     r1, r1, #12
+    move.q  r2, r1
+    move.l  r3, #0
+.quota_limit_row:
+    move.l  r4, #QUOTA_DEFAULT_PAGES
+    store.l r4, (r2)
+    move.l  r4, #QUOTA_DEFAULT_PORTS
+    store.l r4, 4(r2)
+    move.l  r4, #QUOTA_DEFAULT_WAITERS
+    store.l r4, 8(r2)
+    move.l  r4, #QUOTA_DEFAULT_SHMEM
+    store.l r4, 12(r2)
+    move.l  r4, #QUOTA_DEFAULT_GRANTS
+    store.l r4, 16(r2)
+    add     r2, r2, #20
+    add     r3, r3, #1
+    move.l  r4, #MAX_TASKS
+    blt     r3, r4, .quota_limit_row
+.quota_limit_page_skip:
+
     ; PLAN_MAX_RAM.md slice 4: alloc-pool mapping was folded into the
     ; main kern_install_kern_mappings call earlier in boot — no separate
     ; loop needed here.
@@ -6668,8 +6697,11 @@ endif
 .info_quota_limit:
     move.l  r11, #(QUOTA_KIND_COUNT - 1)
     bhi     r2, r11, .info_quota_bad
-    move.q  r1, r2
-    jsr     quota_get_limit             ; r1 = u32 limit
+    move.q  r9, r2                      ; preserve kind
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r1, (r12)                   ; current task slot
+    move.q  r2, r9
+    jsr     quota_get_task_limit        ; r1 = u32 limit
     move.q  r2, #ERR_OK
     eret
 .info_quota_bad:
@@ -6808,6 +6840,8 @@ endif
     pop     r2
     pop     r1
     bnez    r11, .dqsl_perm             ; pubid != 0 → not the boot task
+    move.l  r12, #KERN_DATA_BASE
+    load.q  r3, (r12)                     ; current task slot
     jsr     quota_set_limit             ; r1 = ERR_OK or ERR_BADARG
     move.q  r2, r1
     move.q  r1, #0
@@ -10665,6 +10699,44 @@ quota_row_base:
     jsr     quota_counter_addr
     rts
 
+; quota_task_limit_addr: compute the per-task u32 limit address.
+; Input: R1 = task slot, R2 = quota kind.
+; Output: R1 = address, or 0 when the optional page is unavailable/bad.
+quota_task_limit_addr:
+    move.l  r4, #(MAX_TASKS - 1)
+    bhi     r1, r4, .qtla_bad
+    move.l  r4, #(QUOTA_KIND_COUNT - 1)
+    bhi     r2, r4, .qtla_bad
+    move.l  r4, #KERN_DATA_BASE
+    load.w  r5, KD_QUOTA_LIMIT_PAGE_PPN(r4)
+    beqz    r5, .qtla_bad
+    lsl     r4, r5, #12
+    lsl     r5, r1, #4
+    add     r5, r5, r1
+    add     r5, r5, r1                ; slot * 20 bytes
+    add     r4, r4, r5
+    lsl     r5, r2, #2
+    add     r1, r4, r5
+    rts
+.qtla_bad:
+    move.l  r1, #0
+    rts
+
+; quota_get_task_limit: read a task's limit, falling back to the global
+; default when the optional per-task page was not allocated.
+; Input: R1 = task slot, R2 = quota kind. Output: R1 = u32 limit.
+quota_get_task_limit:
+    move.q  r8, r1
+    move.q  r9, r2
+    jsr     quota_task_limit_addr
+    bnez    r1, .qgtl_found
+    move.q  r1, r9
+    jsr     quota_get_limit
+    rts
+.qgtl_found:
+    load.l  r1, (r1)
+    rts
+
 ; quota_get_limit: read the global default limit for a given kind.
 ; Input:  R1 = kind
 ; Output: R1 = u32 limit (0 if out-of-range kind)
@@ -10683,8 +10755,8 @@ quota_get_limit:
     move.l  r1, #0
     rts
 
-; quota_set_limit: overwrite the global default limit for a given kind.
-; Input:  R1 = kind, R2 = new u32 limit
+; quota_set_limit: overwrite the current task's limit for a given kind.
+; Input:  R1 = kind, R2 = new u32 limit, R3 = current task slot
 ; Output: R1 = ERR_OK (0) or ERR_BADARG on out-of-range kind
 ; Clobbers: R4, R5
 ; Bounds: unsigned BHI (see quota_counter_addr). A negative i64 in R1 (e.g.
@@ -10693,11 +10765,21 @@ quota_get_limit:
 quota_set_limit:
     move.l  r4, #(QUOTA_KIND_COUNT - 1)
     bhi     r1, r4, .qsl_bad
+    move.q  r6, r2
+    move.q  r7, r1
+    move.q  r1, r3
+    move.q  r2, r7
+    jsr     quota_task_limit_addr
+    beqz    r1, .qsl_global_fallback
+    store.l r6, (r1)
+    move.l  r1, #ERR_OK
+    rts
+.qsl_global_fallback:
     move.l  r4, #KERN_DATA_BASE
     add     r4, r4, #KD_QUOTA_LIMITS_BASE
-    lsl     r5, r1, #2
+    lsl     r5, r7, #2
     add     r4, r4, r5
-    store.l r2, (r4)
+    store.l r6, (r4)
     move.l  r1, #ERR_OK
     rts
 .qsl_bad:
@@ -10735,6 +10817,8 @@ quota_check_and_charge:
     move.l  r4, #KERN_DATA_BASE
     load.w  r4, KD_QUOTA_PAGE_PPN(r4)
     beqz    r4, .qcc_disabled
+    move.q  r8, r1                      ; r8 = task slot
+    move.q  r9, r2                      ; r9 = quota kind
     move.q  r6, r2                      ; r6 = kind (saved across get_limit)
     move.q  r7, r3                      ; r7 = delta (saved across counter_addr)
     jsr     quota_counter_addr          ; r1 = counter addr (preserves r2, r3, r6, r7)
@@ -10742,9 +10826,10 @@ quota_check_and_charge:
     move.q  r7, r1                      ; r7 = counter addr (stable across quota_get_limit's r4/r5 clobber)
     load.w  r4, (r7)                    ; r4 = current
     add     r4, r4, r3                  ; r4 = projected (u64 math; r3 still delta)
-    move.q  r6, r4                      ; r6 = projected (get_limit clobbers r4)
-    move.q  r1, r2                      ; r1 = kind
-    jsr     quota_get_limit             ; r1 = limit
+    move.q  r6, r4                      ; r6 = projected
+    move.q  r1, r8                      ; r1 = task slot
+    move.q  r2, r9                      ; r2 = kind
+    jsr     quota_get_task_limit        ; r1 = task limit
     bgt     r6, r1, .qcc_exceed
     store.w r6, (r7)                    ; commit projected
     move.l  r1, #ERR_OK

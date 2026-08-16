@@ -86,7 +86,7 @@ func installIE64BreakInLoop(cpu *CPU64) {
 		cpu.memory[addr] = OP_NOP64
 	}
 	cpu.memory[PROG_START+80] = OP_BRA
-	offsetSigned := int32(-88)
+	offsetSigned := int32(-80)
 	offset := uint32(offsetSigned)
 	cpu.memory[PROG_START+84] = byte(offset)
 	cpu.memory[PROG_START+85] = byte(offset >> 8)

@@ -482,6 +482,12 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 			}
 		}
 		nativeRetired := executed
+		if nativeRetired > 0 && block.x86HasNativeFPU {
+			// Native x87 lowering intentionally tracks only occupied/empty
+			// FTW tags. Any native x87 retirement invalidates exact tags loaded
+			// by FLDENV/FRSTOR before the next interpreter/helper boundary.
+			cpu.x86FPUEnvLoaded = false
+		}
 		// Native blocks do not call the Go interpreter handlers that normally
 		// charge CPU.Cycles. Publish the matching completed-prefix charge here.
 		// A deferred bail can retire only a prefix, so never use the whole block
@@ -926,7 +932,7 @@ func (cpu *CPU_X86) x86RunInterpreter() {
 // fallback steps and JIT exit). The JIT tracks tags only as
 // empty-vs-occupied; see FPU_X87.RenormalizeTags.
 func (cpu *CPU_X86) x86RenormalizeFPUBoundary() {
-	if cpu.FPU != nil {
+	if cpu.FPU != nil && !cpu.x86FPUEnvLoaded {
 		cpu.FPU.RenormalizeTags()
 	}
 }

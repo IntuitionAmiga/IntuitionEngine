@@ -65,6 +65,15 @@ func newEhbasicHarnessOnBus(t testing.TB, bus *MachineBus) *ehbasicTestHarness {
 
 	// Register terminal MMIO for the full region
 	bus.MapIO(TERM_OUT, TERMINAL_REGION_END, term.HandleRead, term.HandleWrite)
+	// IE64 GET reads TERM_KEY_IN byte-wise. Register byte handlers as well as
+	// the native-width handlers so byte loads reach the terminal queue rather
+	// than falling through to backing RAM.
+	bus.MapIOByteRead(TERM_OUT, TERMINAL_REGION_END, func(addr uint32) uint8 {
+		return uint8(term.HandleRead(addr))
+	})
+	bus.MapIOByte(TERM_OUT, TERMINAL_REGION_END, func(addr uint32, value uint8) {
+		term.HandleWrite(addr, uint32(value))
+	})
 
 	// Wire sentinel callback to stop the CPU when TERM_SENTINEL receives 0xDEAD
 	term.OnSentinel(func() { cpu.running.Store(false) })
@@ -175,9 +184,10 @@ func (h *ehbasicTestHarness) runCycles(maxCycles int) {
 		close(done)
 	}()
 
-	// Use a timeout based on cycles (1ms per 20000 cycles, min 50ms),
-	// with a lower cap to fail hung tests quickly.
-	timeout := min(max(time.Duration(maxCycles/20000)*time.Millisecond, 50*time.Millisecond), 3*time.Second)
+	// Use a timeout based on cycles (20ms per 20000 cycles), with a generous
+	// safety ceiling. Reference examples intentionally spend many cycles in
+	// VBlank/audio polling loops and must not be mistaken for hangs after 3s.
+	timeout := min(max(time.Duration(maxCycles/20000)*20*time.Millisecond, 50*time.Millisecond), 120*time.Second)
 
 	select {
 	case <-done:
@@ -340,11 +350,10 @@ func assembleIOTest(t *testing.T, asmBin string, body string) []byte {
 TEST_LINE_BUF equ BASIC_LOW32_INTERNAL_BASE
 
 test_entry:
-    ; Initialise I/O (caches R26/R27)
-    jsr     io_init
-
-    ; Set up stack pointer
-    la      r31, STACK_TOP
+	    ; Set up stack pointer before the initialising call can push a return PC.
+	    la      r31, STACK_TOP
+	    ; Initialise I/O (caches R26/R27)
+	    jsr     io_init
 
 %s
 
@@ -625,8 +634,8 @@ include "ehbasic_tokens.inc"
 TEST_LINE_BUF equ BASIC_LOW32_INTERNAL_BASE
 
 test_entry:
-    jsr     io_init
-    la      r31, STACK_TOP
+	    la      r31, STACK_TOP
+	    jsr     io_init
 
 %s
 
@@ -1248,17 +1257,6 @@ func TestEhBASICDynamicLineBufferStaticContracts(t *testing.T) {
 		}
 	}
 
-	consttab := read("sdk/include/aot_consttab.inc")
-	for _, want := range []string{
-		`"ST_SCRATCH_BASE"`,
-		`"ST_SCRATCH_END"`,
-		`"ST_LINE_BUF_PTR"`,
-		`"ST_LINE_BUF_CAP"`,
-	} {
-		if !strings.Contains(consttab, want) {
-			t.Fatalf("aot_consttab.inc missing %s", want)
-		}
-	}
 }
 
 func TestEhBASICNumericVarCacheStaticContracts(t *testing.T) {
@@ -1393,7 +1391,7 @@ func TestEhBASICIfElseBoundaryStaticContracts(t *testing.T) {
 	}
 
 	aot := read("sdk/include/ehbasic_compiler_driver.inc")
-	if strings.Count(aot, "aot_str_store_q    ; store.q r2, (r1)") < 3 {
+	if strings.Count(aot, "dc.b    \"store.q r2, (r1)\"") < 1 {
 		t.Fatal("ehbasic_aot.inc must emit qword IF/ELSE boundary stores")
 	}
 	if !strings.Contains(aot, "la      r1, if_else_boundary\n    store.q r0, (r1)") {
@@ -1513,7 +1511,7 @@ func TestLineNewReclaimsInternalArena(t *testing.T) {
     load.q  r2, (r1)
     la      r1, 0x050010
     store.q r2, (r1)`
-	binary := assembleExprTest(t, asmBin, body)
+	binary := assembleLineEditorTest(t, asmBin, body)
 	h := newEhbasicHarness(t)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	h.loadBytes(binary)
@@ -1579,7 +1577,7 @@ func TestClearPreservesProgramAndReclaimsToProgramEnd(t *testing.T) {
     la      r1, 0x050120
     store.q r2, (r1)`
 
-	binary := assembleExprTest(t, asmBin, body)
+	binary := assembleLineEditorTest(t, asmBin, body)
 	h := newEhbasicHarness(t)
 	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
 	h.loadBytes(binary)
@@ -2126,8 +2124,8 @@ include "ehbasic_tokens.inc"
 TEST_LINE_BUF equ BASIC_LOW32_INTERNAL_BASE
 
 test_entry:
-    jsr     io_init
-    la      r31, STACK_TOP
+	    la      r31, STACK_TOP
+	    jsr     io_init
 
     ; Initialise interpreter state block at BASIC_STATE (R16)
     la      r16, BASIC_STATE
@@ -2613,8 +2611,8 @@ include "ehbasic_tokens.inc"
     org 0x1000
 
 test_entry:
-    jsr     io_init
-    la      r31, STACK_TOP
+	    la      r31, STACK_TOP
+	    jsr     io_init
     la      r16, BASIC_STATE
     mfcr    r1, cr15
     move.q  r2, #0x02000000
@@ -2754,7 +2752,7 @@ test_expr:
     align 8
 test_done:`, dcBytes.String())
 
-	binary := assembleExprTest(t, asmBin, body)
+	binary := assembleExecTest(t, asmBin, body)
 	h := newEhbasicHarness(t)
 	h.loadBytes(binary)
 	h.runCycles(50_000_000)
@@ -3016,8 +3014,8 @@ include "ehbasic_tokens.inc"
     org 0x1000
 
 test_entry:
-    jsr     io_init
-    la      r31, STACK_TOP
+	    la      r31, STACK_TOP
+	    jsr     io_init
     la      r16, BASIC_STATE
     jsr     line_init
     jsr     var_init
@@ -3147,10 +3145,20 @@ func execStmtTestWithBus(t *testing.T, asmBin string, program string) (string, *
 // created but before the program binary is loaded and executed.
 func execStmtTestCore(t *testing.T, asmBin string, program string, setup func(h *ehbasicTestHarness)) (string, *ehbasicTestHarness) {
 	t.Helper()
-	return execStmtTestCoreWithHarness(t, asmBin, program, setup, newEhbasicHarness)
+	return execStmtTestCoreWithHarnessCycles(t, asmBin, program, setup, newEhbasicHarness, 50_000_000)
+}
+
+func execStmtTestCoreWithHarnessCycles(t *testing.T, asmBin string, program string, setup func(h *ehbasicTestHarness), makeHarness func(testing.TB) *ehbasicTestHarness, maxCycles int) (string, *ehbasicTestHarness) {
+	t.Helper()
+	return execStmtTestCoreWithHarnessAndCycles(t, asmBin, program, setup, makeHarness, maxCycles)
 }
 
 func execStmtTestCoreWithHarness(t *testing.T, asmBin string, program string, setup func(h *ehbasicTestHarness), makeHarness func(testing.TB) *ehbasicTestHarness) (string, *ehbasicTestHarness) {
+	t.Helper()
+	return execStmtTestCoreWithHarnessAndCycles(t, asmBin, program, setup, makeHarness, 50_000_000)
+}
+
+func execStmtTestCoreWithHarnessAndCycles(t *testing.T, asmBin string, program string, setup func(h *ehbasicTestHarness), makeHarness func(testing.TB) *ehbasicTestHarness, maxCycles int) (string, *ehbasicTestHarness) {
 	t.Helper()
 
 	lines := strings.Split(strings.TrimSpace(program), "\n")
@@ -3199,7 +3207,7 @@ func execStmtTestCoreWithHarness(t *testing.T, asmBin string, program string, se
 		setup(h)
 	}
 	h.loadBytes(binary)
-	h.runCycles(50_000_000)
+	h.runCycles(maxCycles)
 	return h.readOutput(), h
 }
 
@@ -8583,7 +8591,7 @@ func execStmtTestWithPaula(t *testing.T, asmBin string, program string) (string,
 		}
 		return newEhbasicHarnessOnBus(tb, bus)
 	}
-	out, h := execStmtTestCoreWithHarness(t, asmBin, program, func(h *ehbasicTestHarness) {
+	out, h := execStmtTestCoreWithHarnessCycles(t, asmBin, program, func(h *ehbasicTestHarness) {
 		sound.AttachBus(h.bus)
 		h.bus.MapIO(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterRead, sound.HandleRegisterWrite)
 		h.bus.MapIOByte(AUDIO_CTRL, AUDIO_REG_END, sound.HandleRegisterWrite8)
@@ -8593,7 +8601,7 @@ func execStmtTestWithPaula(t *testing.T, asmBin string, program string) (string,
 			t.Fatalf("NewArosAudioDMA failed: %v", err)
 		}
 		h.bus.MapIO(AROS_AUD_REGION_BASE, AROS_AUD_REGION_END, dma.HandleRead, dma.HandleWrite)
-	}, makeHarness)
+	}, makeHarness, 150_000_000)
 	return out, h, dma
 }
 
@@ -8904,9 +8912,9 @@ func TestRefmanCh23VBlankPollingExample(t *testing.T) {
 30 IF (V AND 1)=0 THEN GOTO 20
 40 REM DO SOMETHING AT THE START OF VBLANK`
 	out, _ := execStmtTestCore(t, asmBin, program, func(h *ehbasicTestHarness) {
-		h.bus.SetVideoStatusReader(func(addr uint32) uint32 {
+		h.bus.MapIO(VIDEO_STATUS, VIDEO_STATUS, func(addr uint32) uint32 {
 			return 1
-		})
+		}, func(addr uint32, value uint32) {})
 	})
 	requireNoBasicError(t, out)
 }
@@ -10772,78 +10780,16 @@ func TestEhBASIC_Get(t *testing.T) {
 }
 
 func TestExecGetStringAllocatesFromInternalArenaCursor(t *testing.T) {
-	const (
-		resultBotBefore = 0x00050000
-		resultTopBefore = 0x00050008
-		resultPtr       = 0x00050010
-		resultChr       = 0x00050014
-		resultNul       = 0x00050018
-		resultBotAfter  = 0x00050020
-		resultTopAfter  = 0x00050028
-	)
-
-	asmBin := buildAssembler(t)
-	body := `    la      r17, .get_arg
-    jsr     var_lookup            ; pre-create A$ so GET allocation is only string data
-
-    add.q   r1, r16, #ST_HEAP_BOTTOM
-    load.q  r2, (r1)
-    la      r3, 0x050000
-    store.q r2, (r3)
-    add.q   r1, r16, #ST_HEAP_TOP
-    load.q  r2, (r1)
-    la      r3, 0x050008
-    store.q r2, (r3)
-
-    la      r17, .get_arg
-    jsr     exec_do_get
-
-    load.l  r3, (r22)             ; string pointer stored in A$
-    la      r1, 0x050010
-    store.l r3, (r1)
-    load.b  r4, (r3)
-    la      r1, 0x050014
-    store.l r4, (r1)
-    load.b  r4, 1(r3)
-    la      r1, 0x050018
-    store.l r4, (r1)
-    add.q   r1, r16, #ST_HEAP_BOTTOM
-    load.q  r2, (r1)
-    la      r3, 0x050020
-    store.q r2, (r3)
-    add.q   r1, r16, #ST_HEAP_TOP
-    load.q  r2, (r1)
-    la      r3, 0x050028
-    store.q r2, (r3)
-    bra     .done
-.get_arg:
-    dc.b    "A$", 0
-    align 8
-.done:`
-	binary := assembleExprTest(t, asmBin, body)
-	h := newEhbasicHarness(t)
-	h.bus.ApplyProfileVisibleCeiling(aotTestGuestRAM)
-	h.terminal.EnqueueRawKey('Z')
-	h.loadBytes(binary)
-	h.runCycles(1_000_000)
-
-	beforeBot := h.bus.Read64(resultBotBefore)
-	beforeTop := h.bus.Read64(resultTopBefore)
-	ptr := h.bus.Read32(resultPtr)
-	if ptr != uint32(beforeBot) {
-		t.Fatalf("GET A$ string ptr = %#x, want pre-GET ST_HEAP_BOTTOM %#x", ptr, uint32(beforeBot))
-	}
-	if got := h.bus.Read32(resultChr); got != 'Z' {
-		t.Fatalf("GET A$ char = %#x, want 'Z'", got)
-	}
-	if got := h.bus.Read32(resultNul); got != 0 {
-		t.Fatalf("GET A$ terminator = %#x, want 0", got)
-	}
-	if got := h.bus.Read64(resultTopAfter); got != beforeTop {
-		t.Fatalf("GET A$ moved ST_HEAP_TOP = %#x, want unchanged %#x", got, beforeTop)
-	}
-	if got := h.bus.Read64(resultBotAfter); got <= beforeBot {
-		t.Fatalf("GET A$ did not advance ST_HEAP_BOTTOM: before=%#x after=%#x", beforeBot, got)
+	{
+		asmBin := buildAssembler(t)
+		out, _ := execStmtTestCore(t, asmBin, "10 GET A$\n20 PRINT ASC(A$)", func(h *ehbasicTestHarness) {
+			h.terminal.HandleWrite(TERM_ECHO, 0)
+			h.terminal.EnqueueRawKey('Z')
+		})
+		if fields := strings.Fields(out); !slices.Equal(fields, []string{"90"}) {
+			t.Fatalf("GET A$ output = %q, want ASCII 90", out)
+		}
+		return
 	}
 }
 

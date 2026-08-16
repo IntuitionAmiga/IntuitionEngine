@@ -162,7 +162,7 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 				instrs = instrs[:1]
 			}
 			var err error
-			if len(instrs) != 0 && !x86NeedsFallback(instrs) {
+			if len(instrs) != 0 && !x86ARM64NeedsFallback(instrs) {
 				block, err = x86CompileBlockForCPU(cpu, instrs, pc, em)
 			}
 			if err != nil || block == nil {
@@ -263,6 +263,9 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 		if completed == 0 && ctx.NeedIOFallback == 0 {
 			completed = block.instrCount
 		}
+		if completed > 0 && block.x86HasNativeFPU {
+			cpu.x86FPUEnvLoaded = false
+		}
 		if ctx.ChainTicks == 0 && completed > len(block.x86CyclePrefix) {
 			completed = len(block.x86CyclePrefix)
 		}
@@ -359,6 +362,23 @@ func (cpu *CPU_X86) X86ExecuteJIT() {
 	cpu.syncJITSegRegsToNamed()
 }
 
+// x86ARM64NeedsFallback keeps the ARM64 emitter away from x87 memory forms.
+// These operations have variable-width environment/BCD operands and their
+// effective address is part of the interpreter-visible bus contract.  Keep
+// this check local to the dispatcher as a defence in depth: the shared
+// x86NeedsFallback predicate is also used by other backends and a decoder
+// change must not accidentally make ARM64 execute one of these forms natively.
+func x86ARM64NeedsFallback(instrs []X86JITInstr) bool {
+	if x86NeedsFallback(instrs) {
+		return true
+	}
+	if len(instrs) == 0 {
+		return true
+	}
+	first := instrs[0]
+	return first.opcode >= 0xD8 && first.opcode <= 0xDF && first.hasModRM && first.modrm>>6 != 3
+}
+
 // x86RunInterpreter is shared by the ARM64 dispatcher and callers that turn
 // JIT execution off. It intentionally uses the interpreter's normal FPU
 // boundary normalisation before every instruction.
@@ -389,7 +409,7 @@ func (cpu *CPU_X86) x86RunInterpreter() {
 }
 
 func (cpu *CPU_X86) x86RenormalizeFPUBoundary() {
-	if cpu.FPU != nil {
+	if cpu.FPU != nil && !cpu.x86FPUEnvLoaded {
 		cpu.FPU.RenormalizeTags()
 	}
 }

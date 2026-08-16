@@ -213,7 +213,11 @@ func x86ARM64EmitPartialRegStore(cb *CodeBuffer, guest, value byte, width uint32
 }
 
 func x86ARM64EmitPartialRegLoad(cb *CodeBuffer, dst, guest byte, width uint32) {
-	x86ARM64EmitLoadReg(cb, dst, guest&3)
+	baseGuest := guest
+	if width == 8 {
+		baseGuest &= 3
+	}
+	x86ARM64EmitLoadReg(cb, dst, baseGuest)
 	if width == 8 {
 		x86ARM64EmitByteExtract(cb, dst, dst, guest >= 4)
 	} else {
@@ -4929,7 +4933,8 @@ func x86CompileBlockForCPU(cpu *CPU_X86, instrs []X86JITInstr, startPC uint32, e
 		}
 		block := &JITBlock{startPC: uint64(startPC), endPC: uint64(pc), instrCount: count,
 			x86CyclePrefix: x86JITCyclePrefix(compiled), x86TickPrefix: x86JITTickPrefix(compiled), x86DynamicCycles: x86JITDynamicCycles(compiled),
-			execAddr: addr, execSize: len(code)}
+			x86HasNativeFPU: x86BlockHasNativeFPU(compiled),
+			execAddr:        addr, execSize: len(code)}
 		x86ARM64InstallChainSlots(block, chainExits, len(bails) == 0 && !helperExit && len(block.x86DynamicCycles) == 0)
 		return block, nil
 	}
@@ -4947,7 +4952,8 @@ func x86CompileBlockForCPU(cpu *CPU_X86, instrs []X86JITInstr, startPC uint32, e
 	compiled := append([]X86JITInstr(nil), instrs[:count]...)
 	block := &JITBlock{startPC: uint64(startPC), endPC: uint64(pc), instrCount: count,
 		x86CyclePrefix: x86JITCyclePrefix(compiled), x86TickPrefix: x86JITTickPrefix(compiled), x86DynamicCycles: x86JITDynamicCycles(compiled),
-		execAddr: addr, execSize: len(code)}
+		x86HasNativeFPU: x86BlockHasNativeFPU(compiled),
+		execAddr:        addr, execSize: len(code)}
 	x86ARM64InstallChainSlots(block, chainExits, len(bails) == 0 && len(block.x86DynamicCycles) == 0)
 	return block, nil
 }
@@ -5055,7 +5061,8 @@ func x86CompileRegionForCPU(cpu *CPU_X86, region *x86Region, execMem *ExecMem) (
 	block := &JITBlock{
 		startPC: uint64(region.entryPC), endPC: uint64(last.opcodePC + uint32(last.length)), instrCount: total,
 		x86CyclePrefix: x86JITCyclePrefix(all), x86TickPrefix: x86JITTickPrefix(all), x86DynamicCycles: x86JITDynamicCycles(all),
-		execAddr: addr, execSize: len(code), tier: 2, coveredRanges: covered,
+		x86HasNativeFPU: x86BlockHasNativeFPU(all),
+		execAddr:        addr, execSize: len(code), tier: 2, coveredRanges: covered,
 	}
 	x86ARM64InstallChainSlots(block, chainExits, len(bails) == 0 && len(block.x86DynamicCycles) == 0)
 	return block, nil

@@ -2118,6 +2118,33 @@ func TestX86ARM64_DirectMemoryShiftOneParity(t *testing.T) {
 	}
 }
 
+func TestX86ARM64_DoomStartupArithmeticParity(t *testing.T) {
+	code := []byte{
+		0xBC, 0x00, 0x00, 0xFF, 0x00, // MOV ESP,00FF0000
+		0xFC,       // CLD
+		0x31, 0xC0, // XOR EAX,EAX
+		0xBF, 0x00, 0x00, 0x10, 0x00, // MOV EDI,00100000
+		0xB9, 0x20, 0xEC, 0x1D, 0x00, // MOV ECX,001DEC20
+		0x29, 0xF9, // SUB ECX,EDI
+		0xF4, // HLT
+	}
+	newCPU := func() *CPU_X86 {
+		return newX86ARM64DispatchCPU(code)
+	}
+	jit := newCPU()
+	jit.X86ExecuteJIT()
+	interp := newCPU()
+	for interp.Running() && !interp.Halted {
+		interp.Step()
+	}
+	if jit.EAX != interp.EAX || jit.ECX != interp.ECX || jit.EDI != interp.EDI || jit.ESP != interp.ESP {
+		t.Fatalf("registers jit=%08X/%08X/%08X/%08X interp=%08X/%08X/%08X/%08X eip=%08X/%08X", jit.EAX, jit.ECX, jit.EDI, jit.ESP, interp.EAX, interp.ECX, interp.EDI, interp.ESP, jit.EIP, interp.EIP)
+	}
+	if jit.Flags != interp.Flags {
+		t.Fatalf("flags jit=%08X interp=%08X", jit.Flags, interp.Flags)
+	}
+}
+
 func TestX86ARM64_DirectMemoryGroup4INCDECParity(t *testing.T) {
 	for _, code := range [][]byte{{0xFE, 0x03, 0xF4}, {0xFE, 0x0B, 0xF4}} {
 		for _, v := range []byte{0, 1, 0x7F, 0x80, 0xFF} {

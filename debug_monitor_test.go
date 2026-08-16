@@ -118,8 +118,8 @@ func TestMonitorFreezeResume(t *testing.T) {
 	}
 	// BRA back to start at end
 	cpu.memory[PROG_START+80] = OP_BRA
-	// imm32 offset = -(80+8) = -88 as int32
-	offset := int32(-88)
+	// BRA uses the current instruction PC as its base.
+	offset := int32(-80)
 	uoff := uint32(offset)
 	cpu.memory[PROG_START+84] = byte(uoff)
 	cpu.memory[PROG_START+85] = byte(uoff >> 8)
@@ -1213,7 +1213,7 @@ func TestCPUInspectionPreservesThawedCPURunningState(t *testing.T) {
 		cpu.memory[addr] = OP_NOP64
 	}
 	cpu.memory[PROG_START+80] = OP_BRA
-	offset := int32(-88)
+	offset := int32(-80)
 	uoffset := uint32(offset)
 	cpu.memory[PROG_START+84] = byte(uoffset)
 	cpu.memory[PROG_START+85] = byte(uoffset >> 8)
@@ -1277,7 +1277,7 @@ func TestBreakpointRuntimeTrap(t *testing.T) {
 	}
 	// BRA back to start
 	cpu.memory[PROG_START+80] = OP_BRA
-	offset := int32(-88)
+	offset := int32(-80)
 	uoff := uint32(offset)
 	cpu.memory[PROG_START+84] = byte(uoff)
 	cpu.memory[PROG_START+85] = byte(uoff >> 8)
@@ -1319,7 +1319,7 @@ func TestBreakpointAutoActivation(t *testing.T) {
 		cpu.memory[PROG_START+i*8] = OP_NOP64
 	}
 	cpu.memory[PROG_START+80] = OP_BRA
-	offset := int32(-88)
+	offset := int32(-80)
 	uoff := uint32(offset)
 	cpu.memory[PROG_START+84] = byte(uoff)
 	cpu.memory[PROG_START+85] = byte(uoff >> 8)
@@ -1733,7 +1733,7 @@ func TestBreakpointConcurrency(t *testing.T) {
 		cpu.memory[PROG_START+i*8] = OP_NOP64
 	}
 	cpu.memory[PROG_START+80] = OP_BRA
-	offset := int32(-88)
+	offset := int32(-80)
 	uoff := uint32(offset)
 	cpu.memory[PROG_START+84] = byte(uoff)
 	cpu.memory[PROG_START+85] = byte(uoff >> 8)
@@ -1794,7 +1794,7 @@ func TestResetCPUsStopsTrapMode(t *testing.T) {
 		cpu.memory[PROG_START+i*8] = OP_NOP64
 	}
 	cpu.memory[PROG_START+80] = OP_BRA
-	offset := int32(-88)
+	offset := int32(-80)
 	uoff := uint32(offset)
 	cpu.memory[PROG_START+84] = byte(uoff)
 	cpu.memory[PROG_START+85] = byte(uoff >> 8)
@@ -1849,7 +1849,7 @@ func TestBreakpointAutoActivationPreservesFrozenState(t *testing.T) {
 		cpu1.memory[PROG_START+i*8] = OP_NOP64
 	}
 	cpu1.memory[PROG_START+80] = OP_BRA
-	offset := int32(-88)
+	offset := int32(-80)
 	uoff := uint32(offset)
 	cpu1.memory[PROG_START+84] = byte(uoff)
 	cpu1.memory[PROG_START+85] = byte(uoff >> 8)

@@ -73,6 +73,24 @@ func TestIE64JITResumeUsesWorkerForExecutionBreakpoints(t *testing.T) {
 	t.Fatalf("JIT execution breakpoint did not stop at target; pc=0x%X", cpu.PC)
 }
 
+func TestIE64ExecutionBreakpointResumeCallsWorker(t *testing.T) {
+	adapter := NewDebugIE64(NewCPU64(NewMachineBus()))
+	adapter.SetBreakpoint(PROG_START)
+	called := make(chan struct{}, 1)
+	adapter.workerResume = func() { called <- struct{}{} }
+
+	adapter.Resume()
+
+	select {
+	case <-called:
+	case <-time.After(time.Second):
+		t.Fatal("execution-breakpoint resume did not call the JIT worker")
+	}
+	if adapter.trapRunning.Load() {
+		t.Fatal("execution-breakpoint resume entered trapLoop despite an available worker")
+	}
+}
+
 func TestIE64JITDebugBreakInSeesChainedCallTargets(t *testing.T) {
 	bus := NewMachineBus()
 	cpu := NewCPU64(bus)

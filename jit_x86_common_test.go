@@ -529,6 +529,15 @@ func TestX86InstrLength_FPU(t *testing.T) {
 	if l := x86InstrLength(mem, 0); l != 3 {
 		t.Errorf("FLD [EBP+8] length = %d, want 3", l)
 	}
+
+	// D8 05 disp32: FADD dword [absolute] = 6 bytes. This is the form
+	// used by the ARM64 helper-parity matrix; treating an x87 escape as an
+	// unknown one-byte opcode makes the displacement execute as new opcodes.
+	mem[0] = 0xD8
+	mem[1] = 0x05
+	if l := x86InstrLength(mem, 0); l != 6 {
+		t.Errorf("FADD [disp32] length = %d, want 6", l)
+	}
 }
 
 func TestX86InstrLength_ENTER(t *testing.T) {

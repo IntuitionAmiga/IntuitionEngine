@@ -526,6 +526,7 @@ KD_QUOTA_CUR_SHMEM     equ 6           ; u16 (pages, not bytes)
 KD_QUOTA_CUR_GRANTS    equ 8           ; u16
 
 KD_QUOTA_PAGE_PPN      equ 67128       ; u16 allocator-backed supervisor quota page
+KD_QUOTA_LIMIT_PAGE_PPN equ 67130      ; u32 per-task quota-limit page
 KD_QUOTA_LIMITS_BASE   equ 67132       ; 5 × u32 global default limits, kind-indexed
 
 QUOTA_DEFAULT_PAGES    equ 1024        ; 4 MiB of private pages per task

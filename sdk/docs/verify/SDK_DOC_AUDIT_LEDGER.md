@@ -4022,6 +4022,45 @@ outside scope and checksum-protected. The companion renderer reads the
 published preface without modifying either protected tree.
 Disposition: KEEP.
 
+ID: SDK-DOC-0111
+Status: FIXED
+Document: `sdk/docs/IE64_ISA.md`, `sdk/docs/IE32_ISA.md`,
+`sdk/docs/iemon.md`, `sdk/docs/iescript.md`, `sdk/docs/architecture.md`,
+their empirical inventories, and the companion PDFs.
+Section: Post-0110 commit and tracked-worktree re-audit.
+Claim: The five manuals must be rechecked against commits `e4bf1139`,
+`91766cf9`, `fb8bbd18`, `e7d9714e`, `4f90d88e`, and `5899dd34`, plus
+the current tracked worktree. Source-backed changes affecting the five-book
+surface include the Go 1.27rc2 build contract, ARM64 SIMD/build coverage,
+MachineBus transfer semantics, video compositor lifecycle, and IEMon CPU
+inspection. The ARM64 M68K FPU emission and current x86 x87 JIT changes belong
+to their dedicated JIT or processor implementation surfaces and do not add a
+claim to these five manuals.
+Purpose judgement: Architecture and IEMon already contain the applicable
+reader-facing contracts. No source-backed change requires an IE64 ISA, IE32
+ISA, or IEScript Markdown edit in this range or in the current tracked source
+changes.
+Canonical sources checked: the complete post-0110 commit range and current
+tracked source, test, build, workflow, and documentation diffs outside the
+protected refman trees; `machine_bus.go`, `video_chip.go`,
+`video_compositor.go`, `debug_commands.go`, SIMD/JIT gates, Go/module and
+workflow configuration, coprocessor lifecycle code, M68K FPU emission, and
+x86 x87 JIT paths.
+Runnable verification: source-inventory golden and manual-coverage gates,
+companion-document and ledger gates, `make check-docs`, protected-refman
+checksum comparison, final isolated five-PDF render, manifest verification,
+and independent PDF inspection.
+Observed result: The existing Architecture and IEMon claims remain
+source-backed. No new five-book Markdown edits were required. The five PDFs
+were regenerated from the verified manuals and the render manifest was
+updated for the current tracked inputs.
+Action: Keep the five Markdown manuals unchanged; retain this ledger closure
+and regenerate the five PDFs after any later manual, source-inventory, test,
+or ledger hard-gate change.
+Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` are outside scope
+and remain read-only and checksum-protected.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -4061,7 +4100,7 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
 `SDK-DOC-0104`, `SDK-DOC-0105`, `SDK-DOC-0106`, `SDK-DOC-0107`, and
-`SDK-DOC-0108`, `SDK-DOC-0109`, and `SDK-DOC-0110`
+`SDK-DOC-0108`, `SDK-DOC-0109`, `SDK-DOC-0110`, and `SDK-DOC-0111`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -4143,7 +4182,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0110` and
+Open claim-group backlog: none for this run after `SDK-DOC-0111` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate

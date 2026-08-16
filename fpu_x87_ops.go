@@ -402,6 +402,10 @@ func (c *CPU_X86) opFPU_D9() {
 		case 0: // FLD m32
 			addr := c.x87MemAddr()
 			f.push(f.loadFloat32(c.bus, addr))
+		case 1: // Reserved/unused m32 encoding: still consume its EA.
+			// The decoder must advance over SIB/displacement bytes even when
+			// this x87 opcode has no architectural operation implemented.
+			_ = c.x87MemAddrNoCapture()
 		case 2: // FST m32
 			addr := c.x87MemAddr()
 			if !f.checkStackUnderflow(0) {
@@ -416,6 +420,7 @@ func (c *CPU_X86) opFPU_D9() {
 		case 4: // FLDENV
 			addr := c.x87MemAddrNoCapture()
 			f.fldenv32(c.bus, addr)
+			c.x86FPUEnvLoaded = true
 		case 5: // FLDCW
 			addr := c.x87MemAddrNoCapture()
 			f.FCW = uint16(c.read16(addr))
@@ -595,12 +600,17 @@ func (c *CPU_X86) opFPU_DD() {
 	case 4: // FRSTOR
 		addr := c.x87MemAddrNoCapture()
 		f.frstor32(c.bus, addr)
+		c.x86FPUEnvLoaded = true
 	case 6: // FNSAVE
 		addr := c.x87MemAddrNoCapture()
 		f.fsave32(c.bus, addr)
 	case 7: // FNSTSW m16
 		addr := c.x87MemAddrNoCapture()
 		c.write16(addr, f.FSW)
+	default:
+		// Reserved DD memory encodings still consume their complete
+		// effective-address operand before the next instruction is fetched.
+		_ = c.x87MemAddrNoCapture()
 	}
 	c.Cycles += 1
 }

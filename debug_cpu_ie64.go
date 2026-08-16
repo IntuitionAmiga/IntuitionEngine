@@ -150,19 +150,14 @@ func (d *DebugIE64) StopForAccessHit() {
 
 func (d *DebugIE64) Resume() {
 	d.bpMu.Lock()
+	breakpointOnly := len(d.breakpoints) > 0 && len(d.watchpoints) == 0 && !d.accessDebugActive()
+	if breakpointOnly && d.workerResume != nil {
+		d.bpMu.Unlock()
+		d.workerResume()
+		return
+	}
 	hasBP := len(d.breakpoints) > 0 || len(d.watchpoints) > 0 || d.accessDebugActive()
-	jitBreakpointOnly := d.cpu != nil && d.cpu.jitEnabled && len(d.breakpoints) > 0 && len(d.watchpoints) == 0 && !d.accessDebugActive()
 	if hasBP {
-		if jitBreakpointOnly {
-			d.bpMu.Unlock()
-			if d.workerResume != nil {
-				d.workerResume()
-				return
-			}
-			d.cpu.running.Store(true)
-			d.cpu.StartExecution()
-			return
-		}
 		d.trapStop = make(chan struct{})
 		d.frozenCh = make(chan struct{})
 		d.trapRunning.Store(true)

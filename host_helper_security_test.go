@@ -17,7 +17,7 @@ func TestHostHelperLiveImageSecurityContracts(t *testing.T) {
 		`<annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/intuitionengine-host-helper</annotate>`,
 		`action.id === "org.intuitionengine.host.run"`,
 		`subject.user === "ie"`,
-		`chmod 0755 /usr/libexec/intuitionengine-host-helper`,
+		`sif /usr/libexec/intuitionengine-host-helper mode 0100755`,
 		`ExecStart=/usr/libexec/intuitionengine-host-helper serve`,
 		`/run/intuitionengine-host-helper.sock rw,`,
 		`/usr/bin/pkexec ix,`,

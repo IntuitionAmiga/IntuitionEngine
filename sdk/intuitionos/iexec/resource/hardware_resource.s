@@ -189,8 +189,8 @@ prog_hwres_code:
     store.l r25, 160(r29)
 .hwres_vram_set_range:
     move.l  r17, #0x100                ; r17 = ppn_lo
-    move.l  r18, #0x2D5                ; r18 = ppn_hi (0x100 + 470 - 1)
-    move.l  r19, #470                  ; r19 = count
+move.l  r18, #0x2FA                ; r18 = ppn_hi (0x100 + 507 - 1)
+move.l  r19, #507                  ; r19 = count
     bra     .hwres_do_create
 
 .hwres_do_create:

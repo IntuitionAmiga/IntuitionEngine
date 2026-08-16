@@ -531,6 +531,39 @@ prog_shell_code:
     bra     .sh_cp_cmd
 .sh_cp_cmd_done:
     store.b r0, (r19)                  ; null-terminate command name
+
+    ; LIST is the historical spelling of DIR. Dispatch it directly to the
+    ; directory implementation so one shell command does not create a
+    ; second asynchronous child task. The old LIST wrapper could accumulate
+    ; DIR children when commands were entered quickly enough to exhaust task
+    ; slots before their data pages were reclaimed.
+    move.l  r20, #4
+    bne     r17, r20, .sh_list_alias_done
+    load.b  r20, (r15)
+    or      r20, r20, #0x20
+    move.l  r21, #0x6C
+    bne     r20, r21, .sh_list_alias_done
+    load.b  r20, 1(r15)
+    or      r20, r20, #0x20
+    move.l  r21, #0x69
+    bne     r20, r21, .sh_list_alias_done
+    load.b  r20, 2(r15)
+    or      r20, r20, #0x20
+    move.l  r21, #0x73
+    bne     r20, r21, .sh_list_alias_done
+    load.b  r20, 3(r15)
+    or      r20, r20, #0x20
+    move.l  r21, #0x74
+    bne     r20, r21, .sh_list_alias_done
+    move.l  r20, #0x44
+    store.b r20, (r14)
+    move.l  r20, #0x49
+    store.b r20, 1(r14)
+    move.l  r20, #0x52
+    store.b r20, 2(r14)
+    store.b r0, 3(r14)
+    add     r19, r14, #3               ; common increment below → args at +4
+.sh_list_alias_done:
     add     r19, r19, #1               ; advance past null
 
     ; 2. Copy args (everything after first word + space) after null.
