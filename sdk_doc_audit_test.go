@@ -3812,7 +3812,7 @@ func TestSDKCompanionDocs_ArchitecturePerformanceRoadmapClaimsMatchSource(t *tes
 }
 
 func TestSDKCompanionDocs_ArchitectureRuntimeAudioAndRaspberryPiProfilesMatchSource(t *testing.T) {
-	doc := readDoc(t, "sdk/docs/architecture.md")
+	doc := readAuditFile(t, "sdk/docs/architecture.md")
 	for _, want := range []string{
 		"IE_AUDIO_BACKEND selects `oto`, `jack`, or `null`.",
 		"The default and `oto` paths try Oto and then silent output.",
