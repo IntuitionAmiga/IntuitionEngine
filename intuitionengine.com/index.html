@@ -1311,14 +1311,14 @@ SOUND STOP</code></pre>
         <article class="card" style="margin-top: 1rem">
           <span class="kicker">IE64 CPU</span>
           <h3>The native 64-bit core</h3>
-          <p>A 64-bit RISC load-store CPU with 32 general-purpose registers (R0 hardwired to zero), fixed 8-byte instructions and a 16-register control bank. Integer branches compare registers directly, so there is no flags register. The live image JIT-compiles it to x86-64, while the browser build compiles hot blocks to WebAssembly.</p>
+          <p>A 64-bit RISC load-store CPU with 32 general-purpose registers (R0 hardwired to zero), fixed 8-byte instructions and a 16-register control bank. Integer branches compare registers directly, so there is no flags register. The x86-64 live image JIT-compiles it to native x86-64 code, while the browser build compiles hot blocks to WebAssembly.</p>
           <p>The FPU adds 16 IEEE-754 registers, single precision with double precision on even and odd pairs. A six-level paged MMU brings address translation, page-level access control and supervisor access guards, with a hardware trap-frame stack that preserves the fault-control registers across nested traps, so a handler survives a second fault without saving them by hand. Six sequentially-consistent 64-bit atomics, compare-and-swap, exchange, fetch-and-add and the bitwise operations, each act as a full memory barrier: the lock-free backbone for six CPUs on one bus. IntuitionOS and BASIC AOT both target it.</p>
         </article>
 
         <article class="card" style="margin-top: 1rem">
           <span class="kicker">JIT</span>
           <h3>JIT compilers for six CPUs</h3>
-          <p>In the live image, IE64, IE32, M68K, x86, Z80 and 6502 compile guest code to x86-64 machine code as it runs. In the browser, all six CPUs have WebAssembly JITs. The x86 JIT requires WebAssembly SIMD. Every available JIT starts enabled, including programmes launched from BASIC and JIT-capable coprocessor services. If a backend is unavailable, execution stays with the relevant interpreter. Instructions and accesses that cannot stay in compiled code use the relevant interpreter or helper path with guest state preserved. The compilers handle self-modifying code and include CPU-specific floating-point paths for the IE64 FPU, M68K 68881 and x86 x87.</p>
+          <p>In the x86-64 live image, IE64, IE32, M68K, x86, Z80 and 6502 compile guest code to x86-64 machine code as it runs. In the browser, all six CPUs have WebAssembly JITs. The x86 JIT requires WebAssembly SIMD. Every available JIT starts enabled, including programmes launched from BASIC and JIT-capable coprocessor services. If a backend is unavailable, execution stays with the relevant interpreter. Instructions and accesses that cannot stay in compiled code use the relevant interpreter or helper path with guest state preserved. The compilers handle self-modifying code and include CPU-specific floating-point paths for the IE64 FPU, M68K 68881 and x86 x87.</p>
           <p>Even with the paged MMU enabled, IE64 code stays JIT-compiled: the dispatcher keys native blocks by translation state, and data, stack, floating-point and control-flow accesses that need address translation take a helper exit and resume in native code instead of bailing the whole block.</p>
         </article>
       </div>
@@ -1333,7 +1333,7 @@ SOUND STOP</code></pre>
         <div class="grid two">
           <article class="card">
             <h3>Common ranges</h3>
-            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal, keyboard, mouse and USB gamepad input, CPU wait, shared network sockets, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. The socket block gives machine-language programmes IPv4 TCP and UDP in every recognised non-BASIC mode. Through the host-command helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates the live image's host OS packages, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
+            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal, keyboard, mouse and USB gamepad input, CPU wait, shared network sockets, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. The socket block gives machine-language programmes IPv4 TCP and UDP in every recognised non-BASIC mode. Through the host-command helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates the appliance, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
             <div class="tag-row">
               <span class="tag">SYSINFO</span>
               <span class="tag">FILE_DATA_PTR64</span>
@@ -1459,7 +1459,7 @@ Mode: 960 x 540 RGBA32, stride 3840</code></pre>
           <article class="card">
             <span class="kicker">IntuitionOS &middot; security</span>
             <h3>Capability-based isolation</h3>
-            <p>A task only reaches the memory and hardware it was granted. Shared memory is handed out as opaque capability handles, reference-counted and scrubbed to zero when the last mapping drops, and MMIO maps only through explicit grants. The IE64 MMU gives every task its own page tables with separate code, stack and data and W^X enforcement, guard pages catch overruns, and the kernel validates every user pointer before it reads across the supervisor boundary.</p>
+            <p>A task only reaches the memory and hardware it was granted. Each task has separate limits for private pages, message ports, waiters, shared-memory pages and grants. Shared memory is handed out as opaque capability handles, reference-counted and scrubbed to zero when the last mapping drops, and MMIO maps only through explicit grants. The IE64 MMU gives every task its own page tables with separate code, stack and data and W^X enforcement, guard pages catch overruns, and the kernel validates every user pointer before it reads across the supervisor boundary.</p>
             <p>At build time, programmes are position-independent for ASLR, no segment may be both writable and executable, and the ELF loader rejects dynamic linking, external-symbol relocation and text relocations. Kernel ASLR and a stack canary are in progress.</p>
           </article>
           <article class="card">
@@ -1925,7 +1925,7 @@ SOUND PLAY "SONG.MID"</code></pre>
             <pre class="code-panel"><code>ie64-cproc -o demo.ie64 demo.c</code></pre>
             <p>Copy <code>demo.ie64</code> to the machine's file area, then type this at the BASIC prompt:</p>
             <pre class="code-panel"><code>RUN "demo.ie64"</code></pre>
-            <p>The Linux x86-64 Host SDK requires glibc 2.38 or newer. It includes <code>ie32asm</code>, <code>ie32to64</code>, <code>ie64-cproc</code>, QBE, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie64ld</code>, <code>ie64-ar</code>, <code>ie64-ranlib</code>, headers, documentation and the bare-metal libraries.</p>
+            <p>The downloadable x86-64 Linux Host SDK includes <code>ie32asm</code>, <code>ie32to64</code>, <code>ie64-cproc</code>, QBE, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie64ld</code>, <code>ie64-ar</code>, <code>ie64-ranlib</code>, headers, documentation and the bare-metal libraries.</p>
             <div class="actions">
               <a class="button" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz" download>Download the Host SDK</a>
               <a class="button secondary" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz.sha256" download>SHA-256 checksum</a>

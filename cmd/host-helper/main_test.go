@@ -60,6 +60,62 @@ func TestRunUpdateExitCodes(t *testing.T) {
 	}
 }
 
+func TestTargetPackageNeedsRepair(t *testing.T) {
+	tests := []struct {
+		name   string
+		pkg    string
+		output []byte
+		want   bool
+	}{
+		{name: "configured", pkg: "intuitionengine-amd64-v3", output: []byte("install ok installed"), want: false},
+		{name: "unpacked", pkg: "intuitionengine-amd64-v3", output: []byte("install ok unpacked"), want: true},
+		{name: "missing package", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := &recordingCommandRunner{output: tt.output}
+			if got := targetPackageNeedsRepair(context.Background(), runner, tt.pkg); got != tt.want {
+				t.Fatalf("targetPackageNeedsRepair() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunHostUpdateRepairExitCodes(t *testing.T) {
+	runner := &recordingCommandRunner{failAt: 1}
+	if got := runHostUpdateRepair(context.Background(), io.Discard, io.Discard, runner, "intuitionengine-amd64-v3"); got != exitAptReinstallFailed {
+		t.Fatalf("reinstall failure code = %d, want %d", got, exitAptReinstallFailed)
+	}
+	runner = &recordingCommandRunner{failAt: 2}
+	if got := runHostUpdateRepair(context.Background(), io.Discard, io.Discard, runner, "intuitionengine-amd64-v3"); got != exitAptConfigureFailed {
+		t.Fatalf("configure failure code = %d, want %d", got, exitAptConfigureFailed)
+	}
+}
+
+func TestRunUpdateRepairsOnlyAnUnconfiguredEnginePackage(t *testing.T) {
+	runner := &recordingCommandRunner{failAt: 2, output: []byte("install ok unpacked")}
+	if got := runUpdateForTarget(context.Background(), io.Discard, io.Discard, runner, "intuitionengine-amd64-v3"); got != exitOK {
+		t.Fatalf("runUpdateForTarget() = %d, want %d", got, exitOK)
+	}
+	want := []recordedCommand{
+		{Path: "/usr/bin/apt-get", Args: []string{"update"}},
+		{Path: "/usr/bin/apt-get", Args: []string{"upgrade", "-y", "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"}},
+		{Path: "/usr/bin/apt-get", Args: []string{"install", "--reinstall", "-y", "intuitionengine-amd64-v3"}},
+		{Path: "/usr/bin/dpkg", Args: []string{"--configure", "-a"}},
+	}
+	if !reflect.DeepEqual(runner.commands, want) {
+		t.Fatalf("commands = %#v, want %#v", runner.commands, want)
+	}
+
+	runner = &recordingCommandRunner{failAt: 2, output: []byte("install ok installed")}
+	if got := runUpdateForTarget(context.Background(), io.Discard, io.Discard, runner, "intuitionengine-amd64-v3"); got != exitAptUpgradeFailed {
+		t.Fatalf("configured-package failure code = %d, want %d", got, exitAptUpgradeFailed)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("configured-package failure ran %d commands, want 2", len(runner.commands))
+	}
+}
+
 func TestRunWiFiConnectExitCodes(t *testing.T) {
 	tests := []struct {
 		name   string

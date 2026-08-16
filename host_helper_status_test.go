@@ -16,6 +16,8 @@ func TestHostHelperExitStatusText(t *testing.T) {
 		{name: "timeout", code: HostHelperExitWiFiTimeout, want: "Failed: timeout"},
 		{name: "apt update", code: HostHelperExitAptUpdateFailed, want: "Failed: apt-get update"},
 		{name: "apt upgrade", code: HostHelperExitAptUpgradeFailed, want: "Failed: apt-get upgrade"},
+		{name: "apt reinstall", code: HostHelperExitAptReinstallFailed, want: "Failed: apt-get install --reinstall"},
+		{name: "dpkg configure", code: HostHelperExitAptConfigureFailed, want: "Failed: dpkg --configure -a"},
 		{name: "unknown", code: 99, want: "Failed: exit 99"},
 	}
 

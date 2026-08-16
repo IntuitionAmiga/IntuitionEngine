@@ -1,0 +1,1 @@
+make bump-intuitionengine-version && make release-intuitionengine-repository && make -j x64-live && make -j rpi-live-images && make -j wasm-deploy && cd intuitionengine.com/ && netlify deploy --prod && cd ..

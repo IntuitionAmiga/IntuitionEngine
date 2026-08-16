@@ -6,11 +6,18 @@ profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-hos
   dbus send bus=system,
 
   /usr/libexec/intuitionengine-host-helper mr,
+  /opt/ie/IntuitionEngine r,
+  /opt/ie/IntuitionEngine.previous rw,
+  /usr/lib/intuitionengine/package-check ixr,
+  /usr/share/intuitionengine/IntuitionEngine.sha256 r,
   /run/intuitionengine-host-helper.sock rw,
   /run/dbus/system_bus_socket rw,
   /run/systemd/private rw,
   /usr/bin/nmcli ixr,
   /usr/bin/systemctl ixr,
+  /usr/bin/dpkg-query ixr,
+  /etc/ie/update-target r,
+  /var/lib/dpkg/status r,
   /usr/bin/apt-get Cx -> apt,
   /usr/lib/aarch64-linux-gnu/** mr,
   /lib/aarch64-linux-gnu/** mr,
@@ -50,6 +57,7 @@ profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-hos
     /usr/sbin/** mixr,
     /usr/lib/** mixr,
     /var/lib/dpkg/info/* ixr,
+    /usr/lib/intuitionengine/package-check Px -> ie-package-check,
 
     /etc/** rwkl,
     /usr/** rwkl,
@@ -66,5 +74,36 @@ profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-hos
     /run/** rwkl,
     /proc/** r,
     /sys/** r,
+  }
+
+  profile ie-package-check /usr/lib/intuitionengine/package-check flags=(attach_disconnected) {
+    #include <abstractions/base>
+    /usr/lib/intuitionengine/package-check mr,
+    /bin/sh ixr,
+    /bin/dash ixr,
+    /bin/cp ixr,
+    /usr/bin/cp ixr,
+    /usr/bin/grep ixr,
+    /usr/bin/sha256sum ixr,
+    /opt/ie/IntuitionEngine rwix,
+    /opt/ie/IntuitionEngine.previous rw,
+    /usr/share/intuitionengine/IntuitionEngine.sha256 r,
+    /etc/ie/update-target r,
+    /lib/aarch64-linux-gnu/** mr,
+    /usr/lib/aarch64-linux-gnu/** mr,
+    /run/dbus/system_bus_socket rw,
+    /run/systemd/private rw,
+    /usr/bin/systemctl Cx -> ie-package-systemctl,
+
+    profile ie-package-systemctl /usr/bin/systemctl flags=(attach_disconnected) {
+      #include <abstractions/base>
+      #include <abstractions/dbus>
+      /usr/bin/systemctl mr,
+      /etc/systemd/** r,
+      /usr/lib/systemd/** r,
+      /run/dbus/system_bus_socket rw,
+      /run/systemd/private rw,
+      dbus send bus=system,
+    }
   }
 }

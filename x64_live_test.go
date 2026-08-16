@@ -22,6 +22,12 @@ func TestX64LiveMakefileTargets(t *testing.T) {
 		".PHONY: x64-live-qemu",
 		"X64_LIVE_DIR ?= build/x64-live",
 		"X64_LIVE_IMG ?= $(X64_LIVE_DIR)/intuition-engine-x64.img",
+		"X64_QEMU_ACCEL ?= -enable-kvm",
+		"X64_QEMU_CPU ?= host",
+		"X64_QEMU_DISPLAY ?= gtk,gl=on",
+		"X64_QEMU_VIDEO_DEVICE ?= virtio-vga-gl",
+		"X64_QEMU_AUDIO_DRIVER ?= driver=pipewire",
+		"X64_QEMU_SNAPSHOT ?= -snapshot",
 		"CHOCOLATE_DOOM_DIR ?= ../chocolate-doom",
 		"IEDOOM_IE86 ?= build/iedoom.ie86",
 		"IEDOOM_IE68 ?= build/iedoom.ie68",
@@ -29,7 +35,7 @@ func TestX64LiveMakefileTargets(t *testing.T) {
 		"override GOAMD64 := v3",
 		"export GOAMD64",
 		"GOOS=linux GOARCH=amd64 GOAMD64=v3 CGO_ENABLED=1",
-		"$(GO) build $(GO_FLAGS) -trimpath -pgo=default.pgo",
+		"$(GO) build $(GO_FLAGS) -trimpath -pgo=$(PGO_PROFILE)",
 		"-tags \"$(VM_EMBED_TAGS)\"",
 		"-o $(BIN_DIR)/IntuitionEngine_v3 .",
 		"x86-64-v3: x64-live-embed-assets",
@@ -37,20 +43,20 @@ func TestX64LiveMakefileTargets(t *testing.T) {
 		`test -f "$(EMUTOS_ROM)"`,
 		`test -f "$(AROS_ROM)"`,
 		`test -f "sdk/examples/prebuilt/ehbasic_ie64.ie64"`,
-		"x64-live: x86-64-v3",
+		"x64-live: deb-intuitionengine-amd64-v3",
 		"x64-live-demos",
 		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh`,
-		"x64-live-rebuild-golden: x86-64-v3",
+		"x64-live-rebuild-golden: deb-intuitionengine-amd64-v3",
 		`X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden`,
 		".PHONY: x64-live-payload-check",
 		"x64-live-qemu: $(X64_LIVE_IMG)",
 		"$(X64_LIVE_IMG):",
 		"OVMF_CODE ?=",
 		"qemu-system-x86_64",
-		"-cpu host",
-		"-bios $(OVMF_CODE)",
+		"-cpu $(X64_QEMU_CPU)",
+		"-drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE)",
 		"-drive file=$(X64_LIVE_IMG),format=raw,if=virtio",
-		"-audiodev pipewire,id=snd0",
+		"-audiodev $(X64_QEMU_AUDIO_DRIVER),id=snd0",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Makefile missing %q", want)
@@ -290,6 +296,10 @@ func TestX64LiveBinaryEmbedsAllROMs(t *testing.T) {
 		`VM_EMBED_TAGS := embed_basic embed_emutos embed_aros`,
 		`-tags "$(VM_EMBED_TAGS)"`,
 		`IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"`,
+		`IE_PACKAGE_FILE="${IE_PACKAGE_FILE:-${SCRIPT_DIR}/build/debian/intuitionengine-amd64-v3_`,
+		`scripts/install-intuitionengine-package.sh --package "$IE_PACKAGE_FILE"`,
+		`write ${package_root}/opt/ie/IntuitionEngine.previous /opt/ie/IntuitionEngine.previous`,
+		`write ${package_root}/var/lib/dpkg/status /var/lib/dpkg/status`,
 	} {
 		if !strings.Contains(text+readX64LiveScript(t), want) {
 			t.Fatalf("live image embed contract missing %q", want)
@@ -330,7 +340,7 @@ func TestX64LiveScriptContract(t *testing.T) {
 		`virt-filesystems returned no CSV output`,
 		`payload_require_file "$PLYMOUTH_SPLASH" "restore splash.png" "Plymouth splash image"`,
 		`mformat -i "$fat_img" -F -v "${FATSHARE_LABEL}" ::`,
-		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum /sbin/debugfs)`,
+		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file gpg python3 go sha256sum /sbin/debugfs)`,
 		`required_cmds+=(mformat mcopy rsync)`,
 		`local archive_path="${OUTPUT_IMG%.img}.zip"`,
 		`zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=1, allowZip64=True)`,
@@ -566,7 +576,9 @@ func TestX64LiveHostHelperSecurityContract(t *testing.T) {
 		`/usr/bin/pkexec ix,`,
 		`/usr/libexec/intuitionengine-host-helper Px,`,
 		`profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-host-helper flags=(attach_disconnected)`,
-		`/usr/bin/apt-get Ux,`,
+		`/usr/bin/apt-get Cx -> apt,`,
+		`profile apt flags=(attach_disconnected) {`,
+		`profile ie-package-check /usr/lib/intuitionengine/package-check flags=(attach_disconnected) {`,
 		`/usr/bin/systemctl Cx -> systemctl,`,
 		`/run/dbus/system_bus_socket rw,`,
 		`/run/intuitionengine-host-helper.sock rw,`,
@@ -646,7 +658,7 @@ func TestX64LiveNoShareDoesNotRequireMtools(t *testing.T) {
 	body := readX64LiveScript(t)
 
 	for _, want := range []string{
-		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum /sbin/debugfs)`,
+		`local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file gpg python3 go sha256sum /sbin/debugfs)`,
 		`if [[ "${CREATE_SHARE}" == "true" ]]; then`,
 		`required_cmds+=(mformat mcopy rsync)`,
 	} {

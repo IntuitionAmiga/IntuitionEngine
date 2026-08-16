@@ -36,12 +36,15 @@ guestfish() { "$guestfish_bin" "$@"; }
 
 board=""
 binary=""
+package=""
 output=""
 source_image=""
 golden="${project_dir}/rpi-ie-golden.img"
 manifest="${project_dir}/scripts/rpi-ie-golden.manifest"
 payload=""
 work_dir=""
+app_version="${IE_APP_VERSION:-1.0.0}"
+repository_keyring="${IE_REPOSITORY_KEYRING:-${project_dir}/intuitionengine.com/intuitionengine-archive-keyring.gpg}"
 legacy_assets=""
 host_helper="${RPI_HOST_HELPER:-${project_dir}/build/rpi-live/intuitionengine-host-helper}"
 check_payload=false
@@ -50,17 +53,17 @@ create_share=true
 usage() {
     cat >&2 <<'EOF'
 Usage: build_rpi_live_image.sh --board pi4|pi400|pi5 --binary FILE --output FILE [options]
-Options: --golden FILE --manifest FILE --source-image FILE --payload DIR --work-dir DIR
+Options: --package FILE --golden FILE --manifest FILE --source-image FILE --payload DIR --work-dir DIR
          --check-payload --no-share
 EOF
 }
 
 while (($#)); do
     case "$1" in
-        --board|--binary|--output|--golden|--manifest|--source-image|--assets|--payload|--work-dir)
+        --board|--binary|--package|--output|--golden|--manifest|--source-image|--assets|--payload|--work-dir)
             (($# >= 2)) || fail "missing value for $1"
             case "$1" in
-                --board) board="$2" ;; --binary) binary="$2" ;; --output) output="$2" ;;
+                --board) board="$2" ;; --binary) binary="$2" ;; --package) package="$2" ;; --output) output="$2" ;;
                 --golden) golden="$2" ;; --manifest) manifest="$2" ;; --assets) legacy_assets="$2" ;;
                 --source-image) source_image="$2" ;;
                 --payload) payload="$2" ;; --work-dir) work_dir="$2" ;;
@@ -78,6 +81,7 @@ if [[ -n "$source_image" ]] && ! "$create_share"; then
     fail "--source-image cannot be combined with --no-share"
 fi
 [[ -n "$binary" && -f "$binary" ]] || fail "missing ARM64 binary"
+case "$board" in pi4|pi400) package_target=intuitionengine-arm64-pi4 ;; pi5) package_target=intuitionengine-arm64-pi5 ;; esac
 [[ -n "$payload" && -d "$payload" ]] || fail "missing payload directory"
 for required in ie-session.sh ie-launch.sh ie-grow-share.sh ie-grow-share.service greetd-config.toml opt.ie.IntuitionEngine usr.libexec.intuitionengine-host-helper ie-apparmor.service ie-host-helper.service ie-firewall.service ie-no-vt-switch.service ie-no-vt-switch.map; do
     [[ -f "$appliance_assets/$required" ]] || fail "missing Raspberry Pi appliance asset: $required"
@@ -224,6 +228,47 @@ fi
 [[ -n "$output" ]] || fail "missing output path"
 [[ -n "$work_dir" ]] || work_dir="$(dirname "$output")/work"
 output_canonical="$(realpath -m "$output")"
+package_root="$work_dir/intuitionengine-package-root"
+if [[ "${RPI_TEST_MODE:-0}" == 1 && -n "${RPI_PACKAGE_ROOT:-}" ]]; then
+    package_root="$RPI_PACKAGE_ROOT"
+else
+    status_image="$golden"
+    if [[ -n "$source_image" ]]; then
+        status_image="$source_image"
+    fi
+    [[ -f "$status_image" ]] || fail "missing source image for dpkg status: $status_image"
+    base_status="$work_dir/base-dpkg.status"
+    guestfish --ro -a "$status_image" run : mount-ro /dev/sda2 / : cat /var/lib/dpkg/status >"$base_status"
+    if [[ -z "$package" ]]; then
+        package="$(scripts/build-intuitionengine-deb.sh --target "$package_target" --app-version "$app_version" --binary "$binary" --output-dir "$work_dir/debian")"
+    fi
+    [[ -f "$package" ]] || fail "missing IntuitionEngine package: $package"
+    [[ -f "$repository_keyring" ]] || fail "missing repository public keyring: $repository_keyring"
+    need gpg
+    [[ "$(gpg --show-keys --with-colons "$repository_keyring" | awk -F: '$1 == "pub" { count++ } END { print count + 0 }')" == 1 ]] || fail "repository keyring must contain exactly one public key"
+    if gpg --list-packets "$repository_keyring" 2>/dev/null | grep -q '^:.*secret'; then
+        fail "repository keyring contains private key material"
+    fi
+    rm -rf "$package_root"
+    mkdir -p "$package_root"
+    scripts/install-intuitionengine-package.sh --package "$package" --root "$package_root" --target "$package_target" --app-version "$app_version" --base-status "$base_status" --keyring "$repository_keyring"
+fi
+for package_path in \
+    "$package_root/opt/ie/IntuitionEngine" \
+    "$package_root/opt/ie/IntuitionEngine.previous" \
+    "$package_root/etc/ie/update-target" \
+    "$package_root/etc/apt/sources.list.d/intuitionengine.list" \
+    "$package_root/usr/share/keyrings/intuitionengine-archive-keyring.gpg" \
+    "$package_root/usr/share/intuitionengine/IntuitionEngine.sha256" \
+    "$package_root/usr/lib/intuitionengine/package-check" \
+    "$package_root/var/lib/dpkg/status" \
+    "$package_root/var/lib/dpkg/info/$package_target.list" \
+    "$package_root/var/lib/dpkg/info/$package_target.preinst" \
+    "$package_root/var/lib/dpkg/info/$package_target.postinst"; do
+    [[ -f "$package_path" ]] || fail "package root lacks required file: $package_path"
+done
+grep -Fxq "$package_target" "$package_root/etc/ie/update-target" || fail "package root target does not match board"
+cmp -s "$package_root/opt/ie/IntuitionEngine" "$binary" || fail "package binary differs from requested board binary"
 
 if [[ -n "$source_image" ]]; then
     [[ -f "$source_image" ]] || fail "missing source appliance image: $source_image"
@@ -236,7 +281,7 @@ if [[ -n "$source_image" ]]; then
     rm -f "$tmp_output"
     cp --reflink=auto --sparse=always "$source_image" "$tmp_output"
     [[ "$(sha256sum "$source_image" | awk '{print $1}')" == "$source_sha" ]] || fail "source appliance image changed while copying"
-    guestfish --rw -a "$tmp_output" run : mount /dev/sda2 / : rm /opt/ie/IntuitionEngine : copy-in "$binary" /opt/ie/ : mv "/opt/ie/$(basename "$binary")" /opt/ie/IntuitionEngine : chmod 0755 /opt/ie/IntuitionEngine
+    guestfish --rw -a "$tmp_output" run : mount /dev/sda2 / : rm-f /opt/ie/IntuitionEngine : rm-f /opt/ie/IntuitionEngine.previous : rm-f /etc/ie/update-target : rm-f /etc/apt/sources.list.d/intuitionengine.list : rm-f /usr/share/keyrings/intuitionengine-archive-keyring.gpg : rm-f /usr/share/intuitionengine/IntuitionEngine.sha256 : rm-f /usr/lib/intuitionengine/package-check : rm-f /var/lib/dpkg/status : rm-f /var/lib/dpkg/info/$package_target.list : rm-f /var/lib/dpkg/info/$package_target.preinst : rm-f /var/lib/dpkg/info/$package_target.postinst : copy-in "$package_root/opt/ie/IntuitionEngine" /opt/ie/ : copy-in "$package_root/opt/ie/IntuitionEngine.previous" /opt/ie/ : copy-in "$package_root/etc/ie/update-target" /etc/ie/ : copy-in "$package_root/etc/apt/sources.list.d/intuitionengine.list" /etc/apt/sources.list.d/ : copy-in "$package_root/usr/share/keyrings/intuitionengine-archive-keyring.gpg" /usr/share/keyrings/ : copy-in "$package_root/usr/share/intuitionengine/IntuitionEngine.sha256" /usr/share/intuitionengine/ : copy-in "$package_root/usr/lib/intuitionengine/package-check" /usr/lib/intuitionengine/ : copy-in "$package_root/var/lib/dpkg/status" /var/lib/dpkg/ : copy-in "$package_root/var/lib/dpkg/info/$package_target.list" /var/lib/dpkg/info/ : copy-in "$package_root/var/lib/dpkg/info/$package_target.preinst" /var/lib/dpkg/info/ : copy-in "$package_root/var/lib/dpkg/info/$package_target.postinst" /var/lib/dpkg/info/ : chmod 0755 /opt/ie/IntuitionEngine
     mv "$tmp_output" "$output"
     finalise_output
     exit 0
@@ -280,9 +325,9 @@ printf '%s\n' "$boot_args" >"$boot_cmdline"
 guestfish --rw -a "$tmp_output" run : mount /dev/sda1 / : upload "$boot_cmdline" /cmdline.txt
 
 # Image population is intentionally offline.  guestfish obtains no ARM64 execution path.
-guestfish --rw -a "$tmp_output" run : mount /dev/sda2 / : mkdir-p /opt/ie : mkdir-p /var/ie/share : mkdir-p /var/ie/state : mkdir-p /var/ie/runtime : mkdir-p /usr/libexec : \
-    copy-in "$binary" /opt/ie/ : \
-    copy-in "$host_helper" /usr/libexec/ : mv "/opt/ie/$(basename "$binary")" /opt/ie/IntuitionEngine : chmod 0755 /opt/ie/IntuitionEngine : chmod 0755 /usr/libexec/intuitionengine-host-helper : chown "$ie_uid" "$ie_gid" /var/ie : chown "$ie_uid" "$ie_gid" /var/ie/share : chown "$ie_uid" "$ie_gid" /var/ie/state : chown "$ie_uid" "$ie_gid" /var/ie/runtime
+guestfish --rw -a "$tmp_output" run : mount /dev/sda2 / : mkdir-p /opt/ie : mkdir-p /var/ie/share : mkdir-p /var/ie/state : mkdir-p /var/ie/runtime : mkdir-p /usr/libexec : mkdir-p /etc/ie : mkdir-p /etc/apt/sources.list.d : mkdir-p /usr/share/keyrings : mkdir-p /usr/share/intuitionengine : mkdir-p /usr/lib/intuitionengine : mkdir-p /var/lib/dpkg/info : rm-f /opt/ie/IntuitionEngine : rm-f /opt/ie/IntuitionEngine.previous : rm-f /etc/ie/update-target : rm-f /etc/apt/sources.list.d/intuitionengine.list : rm-f /usr/share/keyrings/intuitionengine-archive-keyring.gpg : rm-f /usr/share/intuitionengine/IntuitionEngine.sha256 : rm-f /usr/lib/intuitionengine/package-check : rm-f /var/lib/dpkg/status : rm-f /var/lib/dpkg/info/$package_target.list : rm-f /var/lib/dpkg/info/$package_target.preinst : rm-f /var/lib/dpkg/info/$package_target.postinst : \
+    copy-in "$package_root/opt/ie/IntuitionEngine" /opt/ie/ : copy-in "$package_root/opt/ie/IntuitionEngine.previous" /opt/ie/ : copy-in "$package_root/etc/ie/update-target" /etc/ie/ : copy-in "$package_root/etc/apt/sources.list.d/intuitionengine.list" /etc/apt/sources.list.d/ : copy-in "$package_root/usr/share/keyrings/intuitionengine-archive-keyring.gpg" /usr/share/keyrings/ : copy-in "$package_root/usr/share/intuitionengine/IntuitionEngine.sha256" /usr/share/intuitionengine/ : copy-in "$package_root/usr/lib/intuitionengine/package-check" /usr/lib/intuitionengine/ : copy-in "$package_root/var/lib/dpkg/status" /var/lib/dpkg/ : copy-in "$package_root/var/lib/dpkg/info/$package_target.list" /var/lib/dpkg/info/ : copy-in "$package_root/var/lib/dpkg/info/$package_target.preinst" /var/lib/dpkg/info/ : copy-in "$package_root/var/lib/dpkg/info/$package_target.postinst" /var/lib/dpkg/info/ : \
+    copy-in "$host_helper" /usr/libexec/ : chmod 0755 /opt/ie/IntuitionEngine : chmod 0755 /usr/lib/intuitionengine/package-check : chmod 0755 /usr/libexec/intuitionengine-host-helper : chown "$ie_uid" "$ie_gid" /var/ie : chown "$ie_uid" "$ie_gid" /var/ie/share : chown "$ie_uid" "$ie_gid" /var/ie/state : chown "$ie_uid" "$ie_gid" /var/ie/runtime
 guestfish --rw -a "$tmp_output" run : mount /dev/sda2 / : mkdir-p /etc/greetd : mkdir-p /etc/apparmor.d : mkdir-p /usr/local/sbin : mkdir-p /usr/local/share/kbd/keymaps : mkdir-p /etc/systemd/system : mkdir-p /etc/systemd/system/greetd.service.requires : mkdir-p /etc/systemd/system/ie-host-helper.service.requires : mkdir-p /etc/systemd/system/graphical.target.wants : mkdir-p /etc/systemd/system/multi-user.target.wants : mkdir-p /etc/systemd/system/network-pre.target.wants : \
     copy-in "$appliance_assets/ie-session.sh" /opt/ie/ : copy-in "$appliance_assets/ie-launch.sh" /opt/ie/ : copy-in "$appliance_assets/ie-grow-share.sh" /usr/local/sbin/ : \
     copy-in "$appliance_assets/ie-grow-share.service" /etc/systemd/system/ : copy-in "$appliance_assets/greetd-config.toml" /etc/greetd/ : mv /etc/greetd/greetd-config.toml /etc/greetd/config.toml : \

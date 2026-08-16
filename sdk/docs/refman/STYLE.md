@@ -7,6 +7,41 @@ Author-only. Stripped at publish time. Never shipped to readers.
 This file is the binding plan for the Programmer's Reference Guide. If
 a chapter conflicts with this file, the chapter is wrong.
 
+## Current x87 and HOST UPDATE Editorial Pass
+
+This pass covers the reader-visible changes found after the last canonical
+PRG update. Execute it in reader order over Chapter 30 and Chapter 36, then
+Appendices G, I, and L and the claim ledger. Finish with focused source
+checks, strict publication, and PDF generation.
+
+The required reader-facing contracts are:
+
+- x86 provides the x87 environment operations `FLDENV`, `FNSTENV`,
+  `FRSTOR`, and `FNSAVE`, with the exact 28-byte environment layout and the
+  80-byte register area used by the full save and restore operations;
+- x87 environment fields are little-endian, the tag word is preserved by
+  save and restore, and `FNSAVE` resets the x87 after writing the saved
+  state;
+- Appendix G must contain the x86 x87 environment opcode crib, or Chapter
+  30 must not claim that Appendix G contains the complete FPU reference;
+- `HOST UPDATE` may perform one repair pass after an interrupted update;
+  exit `22` identifies failure while restoring the engine installation and
+  exit `23` identifies failure while completing its configuration.
+
+Chapter 30 must explain the x87 environment fields and give the `/4` and
+`/6` memory-form encodings needed for hand entry. Chapter 36 must add exit
+values `22` and `23` without exposing package-manager commands, repository
+paths, image-building details, or host implementation names. Appendix G
+must provide the x87 opcode and address-form crib. Appendix I must list the
+new HOST UPDATE results, and Appendix L must index the new x87 and HOST
+UPDATE terms.
+
+Do not mention JIT lowering, interpreter boundaries, host architectures,
+source paths, build commands, tests, package managers, repositories, or
+release tooling in reader-facing prose. Those details belong only in the
+author ledger. Do not change the existing `GET` description in this pass:
+the implementation now matches the current Chapter 2 text.
+
 ## Canonical Source Rule
 
 All technical claims about Intuition Engine, its CPUs, buses, memory

@@ -140,6 +140,10 @@ symbols, and Appendix J gives the full memory map.
 | Frequency tables | Appendix E |
 | FRESTORE | Chapter 29, Appendix G, Appendix H |
 | FSAVE | Chapter 29, Appendix G, Appendix H |
+| FLDENV | Chapter 30, Appendix G |
+| FNSTENV | Chapter 30, Appendix G |
+| FNSAVE | Chapter 30, Appendix G |
+| FRSTOR | Chapter 30, Appendix G |
 | FPU data-register operands | Chapter 29, Appendix G |
 | FPU state frame | Chapter 29, Appendix H |
 
@@ -163,6 +167,7 @@ symbols, and Appendix J gives the full memory map.
 | HALT after bootstrap | Chapter 51, Chapter 54 |
 | Halted-CPU effect | Chapter 51, Chapter 54 |
 | HOST command | Chapter 36, Appendix I |
+| HOST UPDATE repair results | Chapter 36, Appendix I |
 | HOST_SOCKET_CMD | Chapter 39, Appendix D, Appendix H |
 | HOST_SOCKET_ERRNO | Chapter 39, Appendix D, Appendix I |
 | HOST_SOCKET_REQ_PTR | Chapter 39, Appendix D, Appendix H |

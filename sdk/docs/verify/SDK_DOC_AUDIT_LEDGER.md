@@ -4061,6 +4061,40 @@ Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` are outside scope
 and remain read-only and checksum-protected.
 Disposition: KEEP.
 
+ID: SDK-DOC-0112
+Status: FIXED
+Document: `sdk/docs/architecture.md`, its empirical inventory and companion
+gates, and the five companion PDFs.
+Section: Signed Debian package and live-image delivery re-audit.
+Claim: The current tracked release changes add target-specific Debian
+packages to the x64 and Raspberry Pi live-image build paths. The public
+architecture manual must state the package identities, checksum and guarded
+restart/rollback behaviour, image-builder binary identity check, and signed
+repository/index contract without inventing claims about the guest ISA or
+IEMon/IEScript APIs.
+Purpose judgement: This is host deployment architecture and belongs in
+`architecture.md`'s build-profile section. It does not change IE64/IE32 CPU
+semantics, monitor commands, or IEScript bindings.
+Canonical sources checked: current `Makefile`, `build_x64_ie_img.sh`,
+`scripts/build_rpi_live_image.sh`, `scripts/build-intuitionengine-deb.sh`,
+`scripts/install-intuitionengine-package.sh`,
+`scripts/stage-intuitionengine-repository.sh`, host-helper update paths,
+release/package integration tests, and all current tracked changes outside
+the protected refman trees.
+Runnable verification: package/source inventory generation, all companion and
+ledger gates, `make check-docs`, protected-refman checksum comparison, final
+isolated five-PDF render, manifest verification, and independent PDF
+inspection.
+Observed result: Architecture now documents the three package targets,
+checksum manifest, previous-binary preservation and rollback conditions,
+package identity verification during image construction, signed repository
+metadata, architecture-separated indexes, HTTPS stable source, and target
+selection. No other book required a change.
+Action: Regenerate the five PDFs and render manifest after this ledger and
+Architecture update.
+Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` were not modified.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -4100,7 +4134,8 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
 `SDK-DOC-0104`, `SDK-DOC-0105`, `SDK-DOC-0106`, `SDK-DOC-0107`, and
-`SDK-DOC-0108`, `SDK-DOC-0109`, `SDK-DOC-0110`, and `SDK-DOC-0111`
+`SDK-DOC-0108`, `SDK-DOC-0109`, `SDK-DOC-0110`, `SDK-DOC-0111`, and
+`SDK-DOC-0112`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -4182,7 +4217,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0111` and
+Open claim-group backlog: none for this run after `SDK-DOC-0112` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate

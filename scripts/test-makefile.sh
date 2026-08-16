@@ -303,7 +303,7 @@ printf '%s\n' "$macos_release_job" | rg -q -- '-checklinkname=0.*main\.Version' 
 assert_var IEXEC_BUILD_DATE 2026-04-25
 assert_no_dup_assign IEXEC_BUILD_DATE
 assert_var NCORES
-assert_recipe_contains intuition-engine 'main\.Version=1\.0\.0'
+assert_recipe_contains intuition-engine "main\\.Version=$(cat VERSION)"
 assert_recipe_not_contains intuition-engine 'go mod tidy'
 assert_makefile_contains 'Checking AHI artifacts'
 assert_makefile_contains 'Drivers/Makefile\.in" 2>/dev/null \|\| true'
@@ -329,6 +329,18 @@ for target in rpi-4-arm64 rpi-400-arm64 rpi-5-arm64 rpi-arm64-preflight rpi-host
   assert_phony "$target"
   assert_target_exists "$target"
 done
+for target in check-intuitionengine-app-version deb-intuitionengine-amd64-v3 deb-intuitionengine-arm64-pi4 deb-intuitionengine-arm64-pi5 deb-intuitionengine release-intuitionengine-repository test-intuitionengine-packages test-intuitionengine-repository test-intuitionengine-release-secrets; do
+  assert_phony "$target"
+  assert_target_exists "$target"
+done
+assert_recipe_contains deb-intuitionengine-amd64-v3 'build-intuitionengine-deb\.sh.*intuitionengine-amd64-v3'
+assert_recipe_contains deb-intuitionengine-arm64-pi4 'build-intuitionengine-deb\.sh.*intuitionengine-arm64-pi4'
+assert_recipe_contains deb-intuitionengine-arm64-pi5 'build-intuitionengine-deb\.sh.*intuitionengine-arm64-pi5'
+assert_recipe_contains release-intuitionengine-repository 'stage-intuitionengine-repository\.sh'
+assert_makefile_contains '^x64-live: deb-intuitionengine-amd64-v3'
+assert_makefile_contains '^x64-live-rebuild-golden: deb-intuitionengine-amd64-v3'
+assert_recipe_contains build-image-pi4 'intuitionengine-arm64-pi4_.*\.deb'
+assert_recipe_contains build-image-pi5 'intuitionengine-arm64-pi5_.*\.deb'
 assert_recipe_contains rpi4-live-qemu 'rpi4_virt_qemu\.sh'
 assert_recipe_contains rpi4-live-hardware-qemu 'rpi4_live_qemu\.sh'
 assert_recipe_contains rpi-4-arm64 'GOARM64=v8\.0' -o x64-live-embed-assets

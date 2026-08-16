@@ -45,6 +45,9 @@ HOST_HELPER_PKGS="polkitd,pkexec,ufw,apparmor,apparmor-utils"
 ALL_PKGS="${KERNEL_PKG},${COMPOSITOR_PKGS},${X11_RUNTIME_PKGS},${AUDIO_PKGS},${MEDIA_PKGS},${SECUREBOOT_PKGS},${PLYMOUTH_PKGS},${SHARE_GROW_PKGS},${NETWORK_PKGS},${HOST_HELPER_PKGS}"
 IE_BINARY="${SCRIPT_DIR}/bin/IntuitionEngine_v3"
 IE_INSTALL_NAME="IntuitionEngine"
+IE_APP_VERSION="${IE_APP_VERSION:-1.0.0}"
+IE_PACKAGE_FILE="${IE_PACKAGE_FILE:-${SCRIPT_DIR}/build/debian/intuitionengine-amd64-v3_${IE_APP_VERSION}-1_amd64.deb}"
+IE_REPOSITORY_KEYRING="${IE_REPOSITORY_KEYRING:-${SCRIPT_DIR}/intuitionengine.com/intuitionengine-archive-keyring.gpg}"
 HOST_HELPER_BINARY="${WORK_DIR}/intuitionengine-host-helper"
 ROOT_PART_IMG="${WORK_DIR}/root-partition.ext4"
 PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"
@@ -167,7 +170,7 @@ trap cleanup EXIT
 
 check_dependencies() {
     log_section "Checking dependencies"
-    local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file python3 go sha256sum /sbin/debugfs)
+    local required_cmds=(aria2c curl virt-customize virt-resize virt-filesystems guestfish qemu-img file gpg python3 go sha256sum /sbin/debugfs)
     if [[ "${CREATE_SHARE}" == "true" ]]; then
         required_cmds+=(mformat mcopy rsync)
     fi
@@ -191,6 +194,23 @@ check_dependencies() {
     if [[ ! -f "$IE_BINARY" ]]; then
         log_error "Intuition Engine x86-64-v3 binary not found: $IE_BINARY"
         log_error "Run: make x86-64-v3"
+        exit 1
+    fi
+    if [[ ! -f "$IE_PACKAGE_FILE" ]]; then
+        log_error "Intuition Engine Debian package not found: $IE_PACKAGE_FILE"
+        log_error "Run: make deb-intuitionengine-amd64-v3"
+        exit 1
+    fi
+    if [[ ! -f "$IE_REPOSITORY_KEYRING" ]]; then
+        log_error "Repository public keyring not found: $IE_REPOSITORY_KEYRING"
+        exit 1
+    fi
+    if [[ "$(gpg --show-keys --with-colons "$IE_REPOSITORY_KEYRING" | awk -F: '$1 == "pub" { count++ } END { print count + 0 }')" != 1 ]]; then
+        log_error "Repository keyring must contain exactly one public key: $IE_REPOSITORY_KEYRING"
+        exit 1
+    fi
+    if gpg --list-packets "$IE_REPOSITORY_KEYRING" 2>/dev/null | grep -q '^:.*secret'; then
+        log_error "Repository keyring contains private key material: $IE_REPOSITORY_KEYRING"
         exit 1
     fi
     if ! file "$IE_BINARY" | grep -q "x86-64"; then
@@ -1260,7 +1280,14 @@ profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-hos
   network unix stream,
 
   /usr/libexec/intuitionengine-host-helper mr,
-  /usr/bin/apt-get Ux,
+  /opt/ie/IntuitionEngine r,
+  /opt/ie/IntuitionEngine.previous rw,
+  /usr/lib/intuitionengine/package-check ixr,
+  /usr/share/intuitionengine/IntuitionEngine.sha256 r,
+  /usr/bin/apt-get Cx -> apt,
+  /usr/bin/dpkg-query ixr,
+  /etc/ie/update-target r,
+  /var/lib/dpkg/status r,
   /usr/bin/systemctl Cx -> systemctl,
 
   /etc/NetworkManager/** r,
@@ -1299,6 +1326,91 @@ profile usr.libexec.intuitionengine-host-helper /usr/libexec/intuitionengine-hos
     dbus send
          bus=system
          peer=(name=org.freedesktop.systemd1),
+  }
+
+  profile apt flags=(attach_disconnected) {
+    #include <abstractions/base>
+    capability chown,
+    capability dac_override,
+    capability dac_read_search,
+    capability fowner,
+    capability fsetid,
+    capability mknod,
+    capability setgid,
+    capability setuid,
+    capability sys_admin,
+    capability sys_chroot,
+    capability sys_resource,
+    network inet stream,
+    network inet6 stream,
+    network unix stream,
+    dbus send bus=system,
+
+    /usr/bin/apt-get mr,
+    /usr/bin/dpkg ixr,
+    /usr/bin/gpg ixr,
+    /usr/bin/gpgv ixr,
+    /bin/dash ixr,
+    /bin/sh ixr,
+    /usr/lib/apt/methods/* ixr,
+    /bin/gunzip ixr,
+    /usr/bin/lzma ixr,
+    /usr/bin/xz ixr,
+    /usr/bin/zstd ixr,
+    /bin/** mixr,
+    /sbin/** mixr,
+    /usr/bin/** mixr,
+    /usr/sbin/** mixr,
+    /usr/lib/** mixr,
+    /var/lib/dpkg/info/* ixr,
+    /usr/lib/intuitionengine/package-check Px -> ie-package-check,
+
+    /etc/** rwkl,
+    /usr/** rwkl,
+    /lib/** rwkl,
+    /boot/** rwkl,
+    /var/lib/apt/** rwkl,
+    /var/cache/apt/** rwkl,
+    /var/lib/dpkg/** rwkl,
+    /var/cache/debconf/** rwkl,
+    /var/log/apt/** rw,
+    /var/log/dpkg.log rw,
+    /var/tmp/** rwkl,
+    /tmp/** rwkl,
+    /run/** rwkl,
+    /proc/** r,
+    /sys/** r,
+
+    profile ie-package-check /usr/lib/intuitionengine/package-check flags=(attach_disconnected) {
+      #include <abstractions/base>
+      /usr/lib/intuitionengine/package-check mr,
+      /bin/sh ixr,
+      /bin/dash ixr,
+      /bin/cp ixr,
+      /usr/bin/cp ixr,
+      /usr/bin/grep ixr,
+      /usr/bin/sha256sum ixr,
+      /opt/ie/IntuitionEngine rwix,
+      /opt/ie/IntuitionEngine.previous rw,
+      /usr/share/intuitionengine/IntuitionEngine.sha256 r,
+      /etc/ie/update-target r,
+      /lib/x86_64-linux-gnu/** mr,
+      /usr/lib/x86_64-linux-gnu/** mr,
+      /run/dbus/system_bus_socket rw,
+      /run/systemd/private rw,
+      /usr/bin/systemctl Cx -> ie-package-systemctl,
+
+      profile ie-package-systemctl /usr/bin/systemctl flags=(attach_disconnected) {
+        #include <abstractions/base>
+        #include <abstractions/dbus>
+        /usr/bin/systemctl mr,
+        /etc/systemd/** r,
+        /usr/lib/systemd/** r,
+        /run/dbus/system_bus_socket rw,
+        /run/systemd/private rw,
+        dbus send bus=system,
+      }
+    }
   }
 }
 EOF
@@ -1532,23 +1644,66 @@ build_golden_image() {
 }
 
 install_ie_binary() {
-    log_section "Installing Intuition Engine binary"
+    log_section "Installing Intuition Engine Debian package"
     cp "$GOLDEN_IMG_PATH" "$OUTPUT_IMG"
     qemu-img resize -f raw "$OUTPUT_IMG" "$OUTPUT_IMAGE_SIZE" 2>&1 | tee -a "$LOG_FILE"
     extract_root_partition_image
+    local package_root="${WORK_DIR}/intuitionengine-package-root"
+    local base_status="${WORK_DIR}/golden-dpkg.status"
+    rm -rf "$package_root"
+    mkdir -p "$package_root"
+    /sbin/debugfs -R "dump /var/lib/dpkg/status $base_status" "$ROOT_PART_IMG" >/dev/null 2>&1 || {
+        log_error "golden image lacks /var/lib/dpkg/status"
+        exit 1
+    }
+    scripts/install-intuitionengine-package.sh --package "$IE_PACKAGE_FILE" --root "$package_root" --target intuitionengine-amd64-v3 --app-version "$IE_APP_VERSION" --base-status "$base_status" --keyring "$IE_REPOSITORY_KEYRING"
+    cmp -s "$package_root/opt/ie/IntuitionEngine" "$IE_BINARY" || {
+        log_error "x64 Debian package binary differs from requested Intuition Engine binary"
+        exit 1
+    }
     local commands_file="${WORK_DIR}/debugfs-install-ie.cmds"
     cat > "$commands_file" <<EOF
 mkdir /opt
 mkdir /opt/ie
+mkdir /etc
+mkdir /etc/ie
+mkdir /etc/apt
+mkdir /etc/apt/sources.list.d
+mkdir /usr
+mkdir /usr/share
+mkdir /usr/share/keyrings
+mkdir /usr/share/intuitionengine
+mkdir /usr/lib
+mkdir /usr/lib/intuitionengine
+mkdir /var/lib
+mkdir /var/lib/dpkg
+mkdir /var/lib/dpkg/info
 mkdir /var
 mkdir /var/ie
 mkdir /var/ie/share
 mkdir /var/ie/state
-rm /opt/ie/${IE_INSTALL_NAME}
-write ${IE_BINARY} /opt/ie/${IE_INSTALL_NAME}
-sif /opt/ie/${IE_INSTALL_NAME} mode 0100755
-sif /opt/ie/${IE_INSTALL_NAME} uid 0
-sif /opt/ie/${IE_INSTALL_NAME} gid 0
+write ${package_root}/opt/ie/IntuitionEngine /opt/ie/IntuitionEngine
+write ${package_root}/opt/ie/IntuitionEngine.previous /opt/ie/IntuitionEngine.previous
+write ${package_root}/etc/ie/update-target /etc/ie/update-target
+write ${package_root}/etc/apt/sources.list.d/intuitionengine.list /etc/apt/sources.list.d/intuitionengine.list
+write ${package_root}/usr/share/keyrings/intuitionengine-archive-keyring.gpg /usr/share/keyrings/intuitionengine-archive-keyring.gpg
+write ${package_root}/usr/share/intuitionengine/IntuitionEngine.sha256 /usr/share/intuitionengine/IntuitionEngine.sha256
+write ${package_root}/usr/lib/intuitionengine/package-check /usr/lib/intuitionengine/package-check
+write ${package_root}/var/lib/dpkg/status /var/lib/dpkg/status
+write ${package_root}/var/lib/dpkg/info/intuitionengine-amd64-v3.list /var/lib/dpkg/info/intuitionengine-amd64-v3.list
+write ${package_root}/var/lib/dpkg/info/intuitionengine-amd64-v3.preinst /var/lib/dpkg/info/intuitionengine-amd64-v3.preinst
+write ${package_root}/var/lib/dpkg/info/intuitionengine-amd64-v3.postinst /var/lib/dpkg/info/intuitionengine-amd64-v3.postinst
+sif /opt/ie/IntuitionEngine mode 0100755
+sif /opt/ie/IntuitionEngine uid 0
+sif /opt/ie/IntuitionEngine gid 0
+sif /opt/ie/IntuitionEngine.previous mode 0100755
+sif /usr/lib/intuitionengine/package-check mode 0100755
+sif /var/lib/dpkg/info/intuitionengine-amd64-v3.preinst mode 0100755
+sif /var/lib/dpkg/info/intuitionengine-amd64-v3.postinst mode 0100755
+sif /etc/ie/update-target mode 0100644
+sif /etc/apt/sources.list.d/intuitionengine.list mode 0100644
+sif /usr/share/keyrings/intuitionengine-archive-keyring.gpg mode 0100644
+sif /usr/share/intuitionengine/IntuitionEngine.sha256 mode 0100644
 sif /opt/ie mode 040755
 sif /opt/ie uid 0
 sif /opt/ie gid 0
@@ -1556,9 +1711,27 @@ sif /var/ie uid 1000
 sif /var/ie gid 1000
 sif /var/ie/share uid 1000
 sif /var/ie/share gid 1000
-sif /var/ie/state uid 1000
-sif /var/ie/state gid 1000
+    sif /var/ie/state uid 1000
+    sif /var/ie/state gid 1000
 EOF
+    # debugfs write does not replace an existing inode.  The golden image
+    # already has dpkg status and may retain package/configuration paths from
+    # an earlier appliance build, so remove only the package-owned paths
+    # before writing the freshly staged package state.
+    for path in \
+        /opt/ie/IntuitionEngine \
+        /opt/ie/IntuitionEngine.previous \
+        /etc/ie/update-target \
+        /etc/apt/sources.list.d/intuitionengine.list \
+        /usr/share/keyrings/intuitionengine-archive-keyring.gpg \
+        /usr/share/intuitionengine/IntuitionEngine.sha256 \
+        /usr/lib/intuitionengine/package-check \
+        /var/lib/dpkg/status \
+        /var/lib/dpkg/info/intuitionengine-amd64-v3.list \
+        /var/lib/dpkg/info/intuitionengine-amd64-v3.preinst \
+        /var/lib/dpkg/info/intuitionengine-amd64-v3.postinst; do
+        /sbin/debugfs -w -R "rm $path" "$ROOT_PART_IMG" >/dev/null 2>&1 || true
+    done
     debugfs_apply "$commands_file"
 }
 

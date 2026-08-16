@@ -105,6 +105,15 @@ A non-zero exit code at `$F140C` after a terminal status of `2`
 gives the underlying action's exit value; the meaning is
 action-specific and is not normalised across subverbs.
 
+For `HOST UPDATE`, the following exit values identify the repair stage:
+
+| Code | Meaning |
+|------|---------|
+| `20` | The update step failed. |
+| `21` | The upgrade step failed without entering repair. |
+| `22` | Engine installation repair failed. |
+| `23` | Engine configuration repair failed. |
+
 ## I.5 Shared network sockets
 
 The shared socket block in Chapter 39 reports:

@@ -10,6 +10,7 @@ fail() {
 }
 
 [[ -x "$builder" ]] || fail "missing executable Raspberry Pi image builder: $builder"
+rg -q 'RPI_TEST_MODE.*RPI_PACKAGE_ROOT' "$builder" || fail "package-root fixture bypass is not test-gated"
 rg -q 'apparmor=1' "$builder" || fail "builder does not enable AppArmor in the physical Pi kernel command line"
 rg -q 'cat /config.txt' "$builder" || fail "builder does not inspect Raspberry Pi boot kernel selection"
 rg -Fq 'kernel=kernel8_rt.img' "$builder" || fail "builder does not require the PREEMPT_RT kernel to be selected"
@@ -41,6 +42,10 @@ host_helper_apparmor="${root_dir}/scripts/rpi-live/usr.libexec.intuitionengine-h
 rg -Fq '/usr/bin/systemctl ixr,' "$host_helper_apparmor" || fail "HOST-helper policy blocks reboot and poweroff through systemctl"
 rg -Fq '/usr/bin/apt-get Cx -> apt,' "$host_helper_apparmor" || fail "HOST-helper policy does not isolate package updates in an APT child profile"
 rg -q '^  profile apt .*\{' "$host_helper_apparmor" || fail "HOST-helper policy lacks its APT child profile"
+rg -Fq '/usr/lib/intuitionengine/package-check Px -> ie-package-check,' "$host_helper_apparmor" || fail "APT policy does not confine package-check"
+rg -q '^  profile ie-package-check /usr/lib/intuitionengine/package-check' "$host_helper_apparmor" || fail "HOST-helper policy lacks package-check profile"
+rg -Fq '/opt/ie/IntuitionEngine.previous rw,' "$host_helper_apparmor" || fail "package-check policy cannot restore the previous binary"
+rg -Fq '/usr/share/intuitionengine/IntuitionEngine.sha256 r,' "$host_helper_apparmor" || fail "package-check policy cannot read its checksum"
 for path_rule in '/var/lib/apt/** rwkl,' '/var/cache/apt/** rwkl,' '/var/lib/dpkg/** rwkl,' '/var/cache/debconf/** rwkl,' '/var/log/apt/** rw,' '/var/log/dpkg.log rw,' '/etc/** rwkl,' '/usr/** rwkl,' '/boot/** rwkl,'; do
     rg -Fq "$path_rule" "$host_helper_apparmor" || fail "APT child policy lacks required rule: $path_rule"
 done
@@ -92,6 +97,26 @@ cp "$tmp/ie-arm64" "$tmp/host-helper"
 printf 'payload\n' >"$tmp/payload/Systems/example"
 printf 'manual\n' >"$tmp/payload/Docs/IE64_ISA.pdf"
 printf 'reference guide\n' >"$tmp/payload/Docs/IEProgRefGuide/00-Preface.pdf"
+for board_target in pi4 pi5; do
+    package_root="$tmp/${board_target}-package-root"
+    mkdir -p "$package_root/opt/ie" "$package_root/etc/ie" "$package_root/etc/apt/sources.list.d" "$package_root/usr/share/keyrings" "$package_root/usr/share/intuitionengine" "$package_root/usr/lib/intuitionengine" "$package_root/var/lib/dpkg/info"
+    cp "$tmp/ie-arm64" "$package_root/opt/ie/IntuitionEngine"
+    cp "$tmp/ie-arm64" "$package_root/opt/ie/IntuitionEngine.previous"
+    if [[ "$board_target" == pi5 ]]; then
+        cp "$tmp/ie-arm64-pi5" "$package_root/opt/ie/IntuitionEngine"
+        cp "$tmp/ie-arm64-pi5" "$package_root/opt/ie/IntuitionEngine.previous"
+    fi
+    printf 'intuitionengine-arm64-%s\n' "$board_target" >"$package_root/etc/ie/update-target"
+    printf '%s\n' 'deb [signed-by=/usr/share/keyrings/intuitionengine-archive-keyring.gpg] https://intuitionengine.io stable main' >"$package_root/etc/apt/sources.list.d/intuitionengine.list"
+    printf 'public test key\n' >"$package_root/usr/share/keyrings/intuitionengine-archive-keyring.gpg"
+    sha256sum "$package_root/opt/ie/IntuitionEngine" | sed 's#  .*#  /opt/ie/IntuitionEngine#' >"$package_root/usr/share/intuitionengine/IntuitionEngine.sha256"
+    printf '#!/bin/sh\nexit 0\n' >"$package_root/usr/lib/intuitionengine/package-check"
+    chmod 0755 "$package_root/usr/lib/intuitionengine/package-check"
+    printf 'Package: intuitionengine-arm64-%s\nStatus: install ok installed\nVersion: 1.0.0-1\nArchitecture: arm64\n\n' "$board_target" >"$package_root/var/lib/dpkg/status"
+    printf '/opt/ie/IntuitionEngine\n/usr/lib/intuitionengine/package-check\n' >"$package_root/var/lib/dpkg/info/intuitionengine-arm64-$board_target.list"
+    printf '#!/bin/sh\nexit 0\n' >"$package_root/var/lib/dpkg/info/intuitionengine-arm64-$board_target.preinst"
+    cp "$package_root/var/lib/dpkg/info/intuitionengine-arm64-$board_target.preinst" "$package_root/var/lib/dpkg/info/intuitionengine-arm64-$board_target.postinst"
+done
 printf 'golden\n' >"$tmp/golden.img"
 golden_sum="$(sha256sum "$tmp/golden.img" | awk '{print $1}')"
 cat >"$tmp/golden.manifest" <<EOF
@@ -169,6 +194,9 @@ fi
 exit 0
 EOF
 chmod +x "$tmp/tools/guestfish"
+export RPI_PACKAGE_ROOT="$tmp/pi4-package-root"
+export RPI_TEST_MODE=1
+export RPI_SKIP_PACKAGE_VERIFY=1
 expect_fail() {
     if "$@" >/dev/null 2>&1; then
         fail "unexpected success: $*"
@@ -203,10 +231,11 @@ env PATH="$tmp/tools:$PATH" "$builder" --board pi4 --binary "$tmp/ie-arm64" --pa
 # must need the host helper, preserve its source image and use the requested
 # output name. The guestfish fixture makes no filesystem changes by design.
 expect_fail env PATH="$tmp/tools:$PATH" RPI_GUESTFISH="$tmp/tools/guestfish" RPI_HOST_HELPER="$tmp/missing-helper" "$builder" --board pi4 --binary "$tmp/ie-arm64" --output "$tmp/no-helper.img" --golden "$tmp/golden.img" --manifest "$tmp/golden.manifest" --payload "$tmp/payload" --work-dir "$tmp/work" --no-share
+expect_fail env PATH="$tmp/tools:$PATH" RPI_PACKAGE_ROOT="$tmp/pi4-package-root" RPI_GUESTFISH="$tmp/tools/guestfish" "$builder" --board pi5 --binary "$tmp/ie-arm64-pi5" --output "$tmp/wrong-target.img" --golden "$tmp/golden.img" --manifest "$tmp/golden.manifest" --payload "$tmp/payload" --work-dir "$tmp/wrong-target-work" --no-share
 guestfish_log="$tmp/guestfish.log"
 env PATH="$tmp/tools:$PATH" RPI_GUESTFISH="$tmp/tools/guestfish" GUESTFISH_LOG="$guestfish_log" FAKE_BINARY="$tmp/ie-arm64" RPI_HOST_HELPER="$tmp/host-helper" "$builder" --board pi4 --binary "$tmp/ie-arm64" --output "$tmp/board-output.img" --golden "$tmp/golden.img" --manifest "$tmp/golden.manifest" --payload "$tmp/payload" --work-dir "$tmp/work" --no-share
 [[ -f "$tmp/board-output.img" && -f "$tmp/board-output.zip" ]] || fail "builder did not produce requested image and ZIP names"
-rg -q 'mv /opt/ie/ie-arm64 /opt/ie/IntuitionEngine' "$guestfish_log" || fail "builder does not install the board binary under the appliance launch name"
+rg -q 'package-root/opt/ie/IntuitionEngine' "$guestfish_log" || fail "builder does not install the packaged board binary"
 rg -q 'mv /etc/greetd/greetd-config.toml /etc/greetd/config.toml' "$guestfish_log" || fail "builder does not install greetd's required config.toml"
 rg -q 'greetd.service.requires/ie-apparmor.service' "$guestfish_log" || fail "builder does not enable AppArmor enforcement for greetd"
 rg -q 'graphical.target.wants/greetd.service' "$guestfish_log" || fail "builder does not enable greetd in graphical.target"
@@ -233,10 +262,10 @@ fi
 # source image and replace only the board-specific Intuition Engine binary.
 derived_source_sum="$(sha256sum "$tmp/board-output.img" | awk '{print $1}')"
 derived_log="$tmp/derived-guestfish.log"
-env PATH="$tmp/tools:$PATH" RPI_GUESTFISH="$tmp/tools/guestfish" GUESTFISH_LOG="$derived_log" FAKE_BINARY="$tmp/ie-arm64-pi5" FAKE_SHARE=1 "$builder" --board pi5 --binary "$tmp/ie-arm64-pi5" --source-image "$tmp/board-output.img" --output "$tmp/derived-output.img" --payload "$tmp/payload" --work-dir "$tmp/derived-work"
+env PATH="$tmp/tools:$PATH" RPI_TEST_MODE=1 RPI_PACKAGE_ROOT="$tmp/pi5-package-root" RPI_GUESTFISH="$tmp/tools/guestfish" GUESTFISH_LOG="$derived_log" FAKE_BINARY="$tmp/ie-arm64-pi5" FAKE_SHARE=1 "$builder" --board pi5 --binary "$tmp/ie-arm64-pi5" --source-image "$tmp/board-output.img" --output "$tmp/derived-output.img" --payload "$tmp/payload" --work-dir "$tmp/derived-work"
 [[ -f "$tmp/derived-output.img" && -f "$tmp/derived-output.zip" ]] || fail "derived builder did not produce Pi 5 image and ZIP"
 [[ "$(sha256sum "$tmp/board-output.img" | awk '{print $1}')" == "$derived_source_sum" ]] || fail "derived builder modified its source appliance image"
-rg -q 'rm /opt/ie/IntuitionEngine.*copy-in .*ie-arm64-pi5.*mv /opt/ie/ie-arm64-pi5 /opt/ie/IntuitionEngine' "$derived_log" || fail "derived builder does not replace the board binary"
+rg -q 'copy-in .*package-root/opt/ie/IntuitionEngine' "$derived_log" || fail "derived builder does not replace the packaged board binary"
 if rg -q 'copy-in .*ie-session\.sh|copy-in .*greetd-config\.toml|write-append /etc/fstab' "$derived_log"; then
     fail "derived builder rebuilt common appliance or IESHARE content"
 fi

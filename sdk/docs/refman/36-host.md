@@ -123,6 +123,15 @@ Exit-code values used by the built-in actions:
 | `13` | Network timeout |
 | `20` | Package update step failed |
 | `21` | Package upgrade step failed |
+| `22` | Engine installation repair failed |
+| `23` | Engine configuration repair failed |
+
+If an update leaves the installed engine incomplete, `HOST UPDATE` makes
+one repair pass before it reports success or failure. Exit `22` means that
+the engine installation could not be restored. Exit `23` means that the
+installation was restored but could not be brought to a configured state.
+The command still reports these results through the ordinary terminal
+status and exit registers.
 
 ## 36.5 Read The Status Register
 

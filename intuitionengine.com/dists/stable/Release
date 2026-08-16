@@ -1,0 +1,23 @@
+Origin: IntuitionEngine
+Label: IntuitionEngine
+Suite: stable
+Codename: stable
+Date: Sun, 16 Aug 2026 16:30:45 +0000
+Architectures: amd64 arm64
+Components: main
+Description: IntuitionEngine Debian packages
+MD5Sum:
+ bc17e2dabdb86ec2427f34c8841305a4 595 main/binary-amd64/Packages
+ 969ede3ac1353a84029fcb879ecf7b6d 379 main/binary-amd64/Packages.gz
+ 1fd8463b37946dc4944a7d7a7b04c9bf 1198 main/binary-arm64/Packages
+ 821826e1b12fd75092f4bf56357b7a9e 498 main/binary-arm64/Packages.gz
+SHA1:
+ f872193c68a07ecfb0523e40a61a7c7db47889f7 595 main/binary-amd64/Packages
+ 3946f92095e022b3f19865ce5895dbd3ee9339d3 379 main/binary-amd64/Packages.gz
+ e972b62963f58527698817ba747849119069b1a1 1198 main/binary-arm64/Packages
+ 1434aeb8ee1d851c341589b668ff4c54d351b6d0 498 main/binary-arm64/Packages.gz
+SHA256:
+ 2df41f9f83428f6e70a9ad256eaed7e154a305a4b13ca86bfa31146c9652078d 595 main/binary-amd64/Packages
+ 5fbadfa37cd3d06859fd219697345a9615aa0a711868accb55c59d7e2de13ffd 379 main/binary-amd64/Packages.gz
+ 2a377e18f6cb48425fff0d9d456f0c33c58ed5fb9e81841a3598cf4fba699881 1198 main/binary-arm64/Packages
+ 9a64cf0b67e42414f9fe2258f251abc8e55bb3e4eceef7c2600ff0c30d46b3de 498 main/binary-arm64/Packages.gz

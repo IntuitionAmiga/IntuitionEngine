@@ -111,7 +111,7 @@ var sdkAuditLastModifiedDates = map[string]string{
 	"sdk/docs/IE32_ISA.md":     "2026-08-08",
 	"sdk/docs/iemon.md":        "2026-08-15",
 	"sdk/docs/iescript.md":     "2026-08-11",
-	"sdk/docs/architecture.md": "2026-08-15",
+	"sdk/docs/architecture.md": "2026-08-16",
 }
 
 func TestSDKCompanionDocs_PageOneLastModifiedDate(t *testing.T) {

@@ -216,6 +216,7 @@ Byte-entry crib for Chapter 29:
 | Flag        | `STC`, `CLC`, `CMC`, `STD`, `CLD`, `STI`, `CLI`, `LAHF`, `SAHF`. |
 | Segment     | `LDS`, `LES`, `LFS`, `LGS`, `LSS`. |
 | System      | `HLT`, `WAIT`, `NOP`, `ESC`, `LOCK`. |
+| x87         | `FLDENV`, `FNSTENV`, `FRSTOR`, `FNSAVE`, `FLDCW`, `FNSTCW`, `FNSTSW`; see Chapter 30 for the environment layout. |
 | Flat-mode extras | `BSWAP`, `CMOVcc`, `MOVSX`, `MOVZX`, dword forms of `16`-bit ops via `66h` / `67h` prefixes. |
 
 Omitted (Chapter 30): all protected-mode opcodes (`LGDT`,
@@ -230,3 +231,7 @@ Byte-entry crib for Chapter 30:
 | `B0 nn` | `MOV AL,nn` | Immediate load into `AL`. |
 | `A2 aa aa aa aa` | `MOV [addr32],AL` | Absolute store from `AL`; address operand is little-endian. |
 | `EB dd` | `JMP SHORT disp8` | Signed displacement from the next byte; `$FE` loops to the jump instruction itself. |
+| `D9 /4` | `FLDENV m28byte` | Loads the 28-byte x87 environment described in Chapter 30. |
+| `D9 /6` | `FNSTENV m28byte` | Stores the 28-byte x87 environment. The `/6` field is in the ModR/M byte. |
+| `DD /4` | `FRSTOR m108byte` | Loads the 28-byte environment followed by eight 80-bit registers. |
+| `DD /6` | `FNSAVE m108byte` | Stores the full state and then resets the x87. |

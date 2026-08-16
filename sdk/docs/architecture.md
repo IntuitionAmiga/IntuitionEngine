@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-08-15*
+*Last modified: 2026-08-16*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -958,6 +958,22 @@ the IE64 runtime and libraries, public assembly includes,
 `intuitionengine.h`, and user documentation. The x64 live image stages that
 archive and its SHA-256 file under `SDK/Toolchains`; the former per-platform
 `SDK/Tools` tree and standalone IE64 toolchain archive are not staged.
+
+The live-image binaries are delivered as target-specific Debian packages for
+x64, Pi 4, and Pi 5: `intuitionengine-amd64-v3`,
+`intuitionengine-arm64-pi4`, and `intuitionengine-arm64-pi5`. Each package
+contains its target executable, a SHA-256 manifest, and a guarded restart hook.
+The x64 and Pi image builders verify that the package executable is identical
+to the binary selected for the image before staging it. A package upgrade
+preserves the previous executable; checksum, version, or appliance-session
+validation failures restore it.
+
+The public Debian repository publishes separate amd64 and arm64 indexes and
+signed `InRelease` and `Release.gpg` metadata. Repository staging rejects a
+different package payload under an existing package version. Appliance images
+use an HTTPS stable source and install the repository keyring. The package
+target file selects the matching architecture-specific package for repair and
+upgrade operations.
 
 Browser builds use an IE64 WebAssembly bytecode JIT for supported MMU-off
 integer, FP32, and FP64 blocks, with interpreter fallback and

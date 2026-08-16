@@ -18,6 +18,7 @@ case " $* " in
   *' is-file '*) echo true ;;
   *' is-symlink '*) echo true ;;
   *' list-partitions '*) printf '%s\n' /dev/sda1 /dev/sda2 /dev/sda3 ;;
+  *' download /etc/greetd/config.toml '*) printf '%s\n' '[initial_session]' 'command = "/opt/ie/ie-session.sh"' '[default_session]' 'command = "/usr/sbin/agreety --cmd /opt/ie/ie-session.sh"' >"${!#}" ;;
   *' download '*) cp "$FAKE_BINARY" "${!#}" ;;
 esac
 EOF
@@ -29,8 +30,8 @@ expect_fail() {
 
 expect_fail env PATH="$tmp/tools:$PATH" "$verifier"
 expect_fail env PATH="$tmp/tools:$PATH" "$verifier" --board wrong --image "$tmp/image.img" --binary "$tmp/ie-arm64"
-env PATH="$tmp/tools:$PATH" FAKE_BINARY="$tmp/ie-arm64" "$verifier" --board pi4 --image "$tmp/image.img" --binary "$tmp/ie-arm64" --share
+env PATH="$tmp/tools:$PATH" RPI_TEST_MODE=1 RPI_SKIP_PACKAGE_VERIFY=1 FAKE_BINARY="$tmp/ie-arm64" "$verifier" --board pi4 --image "$tmp/image.img" --binary "$tmp/ie-arm64" --share
 printf 'other\n' >"$tmp/not-the-binary"
-expect_fail env PATH="$tmp/tools:$PATH" FAKE_BINARY="$tmp/not-the-binary" "$verifier" --board pi4 --image "$tmp/image.img" --binary "$tmp/ie-arm64" --share
+expect_fail env PATH="$tmp/tools:$PATH" RPI_TEST_MODE=1 RPI_SKIP_PACKAGE_VERIFY=1 FAKE_BINARY="$tmp/not-the-binary" "$verifier" --board pi4 --image "$tmp/image.img" --binary "$tmp/ie-arm64" --share
 
 echo "Raspberry Pi post-build verification contracts passed"

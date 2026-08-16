@@ -163,7 +163,8 @@ endif
 
 # Version metadata
 APP_NAME := IntuitionEngine
-APP_VERSION := 1.0.0
+VERSION_FILE ?= VERSION
+APP_VERSION ?= $(strip $(shell cat "$(VERSION_FILE)" 2>/dev/null))
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 EMBEDDED_AB3D2_START_FULLSCREEN ?= 0
@@ -682,13 +683,13 @@ x64-live-embed-assets: sdk-build emutos-release-rom aros-ie-live-inputs intuitio
 	@echo "x64 live embedded binary inputs are ready."
 
 .PHONY: x64-live
-x64-live: x86-64-v3 x64-live-demos wasm dist-host-sdk-linux-amd64
+x64-live: deb-intuitionengine-amd64-v3 x64-live-demos wasm dist-host-sdk-linux-amd64
 	@echo "Building IE x64 live USB image..."
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh
+	@IE_APP_VERSION="$(APP_VERSION)" IE_PACKAGE_FILE="$(IE_DEB_DIR)/intuitionengine-amd64-v3_$(APP_VERSION)-1_amd64.deb" IE_REPOSITORY_KEYRING="$(IE_REPOSITORY_KEYRING)" X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh
 
 .PHONY: x64-live-rebuild-golden
-x64-live-rebuild-golden: x86-64-v3 x64-live-demos dist-host-sdk-linux-amd64
-	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden
+x64-live-rebuild-golden: deb-intuitionengine-amd64-v3 x64-live-demos dist-host-sdk-linux-amd64
+	@IE_APP_VERSION="$(APP_VERSION)" IE_PACKAGE_FILE="$(IE_DEB_DIR)/intuitionengine-amd64-v3_$(APP_VERSION)-1_amd64.deb" IE_REPOSITORY_KEYRING="$(IE_REPOSITORY_KEYRING)" X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden
 
 .PHONY: x64-live-demos
 x64-live-demos: x64-live-payload-check
@@ -759,11 +760,11 @@ rpi4-live-payload-check: rpi-live-payload-check
 rpi400-live-payload-check: rpi-live-payload-check
 rpi5-live-payload-check: rpi-live-payload-check
 
-build-image-pi4: rpi-live-payload-check
-	@scripts/build_rpi_live_image.sh --board pi4 --binary build/rpi4-live/IntuitionEngine-rpi4 --output build/rpi4-live/intuition-engine-rpi4.img --golden "$(RPI_GOLDEN_IMAGE)" --manifest "$(RPI_GOLDEN_MANIFEST)" --payload $(X64_LIVE_DIR)/work/ieshare-payload
+build-image-pi4: rpi-live-payload-check deb-intuitionengine-arm64-pi4
+	@IE_APP_VERSION="$(APP_VERSION)" IE_REPOSITORY_KEYRING="$(IE_REPOSITORY_KEYRING)" scripts/build_rpi_live_image.sh --board pi4 --binary build/rpi4-live/IntuitionEngine-rpi4 --package "$(IE_DEB_DIR)/intuitionengine-arm64-pi4_$(APP_VERSION)-1_arm64.deb" --output build/rpi4-live/intuition-engine-rpi4.img --golden "$(RPI_GOLDEN_IMAGE)" --manifest "$(RPI_GOLDEN_MANIFEST)" --payload $(X64_LIVE_DIR)/work/ieshare-payload
 build-image-pi400: build-image-pi4
-build-image-pi5: build-image-pi4
-	@scripts/build_rpi_live_image.sh --board pi5 --binary build/rpi5-live/IntuitionEngine-rpi5 --source-image build/rpi4-live/intuition-engine-rpi4.img --output build/rpi5-live/intuition-engine-rpi5.img --payload $(X64_LIVE_DIR)/work/ieshare-payload
+build-image-pi5: build-image-pi4 deb-intuitionengine-arm64-pi5
+	@IE_APP_VERSION="$(APP_VERSION)" IE_REPOSITORY_KEYRING="$(IE_REPOSITORY_KEYRING)" scripts/build_rpi_live_image.sh --board pi5 --binary build/rpi5-live/IntuitionEngine-rpi5 --package "$(IE_DEB_DIR)/intuitionengine-arm64-pi5_$(APP_VERSION)-1_arm64.deb" --source-image build/rpi4-live/intuition-engine-rpi4.img --output build/rpi5-live/intuition-engine-rpi5.img --payload $(X64_LIVE_DIR)/work/ieshare-payload
 rpi-live-images: build-image-pi4 build-image-pi5
 
 rpi4-live-qemu:
@@ -862,13 +863,19 @@ iedoom-ie68:
 	@test -f "$(CHOCOLATE_DOOM_DIR)/$(IEDOOM_IE68)" || { echo "Error: IEDoom M68K image was not produced: $(CHOCOLATE_DOOM_DIR)/$(IEDOOM_IE68)"; exit 1; }
 
 .PHONY: x64-live-qemu
+X64_QEMU_ACCEL ?= -enable-kvm
+X64_QEMU_CPU ?= host
+X64_QEMU_DISPLAY ?= gtk,gl=on
+X64_QEMU_VIDEO_DEVICE ?= virtio-vga-gl
+X64_QEMU_AUDIO_DRIVER ?= driver=pipewire
+X64_QEMU_SNAPSHOT ?= -snapshot
 x64-live-qemu: $(X64_LIVE_IMG)
 	@test -n "$(OVMF_CODE)" || { echo "No OVMF firmware found; set OVMF_CODE=/path/to/OVMF_CODE.fd"; exit 1; }
-	qemu-system-x86_64 -enable-kvm -cpu host -m 4G -smp 4 \
-	  -bios $(OVMF_CODE) \
-	  -drive file=$(X64_LIVE_IMG),format=raw,if=virtio \
-	  -display gtk,gl=on -device virtio-vga-gl \
-	  -audiodev pipewire,id=snd0 -device intel-hda -device hda-output,audiodev=snd0
+	qemu-system-x86_64 $(X64_QEMU_ACCEL) -cpu $(X64_QEMU_CPU) -m 4G -smp 4 \
+	  -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
+	  $(X64_QEMU_SNAPSHOT) -drive file=$(X64_LIVE_IMG),format=raw,if=virtio \
+	  -display $(X64_QEMU_DISPLAY) -device $(X64_QEMU_VIDEO_DEVICE) \
+	  -audiodev $(X64_QEMU_AUDIO_DRIVER),id=snd0 -device intel-hda -device hda-output,audiodev=snd0
 
 $(X64_LIVE_IMG):
 	@test -f "$(X64_LIVE_IMG)" || $(MAKE) x64-live
@@ -3015,3 +3022,53 @@ help:
 	@echo "Installation paths:"
 	@echo "  PREFIX        = $(PREFIX)"
 	@echo "  INSTALL_BIN_DIR = $(INSTALL_BIN_DIR)"
+
+# Signed Debian delivery for the three live-image binaries.  Individual
+# package targets only create a .deb; stable repository metadata is produced
+# by the complete release target below.
+IE_DEB_DIR ?= build/debian
+IE_REPOSITORY_DIR ?= intuitionengine.com
+IE_RELEASE_GNUPG_HOME ?= $(HOME)/.config/intuitionengine-release-gnupg
+IE_RELEASE_KEY_FINGERPRINT ?=
+IE_REPOSITORY_KEYRING ?= $(IE_REPOSITORY_DIR)/intuitionengine-archive-keyring.gpg
+
+.PHONY: check-intuitionengine-app-version bump-intuitionengine-version deb-intuitionengine-amd64-v3 deb-intuitionengine-arm64-pi4 deb-intuitionengine-arm64-pi5 deb-intuitionengine release-intuitionengine release-intuitionengine-repository test-intuitionengine-packages test-intuitionengine-repository test-intuitionengine-release-secrets
+check-intuitionengine-app-version:
+	@test "$(APP_VERSION)" != "" && printf '%s\n' "$(APP_VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "APP_VERSION must be semantic x.y.z" >&2; exit 1; }
+
+bump-intuitionengine-version:
+	@scripts/bump-intuitionengine-version.sh --file "$(VERSION_FILE)"
+
+deb-intuitionengine-amd64-v3: check-intuitionengine-app-version x86-64-v3
+	@scripts/build-intuitionengine-deb.sh --target intuitionengine-amd64-v3 --app-version "$(APP_VERSION)" --binary bin/IntuitionEngine_v3 --output-dir "$(IE_DEB_DIR)"
+
+deb-intuitionengine-arm64-pi4: check-intuitionengine-app-version rpi-4-arm64
+	@scripts/build-intuitionengine-deb.sh --target intuitionengine-arm64-pi4 --app-version "$(APP_VERSION)" --binary build/rpi4-live/IntuitionEngine-rpi4 --output-dir "$(IE_DEB_DIR)"
+
+deb-intuitionengine-arm64-pi5: check-intuitionengine-app-version rpi-5-arm64
+	@scripts/build-intuitionengine-deb.sh --target intuitionengine-arm64-pi5 --app-version "$(APP_VERSION)" --binary build/rpi5-live/IntuitionEngine-rpi5 --output-dir "$(IE_DEB_DIR)"
+
+deb-intuitionengine: deb-intuitionengine-amd64-v3 deb-intuitionengine-arm64-pi4 deb-intuitionengine-arm64-pi5
+	@test -f "$(IE_DEB_DIR)/intuitionengine-amd64-v3_$(APP_VERSION)-1_amd64.deb"
+	@test -f "$(IE_DEB_DIR)/intuitionengine-arm64-pi4_$(APP_VERSION)-1_arm64.deb"
+	@test -f "$(IE_DEB_DIR)/intuitionengine-arm64-pi5_$(APP_VERSION)-1_arm64.deb"
+
+release-intuitionengine: release-intuitionengine-repository
+
+release-intuitionengine-repository: deb-intuitionengine test-intuitionengine-repository
+	@fingerprint="$(IE_RELEASE_KEY_FINGERPRINT)"; \
+	if [ -z "$$fingerprint" ]; then \
+		fingerprint="$$(gpg --homedir "$(IE_RELEASE_GNUPG_HOME)" --with-colons --list-secret-keys 2>/dev/null | awk -F: '$$1 == "fpr" { print $$10; exit }')"; \
+	fi; \
+	test -n "$$fingerprint" || { echo "no signing key found in $(IE_RELEASE_GNUPG_HOME); set IE_RELEASE_KEY_FINGERPRINT to override" >&2; exit 1; }; \
+	scripts/check-intuitionengine-release-secrets.sh --root "$(CURDIR)" --output "$(IE_REPOSITORY_DIR)"; \
+	scripts/stage-intuitionengine-repository.sh --output "$(IE_REPOSITORY_DIR)" --key-home "$(IE_RELEASE_GNUPG_HOME)" --fingerprint "$$fingerprint" --app-version "$(APP_VERSION)" --amd64 "$(IE_DEB_DIR)/intuitionengine-amd64-v3_$(APP_VERSION)-1_amd64.deb" --pi4 "$(IE_DEB_DIR)/intuitionengine-arm64-pi4_$(APP_VERSION)-1_arm64.deb" --pi5 "$(IE_DEB_DIR)/intuitionengine-arm64-pi5_$(APP_VERSION)-1_arm64.deb"
+
+test-intuitionengine-packages:
+	@scripts/test-intuitionengine-packages.sh
+
+test-intuitionengine-repository:
+	@scripts/test-intuitionengine-repository.sh
+
+test-intuitionengine-release-secrets:
+	@scripts/test-intuitionengine-release-secrets.sh

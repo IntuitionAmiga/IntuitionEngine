@@ -65,6 +65,9 @@ __pycache__/
 appimagetool*
 AppDir/
 release/
+# Local Debian repository signing material. Never commit or push.
+/release-secrets/
+/intuitionengine.com/.release-secrets/
 SHA256SUMS
 *.tar.xz
 !intuitionengine.com/assets/intuition-engine-host-sdk-linux-amd64.tar.xz

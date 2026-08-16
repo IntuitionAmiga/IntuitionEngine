@@ -29,6 +29,8 @@ const (
 	exitWiFiTimeout         = 13
 	exitAptUpdateFailed     = 20
 	exitAptUpgradeFailed    = 21
+	exitAptReinstallFailed  = 22
+	exitAptConfigureFailed  = 23
 )
 
 const maxWiFiPasswordBytes = 64
@@ -717,7 +719,11 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout io.Writer, 
 	}
 }
 
-func runUpdate(ctx context.Context, stdout io.Writer, stderr io.Writer, commands commandRunner) int {
+func runUpdate(ctx context.Context, stdout io.Writer, stderr io.Writer, commands commandOutputRunner) int {
+	return runUpdateForTarget(ctx, stdout, stderr, commands, updateTargetPackage())
+}
+
+func runUpdateForTarget(ctx context.Context, stdout io.Writer, stderr io.Writer, commands commandOutputRunner, pkg string) int {
 	if err := commands.Run(ctx, "/usr/bin/apt-get", []string{"update"}, nil, stdout, stderr); err != nil {
 		return exitAptUpdateFailed
 	}
@@ -728,7 +734,59 @@ func runUpdate(ctx context.Context, stdout io.Writer, stderr io.Writer, commands
 		"-o", "Dpkg::Options::=--force-confold",
 	}
 	if err := commands.Run(ctx, "/usr/bin/apt-get", args, nil, stdout, stderr); err != nil {
+		if !targetPackageNeedsRepair(ctx, commands, pkg) {
+			return exitAptUpgradeFailed
+		}
+		return runHostUpdateRepair(ctx, stdout, stderr, commands, pkg)
+	}
+	return exitOK
+}
+
+func targetPackageNeedsRepair(ctx context.Context, commands commandOutputRunner, pkg string) bool {
+	if pkg == "" {
+		return false
+	}
+	output, err := commands.Output(ctx, "/usr/bin/dpkg-query", []string{"-W", "-f", "${Status}", pkg}, nil, io.Discard)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(output)) != "install ok installed"
+}
+
+func updateTargetPackage() string {
+	target, err := os.ReadFile("/etc/ie/update-target")
+	if err != nil {
+		return ""
+	}
+	targetValue := strings.TrimSpace(string(target))
+	switch targetValue {
+	case "intuitionengine-amd64-v3":
+		return targetValue
+	case "intuitionengine-arm64-pi4":
+		return targetValue
+	case "intuitionengine-arm64-pi5":
+		return targetValue
+	default:
+		return ""
+	}
+}
+
+func runHostUpdateRepair(ctx context.Context, stdout io.Writer, stderr io.Writer, commands commandRunner, pkg string) int {
+	if pkg == "" {
 		return exitAptUpgradeFailed
+	}
+	if err := commands.Run(
+		ctx,
+		"/usr/bin/apt-get",
+		[]string{"install", "--reinstall", "-y", pkg},
+		nil,
+		stdout,
+		stderr,
+	); err != nil {
+		return exitAptReinstallFailed
+	}
+	if err := commands.Run(ctx, "/usr/bin/dpkg", []string{"--configure", "-a"}, nil, stdout, stderr); err != nil {
+		return exitAptConfigureFailed
 	}
 	return exitOK
 }

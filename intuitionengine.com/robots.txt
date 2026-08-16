@@ -1,4 +1,6 @@
 User-agent: *
 Allow: /
+Disallow: /pool/
+Disallow: /dists/
 
 Sitemap: https://intuitionengine.io/sitemap.xml

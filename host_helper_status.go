@@ -11,6 +11,8 @@ const (
 	HostHelperExitWiFiTimeout         uint32 = 13
 	HostHelperExitAptUpdateFailed     uint32 = 20
 	HostHelperExitAptUpgradeFailed    uint32 = 21
+	HostHelperExitAptReinstallFailed  uint32 = 22
+	HostHelperExitAptConfigureFailed  uint32 = 23
 )
 
 var hostHelperExitStatusText = map[uint32]string{
@@ -22,6 +24,8 @@ var hostHelperExitStatusText = map[uint32]string{
 	HostHelperExitWiFiTimeout:         "Failed: timeout",
 	HostHelperExitAptUpdateFailed:     "Failed: apt-get update",
 	HostHelperExitAptUpgradeFailed:    "Failed: apt-get upgrade",
+	HostHelperExitAptReinstallFailed:  "Failed: apt-get install --reinstall",
+	HostHelperExitAptConfigureFailed:  "Failed: dpkg --configure -a",
 }
 
 func HostHelperExitStatusText(code uint32) string {

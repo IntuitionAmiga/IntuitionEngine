@@ -586,6 +586,47 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 	if !strings.Contains(makefile, "GOEXPERIMENT=simd") {
 		t.Fatal("Makefile no longer enables the documented SIMD experiment")
 	}
+	debBuilder := readAuditFile(t, "scripts/build-intuitionengine-deb.sh")
+	debInstaller := readAuditFile(t, "scripts/install-intuitionengine-package.sh")
+	repositoryBuilder := readAuditFile(t, "scripts/stage-intuitionengine-repository.sh")
+	x64ImageBuilder := readAuditFile(t, "build_x64_ie_img.sh")
+	rpiImageBuilder := readAuditFile(t, "scripts/build_rpi_live_image.sh")
+	for path, contract := range map[string]struct {
+		text    string
+		needles []string
+	}{
+		"Makefile": {makefile, []string{
+			"deb-intuitionengine-amd64-v3: check-intuitionengine-app-version x86-64-v3",
+			"deb-intuitionengine-arm64-pi4: check-intuitionengine-app-version rpi-4-arm64",
+			"deb-intuitionengine-arm64-pi5: check-intuitionengine-app-version rpi-5-arm64",
+		}},
+		"scripts/build-intuitionengine-deb.sh": {debBuilder, []string{
+			`sha256sum "$root/opt/ie/IntuitionEngine"`,
+			`exec /usr/lib/intuitionengine/package-check`,
+			`cp -p /opt/ie/IntuitionEngine /opt/ie/IntuitionEngine.previous`,
+		}},
+		"scripts/install-intuitionengine-package.sh": {debInstaller, []string{
+			`https://intuitionengine.io stable main`,
+			`actual_checksum="$(sha256sum "$staged_binary"`,
+		}},
+		"scripts/stage-intuitionengine-repository.sh": {repositoryBuilder, []string{
+			"dpkg-scanpackages",
+			"--clearsign",
+			"--detach-sign",
+		}},
+		"build_x64_ie_img.sh": {x64ImageBuilder, []string{
+			`cmp -s "$package_root/opt/ie/IntuitionEngine" "$IE_BINARY"`,
+		}},
+		"scripts/build_rpi_live_image.sh": {rpiImageBuilder, []string{
+			`--app-version "$app_version"`,
+		}},
+	} {
+		for _, needle := range contract.needles {
+			if !strings.Contains(contract.text, needle) {
+				t.Fatalf("%s package-delivery contract changed; review architecture.md: %s", path, needle)
+			}
+		}
+	}
 	for _, needle := range []string{
 		"RPI_BINARY_TAGS := $(VM_EMBED_TAGS) jack",
 		"build-rpi-binary,pi4,v8.0,cortex-a72,build/rpi4-live/IntuitionEngine-rpi4,default.pgo.rpi400",
@@ -850,6 +891,14 @@ func sdkArchitectureFactsFromSource(t *testing.T) []sdkSourceFact {
 		{"The x64 live image gives Oto an unreachable PulseAudio server so it selects ALSA, and pipewire-alsa carries that stream into PipeWire.", "`build_x64_ie_img.sh` launch wrapper `PULSE_SERVER`, `pipewire-alsa` package list, and AppArmor audio/PipeWire rules; `x64_live_test.go` launcher contract coverage"},
 		{"The Linux x86-64 Host SDK packages ie32asm, ie32to64, ie64asm, ie64dis, ie64-cproc, ie64ld, ie64-ar, ie64-ranlib, QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes, intuitionengine.h, and user documentation.", "`scripts/dist-host-sdk-linux-amd64.sh` staged tools, libraries, includes, and documentation; `host_sdk_test.go` public-header contract"},
 		{"The x64 live image stages that archive and its SHA-256 file under SDK/Toolchains; the former per-platform SDK/Tools tree and standalone IE64 toolchain archive are not staged.", "`build_x64_ie_img.sh` `stage_share_payload`/`verify_staged_share_payload`, `x64_live_test.go` Host SDK payload assertions"},
+		{"The live-image binaries are delivered as target-specific Debian packages for x64, Pi 4, and Pi 5", "`Makefile` package targets"},
+		{"Each package contains its target executable, a SHA-256 manifest, and a guarded restart hook.", "`scripts/build-intuitionengine-deb.sh` package payload and maintainer scripts"},
+		{"The x64 and Pi image builders verify that the package executable is identical to the binary selected for the image before staging it.", "`build_x64_ie_img.sh` package identity check and `scripts/build_rpi_live_image.sh` package-version check"},
+		{"A package upgrade preserves the previous executable; checksum, version, or appliance-session validation failures restore it.", "`scripts/build-intuitionengine-deb.sh` package-check and upgrade maintainer scripts"},
+		{"The public Debian repository publishes separate amd64 and arm64 indexes and signed InRelease and Release.gpg metadata.", "`scripts/stage-intuitionengine-repository.sh` architecture indexes and signatures"},
+		{"Repository staging rejects a different package payload under an existing package version.", "`scripts/stage-intuitionengine-repository.sh` immutable package check and `scripts/test-intuitionengine-repository.sh`"},
+		{"Appliance images use an HTTPS stable source and install the repository keyring.", "`scripts/install-intuitionengine-package.sh` source-list and keyring staging"},
+		{"The package target file selects the matching architecture-specific package for repair and upgrade operations.", "`cmd/host-helper/main.go` `updateTargetPackage` and package repair path"},
 		{"M68020 JIT backends are available on amd64 and arm64 Linux, Windows and macOS, plus js/wasm; the wasm backend requires __goMem and M68K_WASM_JIT=0 disables it.", "`jit_m68k_dispatch.go`, `jit_m68k_dispatch_arm64.go`, and `jit_m68k_dispatch_wasm.go` build and activation gates"},
 		{"The M68020 JIT shares an untagged scanner, admission rules, CCR liveness, region formation and tier policy while keeping native and wasm lowering target-specific.", "`jit_m68k_common.go`, `jit_m68k_admission.go`, `jit_m68k_ccr_liveness.go`, `jit_m68k_region_form.go`, `jit_m68k_policy.go`, and per-target dispatch/emitter files"},
 		{"Z80 VRAM banks 0x2E and 0x2F map the 16 KiB window at $8000-$BFFF onto the two halves of the VGA text aperture at 0xB8000-0xBFFFF; accesses are routed through the VGA text handler.", "`cpu_z80_runner.go` `translateVRAM`, `readNoDebug`/`Read`/`Write`, and `vga_cpu_access_test.go`"},
