@@ -2,22 +2,22 @@ Origin: IntuitionEngine
 Label: IntuitionEngine
 Suite: stable
 Codename: stable
-Date: Mon, 17 Aug 2026 09:55:49 +0000
+Date: Mon, 17 Aug 2026 15:46:26 +0000
 Architectures: amd64 arm64
 Components: main
 Description: IntuitionEngine Debian packages
 MD5Sum:
- 191957a48d11486885abdc8e98b34feb 595 main/binary-amd64/Packages
- 66f175ddac46803968b8a5a7ee60e92d 380 main/binary-amd64/Packages.gz
- 68dbd1a831f4c30012a283d7e7f38611 1198 main/binary-arm64/Packages
- 2ff80f5491178f1c9e24d4b293a6b0e7 498 main/binary-arm64/Packages.gz
+ f76b74e5b96bea65844b542fa7fe3329 595 main/binary-amd64/Packages
+ 5f8d413e994f15a02710ac3140dcd122 379 main/binary-amd64/Packages.gz
+ ecd29fbf42a07010cf39d7b9ed15c3e8 1198 main/binary-arm64/Packages
+ c87a3d02643ab73fcecc718f2fb1f4a2 498 main/binary-arm64/Packages.gz
 SHA1:
- 610f1e8ef72661ba7b23906743d4d8e321c7c02c 595 main/binary-amd64/Packages
- 0692a7bb78229dab1d999f3df4bf8913c8cac477 380 main/binary-amd64/Packages.gz
- 661d285091c6be30f13ff35b559adb3a9febd117 1198 main/binary-arm64/Packages
- d5b8da07584f4e69ce40fa2e6089eb58a54dc1a5 498 main/binary-arm64/Packages.gz
+ 46b85aa5200d4baf849aebdd199f250de09b4b65 595 main/binary-amd64/Packages
+ f8e9a3292d0dcc7280cf857ca260556215e4cb39 379 main/binary-amd64/Packages.gz
+ 446fe1ce9100cd4b80339b8a1b63ff2924d6fb90 1198 main/binary-arm64/Packages
+ 82e6d8bfbc5dd3cfe3067eae078062443b30d84b 498 main/binary-arm64/Packages.gz
 SHA256:
- 4527ffd2a577e51ce67ec81f2d07b882fa07aebc44fac06de29e178cbb5789ed 595 main/binary-amd64/Packages
- 3a6f45536678228106cd2cfa2a35e2257265851bc0a05d6c0ce7f1795ef828fe 380 main/binary-amd64/Packages.gz
- 457f806a0f247d03d630a857e682d1109df91c4bba1a35c870446f73cfd75af3 1198 main/binary-arm64/Packages
- 5393e2cd2d52afb043a02abad184934654de864e91b2a8e22a9d5ff3ec7604f7 498 main/binary-arm64/Packages.gz
+ cd09003b7a39a36501280a386c329987e364e365285d235ca2df1b59436569d1 595 main/binary-amd64/Packages
+ d737343a6e272a477d44ee306f4c476315176d8377f2803c4d2a62cfb6232221 379 main/binary-amd64/Packages.gz
+ e58a3bd0b9542a8db9ccbd4af837541cc1cd00b711fbd038382901e72a9d338f 1198 main/binary-arm64/Packages
+ ee943f46bc1ac9d9aaff20c2551ef73a859ee59565c7d401249e868d11aa3109 498 main/binary-arm64/Packages.gz

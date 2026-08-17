@@ -828,6 +828,7 @@
         <a href="#devices">Audio/video</a>
         <a href="#iemon">IE Mon</a>
         <a href="#iescript">IEScript</a>
+        <a href="#SDK">SDK</a>
         <a href="#docs">Docs</a>
       </div>
     </nav>
@@ -845,7 +846,7 @@
         <p class="lead">Intuition Engine is a demoscene platform for combinations no original computer could run: a 6502 playing SID music while an x86 drives Atari ANTIC graphics, or a 68020 using a copper with PC VGA. It is free and open source, built for people who still write rotozoomers by hand and people writing their first. I have been building it since 1991.</p>
         <div class="actions">
           <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
-          <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Download the Intuition Engine 1.0.6 live image</a>
+          <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Download the Intuition Engine 1.0.7 live image</a>
           <a class="button secondary" href="https://youtube.com/@IntuitionAmiga">YouTube</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
         </div>
@@ -1122,10 +1123,10 @@ SOUND STOP</code></pre>
         </article>
         <div class="actions">
           <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
-          <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Download the Intuition Engine 1.0.6 live image</a>
+          <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Download the Intuition Engine 1.0.7 live image</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
         </div>
-        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos. IE64, IE32, 68020, Z80, 6502 and x86 code use WebAssembly JITs, with x86 JIT compilation available when the browser supports WebAssembly SIMD. The live image requires an x86-64-v3 processor: Intel Haswell (2013) or newer, or a compatible AMD processor. It bundles worked examples in BASIC, assembly and C, together with the x86-64 and ARM64 Linux Host SDK archives. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
+        <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos. IE64, IE32, 68020, Z80, 6502 and x86 code use WebAssembly JITs, with x86 JIT compilation available when the browser supports WebAssembly SIMD. The live image requires an x86-64-v3 processor: Intel Haswell (2013) or newer, or a compatible AMD processor. It bundles worked examples in BASIC, assembly and C, together with the Linux x86-64, Linux ARM64 and Windows x86-64 Host SDK archives. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
       </div>
     </section>
 
@@ -1836,7 +1837,7 @@ dbg.close()</code></pre>
       </div>
     </section>
 
-    <section id="tooling" class="band">
+    <section id="SDK" class="band">
       <div class="wrap">
         <div class="section-head">
           <h2>IE64 BASIC, C and assembly</h2>

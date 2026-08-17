@@ -4154,6 +4154,36 @@ Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` are outside scope
 and remain read-only and checksum-protected.
 Disposition: KEEP.
 
+ID: SDK-DOC-0115
+Status: FIXED
+Document: `sdk/docs/architecture.md`, its empirical inventory and companion
+gates, and the five companion PDFs.
+Section: Windows x64 Host SDK distribution re-audit.
+Claim: Commits `0019afaf` and `45540dad` add a Windows x64 Host SDK archive
+alongside the Linux x86-64 and ARM64 archives. The Architecture manual must
+state the three Host SDK targets and the x64 live-image staging of all three
+archives without extending the CPU, IEMon, or IEScript manuals.
+Purpose judgement: Host SDK packaging and live-image payload delivery are
+system build architecture and belong in `architecture.md`'s tooling and
+appliance sections. They are not CPU ISA, monitor-command, or scripting-API
+contracts.
+Canonical sources checked: current `Makefile`,
+`scripts/dist-host-sdk-linux-amd64.sh`, its ARM64 and Windows wrappers,
+`build_x64_ie_img.sh`, Host SDK validation/tests, the Architecture manual and
+source inventory, and the complete current tracked commit range outside the
+protected refman trees.
+Runnable verification: source-inventory golden and manual-coverage gates,
+companion and ledger gates, `make check-docs`, protected-refman checksum
+comparison, final isolated five-PDF render, manifest verification, and
+independent PDF inspection.
+Observed result: Architecture identifies Linux x86-64, Linux ARM64, and
+Windows x86-64 Host SDKs and states that the x64 live payload stages all three
+archives with their SHA-256 files. No other book required a change.
+Action: Regenerate the five PDFs and render manifest after this ledger update.
+Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` are outside scope
+and remain read-only and checksum-protected.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -4194,7 +4224,7 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
 `SDK-DOC-0104`, `SDK-DOC-0105`, `SDK-DOC-0106`, `SDK-DOC-0107`, and
 `SDK-DOC-0108`, `SDK-DOC-0109`, `SDK-DOC-0110`, `SDK-DOC-0111`,
-`SDK-DOC-0112`, `SDK-DOC-0113`, and `SDK-DOC-0114`
+`SDK-DOC-0112`, `SDK-DOC-0113`, `SDK-DOC-0114`, and `SDK-DOC-0115`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -4276,7 +4306,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0114` and
+Open claim-group backlog: none for this run after `SDK-DOC-0115` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate
