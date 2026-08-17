@@ -1,8 +1,8 @@
 # Host SDK toolchain profiles
 
-The Linux x86-64 and ARM64 Host SDKs supply `ie64-cproc` and its IE64 runtime.
-They also ship assembly includes and examples for the other CPUs. External
-compilers and their standard libraries are never bundled.
+The Linux x86-64, Linux ARM64 and Windows x86-64 Host SDKs supply `ie64-cproc`
+and its IE64 runtime. They also ship assembly includes and examples for the
+other CPUs. External compilers and their standard libraries are never bundled.
 
 | CPU | Supported compiler | Required target definition | Output |
 | --- | --- | --- | --- |

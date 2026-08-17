@@ -1,9 +1,9 @@
 # Intuition Engine host SDK
 
-This archive is the supported Linux host SDK for the architecture named in the
-download. The x86-64 and ARM64 archives have the same layout and contents
-apart from their host executable architecture. Its top level contains
-only `bin`, `include`, `lib` and `share`.
+This package is a supported host SDK for the architecture named in the
+download. The Linux x86-64, Linux ARM64 and Windows x86-64 packages have the
+same layout and contents apart from their host executable format and suffix.
+Its top level contains only `bin`, `include`, `lib` and `share`.
 
 `bin` contains the supported first-party tools: `ie32asm`, `ie32to64`,
 `ie64asm`, `ie64dis`, `ie64-cproc`, `ie64ld`, `ie64-ar`, `ie64-ranlib`, `qbe`

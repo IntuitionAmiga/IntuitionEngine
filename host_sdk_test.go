@@ -139,7 +139,7 @@ func TestHostSDKLinuxARM64ReleaseAndPayloadContract(t *testing.T) {
 		text := string(data)
 		wants := []string{"intuition-engine-host-sdk-linux-amd64", "intuition-engine-host-sdk-linux-arm64"}
 		if name == "build_x64_ie_img.sh" {
-			wants = append(wants, "${host_sdk_name}.tar.xz", "${host_sdk_name}.tar.xz.sha256")
+			wants = append(wants, "HOST_SDK_ARCHIVES", "HOST_SDK_CHECKSUMS", "HOST_SDK_EXTRACTORS")
 		}
 		for _, want := range wants {
 			if !strings.Contains(text, want) {
@@ -189,6 +189,121 @@ func TestHostSDKLinuxARM64ReleaseAndPayloadContract(t *testing.T) {
 	} {
 		if !strings.Contains(string(gitignore), exception) {
 			t.Errorf(".gitignore does not retain the ARM64 release asset %q", exception)
+		}
+	}
+}
+
+func TestHostSDKWindowsDistributionContract(t *testing.T) {
+	windowsScript, err := os.ReadFile("scripts/dist-host-sdk-windows-amd64.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowsText := string(windowsScript)
+	genericScript, err := os.ReadFile("scripts/dist-host-sdk-linux-amd64.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowsText += "\n" + string(genericScript)
+	for _, want := range []string{
+		"HOST_SDK_ARCH=amd64",
+		"HOST_SDK_GOOS=windows",
+		"CGO_ENABLED=0",
+		"GOOS=windows",
+		"GOARCH=amd64",
+		".exe",
+		"x86_64-w64-mingw32-gcc",
+		"host_gcc_libdir",
+		"bootstrap_windows_guest_tools",
+		"non-system DLL",
+		"HOST_SDK_ARCHIVE_FORMAT=zip",
+		"HOST_SDK_NAME=intuition-engine-host-sdk-windows-amd64",
+	} {
+		if !strings.Contains(windowsText, want) {
+			t.Errorf("Windows Host SDK distributor is missing %q", want)
+		}
+	}
+
+	makefile, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeText := string(makefile)
+	for _, want := range []string{
+		"dist-host-sdk-windows-amd64",
+		"test-host-sdk-windows-amd64",
+		"intuition-engine-host-sdk-windows-amd64.zip",
+	} {
+		if !strings.Contains(makeText, want) {
+			t.Errorf("Makefile is missing Windows Host SDK contract %q", want)
+		}
+	}
+}
+
+func TestHostSDKWindowsReleaseAndPayloadContract(t *testing.T) {
+	buildScript, err := os.ReadFile("build_x64_ie_img.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildText := string(buildScript)
+	windowsScript, err := os.ReadFile("scripts/dist-host-sdk-windows-amd64.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildText += "\n" + string(windowsScript)
+	genericScript, err := os.ReadFile("scripts/dist-host-sdk-linux-amd64.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	buildText += "\n" + string(genericScript)
+	for _, want := range []string{
+		"intuition-engine-host-sdk-windows-amd64.zip",
+		"intuition-engine-host-sdk-windows-amd64.zip.sha256",
+		"unzip",
+		"objdump -p",
+		"zip -X",
+	} {
+		if !strings.Contains(buildText, want) {
+			t.Errorf("shared payload producer is missing Windows Host SDK contract %q", want)
+		}
+	}
+
+	makefile, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeText := string(makefile)
+	for _, want := range []string{
+		"dist-host-sdk-windows-amd64",
+		"! -name 'intuition-engine-host-sdk-windows-amd64.zip*'",
+	} {
+		if !strings.Contains(makeText, want) {
+			t.Errorf("Makefile is missing Windows Host SDK payload contract %q", want)
+		}
+	}
+
+	index, err := os.ReadFile("intuitionengine.com/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"intuition-engine-host-sdk-windows-amd64.zip",
+		"intuition-engine-host-sdk-windows-amd64.zip.sha256",
+	} {
+		if !strings.Contains(string(index), want) {
+			t.Errorf("website is missing Windows Host SDK link %q", want)
+		}
+	}
+
+	gitignore, err := os.ReadFile(".gitignore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"!intuitionengine.com/assets/intuition-engine-host-sdk-windows-amd64.zip",
+		"!intuitionengine.com/assets/intuition-engine-host-sdk-windows-amd64.zip.sha256",
+	} {
+		if !strings.Contains(string(gitignore), want) {
+			t.Errorf(".gitignore does not retain Windows Host SDK asset %q", want)
 		}
 	}
 }

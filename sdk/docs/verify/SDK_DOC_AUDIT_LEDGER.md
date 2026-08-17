@@ -3414,7 +3414,8 @@ match the tools and MMIO addresses implemented by source on disk.
 Purpose judgement: The architecture manual is the user-facing system inventory,
 while `intuitionengine.h` is a shipped programming contract. Both must describe
 the current Host SDK without moving tooling material into either CPU ISA manual.
-Canonical sources checked: `scripts/dist-host-sdk-linux-amd64.sh`,
+Canonical sources checked: `scripts/dist-host-sdk-linux-amd64.sh`, its Linux ARM64
+wrapper and its Windows x86-64 wrapper,
 `build_x64_ie_img.sh`, `program_executor_constants.go`,
 `file_io_constants.go`, the assembly includes, `main.go`, and
 `sdk/include/intuitionengine.h`.
@@ -3426,7 +3427,7 @@ Program Executor to `0xF2320`, matching executable source, assembly includes,
 and the architecture memory map. The architecture diagram and tooling matrix
 now include the compiler, linker, archive tools, public header, and consolidated
 Linux x86-64 and ARM64 Host SDKs. The live-image payload contract identifies
-both Host SDK archives and checksums under `SDK/Toolchains` and excludes the
+all three Host SDK packages and checksums under `SDK/Toolchains` and excludes the
 retired payloads.
 Action: Corrected both public constants, added structured source-value checks,
 updated `architecture.md`, and added empirical architecture facts.
@@ -4101,25 +4102,25 @@ Status: FIXED
 Document: `sdk/docs/architecture.md`, its empirical inventory and companion
 gates, and the five companion PDFs.
 Section: ARM64 Host SDK distribution re-audit.
-Claim: The current ARM64 Host SDK changes add a Linux ARM64 distribution
-alongside the existing x86-64 Host SDK. The Architecture manual must describe
-the two Host SDK targets, the ARM64 toolchain and QEMU-assisted validation
-path, and the live-image staging of both archives without adding claims to the
+Claim: The current Host SDK changes add Linux ARM64 and Windows x86-64
+distributions alongside the existing Linux x86-64 Host SDK. The Architecture
+manual must describe the three Host SDK targets, their build paths and the
+live-image staging of all three packages without adding claims to the
 CPU, IEMon, or IEScript manuals.
 Purpose judgement: Host SDK and image-payload delivery are system build
 architecture and belong in `architecture.md`'s tooling and appliance
 sections. They are not CPU ISA, monitor-command, or scripting-API contracts.
 Canonical sources checked: current `Makefile`, `build_x64_ie_img.sh`,
-`scripts/dist-host-sdk-linux-amd64.sh`, its ARM64 invocation, Host SDK tests,
+`scripts/dist-host-sdk-linux-amd64.sh`, its ARM64 and Windows invocations, Host SDK tests,
 and the current tracked commit and worktree changes outside the protected
 refman trees.
 Runnable verification: source-inventory golden and manual-coverage gates,
 companion and ledger gates, `make check-docs`, protected-refman checksum
 comparison, final isolated five-PDF render, manifest verification, and
 independent PDF inspection.
-Observed result: Architecture now identifies Linux x86-64 and ARM64 Host
-SDKs and records that the x64 live payload stages both archives with their
-checksums. No other book required a change.
+Observed result: Architecture now identifies Linux x86-64, Linux ARM64 and
+Windows x86-64 Host SDKs and records that the x64 live payload stages all three
+packages with their checksums. No other book required a change.
 Action: Regenerate the five PDFs and render manifest after this ledger and
 Architecture date update.
 Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` are outside scope

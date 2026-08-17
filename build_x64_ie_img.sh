@@ -54,13 +54,27 @@ PLYMOUTH_SPLASH="${SCRIPT_DIR}/splash.png"
 PLYMOUTH_THEME_DESCRIPTOR="${SCRIPT_DIR}/scripts/plymouth/intuition-engine.plymouth"
 PLYMOUTH_THEME_SCRIPT="${SCRIPT_DIR}/scripts/plymouth/intuition-engine.script"
 REFMAN_PDF_DIR="${SCRIPT_DIR}/sdk/docs/refman.publish/pdf"
-HOST_SDK_NAME="intuition-engine-host-sdk-linux-amd64"
-HOST_SDK_ARCHIVE="${SCRIPT_DIR}/dist/${HOST_SDK_NAME}.tar.xz"
-HOST_SDK_SHA256="${HOST_SDK_ARCHIVE}.sha256"
 HOST_SDK_NAMES=(
     intuition-engine-host-sdk-linux-amd64
     intuition-engine-host-sdk-linux-arm64
+    intuition-engine-host-sdk-windows-amd64
 )
+HOST_SDK_ARCHIVES=(
+    "${SCRIPT_DIR}/dist/intuition-engine-host-sdk-linux-amd64.tar.xz"
+    "${SCRIPT_DIR}/dist/intuition-engine-host-sdk-linux-arm64.tar.xz"
+    "${SCRIPT_DIR}/dist/intuition-engine-host-sdk-windows-amd64.zip"
+)
+HOST_SDK_CHECKSUMS=(
+    "${SCRIPT_DIR}/dist/intuition-engine-host-sdk-linux-amd64.tar.xz.sha256"
+    "${SCRIPT_DIR}/dist/intuition-engine-host-sdk-linux-arm64.tar.xz.sha256"
+    "${SCRIPT_DIR}/dist/intuition-engine-host-sdk-windows-amd64.zip.sha256"
+)
+HOST_SDK_TARGETS=(
+    dist-host-sdk-linux-amd64
+    dist-host-sdk-linux-arm64
+    dist-host-sdk-windows-amd64
+)
+HOST_SDK_EXTRACTORS=(tar tar unzip)
 IESHARE_SDK_RESERVE_BYTES="${IESHARE_SDK_RESERVE_BYTES:-67108864}"
 SDK_COMPANION_PDFS=(
     "${SCRIPT_DIR}/sdk/docs/IE64_ISA.pdf"
@@ -364,15 +378,17 @@ check_live_payload_inputs() {
         payload_require_file "${SCRIPT_DIR}/sdk/include/${include}" "make sdk-build" "SDK include ${include}"
     done
 
-    local host_sdk_name host_sdk_archive host_sdk_sha256
-    for host_sdk_name in "${HOST_SDK_NAMES[@]}"; do
-        host_sdk_archive="${SCRIPT_DIR}/dist/${host_sdk_name}.tar.xz"
-        host_sdk_sha256="${host_sdk_archive}.sha256"
-        payload_require_file "$host_sdk_archive" "make dist-host-sdk-linux-${host_sdk_name##*-}" "${host_sdk_name} archive"
-        payload_require_file "$host_sdk_sha256" "make dist-host-sdk-linux-${host_sdk_name##*-}" "${host_sdk_name} checksum"
+    local host_sdk_index host_sdk_name host_sdk_archive host_sdk_sha256 host_sdk_target
+    for host_sdk_index in "${!HOST_SDK_NAMES[@]}"; do
+        host_sdk_name="${HOST_SDK_NAMES[$host_sdk_index]}"
+        host_sdk_archive="${HOST_SDK_ARCHIVES[$host_sdk_index]}"
+        host_sdk_sha256="${HOST_SDK_CHECKSUMS[$host_sdk_index]}"
+        host_sdk_target="${HOST_SDK_TARGETS[$host_sdk_index]}"
+        payload_require_file "$host_sdk_archive" "make ${host_sdk_target}" "${host_sdk_name} package"
+        payload_require_file "$host_sdk_sha256" "make ${host_sdk_target}" "${host_sdk_name} checksum"
         if ! (cd "$(dirname "$host_sdk_archive")" && sha256sum -c "$(basename "$host_sdk_sha256")"); then
             log_error "host SDK checksum validation failed: ${host_sdk_sha256}"
-            log_error "Producer: make dist-host-sdk-linux-${host_sdk_name##*-}"
+            log_error "Producer: make ${host_sdk_target}"
             exit 1
         fi
     done
@@ -430,12 +446,16 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/SDK/Include/ie64.inc" "make sdk-build" "staged IE64 include"
     payload_require_file "${payload_root}/SDK/Include/ie64_fp.inc" "make sdk-build" "staged IE64 floating-point include"
     payload_require_file "${payload_root}/SDK/Include/ie65.cfg" "make sdk-build" "staged 6502 linker configuration"
-    local host_sdk_name
-    for host_sdk_name in "${HOST_SDK_NAMES[@]}"; do
-        payload_require_file "${payload_root}/SDK/Toolchains/${host_sdk_name}.tar.xz" "make dist-host-sdk-linux-${host_sdk_name##*-}" "staged ${host_sdk_name} archive"
-        payload_require_file "${payload_root}/SDK/Toolchains/${host_sdk_name}.tar.xz.sha256" "make dist-host-sdk-linux-${host_sdk_name##*-}" "staged ${host_sdk_name} checksum"
-        if ! (cd "${payload_root}/SDK/Toolchains" && sha256sum -c "${host_sdk_name}.tar.xz.sha256"); then
-            log_error "Staged host SDK checksum validation failed: ${payload_root}/SDK/Toolchains/${host_sdk_name}.tar.xz.sha256"
+    local host_sdk_index host_sdk_name host_sdk_archive host_sdk_sha256 host_sdk_target
+    for host_sdk_index in "${!HOST_SDK_NAMES[@]}"; do
+        host_sdk_name="${HOST_SDK_NAMES[$host_sdk_index]}"
+        host_sdk_archive="$(basename "${HOST_SDK_ARCHIVES[$host_sdk_index]}")"
+        host_sdk_sha256="$(basename "${HOST_SDK_CHECKSUMS[$host_sdk_index]}")"
+        host_sdk_target="${HOST_SDK_TARGETS[$host_sdk_index]}"
+        payload_require_file "${payload_root}/SDK/Toolchains/${host_sdk_archive}" "make ${host_sdk_target}" "staged ${host_sdk_name} package"
+        payload_require_file "${payload_root}/SDK/Toolchains/${host_sdk_sha256}" "make ${host_sdk_target}" "staged ${host_sdk_name} checksum"
+        if ! (cd "${payload_root}/SDK/Toolchains" && sha256sum -c "${host_sdk_sha256}"); then
+            log_error "Staged host SDK checksum validation failed: ${payload_root}/SDK/Toolchains/${host_sdk_sha256}"
             log_error "Producer: build_x64_ie_img.sh stage_share_payload"
             exit 1
         fi
@@ -688,11 +708,12 @@ PY
     cp -f "${SCRIPT_DIR}"/sdk/examples/basic/*.bas "$sdk_dir/Examples/basic/"
     cp -f "${SCRIPT_DIR}"/sdk/examples/c/*.c "$sdk_dir/Examples/c/"
     cp -a "${SCRIPT_DIR}/sdk/examples/assets" "$sdk_dir/Examples/"
-    local sdk_bytes available_bytes sdk_budget sdk_tmp host_sdk_archive host_sdk_sha256 host_sdk_name
+    local sdk_bytes available_bytes sdk_budget sdk_tmp host_sdk_index host_sdk_archive host_sdk_sha256 host_sdk_name host_sdk_extractor
     sdk_bytes=0
-    for host_sdk_name in "${HOST_SDK_NAMES[@]}"; do
-        host_sdk_archive="${SCRIPT_DIR}/dist/${host_sdk_name}.tar.xz"
-        host_sdk_sha256="${host_sdk_archive}.sha256"
+    for host_sdk_index in "${!HOST_SDK_NAMES[@]}"; do
+        host_sdk_name="${HOST_SDK_NAMES[$host_sdk_index]}"
+        host_sdk_archive="${HOST_SDK_ARCHIVES[$host_sdk_index]}"
+        host_sdk_sha256="${HOST_SDK_CHECKSUMS[$host_sdk_index]}"
         sdk_bytes=$(( sdk_bytes + $(stat -c '%s' "$host_sdk_archive") + $(stat -c '%s' "$host_sdk_sha256") ))
     done
     available_bytes=$(df -B1 --output=avail "$payload_root" | tail -n 1 | tr -d ' ')
@@ -702,14 +723,20 @@ PY
         exit 1
     fi
     sdk_tmp=$(mktemp -d "${WORK_DIR}/host-sdk-check.XXXXXX")
-    for host_sdk_name in "${HOST_SDK_NAMES[@]}"; do
-        host_sdk_archive="${SCRIPT_DIR}/dist/${host_sdk_name}.tar.xz"
-        tar -xf "$host_sdk_archive" -C "$sdk_tmp"
+    for host_sdk_index in "${!HOST_SDK_NAMES[@]}"; do
+        host_sdk_name="${HOST_SDK_NAMES[$host_sdk_index]}"
+        host_sdk_archive="${HOST_SDK_ARCHIVES[$host_sdk_index]}"
+        host_sdk_extractor="${HOST_SDK_EXTRACTORS[$host_sdk_index]}"
+        if [[ "${host_sdk_extractor}" == unzip ]]; then
+            unzip -q "$host_sdk_archive" -d "$sdk_tmp"
+        else
+            tar -xf "$host_sdk_archive" -C "$sdk_tmp"
+        fi
         bash "${SCRIPT_DIR}/scripts/test-installed-host-sdk.sh" "$sdk_tmp/${host_sdk_name}"
     done
     rm -rf "$sdk_tmp"
-    for host_sdk_name in "${HOST_SDK_NAMES[@]}"; do
-        cp -f "${SCRIPT_DIR}/dist/${host_sdk_name}.tar.xz" "${SCRIPT_DIR}/dist/${host_sdk_name}.tar.xz.sha256" "$sdk_toolchains_dir/"
+    for host_sdk_index in "${!HOST_SDK_NAMES[@]}"; do
+        cp -f "${HOST_SDK_ARCHIVES[$host_sdk_index]}" "${HOST_SDK_CHECKSUMS[$host_sdk_index]}" "$sdk_toolchains_dir/"
     done
     cp -f "${REFMAN_PDF_DIR}"/*.pdf "$refman_docs_dir/"
     cp -f "${SDK_COMPANION_PDFS[@]}" "$docs_dir/"

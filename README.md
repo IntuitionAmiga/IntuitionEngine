@@ -12,7 +12,7 @@ use a fixed 256 MiB heap backing. Guest software discovers total and active
 visible RAM
 through SYSINFO and CPU-specific paths.
 
-[Try Intuition Engine in a browser](https://intuitionengine.io) | [Download Live images](https://intuitionengine.io) | [Download x86-64 Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz) | [Download ARM64 Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-arm64.tar.xz) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
+[Try Intuition Engine in a browser](https://intuitionengine.io) | [Download Live images](https://intuitionengine.io) | [Download Linux x86-64 Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz) | [Download Linux ARM64 Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-arm64.tar.xz) | [Download Windows x86-64 Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-windows-amd64.zip) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
 
 ## Quick Start
 
@@ -194,7 +194,7 @@ Core SDK tool outputs:
 
 The main output formats are `.iex` for IE32, `.ie64` for IE64, `.ie68` for M68K, `.ie80` for Z80, `.ie65` for 6502, and `.ie86` for x86.
 
-The [Linux Host SDK](sdk/docs/host-sdk-README.md) packages these tools with QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation. Download the [x86-64 archive](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz) or [ARM64 archive](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-arm64.tar.xz); build them with `make dist-host-sdk-linux-amd64` and `make dist-host-sdk-linux-arm64`.
+The [Host SDK](sdk/docs/host-sdk-README.md) packages these tools with QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation. Download the [Linux x86-64 package](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz), [Linux ARM64 package](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-arm64.tar.xz) or [Windows x86-64 package](https://intuitionengine.io/assets/intuition-engine-host-sdk-windows-amd64.zip); build them with `make dist-host-sdk-linux-amd64`, `make dist-host-sdk-linux-arm64` and `make dist-host-sdk-windows-amd64`.
 
 ## Live USB Images
 

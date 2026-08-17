@@ -952,11 +952,11 @@ Pi 4 and Pi 400 appliance is copied for Pi 5, then only the Intuition Engine
 binary is replaced. The x64 payload check stages one canonical IESHARE tree,
 and both Raspberry Pi image builds consume that same tree.
 
-The Linux x86-64 and ARM64 Host SDKs package `ie32asm`, `ie32to64`, `ie64asm`,
-`ie64dis`, `ie64-cproc`, `ie64ld`, `ie64-ar`, `ie64-ranlib`, QBE, cproc-qbe,
-the IE64 runtime and libraries, public assembly includes,
-`intuitionengine.h`, and user documentation. The x64 live image stages both
-Host SDK archives and their SHA-256 files under `SDK/Toolchains`; the former
+The Linux x86-64, Linux ARM64 and Windows x86-64 Host SDKs package `ie32asm`,
+`ie32to64`, `ie64asm`, `ie64dis`, `ie64-cproc`, `ie64ld`, `ie64-ar`,
+`ie64-ranlib`, QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes,
+`intuitionengine.h`, and user documentation. The x64 live image stages all
+three Host SDK packages and their SHA-256 files under `SDK/Toolchains`; the former
 per-platform `SDK/Tools` tree and standalone IE64 toolchain archive are not
 staged.
 
