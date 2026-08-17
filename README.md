@@ -12,7 +12,7 @@ use a fixed 256 MiB heap backing. Guest software discovers total and active
 visible RAM
 through SYSINFO and CPU-specific paths.
 
-[Try Intuition Engine in a browser](https://intuitionengine.io) | [Download Live images and the Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
+[Try Intuition Engine in a browser](https://intuitionengine.io) | [Download Live images](https://intuitionengine.io) | [Download the Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
 
 ## Quick Start
 
@@ -194,7 +194,7 @@ Core SDK tool outputs:
 
 The main output formats are `.iex` for IE32, `.ie64` for IE64, `.ie68` for M68K, `.ie80` for Z80, `.ie65` for 6502, and `.ie86` for x86.
 
-The [Linux x86-64 Host SDK](sdk/docs/host-sdk-README.md) packages these tools with QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation. The packaged Host SDK is available from [intuitionengine.io](https://intuitionengine.io); build its source-tree archive with `make dist-host-sdk-linux-amd64`.
+The [Linux x86-64 Host SDK](sdk/docs/host-sdk-README.md) packages these tools with QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation. Download the packaged Host SDK from [intuitionengine.io](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz); build its source-tree archive with `make dist-host-sdk-linux-amd64`.
 
 ## Live USB Images
 
@@ -237,6 +237,8 @@ Maintained profiles:
 |----------|--------------|---------------------|------------------------|
 | Linux | x86_64 | `make`, `novulkan`, `headless`, `headless-novulkan` | IE32, IE64, M68K, 6502, Z80 and x86 |
 | Linux | aarch64 | `make`, `novulkan`, `headless`, `headless-novulkan` | IE32, IE64, M68K, 6502, Z80 and x86 |
+| Raspberry Pi 4 / Pi 400 | ARM64 | `make build-image-pi4` | IE32, IE64, M68K, 6502, Z80 and x86 |
+| Raspberry Pi 5 | ARM64 | `make build-image-pi5` | IE32, IE64, M68K, 6502, Z80 and x86 |
 | Windows | x86_64 | `novulkan` | IE64, M68K, Z80 and x86 |
 | Windows | ARM64 | `novulkan` | IE64 and M68K |
 | macOS | x86_64 | `novulkan` | IE64, M68K, Z80 and x86 |

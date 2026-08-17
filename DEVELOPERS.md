@@ -103,10 +103,10 @@ The VM is written to `bin/IntuitionEngine`. First-party tools are written to
 
 The [Host SDK guide](sdk/docs/host-sdk-README.md) describes the packaged Linux
 x86-64 SDK, including its compiler components, runtime, libraries and public
-headers. The Host SDK is also available from
-[intuitionengine.io](https://intuitionengine.io). It contains the IE32 and IE64
-development tools, not the VM or the external M68K, Z80, 6502 and x86
-toolchains listed above.
+headers. Download the Host SDK from
+[intuitionengine.io](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz).
+It contains the IE32 and IE64 development tools, not the VM or the external
+M68K, Z80, 6502 and x86 toolchains listed above.
 
 ### Makefile build baseline
 
@@ -476,12 +476,15 @@ Selected shared status registers:
 
 ## 9. Live images and release engineering
 
-| Platform | Native profile | JIT coverage |
-|----------|----------------|--------------|
-| Linux x64 and ARM64 | Default, `novulkan`, headless and headless with no Vulkan | See the JIT matrix above |
-| Windows amd64 and arm64 | Pure-Go `novulkan` release | See the JIT matrix above |
-| macOS amd64 and arm64 | Pure-Go `novulkan` release | See the JIT matrix above |
-| Browser | `make wasm` | IE32, IE64, M68K, 6502, Z80 and x86 WebAssembly JITs |
+| Platform | Build profile or target | JIT coverage |
+|----------|-------------------------|--------------|
+| Linux x64 | `make`, `make novulkan`, `make headless`, `make headless-novulkan` | See the JIT matrix above |
+| Linux ARM64 | `make`, `make novulkan`, `make headless`, `make headless-novulkan` | See the JIT matrix above |
+| Raspberry Pi 4 and Pi 400 | `make build-image-pi4` | IE32, IE64, M68K, 6502, Z80 and x86 |
+| Raspberry Pi 5 | `make build-image-pi5` | IE32, IE64, M68K, 6502, Z80 and x86 |
+| Windows amd64 and arm64 | `make novulkan` | See the JIT matrix above |
+| macOS amd64 and arm64 | `make novulkan` | See the JIT matrix above |
+| Browser | `make wasm` | IE32, IE64, M68K, 6502 and Z80; x86 requires WebAssembly SIMD |
 
 Intuition Engine is distributed as bootable USB Live images from
 [intuitionengine.io](https://intuitionengine.io). Each image boots directly into
