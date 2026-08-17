@@ -7,12 +7,17 @@ PROG="$ROOT/sdk/ab3d64/bin/ab3d2_ie64_redux_high_overdrive.ie64"
 STUB_SRC="$ROOT/sdk/ab3d64/tools/generated/boot_stub.ie64.s"
 STUB_BIN="$ROOT/sdk/ab3d64/tools/generated/boot_stub.ie64"
 SCRIPT="$ROOT/sdk/ab3d64/tools/diag_boot_audit.ies"
+SCRIPT_SOURCE="$ROOT/sdk/ab3d64/tools/diag_boot_audit.ies.in"
 SMOKE="$ROOT/sdk/ab3d64/tools/diag_headless_smoke.ies"
 LOG="${1:-/tmp/ab3d64_audit.log}"
 LAUNCH_CWD="${AB3D64_LAUNCH_CWD:-$ROOT/../alienbreed3d2/ab3d2_source}"
 
 echo "[INFO] (re)building $BIN with the headless Go tag"
 make -C "$ROOT" headless
+
+if [[ ! -f "$SCRIPT" ]]; then
+    cp "$SCRIPT_SOURCE" "$SCRIPT"
+fi
 
 echo "[INFO] building AB3D64 and diagnostic symbol module"
 make -C "$ROOT" ab3d64

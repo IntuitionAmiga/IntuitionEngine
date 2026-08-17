@@ -1,0 +1,468 @@
+package.path = "?.lua;?/init.lua;generated/?.lua;generated/?/init.lua;" .. package.path
+
+local S = require("generated.diag_symbols_ab3d64")
+local TARGET = "generated/ab3d2_ie64_redux_high_overdrive.ie64"
+
+local VIDEO_CTRL = 0xF0000
+local VIDEO_MODE = 0xF0004
+local VIDEO_STATUS = 0xF0008
+local VIDEO_PAL_INDEX = 0xF0078
+local VIDEO_PAL_DATA = 0xF007C
+local VIDEO_COLOR_MODE = 0xF0080
+local VIDEO_FB_BASE = 0xF0084
+local VIDEO_PAL_TABLE = 0xF0088
+local IE_PRESENT_COUNT = 0x00625FFC
+
+local VIDEO_MMIO_NAMES = {
+    "VIDEO_CTRL", "VIDEO_MODE", "VIDEO_STATUS",
+    "VIDEO_PAL_INDEX", "VIDEO_PAL_DATA", "VIDEO_COLOR_MODE",
+    "VIDEO_FB_BASE", "BLT_CTRL", "BLT_OP", "BLT_SRC", "BLT_DST",
+    "BLT_WIDTH", "BLT_HEIGHT", "BLT_FLAGS",
+}
+
+local VIDEO_MMIO_ADDR = {
+    VIDEO_CTRL = VIDEO_CTRL,
+    VIDEO_MODE = VIDEO_MODE,
+    VIDEO_STATUS = VIDEO_STATUS,
+    VIDEO_PAL_INDEX = VIDEO_PAL_INDEX,
+    VIDEO_PAL_DATA = VIDEO_PAL_DATA,
+    VIDEO_COLOR_MODE = VIDEO_COLOR_MODE,
+    VIDEO_FB_BASE = VIDEO_FB_BASE,
+    BLT_CTRL = 0xF001C,
+    BLT_OP = 0xF0020,
+    BLT_SRC = 0xF0024,
+    BLT_DST = 0xF0028,
+    BLT_WIDTH = 0xF002C,
+    BLT_HEIGHT = 0xF0030,
+    BLT_FLAGS = 0xF0488,
+}
+
+local MODE_SIZE = {
+    [0x00] = 640 * 480 * 4,
+    [0x01] = 800 * 600 * 4,
+    [0x02] = 1024 * 768 * 4,
+    [0x03] = 1280 * 960 * 4,
+    [0x04] = 320 * 200,
+    [0x05] = 320 * 240,
+    [0x06] = 1920 * 1080,
+}
+
+local landmarks = {
+    "_ie64_entry",
+    "_Sys_Init",
+    "ie_init_fake_lib_vectors",
+    "_Vid_OpenMainScreen",
+    "_Vid_LoadMainPalette",
+    "ie_hud_init",
+    "_Sys_ClearKeyboard",
+    "Game_Begin",
+    "DrawDisplay",
+    "_Vid_Present",
+}
+
+local function hex(n)
+    return string.format("0x%08X", n or 0)
+end
+
+local function fatal(msg)
+    sys.print("[FATAL] " .. tostring(msg))
+    sys.exit(2)
+end
+
+local missing = {}
+for _, name in ipairs(landmarks) do
+    if not S[name] then missing[#missing + 1] = name end
+end
+if #missing > 0 then
+    fatal("missing symbols: " .. table.concat(missing, ", "))
+end
+
+local function rd(addr, len)
+    return dbg.read_mem(addr, len)
+end
+
+local function hex_bytes(addr, len)
+    local s = rd(addr, len)
+    local bytes = {}
+    for i = 1, #s do bytes[#bytes + 1] = string.format("%02X", string.byte(s, i) or 0) end
+    return table.concat(bytes, " ")
+end
+
+local function read_mem_u16_be(addr)
+    local s = rd(addr, 2)
+    local a, b = string.byte(s, 1, 2)
+    return ((a or 0) * 0x100) + (b or 0)
+end
+
+local function read_mem_u32_be(addr)
+    local s = rd(addr, 4)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return ((a or 0) * 0x1000000) + ((b or 0) * 0x10000) + ((c or 0) * 0x100) + (d or 0)
+end
+
+local function read_mmio_u32_le(addr)
+    if video and video.read_reg then
+        local ok, v = pcall(video.read_reg, addr)
+        if ok then return v end
+    end
+    local s = rd(addr, 4)
+    local a, b, c, d = string.byte(s, 1, 4)
+    return (a or 0) + ((b or 0) * 0x100) + ((c or 0) * 0x10000) + ((d or 0) * 0x1000000)
+end
+
+local function fb_base_size()
+    local base = read_mmio_u32_le(VIDEO_FB_BASE)
+    local mode = read_mmio_u32_le(VIDEO_MODE)
+    local color = read_mmio_u32_le(VIDEO_COLOR_MODE)
+    local size = MODE_SIZE[mode] or 0
+    if color ~= 1 and (mode == 0x04 or mode == 0x05 or mode == 0x06) then
+        size = size * 4
+    end
+    return base, size
+end
+
+local function scan_fb_nonzero_count_raw()
+    local base, size = fb_base_size()
+    if not base or not size or size <= 0 then return 0 end
+    local limit = math.min(size, 1024 * 1024)
+    local nonzero = 0
+    local off = 0
+    while off < limit do
+        local n = math.min(4096, limit - off)
+        local data = rd(base + off, n)
+        for i = 1, #data do
+            if (string.byte(data, i) or 0) ~= 0 then nonzero = nonzero + 1 end
+        end
+        off = off + n
+    end
+    return nonzero
+end
+
+local function scan_fb_visible_count()
+    if not video or not video.get_region then return nil end
+    local ok, region = pcall(video.get_region, 0, 0, 64, 64)
+    if not ok or type(region) ~= "string" then return nil end
+    local visible = 0
+    for i = 1, #region, 4 do
+        local r, g, b = string.byte(region, i, i + 2)
+        r, g, b = r or 0, g or 0, b or 0
+        if r ~= 0 or g ~= 0 or b ~= 0 then visible = visible + 1 end
+    end
+    return visible
+end
+
+local function capture_video_mmio()
+    local by_name = {}
+    local used_inspector = false
+    if dbg.io_devices and dbg.io then
+        local ok_devs, devs = pcall(dbg.io_devices)
+        if ok_devs then
+            for _, dev in ipairs(devs or {}) do
+                if string.lower(tostring(dev)) == "video" then
+                    local ok_regs, regs = pcall(dbg.io, dev)
+                    if ok_regs then
+                        for _, r in ipairs(regs or {}) do by_name[r.name] = r.value end
+                        used_inspector = true
+                    end
+                end
+            end
+        end
+    end
+    if not used_inspector then
+        for name, addr in pairs(VIDEO_MMIO_ADDR) do
+            by_name[name] = read_mmio_u32_le(addr)
+        end
+    end
+    return by_name
+end
+
+local function dump_video_mmio(tag, prev, cur)
+    for _, name in ipairs(VIDEO_MMIO_NAMES) do
+        local v = cur and cur[name] or nil
+        if v ~= nil then
+            if prev and prev[name] ~= nil and prev[name] ~= v then
+                sys.print(string.format("[MMIO] %s %s: 0x%08X -> 0x%08X", tag, name, prev[name], v))
+            else
+                sys.print(string.format("[MMIO] %s %s: 0x%08X", tag, name, v))
+            end
+        end
+    end
+end
+
+local function dump_timeline(n)
+    if not dbg.timeline then return end
+    local ok, lines = pcall(dbg.timeline, n or 64)
+    if ok then
+        for _, line in ipairs(lines or {}) do sys.print("[TL] " .. tostring(line)) end
+    end
+end
+
+local function dump_stop_context(name, addr)
+    local pc = dbg.get_pc and dbg.get_pc() or 0
+    sys.print(string.format("[CTX] stopped while waiting for %s want=%s pc=%s", name, hex(addr), hex(pc)))
+    if sym and sym.resolve then
+        local ok, resolved = pcall(sym.resolve, pc)
+        if ok and resolved then sys.print("[CTX] symbol " .. tostring(resolved.name) .. "+0x" .. string.format("%X", resolved.offset or 0)) end
+    end
+    if dbg.source_at then
+        local ok, src = pcall(dbg.source_at, pc)
+        if ok and src then sys.print("[CTX] source " .. tostring(src.file) .. ":" .. tostring(src.line)) end
+    end
+    if regions and regions.lookup then
+        local ok, region = pcall(regions.lookup, pc)
+        if ok and region then sys.print(string.format("[CTX] region %s %s-%s", tostring(region.name), hex(region.start), hex(region["end"]))) end
+    end
+    if dbg.backtrace_frames then
+        local ok, bt = pcall(dbg.backtrace_frames, 16)
+        if ok then
+            for _, f in ipairs(bt or {}) do sys.print(string.format("[BT] #%s pc=%s %s+0x%X", tostring(f.frame), hex(f.pc), tostring(f.sym or "?"), f.offset or 0)) end
+        end
+    end
+    if dbg.get_regs then
+        local ok_regs, regs = pcall(dbg.get_regs)
+        if ok_regs and regs then
+            for i = 0, 31 do
+                local key = "R" .. tostring(i)
+                if regs[key] ~= nil then sys.print(string.format("[REG] %-3s %s", key, hex(regs[key]))) end
+            end
+            for _, key in ipairs({ "PC", "SP" }) do
+                if regs[key] ~= nil then sys.print(string.format("[REG] %-3s %s", key, hex(regs[key]))) end
+            end
+        end
+    end
+    if dbg.tracering_show then
+        local ok, trace = pcall(dbg.tracering_show, 64)
+        if ok then
+            for _, e in ipairs(trace or {}) do sys.print(string.format("[TRACE] %s %-16s %s", hex(e.pc), tostring(e.hex or ""), tostring(e.mnemonic or ""))) end
+        end
+    end
+    if S["_Zone_SetupEdgeClipping"] then
+        sys.print(string.format("[MEM] _Zone_SetupEdgeClipping %s: %s", hex(S["_Zone_SetupEdgeClipping"]), hex_bytes(S["_Zone_SetupEdgeClipping"], 32)))
+    end
+    if S["_Vid_Present"] then
+        sys.print(string.format("[MEM] _Vid_Present %s: %s", hex(S["_Vid_Present"]), hex_bytes(S["_Vid_Present"], 32)))
+    end
+    if pc and pc ~= 0 then
+        sys.print(string.format("[MEM] pc %s: %s", hex(pc), hex_bytes(pc, 32)))
+    end
+    if dbg.accesslog then
+        local ok, access = pcall(dbg.accesslog, 64)
+        if ok then
+            for _, e in ipairs(access or {}) do
+                sys.print(string.format("[ACCESS] seq=%s kind=%s pc=%s addr=%s w=%s old=%s new=%s",
+                    tostring(e.seq), tostring(e.kind), hex(e.pc), hex(e.addr), tostring(e.width), tostring(e.old_val), tostring(e.new_val)))
+            end
+        end
+    end
+    dump_video_mmio("stop", nil, capture_video_mmio())
+    if dbg.layout then
+        local ok_layout, layout = pcall(dbg.layout, "debug")
+        if ok_layout then sys.print(layout) end
+        local ok_trace_layout, trace_layout = pcall(dbg.layout, "trace")
+        if ok_trace_layout then sys.print(trace_layout) end
+    end
+    dump_timeline(128)
+    if dbg.bug_report then
+        local ok, report = pcall(dbg.bug_report, 64)
+        if ok then sys.print(report) end
+    end
+end
+
+local function wait_for_breakpoint(name, addr, timeout_ms)
+    local deadline = sys.time_ms() + timeout_ms
+    while sys.time_ms() < deadline do
+        sys.wait_ms(5)
+        if dbg.poll_faults then pcall(dbg.poll_faults) end
+        if dbg.is_open and dbg.is_open() then
+            local pc = dbg.get_pc()
+            if pc == addr then return true end
+            dump_stop_context(name, addr)
+            fatal(string.format("monitor stopped at wrong PC: got %s want %s", hex(pc), hex(addr)))
+        end
+    end
+    if dbg.request_break_in then pcall(dbg.request_break_in) end
+    sys.wait_ms(10)
+    dbg.open()
+    dump_stop_context(name, addr)
+    fatal(string.format("timed out waiting for %s @ %s", name, hex(addr)))
+end
+
+local function wait_for_present_marker(timeout_ms)
+    local before = read_mem_u32_be(IE_PRESENT_COUNT)
+    if dbg.clear_all_bp then pcall(dbg.clear_all_bp) end
+    dbg.continue(true)
+    local deadline = sys.time_ms() + timeout_ms
+    while sys.time_ms() < deadline do
+        sys.wait_ms(5)
+        local now = read_mem_u32_be(IE_PRESENT_COUNT)
+        if now ~= before then
+            if dbg.request_break_in then pcall(dbg.request_break_in) end
+            sys.wait_ms(10)
+            dbg.open()
+            sys.print(string.format("[CHK]  _Vid_Present marker %08X -> %08X", before, now))
+            return true
+        end
+    end
+    if dbg.request_break_in then pcall(dbg.request_break_in) end
+    sys.wait_ms(10)
+    dbg.open()
+    dump_stop_context("_Vid_Present", S["_Vid_Present"])
+    fatal(string.format("timed out waiting for _Vid_Present marker @ %s", hex(S["_Vid_Present"])))
+end
+
+dbg.open()
+if dbg.cpu_list and dbg.cpu_focus then
+    for _, e in ipairs(dbg.cpu_list() or {}) do
+        local label = string.upper(tostring(e.cpu_name or e.label or ""))
+        if string.find(label, "IE64") then dbg.cpu_focus(e.id); break end
+    end
+end
+if sym and sym.add then
+    for name, addr in pairs(S) do sym.add(name, addr, "label") end
+end
+if dbg.clear_all_bp then pcall(dbg.clear_all_bp) end
+if dbg.history_config then
+    local ok, cfg = pcall(dbg.history_config, { delta_interval = 16, delta_mib = 64, checkpoints = 8, snapshots = 512 })
+    if ok then
+        sys.print(string.format("[DBG] history delta_interval=%s delta_mib=%s checkpoints=%s snapshots=%s",
+            tostring(cfg.delta_interval), tostring(cfg.delta_mib), tostring(cfg.checkpoints), tostring(cfg.snapshots)))
+    end
+end
+if dbg.history_horizon then
+    local ok, horizon = pcall(dbg.history_horizon)
+    if ok then
+        sys.print(string.format("[DBG] horizon snapshots=%s capacity=%s checkpoints=%s deltas=%s devices=%s",
+            tostring(horizon.snapshots), tostring(horizon.capacity), tostring(horizon.checkpoints), tostring(horizon.deltas), tostring(horizon.devices)))
+    end
+end
+
+local device_names = {}
+if dbg.device_list then
+    local ok, devs = pcall(dbg.device_list)
+    if ok and devs then device_names = devs end
+end
+sys.print("[DBG] devices: " .. table.concat(device_names, ", "))
+if dbg.io_devices then
+    local ok, devs = pcall(dbg.io_devices)
+    if ok and devs then sys.print("[DBG] io devices: " .. table.concat(devs, ", ")) end
+end
+local heavy_trace = os.getenv and os.getenv("AB3D64_AUDIT_TRACE") == "1"
+if heavy_trace and dbg.tracering_on then pcall(dbg.tracering_on, 8192) end
+if heavy_trace and dbg.accesslog_on then pcall(dbg.accesslog_on, 8192) end
+if dbg.on_fault then
+    pcall(dbg.on_fault, "*", function(ev)
+        sys.print(string.format("[FAULT] kind=%s cpu=%s pc=%s addr=%s info=%s",
+            tostring(ev.kind), tostring(ev.cpu_id), hex(ev.pc), hex(ev.addr), tostring(ev.info)))
+    end)
+end
+
+local LANDMARK_TIMEOUT_MS = 300000
+local failure_breakpoints = {
+    "Game_Quit",
+    "Sys_FatalError",
+    "_Sys_FatalError",
+}
+
+local function set_failure_breakpoints(want_addr)
+    for _, name in ipairs(failure_breakpoints) do
+        local addr = S[name]
+        if addr and addr ~= want_addr then
+            dbg.set_bp(addr)
+        end
+    end
+end
+
+local function guard_code_symbol(name, span)
+    if heavy_trace and dbg.guard_add and S[name] then
+        local stop = S[name] + (span or 0x1FF)
+        pcall(dbg.guard_add, S[name], stop, "w", "current")
+        sys.print(string.format("[DBG] code write guard %s %s..%s", name, hex(S[name]), hex(stop)))
+    end
+end
+
+local last_video_mmio = nil
+for i, name in ipairs(landmarks) do
+    local addr = S[name]
+    sys.print(string.format("[WAIT] -> %-26s @ %s", name, hex(addr)))
+    dbg.open()
+    if i == 1 then
+        local ok_load, load_err = pcall(cpu.load_stopped, TARGET)
+        if not ok_load then fatal("cpu.load failed: " .. tostring(load_err)) end
+        if not (dbg.get_pc and dbg.get_pc() == addr) then
+            fatal(string.format("load stopped at %s, want %s", hex(dbg.get_pc()), hex(addr)))
+        end
+        guard_code_symbol("nosee", 0x7FF)
+        guard_code_symbol("_Zone_SetupEdgeClipping", 0x1FF)
+        guard_code_symbol("_Vid_Present", 0x1FF)
+        if S["_Zone_SetupEdgeClipping"] then
+            sys.print(string.format("[MEM] loaded _Zone_SetupEdgeClipping %s: %s", hex(S["_Zone_SetupEdgeClipping"]), hex_bytes(S["_Zone_SetupEdgeClipping"], 32)))
+        end
+    else
+        if dbg.clear_all_bp then pcall(dbg.clear_all_bp) end
+        if name == "_Vid_Present" then
+            wait_for_present_marker(LANDMARK_TIMEOUT_MS)
+        else
+            set_failure_breakpoints(addr)
+            dbg.set_bp(addr)
+            dbg.continue(true)
+            wait_for_breakpoint(name, addr, LANDMARK_TIMEOUT_MS)
+        end
+    end
+    sys.print(string.format("[CHK]  %-26s @ %s OK", name, hex(addr)))
+    if rec and rec.screenshot then pcall(rec.screenshot, string.format("shots/ab3d64_%02d_%s.png", i, name)) end
+
+    local current_video_mmio = capture_video_mmio()
+    dump_video_mmio(name, last_video_mmio, current_video_mmio)
+    last_video_mmio = current_video_mmio
+    local fb_base, fb_size = fb_base_size()
+    sys.print(string.format("[DBG] framebuffer region after %s: %s..%s", name, hex(fb_base), hex((fb_base or 0) + (fb_size or 0) - 1)))
+
+    if name == "ie_hud_init" then
+        local pal_index = read_mmio_u32_le(VIDEO_PAL_INDEX)
+        sys.print(string.format("[ASRT] VIDEO_PAL_INDEX = 0x%08X (want 0x00000000 after 256-entry wrap)", pal_index))
+        if pal_index ~= 0x00 then fatal("VIDEO_PAL_INDEX assertion failed") end
+        local pal_samples = {
+            read_mmio_u32_le(VIDEO_PAL_TABLE + 1 * 4),
+            read_mmio_u32_le(VIDEO_PAL_TABLE + 64 * 4),
+            read_mmio_u32_le(VIDEO_PAL_TABLE + 128 * 4),
+            read_mmio_u32_le(VIDEO_PAL_TABLE + 255 * 4),
+        }
+        sys.print(string.format("[ASRT] VIDEO palette samples %08X %08X %08X %08X",
+            pal_samples[1], pal_samples[2], pal_samples[3], pal_samples[4]))
+        if pal_samples[1] == 0 and pal_samples[2] == 0 and pal_samples[3] == 0 and pal_samples[4] == 0 then
+            fatal("VIDEO palette table assertion failed")
+        end
+        if S["_draw_Palette_vw"] then
+            local samples = { read_mem_u16_be(S["_draw_Palette_vw"]), read_mem_u16_be(S["_draw_Palette_vw"] + 2), read_mem_u16_be(S["_draw_Palette_vw"] + 4), read_mem_u16_be(S["_draw_Palette_vw"] + 6) }
+            sys.print(string.format("[ASRT] _draw_Palette_vw BE samples %04X %04X %04X %04X", samples[1], samples[2], samples[3], samples[4]))
+        end
+    end
+
+    if name == "_Sys_ClearKeyboard" and S["GLF_DatabaseName_vb"] then
+        local s = rd(S["GLF_DatabaseName_vb"], 32)
+        local bytes = {}
+        for j = 1, #s do bytes[#bytes + 1] = string.format("%02X", string.byte(s, j) or 0) end
+        sys.print("[DBG] GLF_DatabaseName_vb bytes " .. table.concat(bytes, " "))
+    end
+
+    if name == "_Vid_Present" then
+        local visible = scan_fb_visible_count()
+        local fallback_raw = nil
+        if visible == nil then fallback_raw = scan_fb_nonzero_count_raw() end
+        local nz = visible or fallback_raw or 0
+        sys.print(string.format("[ASRT] fb visible pixels = %d (want > 0)", nz))
+        if nz == 0 then
+            if dbg.who and fb_base then
+                local ok, wrote = pcall(dbg.who, "wrote", fb_base)
+                if ok and wrote then sys.print(string.format("[WHO] framebuffer first byte last write pc=%s addr=%s width=%s new=%s", hex(wrote.pc), hex(wrote.addr), tostring(wrote.width), tostring(wrote.new_val))) end
+            end
+            dump_timeline(128)
+            fatal("Vid_Present landed but framebuffer has no visible RGB content")
+        end
+    end
+
+    if dbg.clear_bp then pcall(dbg.clear_bp, addr) end
+    if i == 1 then dbg.close() end
+end
+sys.print("[DONE] all landmarks fired with assertions green")
+sys.exit(0)

@@ -33,7 +33,8 @@ func TestHostHelperLiveImageSecurityContracts(t *testing.T) {
 		`/run/dbus/system_bus_socket rw,`,
 		`dbus send`,
 		`peer=(name=org.freedesktop.NetworkManager),`,
-		`/usr/bin/apt-get Ux,`,
+		`/usr/bin/apt-get Cx -> apt,`,
+		`profile apt flags=(attach_disconnected) {`,
 		`/usr/bin/systemctl Cx -> systemctl,`,
 		`Before=greetd.service`,
 		`ufw default deny incoming`,
@@ -65,10 +66,10 @@ func TestHostHelperLiveImageSecurityContracts(t *testing.T) {
 
 func TestHostHelperAptUsesUnconfinedTransition(t *testing.T) {
 	body := readX64LiveScript(t)
-	if !strings.Contains(body, `/usr/bin/apt-get Ux,`) {
-		t.Fatal("host helper AppArmor profile must run apt-get with Ux")
+	if !strings.Contains(body, `/usr/bin/apt-get Cx -> apt,`) {
+		t.Fatal("host helper AppArmor profile must transition apt-get to its confined child profile")
 	}
-	if strings.Contains(body, `profile apt `) {
-		t.Fatal("host helper AppArmor profile must not use a confined apt child profile")
+	if !strings.Contains(body, `profile apt flags=(attach_disconnected) {`) {
+		t.Fatal("host helper AppArmor profile must define its confined apt child profile")
 	}
 }

@@ -85,8 +85,14 @@ jobs:
         with:
           go-version: 1.27.0-rc.2
 
+      - name: Generate test assets
+        run: make test-assets
+
       - name: Run tests
-        run: go test -tags headless -timeout 10m -count=1 ./...
+        # The full headless suite includes the 8088 Harte corpus and bounded
+        # AROS/IExec acceptance runs. Keep the per-test timeout above the
+        # measured suite duration while retaining a finite deadlock guard.
+        run: go test -tags headless -timeout 30m -count=1 ./...
 
   windows-jit-test:
     name: Windows JIT tests
@@ -169,6 +175,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: 1.27.0-rc.2
+
+      - name: Install documentation dependencies
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       - name: Check for broken internal doc links
         run: |

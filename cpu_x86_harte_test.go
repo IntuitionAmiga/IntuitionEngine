@@ -40,8 +40,9 @@ type X86HarteTestCase struct {
 
 // X86HarteState represents CPU and memory state for 8088 tests
 type X86HarteState struct {
-	Regs X86HarteRegs `json:"regs"`
-	RAM  [][]uint32   `json:"ram"` // [[address, value], ...]
+	Regs   X86HarteRegs    `json:"regs"`
+	RAM    [][]uint32      `json:"ram"` // [[address, value], ...]
+	regSet map[string]bool `json:"-"`
 }
 
 // X86HarteRegs represents 8088 register state
@@ -62,6 +63,76 @@ type X86HarteRegs struct {
 	Flags uint16 `json:"flags"`
 }
 
+// UnmarshalJSON records which register fields are present. Harte final states
+// are sparse: unchanged registers are omitted and must be inherited from the
+// initial state, while an explicitly present zero is a real value.
+func (s *X86HarteState) UnmarshalJSON(data []byte) error {
+	type stateAlias X86HarteState
+	var decoded stateAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw struct {
+		Regs map[string]json.RawMessage `json:"regs"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	decoded.regSet = make(map[string]bool, len(raw.Regs))
+	for name := range raw.Regs {
+		decoded.regSet[name] = true
+	}
+	*s = X86HarteState(decoded)
+	return nil
+}
+
+func mergeX86HarteFinalRegs(initial, final X86HarteState) X86HarteRegs {
+	regs := initial.Regs
+	if final.regSet["ax"] {
+		regs.AX = final.Regs.AX
+	}
+	if final.regSet["bx"] {
+		regs.BX = final.Regs.BX
+	}
+	if final.regSet["cx"] {
+		regs.CX = final.Regs.CX
+	}
+	if final.regSet["dx"] {
+		regs.DX = final.Regs.DX
+	}
+	if final.regSet["si"] {
+		regs.SI = final.Regs.SI
+	}
+	if final.regSet["di"] {
+		regs.DI = final.Regs.DI
+	}
+	if final.regSet["bp"] {
+		regs.BP = final.Regs.BP
+	}
+	if final.regSet["sp"] {
+		regs.SP = final.Regs.SP
+	}
+	if final.regSet["ip"] {
+		regs.IP = final.Regs.IP
+	}
+	if final.regSet["cs"] {
+		regs.CS = final.Regs.CS
+	}
+	if final.regSet["ds"] {
+		regs.DS = final.Regs.DS
+	}
+	if final.regSet["es"] {
+		regs.ES = final.Regs.ES
+	}
+	if final.regSet["ss"] {
+		regs.SS = final.Regs.SS
+	}
+	if final.regSet["flags"] {
+		regs.Flags = final.Regs.Flags
+	}
+	return regs
+}
+
 // -----------------------------------------------------------------------------
 // Test Configuration
 // -----------------------------------------------------------------------------
@@ -72,7 +143,8 @@ var (
 )
 
 const (
-	x86HarteTestDir = "testdata/8088/v1"
+	x86HarteTestDir          = "testdata/8088/v1"
+	x86HartePhysicalAddrMask = uint32(0xFFFFF)
 )
 
 // -----------------------------------------------------------------------------
@@ -88,16 +160,11 @@ func NewX86HarteBus() *X86HarteBus {
 }
 
 func (b *X86HarteBus) Read(addr uint32) byte {
-	if addr < uint32(len(b.memory)) {
-		return b.memory[addr]
-	}
-	return 0
+	return b.memory[addr&x86HartePhysicalAddrMask]
 }
 
 func (b *X86HarteBus) Write(addr uint32, value byte) {
-	if addr < uint32(len(b.memory)) {
-		b.memory[addr] = value
-	}
+	b.memory[addr&x86HartePhysicalAddrMask] = value
 }
 
 func (b *X86HarteBus) In(port uint16) byte {
@@ -114,6 +181,29 @@ func (b *X86HarteBus) Tick(cycles int) {}
 func (b *X86HarteBus) Clear() {
 	for i := range b.memory {
 		b.memory[i] = 0
+	}
+}
+
+func TestCalcLinearAddrWraps8088PhysicalAddress(t *testing.T) {
+	got := calcLinearAddr(0xFEFE, 0xA7A4)
+	const want = uint32(0x09784)
+	if got != want {
+		t.Fatalf("calcLinearAddr(0xFEFE, 0xA7A4) = 0x%05X, want 0x%05X", got, want)
+	}
+}
+
+func TestX86HarteBusWraps20BitPhysicalAddresses(t *testing.T) {
+	bus := NewX86HarteBus()
+	const wrapped = uint32(0x1234)
+	bus.memory[wrapped] = 0x5A
+
+	if got := bus.Read(wrapped + 0x100000); got != 0x5A {
+		t.Fatalf("Read(0x%X) = 0x%02X, want wrapped byte 0x5A", wrapped+0x100000, got)
+	}
+
+	bus.Write(wrapped+0x200000, 0xA5)
+	if got := bus.memory[wrapped]; got != 0xA5 {
+		t.Fatalf("Write(0x%X) changed 0x%X to 0x%02X, want 0xA5", wrapped+0x200000, wrapped, got)
 	}
 }
 
@@ -169,7 +259,7 @@ func LoadX86HarteTestsUncompressed(filename string) ([]X86HarteTestCase, error) 
 
 // calcLinearAddr calculates linear address from segment:offset
 func calcLinearAddr(seg, off uint16) uint32 {
-	return (uint32(seg) << 4) + uint32(off)
+	return ((uint32(seg) << 4) + uint32(off)) & x86HartePhysicalAddrMask
 }
 
 // SetupX86HarteCPUState configures CPU to match initial state from test case
@@ -187,14 +277,15 @@ func SetupX86HarteCPUState(cpu *CPU_X86, bus *X86HarteBus, state X86HarteState) 
 	cpu.SetBP(state.Regs.BP)
 	cpu.SetSP(state.Regs.SP)
 
-	// Set instruction pointer
-	cpu.SetIP(state.Regs.IP)
-
 	// Set segment registers
 	cpu.CS = state.Regs.CS
 	cpu.DS = state.Regs.DS
 	cpu.ES = state.Regs.ES
 	cpu.SS = state.Regs.SS
+
+	// The Harte fixtures address code through real-mode CS:IP. The emulator's
+	// EIP is linear, so fetch from the segment base plus the fixture offset.
+	cpu.EIP = calcLinearAddr(cpu.CS, state.Regs.IP)
 
 	// Set flags
 	cpu.Flags = uint32(state.Regs.Flags)
@@ -208,7 +299,6 @@ func SetupX86HarteCPUState(cpu *CPU_X86, bus *X86HarteBus, state X86HarteState) 
 	cpu.EDI = cpu.EDI & 0xFFFF
 	cpu.EBP = cpu.EBP & 0xFFFF
 	cpu.ESP = cpu.ESP & 0xFFFF
-	cpu.EIP = cpu.EIP & 0xFFFF
 
 	// Setup RAM contents - each entry is [address, byte_value]
 	for _, entry := range state.RAM {
@@ -276,8 +366,9 @@ func VerifyX86HarteFinalState(cpu *CPU_X86, bus *X86HarteBus, expected X86HarteS
 	if cpu.SP() != expected.Regs.SP {
 		mismatch("SP: got 0x%04X, want 0x%04X", cpu.SP(), expected.Regs.SP)
 	}
-	if cpu.IP() != expected.Regs.IP {
-		mismatch("IP: got 0x%04X, want 0x%04X", cpu.IP(), expected.Regs.IP)
+	gotIP := uint16(cpu.EIP - (uint32(cpu.CS) << 4))
+	if gotIP != expected.Regs.IP {
+		mismatch("IP: got 0x%04X, want 0x%04X", gotIP, expected.Regs.IP)
 	}
 
 	// Check segment registers
@@ -353,7 +444,9 @@ func RunX86HarteTest(tc X86HarteTestCase) X86HarteTestResult {
 	cpu.Step()
 
 	// Verify final state
-	return VerifyX86HarteFinalState(cpu, bus, tc.Final, tc.Name)
+	final := tc.Final
+	final.Regs = mergeX86HarteFinalRegs(tc.Initial, tc.Final)
+	return VerifyX86HarteFinalState(cpu, bus, final, tc.Name)
 }
 
 // RunX86HarteTestT runs a test case using Go's testing framework

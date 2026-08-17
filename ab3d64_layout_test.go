@@ -217,7 +217,7 @@ func TestAB3D64BootAuditRefreshesUnpackedMediaMirror(t *testing.T) {
 }
 
 func TestAB3D64BootAuditKeepsAccessGuardsOptIn(t *testing.T) {
-	b, err := os.ReadFile("sdk/ab3d64/tools/diag_boot_audit.ies")
+	b, err := os.ReadFile("sdk/ab3d64/tools/diag_boot_audit.ies.in")
 	if err != nil {
 		t.Fatalf("read boot audit script: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestAB3D64BootAuditKeepsAccessGuardsOptIn(t *testing.T) {
 }
 
 func TestAB3D64BootAuditUsesPresentMarkerInsteadOfFinalBreakpoint(t *testing.T) {
-	audit, err := os.ReadFile("sdk/ab3d64/tools/diag_boot_audit.ies")
+	audit, err := os.ReadFile("sdk/ab3d64/tools/diag_boot_audit.ies.in")
 	if err != nil {
 		t.Fatalf("read boot audit script: %v", err)
 	}

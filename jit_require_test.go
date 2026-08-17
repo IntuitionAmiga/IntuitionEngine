@@ -17,7 +17,10 @@ func TestJIT_IE64_Availability(t *testing.T) {
 }
 
 func TestJIT_6502_Availability(t *testing.T) {
-	if runtime.GOARCH != "amd64" {
+	// The native 6502 JIT is currently implemented only for Linux hosts.
+	// Windows and macOS retain the interpreter, so their JIT jobs must not
+	// require a backend that the platform deliberately does not provide.
+	if runtime.GOARCH != "amd64" || runtime.GOOS != "linux" {
 		return
 	}
 	if requireJIT && !jit6502Available {

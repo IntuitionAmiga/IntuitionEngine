@@ -2040,6 +2040,13 @@ $(SHOWREEL_FONT_RGBA): $(SHOWREEL_FONT_SOURCES)
 
 font-rgba: $(SHOWREEL_FONT_RGBA)
 
+.PHONY: test-assets
+test-assets: $(SHOWREEL_FONT_RGBA) sdk/examples/assets/robocop_rgba.bin sdk/examples/assets/robocop_mask.bin
+
+sdk/examples/assets/robocop_rgba.bin sdk/examples/assets/robocop_mask.bin: sdk/examples/assets/robocop.png tools/gen_example_assets/main.go
+	@echo "Generating Robocop binary assets..."
+	@$(GO) run ./tools/gen_example_assets
+
 check-showreel-prereqs:
 	@echo "Checking showreel prerequisites..."
 	@missing_tools=""; \
