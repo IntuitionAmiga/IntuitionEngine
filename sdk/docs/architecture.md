@@ -1575,7 +1575,7 @@ CRT processing is a final host presentation stage. Software-composited frames
 are filtered after composition; hardware layers retain native source geometry
 while scaling and filtering, then cursor, status-bar, and host-overlay content
 joins the final presentation path. Guest-Advanced is the default CRT profile
-and flat CRT is the initial presentation mode. F7 cycles flat, curved, and off
+but CRT presentation is initially off. F7 cycles off, flat, curved, and off
 while continuing to reach the guest. The cycle changes host presentation only.
 Guest-Advanced uses preparation, luminance, Gaussian glow, bloom, and final
 screen passes; curved mode warps the image, glow, and bloom together in the

@@ -16,8 +16,8 @@ directory is required.
 Player 1 joystick or joypad game controllers are supported alongside keyboard
 and mouse controls.
 
-The Guest-Advanced CRT filter is enabled by default in flat mode. F7 cycles
-through flat, curved and off. F11 toggles between stretch-fill and aspect-fit
+The Guest-Advanced CRT filter is off by default. F7 cycles through flat, curved
+and off. F11 toggles between stretch-fill and aspect-fit
 where applicable, while Shift+F11 toggles fullscreen mode.
 F12 toggles the status bar; it is visible by default, so the first press hides
 it.

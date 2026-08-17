@@ -57,8 +57,8 @@ func TestCRTProfileGuestAdvancedIsDefault(t *testing.T) {
 	if got := eo.crtProfile; got != crtProfileGuestAdvanced {
 		t.Fatalf("default CRT profile = %v, want Guest-Advanced", got)
 	}
-	if eo.crtMode != crtModeFlat {
-		t.Fatal("Guest-Advanced must be enabled by default")
+	if eo.crtMode != crtModeOff {
+		t.Fatal("CRT presentation must be off by default")
 	}
 }
 

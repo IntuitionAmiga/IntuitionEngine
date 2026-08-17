@@ -11,11 +11,19 @@ for target in bump-intuitionengine-version deb-intuitionengine-amd64-v3 deb-intu
     rg -q "^${target}:" Makefile || fail "missing Make target: $target"
 done
 [[ -x scripts/bump-intuitionengine-version.sh ]] || fail "missing version bump script"
-version_tmp="$(mktemp)"
-trap 'rm -f "$version_tmp"' EXIT
+bump_tmp="$(mktemp -d)"
+trap 'rm -rf "$bump_tmp"' EXIT
+version_tmp="$bump_tmp/VERSION"
+html_tmp="$bump_tmp/index.html"
 printf '%s\n' 2.3.9 >"$version_tmp"
-scripts/bump-intuitionengine-version.sh --file "$version_tmp" >/dev/null
+printf '%s\n' \
+    '<a>Download the Intuition Engine 2.3.9 live image</a>' \
+    '<a>Download the Intuition Engine 2.3.9 live image</a>' >"$html_tmp"
+scripts/bump-intuitionengine-version.sh --file "$version_tmp" --html-file "$html_tmp" >/dev/null
 [[ "$(cat "$version_tmp")" == 2.3.10 ]] || fail "version bump did not increment the patch version"
+[[ "$(rg -o 'Download the Intuition Engine 2\.3\.10 live image' "$html_tmp" | wc -l)" == 2 ]] || fail "version bump did not update both live-image links"
+current_version="$(cat VERSION)"
+[[ "$(rg -o "Download the Intuition Engine ${current_version} live image" intuitionengine.com/index.html | wc -l)" == 2 ]] || fail "website live-image links do not match VERSION"
 make check-intuitionengine-app-version >/dev/null || fail "the Makefile default APP_VERSION was rejected"
 make APP_VERSION=1.2.3 check-intuitionengine-app-version >/dev/null || fail "valid APP_VERSION was rejected"
 for script in build-intuitionengine-deb.sh stage-intuitionengine-repository.sh install-intuitionengine-package.sh merge-intuitionengine-dpkg-status.sh; do

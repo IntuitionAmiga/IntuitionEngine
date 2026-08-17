@@ -244,7 +244,7 @@ func NewEbitenOutput() (VideoOutput, error) {
 		done:          make(chan struct{}),
 		doneOnce:      &sync.Once{},
 		showStatusBar: true,
-		crtMode:       crtModeFlat,
+		crtMode:       crtModeOff,
 		crtProfile:    crtProfileGuestAdvanced,
 	}
 	// Browser build only: expose ieTypeText/ieKey so the demo page's text input

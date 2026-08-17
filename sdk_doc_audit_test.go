@@ -1952,7 +1952,7 @@ func TestSDKCompanionDocs_CRTPresentationAndCaptureContractsMatchSource(t *testi
 		}
 	}
 	for _, needle := range []string{
-		"crtMode:       crtModeFlat",
+		"crtMode:       crtModeOff",
 		"crtProfile:    crtProfileGuestAdvanced",
 		"next := crtModeFromEnabled(enabled)",
 		"if !eo.crtMode.enabled()",
@@ -1973,7 +1973,8 @@ func TestSDKCompanionDocs_CRTPresentationAndCaptureContractsMatchSource(t *testi
 	}
 	for _, needle := range []string{
 		"Guest-Advanced is the default CRT profile",
-		"F7 cycles flat, curved, and off",
+		"CRT presentation is initially off",
+		"F7 cycles off, flat, curved, and off",
 		"CRT processing is a final host presentation stage",
 		"`rec.screenshot_composed` captures the GPU-composed image before CRT",
 		"`rec.screenshot_screen` waits for and captures the final displayed frame",

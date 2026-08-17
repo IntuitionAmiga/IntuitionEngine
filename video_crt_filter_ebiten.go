@@ -48,8 +48,8 @@ func (p crtProfile) String() string {
 	}
 }
 
-// crtPresentationMode is the host-facing F7 state. Flat CRT is the default;
-// convex curvature is opt-in, and off bypasses the presentation shader.
+// crtPresentationMode is the host-facing F7 state. Off is the default;
+// flat CRT is the first enabled mode, convex curvature is opt-in.
 type crtPresentationMode uint8
 
 const (

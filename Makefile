@@ -3043,7 +3043,7 @@ check-intuitionengine-app-version:
 	@test "$(APP_VERSION)" != "" && printf '%s\n' "$(APP_VERSION)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "APP_VERSION must be semantic x.y.z" >&2; exit 1; }
 
 bump-intuitionengine-version:
-	@scripts/bump-intuitionengine-version.sh --file "$(VERSION_FILE)"
+	@scripts/bump-intuitionengine-version.sh --file "$(VERSION_FILE)" --html-file intuitionengine.com/index.html
 
 deb-intuitionengine-amd64-v3: check-intuitionengine-app-version x86-64-v3
 	@scripts/build-intuitionengine-deb.sh --target intuitionengine-amd64-v3 --app-version "$(APP_VERSION)" --binary bin/IntuitionEngine_v3 --output-dir "$(IE_DEB_DIR)"

@@ -845,7 +845,7 @@
         <p class="lead">Intuition Engine is a demoscene platform for combinations no original computer could run: a 6502 playing SID music while an x86 drives Atari ANTIC graphics, or a 68020 using a copper with PC VGA. It is free and open source, built for people who still write rotozoomers by hand and people writing their first. I have been building it since 1991.</p>
         <div class="actions">
           <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
-          <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Download the live image</a>
+          <a class="button secondary" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Download the Intuition Engine 1.0.5 live image</a>
           <a class="button secondary" href="https://youtube.com/@IntuitionAmiga">YouTube</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source</a>
         </div>
@@ -1122,7 +1122,7 @@ SOUND STOP</code></pre>
         </article>
         <div class="actions">
           <a class="button" href="/demo/">Launch IE64 BASIC in your browser</a>
-          <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Download the live image</a>
+          <a class="button" href="https://drive.google.com/drive/folders/1hiSHA8cu-HCzHgFisDp5rk9d1GFxMd0d">Download the Intuition Engine 1.0.5 live image</a>
           <a class="button secondary" href="https://github.com/IntuitionAmiga/IntuitionEngine">Source and examples</a>
         </div>
         <p style="margin-top: 1rem; color: var(--muted); font-size: 0.92rem;">The browser build is the real machine compiled to WebAssembly: the same IE64 BASIC with a disk volume of demos. IE64, IE32, 68020, Z80, 6502 and x86 code use WebAssembly JITs, with x86 JIT compilation available when the browser supports WebAssembly SIMD. The live image requires an x86-64-v3 processor: Intel Haswell (2013) or newer, or a compatible AMD processor. It bundles worked examples in BASIC, assembly and C, together with the host SDK archive. When your demo sticks to the compiled core of BASIC, <code>COMPILE</code> writes it out as a standalone <code>.ie64</code> you can hand to anyone with the machine.</p>
@@ -1648,7 +1648,7 @@ WAV and MIDI/MUS       parsed, scheduled, mixed</code></pre>
         <article class="card" style="margin-bottom: 1rem">
           <span class="kicker">CRT presentation</span>
           <h3>CRT presentation after composition</h3>
-          <p>CRT presentation is enabled by default in the live image and browser build. Compositor layers retain their source resolution for scanline spacing, while phosphor persistence, glow, bloom, a colour mask and deconvergence shape the completed frame. Several composited video chips appear as light on one display rather than as separately filtered screens. Press <code>F7</code> to cycle between flat CRT, curved CRT and unfiltered output. Pictures fill the output by default. When the active picture has a different aspect ratio, press <code>F11</code> to switch between stretch and aspect-fit presentation.</p>
+          <p>CRT presentation is off by default in the live image and browser build. Compositor layers retain their source resolution for scanline spacing, while phosphor persistence, glow, bloom, a colour mask and deconvergence shape the completed frame. Several composited video chips appear as light on one display rather than as separately filtered screens. Press <code>F7</code> to cycle between flat CRT, curved CRT and unfiltered output. Pictures fill the output by default. When the active picture has a different aspect ratio, press <code>F11</code> to switch between stretch and aspect-fit presentation.</p>
         </article>
 
         <article class="card" style="margin-bottom: 1rem">

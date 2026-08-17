@@ -60,14 +60,14 @@ func TestEbitenF11ActionSwapAndFullscreenLock(t *testing.T) {
 	}
 }
 
-func TestEbitenCRTRequestedByDefaultAndF7Decision(t *testing.T) {
+func TestEbitenCRTOffByDefaultAndF7Decision(t *testing.T) {
 	out, err := NewEbitenOutput()
 	if err != nil {
 		t.Fatalf("NewEbitenOutput: %v", err)
 	}
 	eo := out.(*EbitenOutput)
-	if eo.crtMode != crtModeFlat || eo.crtState != crtFilterUninitialised {
-		t.Fatalf("new CRT mode = %v state:%v, want flat and uninitialised", eo.crtMode, eo.crtState)
+	if eo.crtMode != crtModeOff || eo.crtState != crtFilterUninitialised {
+		t.Fatalf("new CRT mode = %v state:%v, want off and uninitialised", eo.crtMode, eo.crtState)
 	}
 	if decideEbitenF7Action(false) {
 		t.Fatal("F7 action fired without a just-pressed F7")
@@ -77,12 +77,16 @@ func TestEbitenCRTRequestedByDefaultAndF7Decision(t *testing.T) {
 	}
 
 	eo.cycleCRTMode()
+	if eo.crtMode != crtModeFlat {
+		t.Fatal("first F7 transition did not enable flat CRT state")
+	}
+	eo.cycleCRTMode()
 	if eo.crtMode != crtModeCurved {
-		t.Fatal("first F7 transition did not enable curved CRT state")
+		t.Fatal("second F7 transition did not enable curved CRT state")
 	}
 	eo.cycleCRTMode()
 	if eo.crtMode != crtModeOff {
-		t.Fatal("F7 transition did not disable requested CRT state")
+		t.Fatal("third F7 transition did not disable requested CRT state")
 	}
 }
 
@@ -102,7 +106,7 @@ func TestEbitenCRTModeControllerUsesF7Cycle(t *testing.T) {
 		t.Fatalf("NewEbitenOutput: %v", err)
 	}
 	eo := out.(*EbitenOutput)
-	for _, want := range []string{"curved", "off", "flat"} {
+	for _, want := range []string{"flat", "curved", "off"} {
 		if got := eo.cycleCRTModeRequested(); got != want {
 			t.Fatalf("IEScript CRT cycle = %q, want %q", got, want)
 		}

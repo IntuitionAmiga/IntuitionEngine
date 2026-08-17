@@ -28,11 +28,13 @@ func TestIEScriptControlsHostCRTPresentation(t *testing.T) {
 	eo := out.(*EbitenOutput)
 	se := NewScriptEngine(NewMachineBus(), NewVideoCompositor(eo), NewTerminalMMIO())
 	if err := se.RunString(`
-		if not video.is_crt_enabled() then error("CRT should start enabled") end
-		video.set_crt_enabled(false)
-		if video.is_crt_enabled() then error("set_crt_enabled(false) failed") end
-		if video.toggle_crt() ~= true then error("toggle_crt should return enabled") end
-		if not video.is_crt_enabled() then error("toggle_crt did not restore CRT") end
+		if video.is_crt_enabled() then error("CRT should start disabled") end
+		video.set_crt_enabled(true)
+		if not video.is_crt_enabled() then error("set_crt_enabled(true) failed") end
+		if video.toggle_crt() ~= false then error("toggle_crt should return disabled") end
+		if video.is_crt_enabled() then error("toggle_crt did not disable CRT") end
+		video.set_crt_enabled(true)
+		if not video.is_crt_enabled() then error("set_crt_enabled(true) did not restore CRT") end
 	`, "crt-host-control"); err != nil {
 		t.Fatalf("RunString: %v", err)
 	}
