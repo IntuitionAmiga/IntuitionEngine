@@ -86,3 +86,109 @@ func TestHostSDKAssemblyIncludeInventory(t *testing.T) {
 		}
 	}
 }
+
+func TestHostSDKLinuxARM64DistributionContract(t *testing.T) {
+	armScript, err := os.ReadFile("scripts/dist-host-sdk-linux-arm64.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	armText := string(armScript)
+	genericScript, err := os.ReadFile("scripts/dist-host-sdk-linux-amd64.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	armText += "\n" + string(genericScript)
+	for _, want := range []string{
+		"GOOS=linux",
+		"GOARCH=arm64",
+		"aarch64",
+		"qemu-aarch64",
+		"--sysroot",
+		"ELF",
+		"sha256sum",
+		"cmp",
+	} {
+		if !strings.Contains(armText, want) {
+			t.Errorf("ARM64 Host SDK distributor is missing %q", want)
+		}
+	}
+
+	makefile, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeText := string(makefile)
+	for _, want := range []string{
+		"dist-host-sdk-linux-arm64",
+		"test-host-sdk-arm64",
+		"intuition-engine-host-sdk-linux-arm64.tar.xz",
+		"QEMU_AARCH64",
+	} {
+		if !strings.Contains(makeText, want) {
+			t.Errorf("Makefile is missing ARM64 Host SDK contract %q", want)
+		}
+	}
+}
+
+func TestHostSDKLinuxARM64ReleaseAndPayloadContract(t *testing.T) {
+	for _, name := range []string{"build_x64_ie_img.sh", "Makefile"} {
+		data, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		wants := []string{"intuition-engine-host-sdk-linux-amd64", "intuition-engine-host-sdk-linux-arm64"}
+		if name == "build_x64_ie_img.sh" {
+			wants = append(wants, "${host_sdk_name}.tar.xz", "${host_sdk_name}.tar.xz.sha256")
+		}
+		for _, want := range wants {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s is missing shared ARM64 payload artefact %q", name, want)
+			}
+		}
+	}
+	stageScript, err := os.ReadFile("scripts/stage_ieshare_payload.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(stageScript), "build_x64_ie_img.sh") ||
+		!strings.Contains(string(stageScript), "stage_share_payload") ||
+		!strings.Contains(string(stageScript), "verify_staged_share_payload") {
+		t.Error("shared IESHARE staging entrypoint does not delegate the complete payload contract")
+	}
+
+	makefile, err := os.ReadFile("Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	makeText := string(makefile)
+	for _, archive := range []string{
+		"intuition-engine-host-sdk-linux-amd64.tar.xz*",
+		"intuition-engine-host-sdk-linux-arm64.tar.xz*",
+	} {
+		if !strings.Contains(makeText, archive) {
+			t.Errorf("browser manifest does not exclude %q", archive)
+		}
+	}
+
+	index, err := os.ReadFile("intuitionengine.com/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(index), "intuition-engine-host-sdk-linux-arm64.tar.xz") {
+		t.Error("website does not offer the ARM64 Host SDK download")
+	}
+
+	gitignore, err := os.ReadFile(".gitignore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, exception := range []string{
+		"!intuitionengine.com/assets/intuition-engine-host-sdk-linux-arm64.tar.xz",
+		"!intuitionengine.com/assets/intuition-engine-host-sdk-linux-arm64.tar.xz.sha256",
+	} {
+		if !strings.Contains(string(gitignore), exception) {
+			t.Errorf(".gitignore does not retain the ARM64 release asset %q", exception)
+		}
+	}
+}

@@ -13,6 +13,8 @@ if ((${#missing[@]})); then
 fi
 
 tmp="$(mktemp -d)"
+private_key_marker="-----BEGIN PGP PRIVATE KEY"
+private_key_marker+=" BLOCK-----"
 home="$tmp/gnupg"; mkdir -m0700 "$home"
 cleanup_gpg() {
     gpgconf --homedir "$home" --kill gpg-agent >/dev/null 2>&1 || true
@@ -101,7 +103,7 @@ install_root="$tmp/install-root"
 mkdir -p "$install_root"
 scripts/install-intuitionengine-package.sh --package "$tmp/intuitionengine-amd64-v3_1.0.0-1_amd64.deb" --root "$install_root" --target intuitionengine-amd64-v3 --app-version 1.0.0 --keyring "$tmp/test-keyring.gpg" >/dev/null
 [[ "$(cat "$install_root/etc/apt/sources.list.d/intuitionengine.list")" == *"https://intuitionengine.io stable main" ]] || fail "installer points at the wrong repository domain"
-printf '%s\n' '-----BEGIN PGP PRIVATE KEY BLOCK-----' >"$repo/accidental-private.key"
+printf '%s\n' "$private_key_marker" >"$repo/accidental-private.key"
 if stage >/dev/null 2>&1; then fail "repository accepted a private key below output"; fi
 rm -f "$repo/accidental-private.key"
 gpg --homedir "$home" --batch --yes --export "$fingerprint" | gpg --dearmor >"$tmp/public.gpg"

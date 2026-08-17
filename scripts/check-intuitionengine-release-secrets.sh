@@ -2,6 +2,8 @@
 set -euo pipefail
 
 fail(){ echo "check-intuitionengine-release-secrets: $*" >&2; exit 1; }
+private_key_marker="BEGIN PGP PRIVATE KEY"
+private_key_marker+=" BLOCK"
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repository_root="$root_dir"
 output="$root_dir/intuitionengine.com"
@@ -40,10 +42,10 @@ while IFS= read -r -d '' path; do
     check_path_name "$path"
 done < <(git -C "$repository_root" diff --cached --name-only -z --diff-filter=ACMR)
 
-if git -C "$repository_root" grep --cached -a -l 'BEGIN PGP PRIVATE KEY BLOCK' -- . >/dev/null 2>&1; then
+if git -C "$repository_root" grep --cached -a -l "$private_key_marker" -- . >/dev/null 2>&1; then
     fail "ASCII-armoured private key material is staged"
 fi
-if git -C "$repository_root" grep -a -l 'BEGIN PGP PRIVATE KEY BLOCK' -- . >/dev/null 2>&1; then
+if git -C "$repository_root" grep -a -l "$private_key_marker" -- . >/dev/null 2>&1; then
     fail "ASCII-armoured private key material is present in the checkout"
 fi
 
@@ -51,7 +53,7 @@ if [[ -d "$output" ]]; then
     while IFS= read -r -d '' path; do
         check_path_name "$path"
     done < <(find "$output" -type f -print0)
-    if rg -a -l --hidden --glob '!.git/**' 'BEGIN PGP PRIVATE KEY BLOCK' "$output" >/dev/null 2>&1; then
+    if rg -a -l --hidden --glob '!.git/**' "$private_key_marker" "$output" >/dev/null 2>&1; then
         fail "ASCII-armoured private key material is below release output"
     fi
 fi

@@ -3425,8 +3425,9 @@ Observed result: The public C header now maps File I/O to `0xF2200` and the
 Program Executor to `0xF2320`, matching executable source, assembly includes,
 and the architecture memory map. The architecture diagram and tooling matrix
 now include the compiler, linker, archive tools, public header, and consolidated
-Linux x86-64 Host SDK. The live-image payload contract identifies the Host SDK
-archive and checksum under `SDK/Toolchains` and excludes the retired payloads.
+Linux x86-64 and ARM64 Host SDKs. The live-image payload contract identifies
+both Host SDK archives and checksums under `SDK/Toolchains` and excludes the
+retired payloads.
 Action: Corrected both public constants, added structured source-value checks,
 updated `architecture.md`, and added empirical architecture facts.
 Notes: IE64 and IE32 ISA semantics did not change; compiler, linker, archive,
@@ -4095,6 +4096,36 @@ Architecture update.
 Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` were not modified.
 Disposition: KEEP.
 
+ID: SDK-DOC-0113
+Status: FIXED
+Document: `sdk/docs/architecture.md`, its empirical inventory and companion
+gates, and the five companion PDFs.
+Section: ARM64 Host SDK distribution re-audit.
+Claim: The current ARM64 Host SDK changes add a Linux ARM64 distribution
+alongside the existing x86-64 Host SDK. The Architecture manual must describe
+the two Host SDK targets, the ARM64 toolchain and QEMU-assisted validation
+path, and the live-image staging of both archives without adding claims to the
+CPU, IEMon, or IEScript manuals.
+Purpose judgement: Host SDK and image-payload delivery are system build
+architecture and belong in `architecture.md`'s tooling and appliance
+sections. They are not CPU ISA, monitor-command, or scripting-API contracts.
+Canonical sources checked: current `Makefile`, `build_x64_ie_img.sh`,
+`scripts/dist-host-sdk-linux-amd64.sh`, its ARM64 invocation, Host SDK tests,
+and the current tracked commit and worktree changes outside the protected
+refman trees.
+Runnable verification: source-inventory golden and manual-coverage gates,
+companion and ledger gates, `make check-docs`, protected-refman checksum
+comparison, final isolated five-PDF render, manifest verification, and
+independent PDF inspection.
+Observed result: Architecture now identifies Linux x86-64 and ARM64 Host
+SDKs and records that the x64 live payload stages both archives with their
+checksums. No other book required a change.
+Action: Regenerate the five PDFs and render manifest after this ledger and
+Architecture date update.
+Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` are outside scope
+and remain read-only and checksum-protected.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -4134,8 +4165,8 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0092`, `SDK-DOC-0093`, `SDK-DOC-0094`, `SDK-DOC-0095`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
 `SDK-DOC-0104`, `SDK-DOC-0105`, `SDK-DOC-0106`, `SDK-DOC-0107`, and
-`SDK-DOC-0108`, `SDK-DOC-0109`, `SDK-DOC-0110`, `SDK-DOC-0111`, and
-`SDK-DOC-0112`
+`SDK-DOC-0108`, `SDK-DOC-0109`, `SDK-DOC-0110`, `SDK-DOC-0111`,
+`SDK-DOC-0112`, and `SDK-DOC-0113`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -4217,7 +4248,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0112` and
+Open claim-group backlog: none for this run after `SDK-DOC-0113` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate

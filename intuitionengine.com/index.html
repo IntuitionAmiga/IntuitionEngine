@@ -1296,7 +1296,7 @@ SOUND STOP</code></pre>
                 <td>x86</td>
                 <td><code>.ie86</code></td>
                 <td>32-bit flat guest binaries can use MachineBus file, video, audio, and coprocessor devices.</td>
-                <td>JIT-backed, including x87 FPU paths.</td>
+                <td>JIT-backed, including x87 FPU paths. The interpreter also supports x87 environment save and restore.</td>
               </tr>
             </tbody>
           </table>
@@ -1333,7 +1333,7 @@ SOUND STOP</code></pre>
         <div class="grid two">
           <article class="card">
             <h3>Common ranges</h3>
-            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal, keyboard, mouse and USB gamepad input, CPU wait, shared network sockets, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. The socket block gives machine-language programmes IPv4 TCP and UDP in every recognised non-BASIC mode. Through the host-command helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates the appliance, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
+            <p>SYSINFO publishes RAM and feature bits. File I/O adds the IE64 <code>FILE_DATA_PTR64</code> extension. Media load, Program Executor, terminal, keyboard, mouse and USB gamepad input, CPU wait, shared network sockets, Voodoo apertures, Bootstrap HostFS, and the gated host-command helper map as bus services. The socket block gives machine-language programmes IPv4 TCP and UDP in every recognised non-BASIC mode. Through the host-command helper, a booted image becomes an appliance you drive from BASIC: <code>HOST NET</code> configures WiFi, <code>HOST UPDATE</code> updates the installed appliance packages from the signed Intuition Engine repository, verifying the engine checksum and version and restoring the previous binary if validation or the restart check fails, and <code>HOST REBOOT</code> and <code>HOST POWEROFF</code> restart or shut it down.</p>
             <div class="tag-row">
               <span class="tag">SYSINFO</span>
               <span class="tag">FILE_DATA_PTR64</span>
@@ -1915,20 +1915,22 @@ SOUND PLAY "SONG.MID"</code></pre>
           </article>
           <article class="card">
             <h3>SDK and debug tools</h3>
-            <p>The live image carries the full Host SDK archive and checksum under <code>SDK/Toolchains</code>. It is the supported download for the first-party assemblers, converter and IE64 C toolchain. IE Mon supplies the debugger.</p>
+            <p>The live image carries the full Host SDK archives and checksums under <code>SDK/Toolchains</code>. They are the supported downloads for the first-party assemblers, converter and IE64 C toolchain. IE Mon supplies the debugger.</p>
           </article>
           <article class="card">
             <span class="kicker">Companion tools</span>
-            <h3>Host SDK</h3>
+            <h3>Host SDKs</h3>
             <p>C is not limited to IE64. You can use any freestanding C compiler that targets 68020, Z80, 6502 or 32-bit x86, provided you link or convert its output to the flat image format expected by that CPU: <code>.ie68</code>, <code>.ie80</code>, <code>.ie65</code> or <code>.ie86</code>. The SDK supplies the hardware definitions; IE32 is the only CPU without a C compiler target.</p>
-            <p>The Host SDK includes <code>ie64-cproc</code>, a freestanding C23 toolchain for the <code>ie64-unknown-none</code> target. It uses cproc, QBE and Picolibc, with the V3 IE64 ABI, scalar floating point, static archives and C atomics. It is not a hosted POSIX environment and does not provide dynamic linking, threads or C++.</p>
+            <p>Each Host SDK includes <code>ie64-cproc</code>, a freestanding C23 toolchain for the <code>ie64-unknown-none</code> target. It uses cproc, QBE and Picolibc, with the V3 IE64 ABI, scalar floating point, static archives and C atomics. It is not a hosted POSIX environment and does not provide dynamic linking, threads or C++.</p>
             <pre class="code-panel"><code>ie64-cproc -o demo.ie64 demo.c</code></pre>
             <p>Copy <code>demo.ie64</code> to the machine's file area, then type this at the BASIC prompt:</p>
             <pre class="code-panel"><code>RUN "demo.ie64"</code></pre>
-            <p>The downloadable x86-64 Linux Host SDK includes <code>ie32asm</code>, <code>ie32to64</code>, <code>ie64-cproc</code>, QBE, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie64ld</code>, <code>ie64-ar</code>, <code>ie64-ranlib</code>, headers, documentation and the bare-metal libraries.</p>
+            <p>The downloadable x86-64 and ARM64 Linux Host SDKs include <code>ie32asm</code>, <code>ie32to64</code>, <code>ie64-cproc</code>, QBE, <code>ie64asm</code>, <code>ie64dis</code>, <code>ie64ld</code>, <code>ie64-ar</code>, <code>ie64-ranlib</code>, headers, documentation and the bare-metal libraries.</p>
             <div class="actions">
-              <a class="button" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz" download>Download the Host SDK</a>
-              <a class="button secondary" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz.sha256" download>SHA-256 checksum</a>
+              <a class="button" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz" download>Download Linux x86-64 Host SDK</a>
+              <a class="button secondary" href="assets/intuition-engine-host-sdk-linux-amd64.tar.xz.sha256" download>Linux x86-64 SHA-256 checksum</a>
+              <a class="button" href="assets/intuition-engine-host-sdk-linux-arm64.tar.xz" download>Download Linux ARM64 Host SDK</a>
+              <a class="button secondary" href="assets/intuition-engine-host-sdk-linux-arm64.tar.xz.sha256" download>Linux ARM64 SHA-256 checksum</a>
             </div>
           </article>
           <article class="card">

@@ -57,6 +57,10 @@ REFMAN_PDF_DIR="${SCRIPT_DIR}/sdk/docs/refman.publish/pdf"
 HOST_SDK_NAME="intuition-engine-host-sdk-linux-amd64"
 HOST_SDK_ARCHIVE="${SCRIPT_DIR}/dist/${HOST_SDK_NAME}.tar.xz"
 HOST_SDK_SHA256="${HOST_SDK_ARCHIVE}.sha256"
+HOST_SDK_NAMES=(
+    intuition-engine-host-sdk-linux-amd64
+    intuition-engine-host-sdk-linux-arm64
+)
 IESHARE_SDK_RESERVE_BYTES="${IESHARE_SDK_RESERVE_BYTES:-67108864}"
 SDK_COMPANION_PDFS=(
     "${SCRIPT_DIR}/sdk/docs/IE64_ISA.pdf"
@@ -360,13 +364,18 @@ check_live_payload_inputs() {
         payload_require_file "${SCRIPT_DIR}/sdk/include/${include}" "make sdk-build" "SDK include ${include}"
     done
 
-    payload_require_file "$HOST_SDK_ARCHIVE" "make dist-host-sdk-linux-amd64" "host SDK archive"
-    payload_require_file "$HOST_SDK_SHA256" "make dist-host-sdk-linux-amd64" "host SDK checksum"
-    if ! (cd "$(dirname "$HOST_SDK_ARCHIVE")" && sha256sum -c "$(basename "$HOST_SDK_SHA256")"); then
-        log_error "host SDK checksum validation failed: ${HOST_SDK_SHA256}"
-        log_error "Producer: make dist-host-sdk-linux-amd64"
-        exit 1
-    fi
+    local host_sdk_name host_sdk_archive host_sdk_sha256
+    for host_sdk_name in "${HOST_SDK_NAMES[@]}"; do
+        host_sdk_archive="${SCRIPT_DIR}/dist/${host_sdk_name}.tar.xz"
+        host_sdk_sha256="${host_sdk_archive}.sha256"
+        payload_require_file "$host_sdk_archive" "make dist-host-sdk-linux-${host_sdk_name##*-}" "${host_sdk_name} archive"
+        payload_require_file "$host_sdk_sha256" "make dist-host-sdk-linux-${host_sdk_name##*-}" "${host_sdk_name} checksum"
+        if ! (cd "$(dirname "$host_sdk_archive")" && sha256sum -c "$(basename "$host_sdk_sha256")"); then
+            log_error "host SDK checksum validation failed: ${host_sdk_sha256}"
+            log_error "Producer: make dist-host-sdk-linux-${host_sdk_name##*-}"
+            exit 1
+        fi
+    done
 
     log_success "Live payload manifest inputs are ready"
 }
@@ -421,13 +430,16 @@ verify_staged_share_payload() {
     payload_require_file "${payload_root}/SDK/Include/ie64.inc" "make sdk-build" "staged IE64 include"
     payload_require_file "${payload_root}/SDK/Include/ie64_fp.inc" "make sdk-build" "staged IE64 floating-point include"
     payload_require_file "${payload_root}/SDK/Include/ie65.cfg" "make sdk-build" "staged 6502 linker configuration"
-    payload_require_file "${payload_root}/SDK/Toolchains/${HOST_SDK_NAME}.tar.xz" "make dist-host-sdk-linux-amd64" "staged host SDK archive"
-    payload_require_file "${payload_root}/SDK/Toolchains/${HOST_SDK_NAME}.tar.xz.sha256" "make dist-host-sdk-linux-amd64" "staged host SDK checksum"
-    if ! (cd "${payload_root}/SDK/Toolchains" && sha256sum -c "${HOST_SDK_NAME}.tar.xz.sha256"); then
-        log_error "Staged host SDK checksum validation failed: ${payload_root}/SDK/Toolchains/${HOST_SDK_NAME}.tar.xz.sha256"
-        log_error "Producer: build_x64_ie_img.sh stage_share_payload"
-        exit 1
-    fi
+    local host_sdk_name
+    for host_sdk_name in "${HOST_SDK_NAMES[@]}"; do
+        payload_require_file "${payload_root}/SDK/Toolchains/${host_sdk_name}.tar.xz" "make dist-host-sdk-linux-${host_sdk_name##*-}" "staged ${host_sdk_name} archive"
+        payload_require_file "${payload_root}/SDK/Toolchains/${host_sdk_name}.tar.xz.sha256" "make dist-host-sdk-linux-${host_sdk_name##*-}" "staged ${host_sdk_name} checksum"
+        if ! (cd "${payload_root}/SDK/Toolchains" && sha256sum -c "${host_sdk_name}.tar.xz.sha256"); then
+            log_error "Staged host SDK checksum validation failed: ${payload_root}/SDK/Toolchains/${host_sdk_name}.tar.xz.sha256"
+            log_error "Producer: build_x64_ie_img.sh stage_share_payload"
+            exit 1
+        fi
+    done
     if find "${payload_root}/Docs" -type f -name '*.md' | grep -q .; then
         log_error "Forbidden live payload content: Markdown staged under Docs"
         log_error "Expected: Docs contains PDFs only"
@@ -676,8 +688,13 @@ PY
     cp -f "${SCRIPT_DIR}"/sdk/examples/basic/*.bas "$sdk_dir/Examples/basic/"
     cp -f "${SCRIPT_DIR}"/sdk/examples/c/*.c "$sdk_dir/Examples/c/"
     cp -a "${SCRIPT_DIR}/sdk/examples/assets" "$sdk_dir/Examples/"
-    local sdk_bytes available_bytes sdk_budget sdk_tmp
-    sdk_bytes=$(( $(stat -c '%s' "$HOST_SDK_ARCHIVE") + $(stat -c '%s' "$HOST_SDK_SHA256") ))
+    local sdk_bytes available_bytes sdk_budget sdk_tmp host_sdk_archive host_sdk_sha256 host_sdk_name
+    sdk_bytes=0
+    for host_sdk_name in "${HOST_SDK_NAMES[@]}"; do
+        host_sdk_archive="${SCRIPT_DIR}/dist/${host_sdk_name}.tar.xz"
+        host_sdk_sha256="${host_sdk_archive}.sha256"
+        sdk_bytes=$(( sdk_bytes + $(stat -c '%s' "$host_sdk_archive") + $(stat -c '%s' "$host_sdk_sha256") ))
+    done
     available_bytes=$(df -B1 --output=avail "$payload_root" | tail -n 1 | tr -d ' ')
     sdk_budget=$(( available_bytes - IESHARE_SDK_RESERVE_BYTES ))
     if (( sdk_budget < 0 || sdk_bytes > sdk_budget )); then
@@ -685,10 +702,15 @@ PY
         exit 1
     fi
     sdk_tmp=$(mktemp -d "${WORK_DIR}/host-sdk-check.XXXXXX")
-    tar -xf "$HOST_SDK_ARCHIVE" -C "$sdk_tmp"
-    bash "${SCRIPT_DIR}/scripts/test-installed-host-sdk.sh" "$sdk_tmp/${HOST_SDK_NAME}"
+    for host_sdk_name in "${HOST_SDK_NAMES[@]}"; do
+        host_sdk_archive="${SCRIPT_DIR}/dist/${host_sdk_name}.tar.xz"
+        tar -xf "$host_sdk_archive" -C "$sdk_tmp"
+        bash "${SCRIPT_DIR}/scripts/test-installed-host-sdk.sh" "$sdk_tmp/${host_sdk_name}"
+    done
     rm -rf "$sdk_tmp"
-    cp -f "$HOST_SDK_ARCHIVE" "$HOST_SDK_SHA256" "$sdk_toolchains_dir/"
+    for host_sdk_name in "${HOST_SDK_NAMES[@]}"; do
+        cp -f "${SCRIPT_DIR}/dist/${host_sdk_name}.tar.xz" "${SCRIPT_DIR}/dist/${host_sdk_name}.tar.xz.sha256" "$sdk_toolchains_dir/"
+    done
     cp -f "${REFMAN_PDF_DIR}"/*.pdf "$refman_docs_dir/"
     cp -f "${SDK_COMPANION_PDFS[@]}" "$docs_dir/"
 

@@ -102,9 +102,9 @@ The VM is written to `bin/IntuitionEngine`. First-party tools are written to
 | `ie64-ranlib` | IE64 archive indexer |
 
 The [Host SDK guide](sdk/docs/host-sdk-README.md) describes the packaged Linux
-x86-64 SDK, including its compiler components, runtime, libraries and public
-headers. Download the Host SDK from
-[intuitionengine.io](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz).
+x86-64 and ARM64 SDKs, including their compiler components, runtime, libraries
+and public headers. Download the [x86-64 archive](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz)
+or [ARM64 archive](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-arm64.tar.xz).
 It contains the IE32 and IE64 development tools, not the VM or the external
 M68K, Z80, 6502 and x86 toolchains listed above.
 
@@ -382,7 +382,7 @@ emitter file:
 | Windows arm64 | IE64 and M68K |
 | macOS amd64 | IE64, M68K, Z80 and x86 |
 | macOS arm64 | IE64 and M68K |
-| Browser, js/wasm | IE32, IE64, M68K, 6502, Z80 and x86 WebAssembly backends |
+| Browser, js/wasm | IE32, IE64, M68K, 6502 and Z80 WebAssembly backends; x86 also requires WebAssembly SIMD, its executable coverage manifest, the Go memory export and `X86_WASM_JIT` not set to `0` |
 
 IE32 has JIT backends on Linux amd64, Linux arm64 and js/wasm. They lower the
 eligible direct-RAM subset and resume through the interpreter at observation

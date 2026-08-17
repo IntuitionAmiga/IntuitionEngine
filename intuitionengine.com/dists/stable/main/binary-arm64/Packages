@@ -1,26 +1,26 @@
 Package: intuitionengine-arm64-pi4
-Version: 1.0.2-1
+Version: 1.0.5-1
 Architecture: arm64
 Maintainer: IntuitionEngine release team <packages@intuitionengine.io>
-Filename: pool/main/i/intuitionengine-arm64-pi4/intuitionengine-arm64-pi4_1.0.2-1_arm64.deb
-Size: 5411708
-MD5sum: 189a37fa6db34b69f4303602230041f4
-SHA1: 2d9614474bdb31773abd6f5b5de8676ed1d02a26
-SHA256: 3bbeb60cdd27617bf793222f34d63dd14ab343cdbd2c96d3bee1c3ef69c80a7f
+Filename: pool/main/i/intuitionengine-arm64-pi4/intuitionengine-arm64-pi4_1.0.5-1_arm64.deb
+Size: 5412184
+MD5sum: ae51f67ae8e82529693818503febb5b1
+SHA1: 559177d2ef4116dcda9e4328240e5d5e80804fad
+SHA256: e822480a137006ee62158cd6723abfae0902fb5092f9258f8d1637c4166f33a8
 Section: misc
 Priority: optional
 Description: IntuitionEngine live appliance binary for intuitionengine-arm64-pi4
  The target-specific IntuitionEngine executable and guarded restart hook.
 
 Package: intuitionengine-arm64-pi5
-Version: 1.0.2-1
+Version: 1.0.5-1
 Architecture: arm64
 Maintainer: IntuitionEngine release team <packages@intuitionengine.io>
-Filename: pool/main/i/intuitionengine-arm64-pi5/intuitionengine-arm64-pi5_1.0.2-1_arm64.deb
-Size: 5395452
-MD5sum: 577d5eebd5ddc168829c6267bfa7789c
-SHA1: e84bd3c08ae808fe1f15aec96637727ce279d851
-SHA256: de39478e585732557c388e3c465942e5e5aafcf6227e220f0423d88e000f7bdf
+Filename: pool/main/i/intuitionengine-arm64-pi5/intuitionengine-arm64-pi5_1.0.5-1_arm64.deb
+Size: 5397500
+MD5sum: 53709ecd262609bcff41e277c6f3f5dd
+SHA1: d8b2b78a1c40ae1cd545132bd42ea94af7561b46
+SHA256: ba6729650e4897e6c7b4e30363602fa752ed8bd8ed5537eb09bf3fcdae6b8664
 Section: misc
 Priority: optional
 Description: IntuitionEngine live appliance binary for intuitionengine-arm64-pi5

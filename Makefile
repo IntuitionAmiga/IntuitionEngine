@@ -683,12 +683,12 @@ x64-live-embed-assets: sdk-build emutos-release-rom aros-ie-live-inputs intuitio
 	@echo "x64 live embedded binary inputs are ready."
 
 .PHONY: x64-live
-x64-live: deb-intuitionengine-amd64-v3 x64-live-demos wasm dist-host-sdk-linux-amd64
+x64-live: deb-intuitionengine-amd64-v3 x64-live-demos wasm dist-host-sdk-linux-amd64 dist-host-sdk-linux-arm64
 	@echo "Building IE x64 live USB image..."
 	@IE_APP_VERSION="$(APP_VERSION)" IE_PACKAGE_FILE="$(IE_DEB_DIR)/intuitionengine-amd64-v3_$(APP_VERSION)-1_amd64.deb" IE_REPOSITORY_KEYRING="$(IE_REPOSITORY_KEYRING)" X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh
 
 .PHONY: x64-live-rebuild-golden
-x64-live-rebuild-golden: deb-intuitionengine-amd64-v3 x64-live-demos dist-host-sdk-linux-amd64
+x64-live-rebuild-golden: deb-intuitionengine-amd64-v3 x64-live-demos dist-host-sdk-linux-amd64 dist-host-sdk-linux-arm64
 	@IE_APP_VERSION="$(APP_VERSION)" IE_PACKAGE_FILE="$(IE_DEB_DIR)/intuitionengine-amd64-v3_$(APP_VERSION)-1_amd64.deb" IE_REPOSITORY_KEYRING="$(IE_REPOSITORY_KEYRING)" X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --rebuild-golden
 
 .PHONY: x64-live-demos
@@ -697,7 +697,7 @@ x64-live-demos: x64-live-payload-check
 	@echo "x64 live demo payload inputs are ready."
 
 .PHONY: x64-live-payload-check
-x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer arosvision-live-tree x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-companion-pdfs intuitionos iedoom dist-host-sdk-linux-amd64
+x64-live-payload-check: x86-64-v3 sdk-build gem-rotozoomer arosvision-live-tree x64-live-aros-demos x64-live-ab3d2-assets x64-live-refman-pdfs x64-live-sdk-companion-pdfs intuitionos iedoom dist-host-sdk-linux-amd64 dist-host-sdk-linux-arm64
 	@X64_LIVE_OUT_DIR="$(X64_LIVE_DIR)" AROS_RELEASE_DIR="$(AROS_LIVE_DIR)" CHOCOLATE_DOOM_DIR="$(CHOCOLATE_DOOM_DIR)" IEDOOM_IE86="$(IEDOOM_IE86)" IEDOOM_IE68="$(IEDOOM_IE68)" IEDOOM_WAD="$(IEDOOM_WAD)" ./build_x64_ie_img.sh --check-payload
 
 RPI_LIVE_DIR ?= build/rpi-live
@@ -944,7 +944,7 @@ web-demos:
 	@cp -a sdk/examples/assets intuitionengine.com/assets/sdk/examples/ 2>/dev/null || true
 	@# Recursive manifest of the whole document-root assets folder (relative
 	@# paths), which is the BASIC disk volume the browser preloads over HTTP.
-	@(cd intuitionengine.com/assets && find . -type f ! -name MANIFEST ! -name '.gitkeep' ! -iname 'README.TXT' ! -iname 'mariokart*' ! -name 'intuition-engine-host-sdk-linux-amd64.tar.xz*' | sed 's|^\./||' | LC_ALL=C sort) > intuitionengine.com/assets/MANIFEST
+	@(cd intuitionengine.com/assets && find . -type f ! -name MANIFEST ! -name '.gitkeep' ! -iname 'README.TXT' ! -iname 'mariokart*' ! -name 'intuition-engine-host-sdk-linux-amd64.tar.xz*' ! -name 'intuition-engine-host-sdk-linux-arm64.tar.xz*' | sed 's|^\./||' | LC_ALL=C sort) > intuitionengine.com/assets/MANIFEST
 	@echo "  $$(grep -vc '^$$' intuitionengine.com/assets/MANIFEST 2>/dev/null || echo 0) file(s) in the assets disk volume"
 
 wasm: setup web-demos
@@ -1152,13 +1152,19 @@ ie64-ranlib: setup
 dist-ie64-toolchain-linux-amd64:
 	@bash ./scripts/dist-ie64-toolchain-linux-amd64.sh
 
-.PHONY: dist-host-sdk-linux-amd64 test-host-sdk test-host-sdk-external
+.PHONY: dist-host-sdk-linux-amd64 dist-host-sdk-linux-arm64 test-host-sdk test-host-sdk-arm64 test-host-sdk-external
 dist-host-sdk-linux-amd64:
 	@bash ./scripts/dist-host-sdk-linux-amd64.sh
+
+dist-host-sdk-linux-arm64:
+	@HOST_SDK_CC="$(CROSS_CC)" HOST_SDK_SYSROOT="$(if $(CROSS_CC_SYSROOT),$(CROSS_CC_SYSROOT),$(CROSS_SYSROOT))" bash ./scripts/dist-host-sdk-linux-arm64.sh
 
 test-host-sdk: dist-host-sdk-linux-amd64
 	@bash ./scripts/test-host-sdk-header.sh
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; tar -xf dist/intuition-engine-host-sdk-linux-amd64.tar.xz -C "$$tmp"; bash ./scripts/test-installed-host-sdk.sh "$$tmp/intuition-engine-host-sdk-linux-amd64"
+
+test-host-sdk-arm64: dist-host-sdk-linux-arm64
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; tar -xf dist/intuition-engine-host-sdk-linux-arm64.tar.xz -C "$$tmp"; bash ./scripts/test-installed-host-sdk.sh "$$tmp/intuition-engine-host-sdk-linux-arm64"
 
 test-host-sdk-external:
 	@bash ./scripts/test-host-sdk-external.sh

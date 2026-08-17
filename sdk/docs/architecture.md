@@ -1,6 +1,6 @@
 # Intuition Engine Architecture
 
-*Last modified: 2026-08-16*
+*Last modified: 2026-08-17*
 
 Intuition Engine is a multi-CPU fantasy computer with 6 heterogeneous CPU cores, 6 video systems, audio engines and players, a copper coprocessor, DMA blitter, and extensive I/O peripherals - all connected through a unified MachineBus. Total guest RAM is sized at boot from platform-dispatched usable-RAM detection (`/proc/meminfo` on Linux, `GlobalMemoryStatusEx` on Windows, and `hw.memsize` on Darwin) minus a per-platform reserve. Darwin RAM sizing uses a page-aligned conservative half of `hw.memsize` as the detected base before applying the per-platform reserve. Each CPU/profile sees an active visible RAM clamped to its own ceiling. Guest software discovers sizes through the SYSINFO MMIO pairs (`SYSINFO_TOTAL_RAM_LO/HI`, `SYSINFO_ACTIVE_RAM_LO/HI`) and IE64 `CR_RAM_SIZE_BYTES`. This document describes the system architecture with diagrams showing chips, buses, internal functional units, and data flow paths.
 
@@ -461,7 +461,7 @@ flowchart LR
 | Video | VideoChip, VGA, TED video, ANTIC/GTIA, ULA, Voodoo | `video_chip.go`, `video_vga.go`, `video_ted.go`, `video_antic.go`, `video_ula.go`, `video_voodoo.go` | `main.go` maps each register/VRAM block and registers compositor layers 0/10/12/13/15/20 |
 | Audio | SoundChip/SFX, PSG/AY, SN76489, SID x3, TED, POKEY/SAP, AHX, MOD, WAV, MIDI/MUS | `audio_chip.go`, `sfx_trigger.go`, `psg_engine.go`, `sn76489_chip.go`, `sid_engine.go`, `ted_engine.go`, `pokey_engine.go`, `ahx_player.go`, `mod_player.go`, `wav_player.go`, `midi_player.go` | `main.go` maps chip/player MMIO and registers sample tickers/mixers into SoundChip; register-mapped players share `PlayerControlState` for staged playback requests |
 | OS integration | EmuTOS, AROS, GEMDOS/XBIOS, M68K DOS bridge, Paula-style DMA | `emutos_loader.go`, `aros_loader.go`, `gemdos_intercept.go`, `aros_dos_intercept.go`, `aros_audio_dma.go` | OS profiles install their intercept MMIO and loader state during boot/reset; flat M68K mode installs the host-backed DOS bridge directly |
-| Tooling | Assemblers, disassembler, converters, IE64 C compiler, linker, archive tools, generators, and public headers | `assembler/`, `cmd/ie32to64/`, `cmd/ie64-cproc/`, `cmd/ie64ld/`, `cmd/ie64-ar/`, `cmd/ie64-ranlib/`, `internal/ie64meta/`, `internal/ie64obj/`, `internal/ie64link/`, `internal/ie64archive/`, `sdk/include/intuitionengine.h` | Makefile builds individual SDK tools and the Linux x86-64 Host SDK. The Host SDK combines first-party tools, IE64 C runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation |
+| Tooling | Assemblers, disassembler, converters, IE64 C compiler, linker, archive tools, generators, and public headers | `assembler/`, `cmd/ie32to64/`, `cmd/ie64-cproc/`, `cmd/ie64ld/`, `cmd/ie64-ar/`, `cmd/ie64-ranlib/`, `internal/ie64meta/`, `internal/ie64obj/`, `internal/ie64link/`, `internal/ie64archive/`, `sdk/include/intuitionengine.h` | Makefile builds individual SDK tools and Linux x86-64 and ARM64 Host SDKs. Each Host SDK combines first-party tools, IE64 C runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation |
 
 ### Internal Ownership Notes
 
@@ -952,12 +952,13 @@ Pi 4 and Pi 400 appliance is copied for Pi 5, then only the Intuition Engine
 binary is replaced. The x64 payload check stages one canonical IESHARE tree,
 and both Raspberry Pi image builds consume that same tree.
 
-The Linux x86-64 Host SDK packages `ie32asm`, `ie32to64`, `ie64asm`,
+The Linux x86-64 and ARM64 Host SDKs package `ie32asm`, `ie32to64`, `ie64asm`,
 `ie64dis`, `ie64-cproc`, `ie64ld`, `ie64-ar`, `ie64-ranlib`, QBE, cproc-qbe,
 the IE64 runtime and libraries, public assembly includes,
-`intuitionengine.h`, and user documentation. The x64 live image stages that
-archive and its SHA-256 file under `SDK/Toolchains`; the former per-platform
-`SDK/Tools` tree and standalone IE64 toolchain archive are not staged.
+`intuitionengine.h`, and user documentation. The x64 live image stages both
+Host SDK archives and their SHA-256 files under `SDK/Toolchains`; the former
+per-platform `SDK/Tools` tree and standalone IE64 toolchain archive are not
+staged.
 
 The live-image binaries are delivered as target-specific Debian packages for
 x64, Pi 4, and Pi 5: `intuitionengine-amd64-v3`,

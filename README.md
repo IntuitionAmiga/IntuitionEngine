@@ -12,7 +12,7 @@ use a fixed 256 MiB heap backing. Guest software discovers total and active
 visible RAM
 through SYSINFO and CPU-specific paths.
 
-[Try Intuition Engine in a browser](https://intuitionengine.io) | [Download Live images](https://intuitionengine.io) | [Download the Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
+[Try Intuition Engine in a browser](https://intuitionengine.io) | [Download Live images](https://intuitionengine.io) | [Download x86-64 Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz) | [Download ARM64 Host SDK](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-arm64.tar.xz) | [Read the architecture guide](sdk/docs/architecture.md) | [Watch demonstrations on YouTube](https://www.youtube.com/@IntuitionAmiga/)
 
 ## Quick Start
 
@@ -46,7 +46,7 @@ not installed; the Makefile reports any such skips.
 ## Features
 
 - Guest CPU modes: IE64, IE32, Motorola 68020-oriented M68K, Z80, 6502, and 32-bit flat x86.
-- JIT backends for all six guest CPUs, with availability determined by the host OS and architecture.
+- JIT backends for all six guest CPUs, with availability determined by the host OS, architecture and required host features.
 - A Coprocessor Manager that launches additional CPU workers to run concurrently with the primary CPU on the shared MachineBus.
 - Video systems: VideoChip, VGA, TED video, ANTIC/GTIA, ULA, and Voodoo 3D, combined through a layered compositor.
 - Audio and music paths: custom SoundChip, PSG/AY/YM/SN76489, SID, POKEY/SAP, TED, AHX/THX, MOD, WAV, MIDI/MUS, and AROS Paula-style DMA.
@@ -194,7 +194,7 @@ Core SDK tool outputs:
 
 The main output formats are `.iex` for IE32, `.ie64` for IE64, `.ie68` for M68K, `.ie80` for Z80, `.ie65` for 6502, and `.ie86` for x86.
 
-The [Linux x86-64 Host SDK](sdk/docs/host-sdk-README.md) packages these tools with QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation. Download the packaged Host SDK from [intuitionengine.io](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz); build its source-tree archive with `make dist-host-sdk-linux-amd64`.
+The [Linux Host SDK](sdk/docs/host-sdk-README.md) packages these tools with QBE, cproc-qbe, the IE64 runtime and libraries, public assembly includes, the target-selected C hardware header, and user documentation. Download the [x86-64 archive](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-amd64.tar.xz) or [ARM64 archive](https://intuitionengine.io/assets/intuition-engine-host-sdk-linux-arm64.tar.xz); build them with `make dist-host-sdk-linux-amd64` and `make dist-host-sdk-linux-arm64`.
 
 ## Live USB Images
 
@@ -243,7 +243,7 @@ Maintained profiles:
 | Windows | ARM64 | `novulkan` | IE64 and M68K |
 | macOS | x86_64 | `novulkan` | IE64, M68K, Z80 and x86 |
 | macOS | ARM64 | `novulkan` | IE64 and M68K |
-| Browser | WebAssembly | `make wasm` | IE32, IE64, M68K, 6502, Z80 and x86 |
+| Browser | WebAssembly | `make wasm` | IE32, IE64, M68K, 6502 and Z80; x86 requires WebAssembly SIMD |
 
 SIMD span acceleration (`simd/archsimd`) is enabled for x64 and Linux ARM64
 `make` builds. Other targets use the bit-exact scalar kernels. Set `IE_SIMD=0`
