@@ -417,6 +417,10 @@ pixel returned by `video.get_pixel`. The explicit mode calls use the same
 three-state order as F7, but they do not inject an F7 key into the running
 programme.
 
+New output starts with CRT presentation off. The first F7 action, or the
+first `video.cycle_crt_mode()` call from `off`, selects flat presentation.
+Subsequent cycles select curved and then off.
+
 The older boolean calls remain useful for scripts that need only on or off.
 Enabling selects flat mode. `video.toggle_crt()` changes flat or curved to off,
 and changes off to flat. It never selects curved mode.

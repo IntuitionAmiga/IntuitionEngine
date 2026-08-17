@@ -4126,6 +4126,33 @@ Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` are outside scope
 and remain read-only and checksum-protected.
 Disposition: KEEP.
 
+ID: SDK-DOC-0114
+Status: FIXED
+Document: `sdk/docs/architecture.md`, its empirical inventory and companion
+gates, and the five companion PDFs.
+Section: CRT presentation default re-audit.
+Claim: Commit `f96fe6f3` changes the host CRT presentation default from flat
+to off while retaining the Guest-Advanced profile. The Architecture manual
+must state the disabled initial presentation and the exact F7 cycle without
+changing the guest-facing video or scripting contracts.
+Purpose judgement: CRT presentation is host display architecture and belongs
+in `architecture.md`. It does not change IE64/IE32 ISA semantics, monitor
+commands, or the IEScript API surface.
+Canonical sources checked: `video_backend_ebiten.go`,
+`video_crt_filter_ebiten.go`, CRT profile and status tests, the current
+Architecture manual, source inventory, and companion-document gates.
+Runnable verification: source-inventory golden and manual-coverage gates,
+companion and ledger gates, `make check-docs`, protected-refman checksum
+comparison, final isolated five-PDF render, manifest verification, and
+independent PDF inspection.
+Observed result: Architecture states that Guest-Advanced remains the default
+profile, CRT presentation starts off, and F7 cycles off, flat, curved, and off.
+No other book required a change.
+Action: Regenerate the five PDFs and render manifest after this ledger update.
+Notes: `sdk/docs/refman/` and `sdk/docs/refman.publish/` are outside scope
+and remain read-only and checksum-protected.
+Disposition: KEEP.
+
 ID: SDK-DOC-0031
 Status: FIXED
 Document: All five shipped PDFs.
@@ -4166,7 +4193,7 @@ the `SDK-DOC-0041`, `SDK-DOC-0042`, `SDK-DOC-0043`, and
 `SDK-DOC-0096`, `SDK-DOC-0097`, `SDK-DOC-0098`, `SDK-DOC-0099`, and
 `SDK-DOC-0104`, `SDK-DOC-0105`, `SDK-DOC-0106`, `SDK-DOC-0107`, and
 `SDK-DOC-0108`, `SDK-DOC-0109`, `SDK-DOC-0110`, `SDK-DOC-0111`,
-`SDK-DOC-0112`, and `SDK-DOC-0113`
+`SDK-DOC-0112`, `SDK-DOC-0113`, and `SDK-DOC-0114`
 corrections and
 rerun evidence, and after the focused SDK companion verification command
 passed:
@@ -4248,7 +4275,7 @@ Reference Manual plan:
    Markdown, source, source-comment, generated-table, test, or ledger
    hard-gate change
 
-Open claim-group backlog: none for this run after `SDK-DOC-0113` and
+Open claim-group backlog: none for this run after `SDK-DOC-0114` and
 the final PDF render gate in `SDK-DOC-0031`.
 
 ## Empirical ISA Source Inventory Gate

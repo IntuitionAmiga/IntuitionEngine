@@ -5,39 +5,39 @@ Origin: IntuitionEngine
 Label: IntuitionEngine
 Suite: stable
 Codename: stable
-Date: Mon, 17 Aug 2026 08:41:35 +0000
+Date: Mon, 17 Aug 2026 09:55:49 +0000
 Architectures: amd64 arm64
 Components: main
 Description: IntuitionEngine Debian packages
 MD5Sum:
- afc2772e948be6f3f5f463181d8058fa 595 main/binary-amd64/Packages
- 328ee18b865380a584915fe6d01cbcb7 380 main/binary-amd64/Packages.gz
- 62057b76c2d287d28d0683e9adeb1514 1198 main/binary-arm64/Packages
- 47ea251e5609f22d67e2a966e63e4b38 498 main/binary-arm64/Packages.gz
+ 191957a48d11486885abdc8e98b34feb 595 main/binary-amd64/Packages
+ 66f175ddac46803968b8a5a7ee60e92d 380 main/binary-amd64/Packages.gz
+ 68dbd1a831f4c30012a283d7e7f38611 1198 main/binary-arm64/Packages
+ 2ff80f5491178f1c9e24d4b293a6b0e7 498 main/binary-arm64/Packages.gz
 SHA1:
- 547a3ba9b971ea9164f206e9080b65d2e21247c8 595 main/binary-amd64/Packages
- 7b4e916e85e6762b8cdf7ed34acf98bbf56944db 380 main/binary-amd64/Packages.gz
- 41a4addf7af197bfcdb3584eb69340420fb7bdaf 1198 main/binary-arm64/Packages
- 5e54cb3ef58f5b2034ff03c0199716b209aac614 498 main/binary-arm64/Packages.gz
+ 610f1e8ef72661ba7b23906743d4d8e321c7c02c 595 main/binary-amd64/Packages
+ 0692a7bb78229dab1d999f3df4bf8913c8cac477 380 main/binary-amd64/Packages.gz
+ 661d285091c6be30f13ff35b559adb3a9febd117 1198 main/binary-arm64/Packages
+ d5b8da07584f4e69ce40fa2e6089eb58a54dc1a5 498 main/binary-arm64/Packages.gz
 SHA256:
- 436f23131eb75456404b2157e2f3b45af77562089f3438c061033952533220c8 595 main/binary-amd64/Packages
- 709f17f9b207eb07ba85bbfd9e497c4629db4f8d0db8dd6cd704493111f8381d 380 main/binary-amd64/Packages.gz
- b3f4943d241e1eefe2183012c7f0171483a2cabcc75988cb73a1637e9a072522 1198 main/binary-arm64/Packages
- 81549c716d7ec7b18eaae6ea5d9341e35772f14cb5f07dccccd8a52ae3cff659 498 main/binary-arm64/Packages.gz
+ 4527ffd2a577e51ce67ec81f2d07b882fa07aebc44fac06de29e178cbb5789ed 595 main/binary-amd64/Packages
+ 3a6f45536678228106cd2cfa2a35e2257265851bc0a05d6c0ce7f1795ef828fe 380 main/binary-amd64/Packages.gz
+ 457f806a0f247d03d630a857e682d1109df91c4bba1a35c870446f73cfd75af3 1198 main/binary-arm64/Packages
+ 5393e2cd2d52afb043a02abad184934654de864e91b2a8e22a9d5ff3ec7604f7 498 main/binary-arm64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iQJPBAEBCAA5FiEEm0COWDpQwhEhqQ6DuLmiKIhIpjkFAmqCyT8bFIAAAAAABAAO
-bWFudTIsMi41KzEuMTIsMiwyAAoJELi5oiiISKY5aQQP/j7sfQZvnZ6h89xWw5nr
-HJeisIyHgetnpyi5Jl46XGDaxI1ARbmL+DDLkIt4bGyHkHIr+Iibu7oICpaBXjfb
-5ZVAeuNLxSeb1Ac+AOVcSbv218FGoeituudM3xMYVCMjinDIYl5LdNaS+fk2Fv3H
-evHY61codDXuU4KdnPhy42ueCAjxcW3WXdDzD1OhpItYH0g8iUrK9sJzdmdsOay5
-l8j9kBdYOHRQeLu3StYBr54BGTtOtpRY2ulxS19vq/kOGytoqfT4JWR3CgV2ZTDd
-XmzXXItcDF3CplwESTvnVlTqUnHDx+qPMuMGTjZ4p46Jg1vU5FVzYH7e/2/YyxpZ
-XveKl14dpcdfi2uwDrijFuTF+GrYWd25n/dSZrIRmdIu8GuTK+IrGf5p/SBqqrBZ
-q1gUP1FOo5JntwxnpF0S6YaIhX0Ll3D0V4HNtP9NJsCx6A2+VVArJeH4oV7cB145
-xs0cxBzNx8ei4NcLv1H1Esqy8SS6mZpTASWUz2gfn9vTx5MFc/VufR0m49KtC+N5
-xfa+jzFUXomLjCDX4SxLRlD+JEJRz/K7O50BL0Zgg4B4lJxwyg0ODqNOBKLJOTTH
-vfeYyKLvr/UE9JLDRA/Lwz1SkwaThPGqNy3RY/s0LGeSMXiQ+8WcE3EctpgGIFci
-/LoqLE+8TPsoApSs4nvaqwGB
-=9mV4
+iQJPBAEBCAA5FiEEm0COWDpQwhEhqQ6DuLmiKIhIpjkFAmqC2qUbFIAAAAAABAAO
+bWFudTIsMi41KzEuMTIsMiwyAAoJELi5oiiISKY5gTYP/RsbPQzEYxgUgJzX14mx
+Z7mEp+uEMC6aTdjBYQUIvexeh8C4gsiykF5xg01/+7bGh5rg4mTS7dpV4YzS7IGp
+1cuILxzl1UFznDQHxCkGPwGselWKZ52igUwnSVf7h2fEob4GqiTOyZWhmCQnZPrS
+dueMzUhQ5q32uMGWvdXzhZQazjafApLdQbN/TVTuCUo7nB3GzyU9V39eBvzDE6F9
+SyQLiqFE2UEgzlteGMDXjAMnpfHz7a4lxu1qIbFMyHJqwlsDusMLBb61pr4GJobf
++iX39tNbVeIo4wfv0shdVe73Drd6cAwjCe4D9zHWf+nPol6VMFkiRZy1BakxpDd0
+u8iq6C7DCavCmiRomKOPrda2yD72KzKvRBE7IrbpLW1Jvuyl2ppEKSSiO+flPIwa
+pP4LBBFdpmpNV/2WNoNI3VcI42FXr8zqNWix0m1Sy6rwR2XPMwpqD9dIviM2d6Hn
+HsZ6tTwKRGfV1IANMVXsVXI677CFLTux3zKo1tNLKV4EhlQOhaI6Ti3z+xw3/mRS
+G710OOgJ9uJpziW1OkgXbyjIci1Rc51imBicZDeQXiZmGNDgyPIsA7ZYd2LsgTbJ
+ZXpSCdPp4i8NbED3YEirlchIqEUPADXw5xYureVwVkk9TYoqPSu+hfGaoLaXFRuo
+0mP6NNlCaeW/plSyn3aGGtx2
+=7taz
 -----END PGP SIGNATURE-----

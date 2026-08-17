@@ -1,12 +1,12 @@
 Package: intuitionengine-amd64-v3
-Version: 1.0.5-1
+Version: 1.0.6-1
 Architecture: amd64
 Maintainer: IntuitionEngine release team <packages@intuitionengine.io>
-Filename: pool/main/i/intuitionengine-amd64-v3/intuitionengine-amd64-v3_1.0.5-1_amd64.deb
-Size: 6544476
-MD5sum: 4522ee647cd1258aa6404558b60a899a
-SHA1: c1ced0953c4b3e95d99009783beac750f30964b8
-SHA256: f758855597f128422529f6d027ffc38d04a036e7570220f72ea28064aba4cae4
+Filename: pool/main/i/intuitionengine-amd64-v3/intuitionengine-amd64-v3_1.0.6-1_amd64.deb
+Size: 6544272
+MD5sum: 8f68f3a0dd3189b563dfe1b3254e2c83
+SHA1: 3419344c52b996374b240ad245e3bf54cefdfc75
+SHA256: 711b89fbd1aba501e91c886e47df79f2b35fe0994f452ca56b3a0e20c5620f40
 Section: misc
 Priority: optional
 Description: IntuitionEngine live appliance binary for intuitionengine-amd64-v3

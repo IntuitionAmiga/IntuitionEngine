@@ -42,6 +42,34 @@ release tooling in reader-facing prose. Those details belong only in the
 author ledger. Do not change the existing `GET` description in this pass:
 the implementation now matches the current Chapter 2 text.
 
+## Current CRT Presentation Default Editorial Pass
+
+This pass records the host presentation default changed after the previous
+canonical PRG update. Execute it in reader order over Chapter 34 and Chapter
+44, then update the claim ledger. Finish with focused source checks, strict
+publication, and PDF generation.
+
+The reader-facing contract is:
+
+- CRT presentation starts in `off` mode for a new output;
+- F7 and `video.cycle_crt_mode()` retain the existing `flat`, `curved`,
+  `off` cycle once a mode is selected;
+- `video.set_crt_mode()`, the Boolean CRT helpers, and the two-stage capture
+  rules remain unchanged;
+- CRT is a final presentation stage. It does not change guest video
+  registers, framebuffer bytes, palettes, or composited pixels.
+
+Chapter 34 must state the new startup state beside the CRT mode table and
+must explain that the first cycle from `off` selects `flat`. Chapter 44 must
+be checked for any implied startup mode, but must not repeat the complete
+CRT reference. Record the exact runtime and test evidence in
+`verify/CLAIM_LEDGER.txt`.
+
+Do not mention host backend names, graphics libraries, shader details,
+source paths, build commands, tests, or release tooling in reader-facing
+prose. This pass changes the presentation default only. It does not change
+the guest display cards or their MMIO contracts.
+
 ## Canonical Source Rule
 
 All technical claims about Intuition Engine, its CPUs, buses, memory
