@@ -858,12 +858,13 @@
           <figcaption>IE64 BASIC running directly on the machine. Load, inspect and change the supplied examples from the Ready prompt.</figcaption>
         </figure>
         <p style="max-width: 820px; margin: 1rem 0 0; color: var(--muted); font-size: 0.95rem;">Your first minute, and the first thing on screen is yours, not a demo off the disk. Launch the browser demo and type this at the Ready prompt:</p>
-        <pre class="code-panel" style="max-width: 820px"><code>SCREEN &amp;H13
-PALETTE 1, 63, 0, 0
-PLOT 160, 100, 1
-POKE32 &amp;HF0800, 1 : REM switch the sound chip on
-SOUND 0, 440, 200, 0, 128
-GATE 0, ON : REM play the note</code></pre>
+        <pre class="code-panel" style="max-width: 820px"><code>10 SCREEN &amp;H13
+20 PALETTE 1, 63, 0, 0
+30 PLOT 160, 100, 1
+40 POKE32 &amp;HF0800, 1 : REM switch the sound chip on
+50 SOUND 0, 440, 200, 0, 128
+60 GATE 0, ON : REM play the note
+RUN</code></pre>
         <p style="max-width: 820px; margin: 0.6rem 0 0; color: var(--muted); font-size: 0.95rem;">A red dot appears in the middle of the screen and a tone plays. Your programme has written directly to the video and sound hardware. From here, <code>RUN AOT</code> compiles the same BASIC to native IE64 code, while <code>DIR "Demos"</code> lists the supplied rotozoomers. Two ways in: <a href="#guide">make your first effect</a>, or <a href="#architecture">see the hardware</a>.</p>
 
 

@@ -142,9 +142,28 @@ func wasmPollFramePark() {
 	wasmResetYieldThrottle()
 }
 
-// wasmParkUntilFrame parks the CPU goroutine until the browser has rendered
-// a frame (or briefly, in fixed-sleep/node mode), unconditionally: callers
-// own any throttling.
+var (
+	yieldChanPort1 js.Value
+	yieldChanPort2 js.Value
+	hasMsgChannel  = js.Global().Get("MessageChannel").Truthy()
+)
+
+func init() {
+	if hasMsgChannel {
+		ch := js.Global().Get("MessageChannel").New()
+		yieldChanPort1 = ch.Get("port1")
+		yieldChanPort2 = ch.Get("port2")
+		yieldChanPort1.Call("start")
+		yieldChanPort2.Call("start")
+	}
+}
+
+// wasmParkUntilFrame yields the CPU goroutine to the browser event loop briefly
+// (timers, AudioWorklet messages, input, and rendering) using a zero-delay MessageChannel.
+// Parking via requestAnimationFrame caused the CPU goroutine to spend 16.6ms waiting for V-Sync,
+// and setTimeout(0) is subject to the HTML5 4ms minimum timer clamp.
+// Yielding via MessageChannel.postMessage returns control to Go in <0.2ms as soon as the JS
+// event loop processes pending callbacks, achieving full 1.0x real-time playback speed.
 func wasmParkUntilFrame() {
 	switch {
 	case wasmYieldSleep > 0 || !wasmHasRAF:
@@ -154,52 +173,27 @@ func wasmParkUntilFrame() {
 			d = time.Millisecond
 		}
 		time.Sleep(d)
+	case hasMsgChannel:
+		done := make(chan struct{})
+		var onMsg js.Func
+		onMsg = js.FuncOf(func(this js.Value, args []js.Value) any {
+			onMsg.Release()
+			close(done)
+			return nil
+		})
+		yieldChanPort1.Set("onmessage", onMsg)
+		yieldChanPort2.Call("postMessage", nil)
+		<-done
 	default:
-		// Park until the browser has rendered a frame. Resuming inside the
-		// rAF callback itself would block THAT frame's paint (callbacks run
-		// before the rendering step), so the rAF handler defers the resume
-		// through a zero-delay timeout, which runs after the paint. A 50 ms
-		// timeout races the frame: browsers stop rAF completely in hidden
-		// tabs, and without the fallback the machine would freeze the moment
-		// the tab loses focus. Whichever side wins cancels AND releases the
-		// loser; otherwise a long-hidden tab would queue one dangling rAF
-		// callback (plus two live js.Func registrations) per 50 ms yield and
-		// replay the whole backlog in a burst on becoming visible again.
-		// Callbacks run on the single JS thread, so no locking is needed and
-		// the channel closes exactly once.
 		global := js.Global()
 		done := make(chan struct{})
-		resumed := false
-		resume := func() {
-			if !resumed {
-				resumed = true
-				close(done)
-			}
-		}
-		var after, raf, fallback js.Func
-		var rafID, timerID js.Value
+		var after js.Func
 		after = js.FuncOf(func(this js.Value, args []js.Value) any {
 			after.Release()
-			resume()
+			close(done)
 			return nil
 		})
-		raf = js.FuncOf(func(this js.Value, args []js.Value) any {
-			raf.Release()
-			global.Call("clearTimeout", timerID)
-			fallback.Release()
-			global.Call("setTimeout", after, 0)
-			return nil
-		})
-		fallback = js.FuncOf(func(this js.Value, args []js.Value) any {
-			fallback.Release()
-			global.Call("cancelAnimationFrame", rafID)
-			raf.Release()
-			after.Release() // never handed to JS on this path
-			resume()
-			return nil
-		})
-		rafID = global.Call("requestAnimationFrame", raf)
-		timerID = global.Call("setTimeout", fallback, 50)
+		global.Call("setTimeout", after, 0)
 		<-done
 	}
 }

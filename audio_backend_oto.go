@@ -80,8 +80,14 @@ func (op *OtoPlayer) SetupPlayer(chip *SoundChip) {
 	op.chip.Store(chip)
 	op.closed = false
 	op.player = op.ctx.NewPlayer(op)
-	// Pre-allocate buffer for typical oto buffer sizes (4096 bytes = 1024 float32 samples)
-	op.sampleBuf = make([]float32, 4096)
+	bufSize := otoPlayerBufferSize(SAMPLE_RATE)
+	op.player.SetBufferSize(bufSize)
+	// Pre-allocate buffer for typical oto buffer sizes
+	if bufSize/4 > 4096 {
+		op.sampleBuf = make([]float32, bufSize/4)
+	} else {
+		op.sampleBuf = make([]float32, 4096)
+	}
 }
 
 func (op *OtoPlayer) Read(p []byte) (n int, err error) {

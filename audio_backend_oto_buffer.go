@@ -1,3 +1,5 @@
+//go:build !js
+
 // audio_backend_oto_buffer.go - output device buffer sizing for the oto backend.
 
 /*
@@ -36,4 +38,17 @@ const otoDefaultBufferDuration = 10 * time.Millisecond
 // where the oto backend itself is not compiled in.
 func otoBufferDuration() time.Duration {
 	return otoDefaultBufferDuration
+}
+
+// otoPlayerBufferSize returns the buffer size passed to op.player.SetBufferSize.
+// Derived from otoBufferDuration() to ensure the player source buffer matches
+// the device output buffer size.
+func otoPlayerBufferSize(sampleRate int) int {
+	bytesPerSample := 4
+	d := otoBufferDuration()
+	sz := int(int64(d) * int64(sampleRate) * int64(bytesPerSample) / int64(time.Second))
+	if sz < 4096 {
+		sz = 4096
+	}
+	return (sz / bytesPerSample) * bytesPerSample
 }

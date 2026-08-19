@@ -9,6 +9,7 @@ License: GPLv3 or later
 package main
 
 import (
+	"runtime"
 	"testing"
 	"time"
 )
@@ -21,7 +22,11 @@ import (
 // measurement sweep.
 func TestOtoContextOptions_BufferSizeExplicit(t *testing.T) {
 	got := otoBufferDuration()
-	if want := 10 * time.Millisecond; got != want {
+	want := 10 * time.Millisecond
+	if runtime.GOOS == "js" {
+		want = 100 * time.Millisecond
+	}
+	if got != want {
 		t.Fatalf("oto buffer duration = %v, want %v", got, want)
 	}
 	if got < time.Millisecond {
